@@ -36,7 +36,7 @@ pub struct Actor {
 
 #[derive(Debug, Clone)]
 pub struct Session {
-    pub id: Uuid,
+    pub _id: Uuid,
     pub actors: Vec<Actor>,
 }
 
@@ -48,8 +48,6 @@ pub struct CreateSessionRequest {
     pub role: Role,
     /// Display name of the calling actor.
     pub name: String,
-    /// Transport the caller is reachable at (provided by the FE).
-    pub transport: Transport,
     /// Number of additional helpers to provision in the session.
     /// If role == Helper, an Owner is also provisioned automatically.
     pub additional_helpers: u8,
@@ -60,4 +58,23 @@ pub struct CreateSessionResponse {
     pub session_id: Uuid,
     /// All actors in the session, including the caller and any provisioned actors.
     pub actors: Vec<Actor>,
+}
+
+/// Actor enriched with live pairing state — used in GET /sessions/{id}.
+#[derive(Debug, Clone, Serialize)]
+pub struct ActorWithStatus {
+    #[serde(flatten)]
+    pub actor: Actor,
+    /// Protocol channel ID, present only if pairing has completed for this actor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel_id: Option<String>,
+    /// New channel ID from a recovery pairing, awaiting association by the helper.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_recovery_channel_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GetSessionResponse {
+    pub session_id: Uuid,
+    pub actors: Vec<ActorWithStatus>,
 }

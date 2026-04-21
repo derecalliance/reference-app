@@ -93,6 +93,12 @@
   }
 }
 
+.leave-btn {
+  margin-left: 8px;
+  border-left: 1px solid var(--border);
+  padding-left: 16px !important;
+}
+
 /* ── Modal ─────────────────────────────────────────────────────────────────── */
 
 .modal-overlay {
@@ -178,6 +184,17 @@
   gap: 10px;
 }
 
+.copy-row {
+  display: flex;
+  gap: 8px;
+}
+
+.copy-field-btn {
+  flex: 1;
+  font-size: 13px;
+  padding: 6px 12px;
+}
+
 /* ── Modal form fields ─────────────────────────────────────────────────────── */
 
 .form-field {
@@ -205,6 +222,7 @@
   color: var(--text-h);
   outline: none;
   font-family: var(--sans);
+  resize: vertical;
 
   &:focus {
     border-color: var(--accent);
@@ -214,6 +232,18 @@
     opacity: 0.45;
     cursor: not-allowed;
   }
+}
+
+.mono-textarea {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.field-error {
+  margin: 0;
+  font-size: 12px;
+  color: #ef4444;
 }
 
 /* ── Helper checkbox list ──────────────────────────────────────────────────── */
@@ -466,21 +496,59 @@
   white-space: nowrap;
 }
 
+/* ── Click-to-copy ──────────────────────────────────────────────────────────── */
+
+.click-to-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+
+.click-to-copy:hover {
+  background: var(--code-bg);
+}
+
+.click-to-copy-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary, #888);
+  white-space: nowrap;
+}
+
+.click-to-copy-value {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 3px 8px;
+  background: var(--code-bg);
+  border-radius: 4px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
 /* ── Field list (dl) ───────────────────────────────────────────────────────── */
 
 .field-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 10px;
   margin: 0;
   padding: 0;
+
+  @media (max-width: 480px) {
+    grid-template-columns: 1fr;
+    row-gap: 4px;
+  }
 }
 
 .field-row {
-  display: grid;
-  grid-template-columns: 100px 1fr;
-  align-items: center;
-  gap: 12px;
+  display: contents;
 
   dt {
     font-size: 12px;
@@ -494,11 +562,6 @@
   dd {
     margin: 0;
     min-width: 0;
-  }
-
-  @media (max-width: 480px) {
-    grid-template-columns: 1fr;
-    gap: 4px;
   }
 }
 
@@ -580,6 +643,13 @@
   margin: 0;
 }
 
+.form-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 2px 0 0;
+  line-height: 1.4;
+}
+
 /* ── Share list ────────────────────────────────────────────────────────────── */
 
 .share-list {
@@ -606,6 +676,27 @@
   color: var(--text-h);
 }
 
+.share-item--confirmed {
+  border-color: var(--accent-border, #2d7d46);
+  background: var(--accent-bg, #0d1f14);
+}
+
+.share-status-tag {
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.share-status-tag.confirmed {
+  color: #4ade80;
+}
+
+.share-status-tag.pending {
+  color: var(--text-muted, #666);
+  letter-spacing: 0.1em;
+}
+
 /* ── Card actions row ──────────────────────────────────────────────────────── */
 
 .card-actions {
@@ -621,21 +712,6 @@
   padding: 3px 10px;
   white-space: nowrap;
   flex-shrink: 0;
-}
-
-.verify-success {
-  background: #16a34a !important;
-  opacity: 1 !important;
-}
-
-.verify-failed {
-  background: #ef4444 !important;
-  opacity: 1 !important;
-}
-
-@media (prefers-color-scheme: dark) {
-  .verify-success { background: #15803d !important; }
-  .verify-failed  { background: #dc2626 !important; }
 }
 
 /* ── Version tag (shared) ──────────────────────────────────────────────────── */
@@ -724,7 +800,28 @@
   user-select: all;
 }
 
+.threshold-value {
+  font-size: 13px;
+  color: var(--text-h);
+}
+
 /* ── Helper tag list (inside secret card) ──────────────────────────────────── */
+
+.sub-heading-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.verified-summary {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 10px;
+  background: var(--code-bg);
+  color: var(--text);
+  white-space: nowrap;
+}
 
 .helper-tag-list {
   list-style: none;
@@ -736,6 +833,9 @@
 }
 
 .helper-tag {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   font-size: 12px;
   font-weight: 500;
   padding: 3px 10px;
@@ -743,6 +843,27 @@
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--text-h);
+}
+
+.helper-tag--verified {
+  border-color: #16a34a;
+  background: rgba(34, 197, 94, 0.08);
+  color: #15803d;
+}
+
+@media (prefers-color-scheme: dark) {
+  .helper-tag--verified {
+    border-color: #4ade80;
+    background: rgba(74, 222, 128, 0.1);
+    color: #4ade80;
+  }
+}
+
+.helper-verification-icon {
+  font-size: 11px;
+  line-height: 1;
+  flex-shrink: 0;
+  color: inherit;
 }
 
 /* ── Side panel ────────────────────────────────────────────────────────────── */
@@ -893,6 +1014,22 @@
   }
 }
 
+/* ── Side helper action row ────────────────────────────────────────────────── */
+
+.side-helper-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.side-action-btn {
+  width: 100%;
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-weight: 600;
+}
+
 /* ── Pair / Unpair action button ───────────────────────────────────────────── */
 
 .pair-action-btn {
@@ -973,3 +1110,352 @@
     overflow: visible;
   }
 }
+
+/* ── Modal prose / form label hint ────────────────────────────────────────── */
+
+.modal-description {
+  font-size: 13px;
+  color: var(--text);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.form-label-hint {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text);
+}
+
+/* ── Share delivery progress ──────────────────────────────────────────────── */
+
+@keyframes share-spin {
+  to { transform: rotate(360deg); }
+}
+
+.share-status-spinning {
+  animation: share-spin 0.85s linear infinite;
+  display: block;
+}
+
+.share-progress-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-h);
+  margin: 0 0 2px;
+}
+
+.share-progress-subtitle {
+  font-size: 12px;
+  color: var(--text);
+  margin: 0;
+}
+
+.share-progress-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.share-progress-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-size: 14px;
+  color: var(--text-h);
+  transition: border-color 0.25s, background 0.25s;
+}
+
+.share-progress-item--confirmed {
+  border-color: var(--accent-border);
+  background: var(--accent-bg);
+}
+
+.share-progress-item--failed {
+  border-color: #fca5a5;
+  background: #fef2f2;
+}
+
+.share-progress-item-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.share-progress-item-status {
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.share-progress-bar-track {
+  height: 5px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+
+.share-progress-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+
+.share-progress-bar-fill--has-failures {
+  background: #ef4444;
+}
+
+.share-progress-summary {
+  font-size: 12px;
+  color: var(--text);
+  margin: 0;
+}
+
+/* ── Verify shares wizard ──────────────────────────────────────────────────── */
+
+/* Wider modal for the progress list step */
+.verify-modal--progress {
+  max-width: 420px;
+}
+
+/* Bar + summary wrapper */
+.verify-progress-bar-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Icon cell in each progress row */
+.verify-progress-icon {
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.verify-progress-icon--done {
+  font-size: 13px;
+  font-weight: 700;
+  color: #16a34a;
+}
+
+@media (prefers-color-scheme: dark) {
+  .verify-progress-icon--done {
+    color: #4ade80;
+  }
+}
+
+/* CSS-only spinner */
+@keyframes verify-spin {
+  to { transform: rotate(360deg); }
+}
+
+.verify-spinner {
+  display: block;
+  width: 13px;
+  height: 13px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: verify-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+/* Verified status text in progress rows */
+.share-progress-item-status.status--verified {
+  color: #16a34a;
+  font-weight: 600;
+}
+
+@media (prefers-color-scheme: dark) {
+  .share-progress-item-status.status--verified {
+    color: #4ade80;
+  }
+}
+
+/* "Verified" badge in helper selection list */
+.share-status-tag.verified {
+  color: #16a34a;
+  background: rgba(34, 197, 94, 0.1);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+/* ── Previous version history list ──────────────────────────────────────────── */
+
+.version-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.version-history-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.version-history-label {
+  color: var(--text);
+  font-family: var(--mono, monospace);
+}
+
+.version-history-note {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.version-history-verified {
+  font-size: 11px;
+  font-weight: 600;
+  color: #16a34a;
+  white-space: nowrap;
+}
+
+@media (prefers-color-scheme: dark) {
+  .version-history-verified {
+    color: #4ade80;
+  }
+}
+
+.version-verify-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  margin-left: auto;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ── Card actions with multiple buttons ──────────────────────────────────────── */
+
+.card-actions {
+  gap: 8px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .share-status-tag.verified {
+    color: #4ade80;
+    background: rgba(74, 222, 128, 0.1);
+  }
+}
+
+/* ── Session setup gate ───────────────────────────────────────────────────── */
+
+.session-setup-gate {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.25rem;
+  padding: 3rem 2rem;
+  max-width: 420px;
+  margin: 4rem auto 0;
+}
+
+.setup-gate-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.setup-gate-description {
+  color: var(--text-secondary, #666);
+  margin: 0;
+}
+
+.setup-gate-progress {
+  width: 100%;
+}
+
+/* ── Recovery mode ──────────────────────────────────────────────────────────── */
+
+.recovery-active {
+  background: var(--warning, #f59e0b) !important;
+  color: #fff !important;
+  border-color: var(--warning, #f59e0b) !important;
+}
+
+.recovery-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.recovery-section > .sub-heading {
+  margin-bottom: 12px;
+}
+
+/* ── Recovery association prompt (helper side panel) ──────────────────────── */
+
+.recovery-association-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--surface-raised, #fffbeb);
+  border: 1px solid var(--warning, #f59e0b);
+  border-radius: 8px;
+}
+
+.recovery-assoc-description {
+  font-size: 12px;
+  color: var(--text-secondary, #64748b);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.recovery-assoc-contact {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.recovery-assoc-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary, #1e293b);
+}
+
+/* Recovery-pending dot color */
+.helper-dot.recovery-pending {
+  background: var(--warning, #f59e0b);
+}
+
+.status-tag.recovery-pending {
+  background: var(--warning, #f59e0b);
+  color: #fff;
+}
+
+/* ── Recovered secret plain text display ─────────────────────────────────── */
+
+.recovered-secret-plaintext {
+  margin: 0;
+  padding: 14px 16px;
+  background: var(--surface, #f8fafc);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text, #1e293b);
+}
+
