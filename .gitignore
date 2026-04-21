@@ -1,5 +1,7 @@
 # Rust
-/target
+target/
+.env
+.env.*
 
 # React
 

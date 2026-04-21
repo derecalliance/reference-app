@@ -201,6 +201,38 @@
   }
 }
 
+.helper-count-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.helper-count-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 20px 0;
+
+  & + .helper-count-section {
+    border-top: 1px solid var(--border);
+  }
+}
+
+.helper-count-section-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-h);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.helper-count-section-hint {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
 .wizard-actions {
   display: flex;
   justify-content: flex-end;
@@ -209,4 +241,54 @@
     font-size: 15px;
     padding: 9px 24px;
   }
+}
+
+/* ── Resume card ────────────────────────────────────────────────────────────── */
+
+.resume-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--accent-border);
+  border-radius: 8px;
+  background: var(--accent-bg);
+  margin-bottom: 8px;
+}
+
+.resume-card-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.resume-card-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--accent);
+}
+
+.resume-card-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.resume-card-id {
+  font-size: 11px;
+  color: var(--text);
+  font-family: var(--mono, monospace);
+}
+
+/* ── Wizard field error ──────────────────────────────────────────────────────── */
+
+.wizard-field-error {
+  font-size: 12px;
+  color: #ef4444;
+  margin: 4px 0 0;
+  line-height: 1.4;
 }

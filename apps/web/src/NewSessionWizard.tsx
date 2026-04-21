@@ -1,6 +1,9 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import './NewSessionWizard.css'
-import type { OwnerSession, PairedHelper, ProtectedSecret } from './types'
+import type { OwnerSession } from './types'
+import { apiCreateSession, apiGetSession } from './api'
+import { useConsole } from './ConsoleContext'
+import { loadLastSession, loadSessionById } from './sessionPersistence'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -12,72 +15,45 @@ interface WizardData {
   role: Role
   ownerName: string
   helperCount: number
+  prePairedCount: number
   sessionId: string
-}
-
-// ── Mock API ─────────────────────────────────────────────────────────────────
-
-function randomHex(bytes: number): string {
-  return Array.from(crypto.getRandomValues(new Uint8Array(bytes)))
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('')
-}
-
-async function mockCreateSession(ownerName: string, helperCount: number): Promise<OwnerSession> {
-  await new Promise<void>(resolve => setTimeout(resolve, 500))
-
-  const seedSecretId = crypto.randomUUID()
-
-  // All provisioned helpers are auto-paired. Seed the first one with a secret share.
-  const helpers: PairedHelper[] = Array.from({ length: helperCount }, (_, i) => ({
-    id: crypto.randomUUID(),
-    name: i === 0 ? 'Demo Helper' : `Helper ${i + 1}`,
-    channelId: randomHex(8),
-    transport: {
-      protocol: 'https' as const,
-      uri: `https://helper-${i + 1}.example.com/derec`,
-    },
-    sharedKey: randomHex(16),
-    connectionStatus: 'paired' as const,
-    secretShares: i === 0
-      ? [{ secretId: seedSecretId, version: 1, label: 'Metamask Wallet V1' }]
-      : [],
-  }))
-
-  const protectedSecrets: ProtectedSecret[] = [
-    {
-      secretId: seedSecretId,
-      version: 1,
-      label: 'Metamask Wallet V1',
-      helperNames: ['Demo Helper'],
-    },
-  ]
-
-  return {
-    sessionId: crypto.randomUUID(),
-    ownerName,
-    transport: {
-      protocol: 'https' as const,
-      uri: 'https://owner.example.com/derec',
-    },
-    helpers,
-    protectedSecrets,
-  }
 }
 
 // ── Step components ──────────────────────────────────────────────────────────
 
-function StepChoice({ onSelect }: { onSelect: (flow: Flow) => void }) {
+function StepChoice({
+  onSelect,
+  onResumeLast,
+  lastSession,
+}: {
+  onSelect: (flow: Flow) => void
+  onResumeLast: () => void
+  lastSession: OwnerSession | null
+}) {
   return (
     <div className="wizard-step">
       <h2>Get started</h2>
       <p>Choose an option to continue.</p>
+
+      {lastSession && (
+        <div className="resume-card">
+          <div className="resume-card-info">
+            <span className="resume-card-label">Last session</span>
+            <span className="resume-card-name">{lastSession.ownerName}</span>
+            <code className="resume-card-id">{lastSession.sessionId.slice(0, 8)}…</code>
+          </div>
+          <button className="primary" onClick={onResumeLast}>
+            Resume
+          </button>
+        </div>
+      )}
+
       <div className="choice-buttons">
         <button className="primary" onClick={() => onSelect('create')}>
           Create Session
         </button>
         <button className="secondary" onClick={() => onSelect('continue')}>
-          Continue Session
+          Continue by ID
         </button>
       </div>
     </div>
@@ -139,12 +115,16 @@ function StepOwnerName({
 }
 
 function StepHelperCount({
-  value,
-  onChange,
+  helperCount,
+  prePairedCount,
+  onChangeHelperCount,
+  onChangePrePairedCount,
   role,
 }: {
-  value: number
-  onChange: (n: number) => void
+  helperCount: number
+  prePairedCount: number
+  onChangeHelperCount: (n: number) => void
+  onChangePrePairedCount: (n: number) => void
   role: Role
 }) {
   return (
@@ -154,23 +134,60 @@ function StepHelperCount({
         Helpers store encrypted shares of your secret. More helpers increases
         resilience.
       </p>
-      <div className="helper-count-input">
-        <button
-          className="stepper"
-          onClick={() => onChange(Math.max(1, value - 1))}
-          aria-label="Decrease"
-        >
-          −
-        </button>
-        <span className="count">{value}</span>
-        <button
-          className="stepper"
-          onClick={() => onChange(value + 1)}
-          aria-label="Increase"
-        >
-          +
-        </button>
+
+      <div className="helper-count-section">
+        <span className="helper-count-section-label">Total helpers</span>
+        <div className="helper-count-input">
+          <button
+            className="stepper"
+            onClick={() => {
+              const next = Math.max(1, helperCount - 1)
+              onChangeHelperCount(next)
+              if (prePairedCount > next) onChangePrePairedCount(next)
+            }}
+            disabled={helperCount <= 1}
+            aria-label="Decrease total helpers"
+          >
+            −
+          </button>
+          <span className="count">{helperCount}</span>
+          <button
+            className="stepper"
+            onClick={() => onChangeHelperCount(helperCount + 1)}
+            aria-label="Increase total helpers"
+          >
+            +
+          </button>
+        </div>
       </div>
+
+      {role === 'owner' && (
+        <div className="helper-count-section">
+          <span className="helper-count-section-label">
+            Pre-pair locally{' '}
+            <span className="helper-count-section-hint">(testing only — skips QR exchange)</span>
+          </span>
+          <div className="helper-count-input">
+            <button
+              className="stepper"
+              onClick={() => onChangePrePairedCount(Math.max(0, prePairedCount - 1))}
+              disabled={prePairedCount <= 0}
+              aria-label="Decrease pre-paired helpers"
+            >
+              −
+            </button>
+            <span className="count">{prePairedCount}</span>
+            <button
+              className="stepper"
+              onClick={() => onChangePrePairedCount(Math.min(helperCount, prePairedCount + 1))}
+              disabled={prePairedCount >= helperCount}
+              aria-label="Increase pre-paired helpers"
+            >
+              +
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -178,14 +195,16 @@ function StepHelperCount({
 function StepSessionId({
   value,
   onChange,
+  error,
 }: {
   value: string
   onChange: (v: string) => void
+  error: string | null
 }) {
   return (
     <div className="wizard-step">
       <h2>Enter session ID</h2>
-      <p>Paste the session ID you received to resume your session.</p>
+      <p>Paste the full session ID to resume a previously saved session.</p>
       <input
         className="full-input"
         type="text"
@@ -194,6 +213,7 @@ function StepSessionId({
         onChange={e => onChange(e.target.value)}
         autoFocus
       />
+      {error && <p className="wizard-field-error">{error}</p>}
     </div>
   )
 }
@@ -209,18 +229,35 @@ const FLOW_STEPS: Record<Flow, StepKey[]> = {
 
 interface Props {
   onCreated: (session: OwnerSession) => void
+  /** Pre-filled session ID from the URL — auto-triggers the "Continue by ID" flow. */
+  initialSessionId?: string | null
 }
 
-export default function NewSessionWizard({ onCreated }: Props) {
-  const [flow, setFlow] = useState<Flow | null>(null)
+export default function NewSessionWizard({ onCreated, initialSessionId }: Props) {
+  const [flow, setFlow] = useState<Flow | null>(initialSessionId ? 'continue' : null)
   const [stepIndex, setStepIndex] = useState(0)
   const [data, setData] = useState<WizardData>({
     role: 'owner',
     ownerName: '',
     helperCount: 3,
-    sessionId: '',
+    prePairedCount: 0,
+    sessionId: initialSessionId ?? '',
   })
   const [creating, setCreating] = useState(false)
+  const [continueError, setContinueError] = useState<string | null>(null)
+  const { log } = useConsole()
+
+  // Loaded once at mount — used to show the "Resume" shortcut on the choice screen.
+  const [lastSession] = useState<OwnerSession | null>(() => loadLastSession())
+
+  // When opened with a session ID from the URL, auto-submit.
+  const didAutoSubmit = useRef(false)
+  useEffect(() => {
+    if (!initialSessionId || didAutoSubmit.current) return
+    didAutoSubmit.current = true
+    handleContinue()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const steps: StepKey[] = flow ? FLOW_STEPS[flow] : []
   const isFinal = flow !== null && stepIndex === steps.length - 1
@@ -242,15 +279,112 @@ export default function NewSessionWizard({ onCreated }: Props) {
   async function handleCreate() {
     setCreating(true)
     try {
-      const session = await mockCreateSession(data.ownerName, data.helperCount)
+      const resp = await apiCreateSession({
+        ownerName: data.ownerName,
+        additionalHelpers: data.helperCount,
+      })
+
+      const ownerActor = resp.actors.find(a => a.role === 'owner')!
+      const ownerTransport = { protocol: ownerActor.transport.protocol, uri: ownerActor.transport.uri }
+      const helperActors = resp.actors.filter(a => a.role === 'helper')
+
+      const session: OwnerSession = {
+        sessionId: resp.session_id,
+        ownerId: ownerActor.id,
+        ownerName: data.ownerName,
+        transport: ownerTransport,
+        helpers: helperActors.map(a => ({
+          id: a.id,
+          name: a.name,
+          channelId: '',
+          transport: { protocol: a.transport.protocol, uri: a.transport.uri },
+          connectionStatus: 'available' as const,
+          secretShares: [],
+        })),
+        protectedSecrets: [],
+        pendingPairings: [],
+        prePairedCount: data.prePairedCount > 0 ? data.prePairedCount : undefined,
+        discoverableSecrets: [],
+        recoveredSecrets: [],
+        recoveryProgress: null,
+      }
+
+      log({
+        role: 'owner',
+        flow: 'session',
+        step: 'session_created',
+        description: `Session created with ${session.helpers.length} helper(s), ${data.prePairedCount} to auto-pair`,
+        payload: {
+          sessionId: session.sessionId,
+          ownerName: session.ownerName,
+          transport: session.transport,
+          helpers: session.helpers.map(h => ({ id: h.id, name: h.name, transport: h.transport })),
+        },
+      })
+
       onCreated(session)
     } catch {
       setCreating(false)
     }
   }
 
-  function handleContinue() {
-    // TODO: implement session resume
+  async function handleContinue() {
+    setContinueError(null)
+    const sessionId = data.sessionId.trim()
+
+    // Try localStorage first — it preserves full FE state (paired helpers, secrets, etc.)
+    const localSession = loadSessionById(sessionId)
+    if (localSession) {
+      onCreated(localSession)
+      return
+    }
+
+    // Fall back to the BE — works cross-browser/device but starts with fresh FE state.
+    setCreating(true)
+    try {
+      const resp = await apiGetSession(sessionId)
+      const ownerActor = resp.actors.find(a => a.role === 'owner')
+      if (!ownerActor) {
+        setContinueError('Session has no owner actor.')
+        return
+      }
+
+      const helperActors = resp.actors.filter(a => a.role === 'helper')
+      const session: OwnerSession = {
+        sessionId: resp.session_id,
+        ownerId: ownerActor.id,
+        ownerName: ownerActor.name,
+        transport: { protocol: ownerActor.transport.protocol, uri: ownerActor.transport.uri },
+        helpers: helperActors.map(a => ({
+          id: a.id,
+          name: a.name,
+          channelId: a.channel_id ?? '',
+          transport: { protocol: a.transport.protocol, uri: a.transport.uri },
+          connectionStatus: a.channel_id ? 'paired' as const : 'available' as const,
+          secretShares: [],
+          pendingRecoveryChannelId: a.pending_recovery_channel_id,
+        })),
+        protectedSecrets: [],
+        pendingPairings: [],
+        discoverableSecrets: [],
+        recoveredSecrets: [],
+        recoveryProgress: null,
+      }
+
+      log({
+        role: 'owner',
+        flow: 'session',
+        step: 'session_resumed',
+        description: `Session resumed from server: ${sessionId}`,
+        payload: { sessionId, helperCount: helperActors.length },
+      })
+
+      onCreated(session)
+    } catch (err) {
+      setContinueError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setCreating(false)
+    }
   }
 
   const canProceed =
@@ -282,7 +416,13 @@ export default function NewSessionWizard({ onCreated }: Props) {
       )}
 
       <div className="wizard-body">
-        {step === 'choice' && <StepChoice onSelect={handleSelectFlow} />}
+        {step === 'choice' && (
+          <StepChoice
+            onSelect={handleSelectFlow}
+            onResumeLast={() => lastSession && onCreated(lastSession)}
+            lastSession={lastSession}
+          />
+        )}
         {step === 'role' && (
           <StepRole
             value={data.role}
@@ -297,15 +437,18 @@ export default function NewSessionWizard({ onCreated }: Props) {
         )}
         {step === 'helperCount' && (
           <StepHelperCount
-            value={data.helperCount}
-            onChange={n => setData(d => ({ ...d, helperCount: n }))}
+            helperCount={data.helperCount}
+            prePairedCount={data.prePairedCount}
+            onChangeHelperCount={n => setData(d => ({ ...d, helperCount: n }))}
+            onChangePrePairedCount={n => setData(d => ({ ...d, prePairedCount: n }))}
             role={data.role}
           />
         )}
         {step === 'sessionId' && (
           <StepSessionId
             value={data.sessionId}
-            onChange={v => setData(d => ({ ...d, sessionId: v }))}
+            onChange={v => { setData(d => ({ ...d, sessionId: v })); setContinueError(null) }}
+            error={continueError}
           />
         )}
       </div>
@@ -318,8 +461,8 @@ export default function NewSessionWizard({ onCreated }: Props) {
                 {creating ? 'Creating…' : 'Create'}
               </button>
             ) : (
-              <button className="primary" onClick={handleContinue} disabled={!canProceed}>
-                Continue
+              <button className="primary" onClick={handleContinue} disabled={!canProceed || creating}>
+                {creating ? 'Loading…' : 'Continue'}
               </button>
             )
           ) : (
