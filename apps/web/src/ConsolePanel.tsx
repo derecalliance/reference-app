@@ -12,7 +12,7 @@ function formatTime(date: Date): string {
 
 const ROLE_LABEL: Record<ConsoleRole, string> = {
   owner: 'Owner',
-  helper: 'Helper',
+  participant: 'Participant',
 }
 
 const FLOW_LABEL: Record<ConsoleFlow, string> = {
@@ -21,6 +21,7 @@ const FLOW_LABEL: Record<ConsoleFlow, string> = {
   sharing: 'Sharing',
   verification: 'Verification',
   recovery: 'Recovery',
+  replica: 'Replica',
 }
 
 function RoleBadge({ role }: { role: ConsoleRole }) {

@@ -13,6 +13,13 @@ header {
     color: var(--text-h);
     letter-spacing: -0.1px;
   }
+
+  .header-spacer {
+    flex: 1;
+  }
+
+  .leave-btn {
+  }
 }
 
 main {
@@ -21,12 +28,15 @@ main {
   align-items: center;
   justify-content: center;
   padding: 40px 24px;
+  min-height: 0;
+  overflow: auto;
 }
 
 main.session-mode {
   align-items: stretch;
   justify-content: flex-start;
   padding: 0;
+  overflow: hidden;
 }
 
 

@@ -35,7 +35,7 @@ export async function sendMessage(uri: string, message: Uint8Array): Promise<voi
  */
 export async function pollMailbox(
   sessionId: string,
-  role: 'owners' | 'helpers',
+  role: 'owners' | 'participants',
   actorId: string,
 ): Promise<MailboxMessage[]> {
   const res = await fetch(

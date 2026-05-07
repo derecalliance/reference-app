@@ -6,28 +6,35 @@ function contactKey(ns: string, channelId: string): string {
   return `derec:${ns}:contact:${channelId}`
 }
 
-function secretKey(ns: string, channelId: string, kind: 0 | 1): string {
+function secretKey(ns: string, channelId: string, kind: 0 | 1 | 2): string {
   return `derec:${ns}:secret:${channelId}:${kind}`
 }
 
-function shareKey(ns: string, channelId: string, secretIdHex: string, version: number): string {
-  return `derec:${ns}:share:${channelId}:${secretIdHex}:${version}`
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
-}
-
-// ── ContactStore ──────────────────────────────────────────────────────────────
+// ── ChannelStore ──────────────────────────────────────────────────────────────
 //
-// Stores raw protobuf-encoded ContactMessage bytes per channel.
+// Stores JSON-encoded Channel records per channel.
 // The library uses these to route outgoing messages back to the peer.
 //
 // JS interface contract:
 //   load(channelId: string): Promise<Uint8Array | null | undefined>
-//   save(channelId: string, contactBytes: Uint8Array): Promise<void>
+//   save(channelId: string, bytes: Uint8Array): Promise<void>
+//   remove(channelId: string): Promise<boolean>
+//   listChannels(): Promise<string[]>
 
-export function makeContactStore(namespace: string) {
+const CONTACT_INDEX_SUFFIX = ':contact-index'
+
+export function makeChannelStore(namespace: string) {
+  const indexKey = `derec:${namespace}${CONTACT_INDEX_SUFFIX}`
+
+  function loadIndex(): string[] {
+    const raw = localStorage.getItem(indexKey)
+    return raw ? (JSON.parse(raw) as string[]) : []
+  }
+
+  function saveIndex(ids: string[]): void {
+    localStorage.setItem(indexKey, JSON.stringify(ids))
+  }
+
   return {
     async load(channelId: string): Promise<Uint8Array | null> {
       const val = localStorage.getItem(contactKey(namespace, channelId))
@@ -35,6 +42,21 @@ export function makeContactStore(namespace: string) {
     },
     async save(channelId: string, contactBytes: Uint8Array): Promise<void> {
       localStorage.setItem(contactKey(namespace, channelId), toBase64Url(contactBytes))
+      const idx = loadIndex()
+      if (!idx.includes(channelId)) {
+        idx.push(channelId)
+        saveIndex(idx)
+      }
+    },
+    async listChannels(): Promise<string[]> {
+      return loadIndex()
+    },
+    async remove(channelId: string): Promise<boolean> {
+      const existed = localStorage.getItem(contactKey(namespace, channelId)) !== null
+      localStorage.removeItem(contactKey(namespace, channelId))
+      const idx = loadIndex().filter((id) => id !== channelId)
+      saveIndex(idx)
+      return existed
     },
   }
 }
@@ -43,24 +65,25 @@ export function makeContactStore(namespace: string) {
 //
 // Stores ephemeral pairing key material and established shared keys per channel.
 //
-//   kind 0 = SharedKey      (32 raw bytes, established after pairing)
-//   kind 1 = PairingSecret  (ark-serialized, ephemeral — discarded after pairing)
+//   kind 0 = SharedKey       (32 raw bytes, established after pairing)
+//   kind 1 = PairingSecret   (ark-serialized, ephemeral — discarded after pairing)
+//   kind 2 = PairingContact  (protobuf-encoded ContactMessage, ephemeral — discarded after pairing)
 //
 // JS interface contract:
-//   load(channelId: string, kind: 0 | 1): Promise<Uint8Array | null | undefined>
-//   save(channelId: string, kind: 0 | 1, value: Uint8Array): Promise<void>
-//   remove(channelId: string, kind: 0 | 1): Promise<void>
+//   load(channelId: string, kind: 0 | 1 | 2): Promise<Uint8Array | null | undefined>
+//   save(channelId: string, kind: 0 | 1 | 2, value: Uint8Array): Promise<void>
+//   remove(channelId: string, kind: 0 | 1 | 2): Promise<void>
 
 export function makeSecretStore(namespace: string) {
   return {
-    async load(channelId: string, kind: 0 | 1): Promise<Uint8Array | null> {
+    async load(channelId: string, kind: 0 | 1 | 2): Promise<Uint8Array | null> {
       const val = localStorage.getItem(secretKey(namespace, channelId, kind))
       return val ? fromBase64Url(val) : null
     },
-    async save(channelId: string, kind: 0 | 1, value: Uint8Array): Promise<void> {
+    async save(channelId: string, kind: 0 | 1 | 2, value: Uint8Array): Promise<void> {
       localStorage.setItem(secretKey(namespace, channelId, kind), toBase64Url(value))
     },
-    async remove(channelId: string, kind: 0 | 1): Promise<void> {
+    async remove(channelId: string, kind: 0 | 1 | 2): Promise<void> {
       localStorage.removeItem(secretKey(namespace, channelId, kind))
     },
   }
@@ -68,90 +91,73 @@ export function makeSecretStore(namespace: string) {
 
 // ── ShareStore ────────────────────────────────────────────────────────────────
 //
-// Stores committed shares on the helper side, keyed by (channelId, secretId, version).
-// Also maintains two indexes for the required lookup patterns.
+// Stores committed shares keyed by (channelId, version). In the single-secret-bag
+// model there is one secret per channel, so secret_id is implicit.
 //
-// JS interface contract:
-//   load(channelId: string, secretId: Uint8Array, version: number): Promise<Uint8Array | null>
-//   save(channelId: string, secretId: Uint8Array, version: number, encoded: Uint8Array): Promise<void>
-//   loadChannelsForSecret(secretId: Uint8Array, version: number): Promise<string[]>
-//   loadSecretsForChannel(channelId: string): Promise<Array<[Uint8Array, number[]]>>
+// Two indexes support the required lookup patterns:
+//   - by-version: which channels hold a given version
+//   - by-channel: which versions a channel holds
+//
+// JS interface contract (matches WASM trait):
+//   load(channelId: string, versions: number[]): Promise<Array<[number, Uint8Array]>>
+//   save(channelId: string, version: number, encoded: Uint8Array): Promise<void>
 
-function shareIndexBySecretKey(ns: string, secretIdHex: string, version: number): string {
-  return `derec:${ns}:share-idx:secret:${secretIdHex}:${version}`
+function shareDataKey(ns: string, channelId: string, version: number): string {
+  return `derec:${ns}:share:${channelId}:${version}`
 }
 
-function shareIndexByChannelKey(ns: string, channelId: string): string {
-  return `derec:${ns}:share-idx:channel:${channelId}`
+function channelVersionsKey(ns: string, channelId: string): string {
+  return `derec:${ns}:share-idx:channel-versions:${channelId}`
 }
 
-interface ShareIndexEntry {
-  channelId: string
-  secretIdHex: string
-  version: number
+function ownerVersionKey(ns: string): string {
+  return `derec:${ns}:share-idx:owner-version`
 }
 
-function loadShareIndex(key: string): ShareIndexEntry[] {
+function loadNumberArray(key: string): number[] {
   const raw = localStorage.getItem(key)
-  return raw ? (JSON.parse(raw) as ShareIndexEntry[]) : []
-}
-
-function saveShareIndex(key: string, entries: ShareIndexEntry[]): void {
-  localStorage.setItem(key, JSON.stringify(entries))
+  return raw ? (JSON.parse(raw) as number[]) : []
 }
 
 export function makeShareStore(namespace: string) {
   return {
-    async load(channelId: string, secretId: Uint8Array, version: number): Promise<Uint8Array | null> {
-      const val = localStorage.getItem(shareKey(namespace, channelId, bytesToHex(secretId), version))
-      return val ? fromBase64Url(val) : null
-    },
+    async load(channelId: string, versions: number[]): Promise<Array<[number, Uint8Array]>> {
+      const targetVersions = versions.length > 0
+        ? versions
+        : loadNumberArray(channelVersionsKey(namespace, channelId))
 
-    async save(channelId: string, secretId: Uint8Array, version: number, encoded: Uint8Array): Promise<void> {
-      const secretIdHex = bytesToHex(secretId)
-      localStorage.setItem(shareKey(namespace, channelId, secretIdHex, version), toBase64Url(encoded))
-
-      // Update the by-secret index (channels that hold this secret/version)
-      const bySecretKey = shareIndexBySecretKey(namespace, secretIdHex, version)
-      const bySecretEntries = loadShareIndex(bySecretKey)
-      if (!bySecretEntries.some(e => e.channelId === channelId)) {
-        bySecretEntries.push({ channelId, secretIdHex, version })
-        saveShareIndex(bySecretKey, bySecretEntries)
-      }
-
-      // Update the by-channel index (secrets held by this channel)
-      const byChannelKey = shareIndexByChannelKey(namespace, channelId)
-      const byChannelEntries = loadShareIndex(byChannelKey)
-      if (!byChannelEntries.some(e => e.secretIdHex === secretIdHex && e.version === version)) {
-        byChannelEntries.push({ channelId, secretIdHex, version })
-        saveShareIndex(byChannelKey, byChannelEntries)
-      }
-    },
-
-    async loadChannelsForSecret(secretId: Uint8Array, version: number): Promise<string[]> {
-      const secretIdHex = bytesToHex(secretId)
-      const entries = loadShareIndex(shareIndexBySecretKey(namespace, secretIdHex, version))
-      return entries.map(e => e.channelId)
-    },
-
-    async loadSecretsForChannel(channelId: string): Promise<Array<[Uint8Array, number[]]>> {
-      const entries = loadShareIndex(shareIndexByChannelKey(namespace, channelId))
-
-      // Group by secretId: secretIdHex → version[]
-      const grouped = new Map<string, number[]>()
-      for (const e of entries) {
-        const versions = grouped.get(e.secretIdHex) ?? []
-        if (!versions.includes(e.version)) versions.push(e.version)
-        grouped.set(e.secretIdHex, versions)
-      }
-
-      return Array.from(grouped.entries()).map(([hex, versions]) => {
-        const bytes = new Uint8Array(hex.length / 2)
-        for (let i = 0; i < bytes.length; i++) {
-          bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
+      const result: Array<[number, Uint8Array]> = []
+      for (const v of targetVersions) {
+        const val = localStorage.getItem(shareDataKey(namespace, channelId, v))
+        if (val) {
+          result.push([v, fromBase64Url(val)])
         }
-        return [bytes, versions] as [Uint8Array, number[]]
-      })
+      }
+      return result
+    },
+
+    async save(channelId: string, version: number, encoded: Uint8Array): Promise<void> {
+      localStorage.setItem(shareDataKey(namespace, channelId, version), toBase64Url(encoded))
+
+      // Update by-channel index (versions held by this channel)
+      const cKey = channelVersionsKey(namespace, channelId)
+      const storedVersions = loadNumberArray(cKey)
+      if (!storedVersions.includes(version)) {
+        storedVersions.push(version)
+        localStorage.setItem(cKey, JSON.stringify(storedVersions))
+      }
+    },
+
+    async latestVersion(): Promise<number | null> {
+      // Return only the owner's distributed version — NOT held shares from other owners.
+      // This counter is updated by setOwnerVersion() after a successful ProtectSecret flow.
+      const raw = localStorage.getItem(ownerVersionKey(namespace))
+      return raw ? Number(raw) : null
+    },
+
+    /** Update the owner-distributed version counter after a successful ProtectSecret. */
+    setOwnerVersion(version: number): void {
+      localStorage.setItem(ownerVersionKey(namespace), String(version))
     },
   }
 }
