@@ -1,38 +1,44 @@
 // In-memory implementations of the derec-library store and transport traits.
 //
-// Each helper protocol instance gets its own set of stores. Concurrency is
-// handled by the outer `tokio::sync::Mutex` on the `HelperProtocol`, so
+// Each actor protocol instance gets its own set of stores. Concurrency is
+// handled by the outer `tokio::sync::Mutex` on the `ActorProtocol`, so
 // these stores do not need internal synchronization.
 
 use std::collections::HashMap;
 
 use derec_library::protocol::{
-    ContactStoreFuture, DeRecContactStore, DeRecSecretStore, DeRecShareStore, DeRecTransport,
+    ChannelStoreFuture, DeRecChannelStore, DeRecSecretStore, DeRecShareStore, DeRecTransport,
     SecretKind, SecretStoreFuture, SecretValue, ShareStoreFuture, TransportFuture,
 };
-use derec_library::types::ChannelId;
-use derec_proto::{ContactMessage, TransportProtocol};
+use derec_library::types::{Channel, ChannelId};
+use derec_proto::TransportProtocol;
 
-// ── Contact store ────────────────────────────────────────────────────────────
+// ── Channel store ───────────────────────────────────────────────────────────
 
 #[derive(Default)]
-pub struct InMemoryContactStore {
-    data: HashMap<u64, ContactMessage>,
+pub struct InMemoryChannelStore {
+    data: HashMap<u64, Channel>,
 }
 
-impl DeRecContactStore for InMemoryContactStore {
-    fn load(&self, channel_id: ChannelId) -> ContactStoreFuture<'_, Option<ContactMessage>> {
+impl DeRecChannelStore for InMemoryChannelStore {
+    fn load(&self, channel_id: ChannelId) -> ChannelStoreFuture<'_, Option<Channel>> {
         let result = self.data.get(&channel_id.0).cloned();
         Box::pin(std::future::ready(Ok(result)))
     }
 
-    fn save(
-        &mut self,
-        channel_id: ChannelId,
-        contact: ContactMessage,
-    ) -> ContactStoreFuture<'_, ()> {
-        self.data.insert(channel_id.0, contact);
+    fn save(&mut self, channel: Channel) -> ChannelStoreFuture<'_, ()> {
+        self.data.insert(channel.id.0, channel);
         Box::pin(std::future::ready(Ok(())))
+    }
+
+    fn remove(&mut self, channel_id: ChannelId) -> ChannelStoreFuture<'_, bool> {
+        let removed = self.data.remove(&channel_id.0).is_some();
+        Box::pin(std::future::ready(Ok(removed)))
+    }
+
+    fn channels(&self) -> ChannelStoreFuture<'_, Vec<Channel>> {
+        let entries: Vec<Channel> = self.data.values().cloned().collect();
+        Box::pin(std::future::ready(Ok(entries)))
     }
 }
 
@@ -57,6 +63,7 @@ impl DeRecSecretStore for InMemorySecretStore {
         let kind = match &value {
             SecretValue::SharedKey(_) => SecretKind::SharedKey as u8,
             SecretValue::PairingSecret(_) => SecretKind::PairingSecret as u8,
+            SecretValue::PairingContact(_) => SecretKind::PairingContact as u8,
         };
         self.data.insert((channel_id.0, kind), value);
         Box::pin(std::future::ready(Ok(())))
@@ -76,6 +83,7 @@ fn clone_secret_value(v: &SecretValue) -> SecretValue {
     match v {
         SecretValue::SharedKey(k) => SecretValue::SharedKey(*k),
         SecretValue::PairingSecret(p) => SecretValue::PairingSecret(p.clone()),
+        SecretValue::PairingContact(c) => SecretValue::PairingContact(c.clone()),
     }
 }
 
@@ -83,62 +91,49 @@ fn clone_secret_value(v: &SecretValue) -> SecretValue {
 
 #[derive(Default)]
 pub struct InMemoryShareStore {
-    /// Primary data: (channel_id, secret_id_hex, version) → encoded bytes
-    data: HashMap<(u64, Vec<u8>, i32), Vec<u8>>,
+    /// Primary data: (channel_id, version) → encoded bytes
+    data: HashMap<(u64, i32), Vec<u8>>,
 }
 
 impl DeRecShareStore for InMemoryShareStore {
     fn load(
         &self,
         channel_id: ChannelId,
-        secret_id: &[u8],
-        version: i32,
-    ) -> ShareStoreFuture<'_, Option<Vec<u8>>> {
-        let key = (channel_id.0, secret_id.to_vec(), version);
-        let result = self.data.get(&key).cloned();
+        versions: &[i32],
+    ) -> ShareStoreFuture<'_, Vec<(i32, Vec<u8>)>> {
+        let cid = channel_id.0;
+        let result: Vec<(i32, Vec<u8>)> = if versions.is_empty() {
+            // All versions for this channel
+            self.data
+                .iter()
+                .filter(|((c, _), _)| *c == cid)
+                .map(|((_, v), data)| (*v, data.clone()))
+                .collect()
+        } else {
+            versions
+                .iter()
+                .filter_map(|v| {
+                    self.data.get(&(cid, *v)).map(|data| (*v, data.clone()))
+                })
+                .collect()
+        };
         Box::pin(std::future::ready(Ok(result)))
     }
 
     fn save(
         &mut self,
         channel_id: ChannelId,
-        secret_id: &[u8],
         version: i32,
         encoded: Vec<u8>,
     ) -> ShareStoreFuture<'_, ()> {
-        let key = (channel_id.0, secret_id.to_vec(), version);
+        let key = (channel_id.0, version);
         self.data.insert(key, encoded);
         Box::pin(std::future::ready(Ok(())))
     }
 
-    fn load_channels_for_secret(
-        &self,
-        secret_id: &[u8],
-        version: i32,
-    ) -> ShareStoreFuture<'_, Vec<ChannelId>> {
-        let sid = secret_id.to_vec();
-        let channels: Vec<ChannelId> = self
-            .data
-            .keys()
-            .filter(|(_, s, v)| *s == sid && *v == version)
-            .map(|(c, _, _)| ChannelId(*c))
-            .collect();
-        Box::pin(std::future::ready(Ok(channels)))
-    }
-
-    fn load_secrets_for_channel(
-        &self,
-        channel_id: ChannelId,
-    ) -> ShareStoreFuture<'_, Vec<(Vec<u8>, Vec<i32>)>> {
-        let cid = channel_id.0;
-        let mut grouped: HashMap<Vec<u8>, Vec<i32>> = HashMap::new();
-        for (c, sid, v) in self.data.keys() {
-            if *c == cid {
-                grouped.entry(sid.clone()).or_default().push(*v);
-            }
-        }
-        let result: Vec<(Vec<u8>, Vec<i32>)> = grouped.into_iter().collect();
-        Box::pin(std::future::ready(Ok(result)))
+    fn latest_version(&self) -> ShareStoreFuture<'_, Option<i32>> {
+        let max = self.data.keys().map(|(_, v)| *v).max();
+        Box::pin(std::future::ready(Ok(max)))
     }
 }
 
@@ -149,8 +144,8 @@ impl InMemoryShareStore {
         let entries: Vec<_> = self
             .data
             .iter()
-            .filter(|((cid, _, _), _)| *cid == old_channel_id)
-            .map(|((_, sid, ver), val)| ((new_channel_id, sid.clone(), *ver), val.clone()))
+            .filter(|((cid, _), _)| *cid == old_channel_id)
+            .map(|((_, ver), val)| ((new_channel_id, *ver), val.clone()))
             .collect();
         let count = entries.len();
         for (key, val) in entries {
@@ -161,6 +156,16 @@ impl InMemoryShareStore {
 }
 
 impl InMemorySecretStore {
+    /// Load the raw shared key bytes for a channel, if present.
+    pub fn load_shared_key(&self, channel_id: u64) -> Option<[u8; 32]> {
+        self.data
+            .get(&(channel_id, SecretKind::SharedKey as u8))
+            .and_then(|v| match v {
+                SecretValue::SharedKey(k) => Some(*k),
+                _ => None,
+            })
+    }
+
     /// Copy secret entries (SharedKey, PairingSecret) from `old_channel_id` to `new_channel_id`.
     /// Skips entries that already exist on the new channel to avoid overwriting
     /// the recovery pairing's shared key with the old one.
@@ -219,10 +224,10 @@ impl DeRecTransport for HttpTransport {
     }
 }
 
-// ── Helper protocol type alias ───────────────────────────────────────────────
+// ── Actor protocol type alias ────────────────────────────────────────────────
 
-pub type HelperProtocol = derec_library::protocol::DeRecProtocol<
-    InMemoryContactStore,
+pub type ActorProtocol = derec_library::protocol::DeRecProtocol<
+    InMemoryChannelStore,
     InMemoryShareStore,
     InMemorySecretStore,
     HttpTransport,

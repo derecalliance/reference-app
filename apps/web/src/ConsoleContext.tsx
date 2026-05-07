@@ -8,8 +8,8 @@ import {
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export type ConsoleRole = 'owner' | 'helper'
-export type ConsoleFlow = 'session' | 'pairing' | 'sharing' | 'verification' | 'recovery'
+export type ConsoleRole = 'owner' | 'participant'
+export type ConsoleFlow = 'session' | 'pairing' | 'sharing' | 'verification' | 'recovery' | 'replica'
 
 export interface ConsoleEntry {
   id: string

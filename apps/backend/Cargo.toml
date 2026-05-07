@@ -19,3 +19,7 @@ base64 = "0.22"
 derec-library = { path = "../../../lib-derec/library" }
 derec-proto = { path = "../../../lib-derec/protobufs" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+fake = { version = "3", features = ["derive"] }
+rand = "0.8"
+actix = "0.13"
+actix-rt = "2"

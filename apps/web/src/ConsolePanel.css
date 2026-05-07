@@ -175,7 +175,7 @@
 
 /* Role */
 .cbadge.role-owner  { background: rgba(168, 85, 247, 0.2); color: #c084fc; }
-.cbadge.role-helper { background: rgba(20, 184, 166, 0.2); color: #2dd4bf; }
+.cbadge.role-participant { background: rgba(20, 184, 166, 0.2); color: #2dd4bf; }
 
 /* Flow */
 .cbadge.flow-session      { background: rgba(107, 114, 128, 0.2); color: #9ca3af; }

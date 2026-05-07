@@ -1,22 +1,24 @@
 import { useState, useEffect, useRef } from 'react'
 import './NewSessionWizard.css'
 import type { OwnerSession } from './types'
-import { apiCreateSession, apiGetSession } from './api'
+import { apiCreateSession, apiGetSession, apiJoinSession } from './api'
 import { useConsole } from './ConsoleContext'
 import { loadLastSession, loadSessionById } from './sessionPersistence'
+import { faker } from '@faker-js/faker'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-type Flow = 'create' | 'continue'
-type Role = 'owner' | 'helper'
-type StepKey = 'choice' | 'role' | 'ownerName' | 'helperCount' | 'sessionId'
+type Flow = 'create' | 'continue' | 'join'
+type StepKey = 'choice' | 'ownerName' | 'participantCount' | 'sessionId' | 'participantName' | 'joinPrePair'
 
 interface WizardData {
-  role: Role
   ownerName: string
-  helperCount: number
+  participantCount: number
   prePairedCount: number
+  minParticipants: number
+  recommendedParticipants: number
   sessionId: string
+  participantName: string
 }
 
 // ── Step components ──────────────────────────────────────────────────────────
@@ -52,39 +54,11 @@ function StepChoice({
         <button className="primary" onClick={() => onSelect('create')}>
           Create Session
         </button>
+        <button className="secondary" onClick={() => onSelect('join')}>
+          Join Session
+        </button>
         <button className="secondary" onClick={() => onSelect('continue')}>
           Continue by ID
-        </button>
-      </div>
-    </div>
-  )
-}
-
-function StepRole({
-  value,
-  onChange,
-}: {
-  value: Role
-  onChange: (r: Role) => void
-}) {
-  return (
-    <div className="wizard-step">
-      <h2>What is your role?</h2>
-      <p>Choose how you will participate in this session.</p>
-      <div className="role-cards">
-        <button
-          className={`role-card ${value === 'owner' ? 'selected' : ''}`}
-          onClick={() => onChange('owner')}
-        >
-          <span className="role-title">Owner</span>
-          <span className="role-desc">You are protecting your own secret.</span>
-        </button>
-        <button
-          className={`role-card ${value === 'helper' ? 'selected' : ''}`}
-          onClick={() => onChange('helper')}
-        >
-          <span className="role-title">Helper</span>
-          <span className="role-desc">You are helping someone else recover their secret.</span>
         </button>
       </div>
     </div>
@@ -114,80 +88,170 @@ function StepOwnerName({
   )
 }
 
-function StepHelperCount({
-  helperCount,
+function StepParticipantCount({
+  participantCount,
   prePairedCount,
-  onChangeHelperCount,
+  minParticipants,
+  recommendedParticipants,
+  onChangeParticipantCount,
   onChangePrePairedCount,
-  role,
+  onChangeMinParticipants,
+  onChangeRecommendedParticipants,
 }: {
-  helperCount: number
+  participantCount: number
   prePairedCount: number
-  onChangeHelperCount: (n: number) => void
+  minParticipants: number
+  recommendedParticipants: number
+  onChangeParticipantCount: (n: number) => void
   onChangePrePairedCount: (n: number) => void
-  role: Role
+  onChangeMinParticipants: (n: number) => void
+  onChangeRecommendedParticipants: (n: number) => void
 }) {
   return (
     <div className="wizard-step">
-      <h2>{role === 'helper' ? 'How many additional helpers?' : 'How many helpers?'}</h2>
+      <h2>How many participants?</h2>
       <p>
-        Helpers store encrypted shares of your secret. More helpers increases
+        Participants store encrypted shares of your secret. More participants increases
         resilience.
       </p>
 
-      <div className="helper-count-section">
-        <span className="helper-count-section-label">Total helpers</span>
-        <div className="helper-count-input">
+      <div className="participant-count-section">
+        <span className="participant-count-section-label">Total participants</span>
+        <div className="participant-count-input">
           <button
             className="stepper"
             onClick={() => {
-              const next = Math.max(1, helperCount - 1)
-              onChangeHelperCount(next)
+              const next = Math.max(1, participantCount - 1)
+              onChangeParticipantCount(next)
               if (prePairedCount > next) onChangePrePairedCount(next)
+              if (minParticipants > next) onChangeMinParticipants(next)
+              if (recommendedParticipants > next) onChangeRecommendedParticipants(next)
             }}
-            disabled={helperCount <= 1}
-            aria-label="Decrease total helpers"
+            disabled={participantCount <= 1}
+            aria-label="Decrease total participants"
           >
             −
           </button>
-          <span className="count">{helperCount}</span>
+          <span className="count">{participantCount}</span>
           <button
             className="stepper"
-            onClick={() => onChangeHelperCount(helperCount + 1)}
-            aria-label="Increase total helpers"
+            onClick={() => onChangeParticipantCount(participantCount + 1)}
+            aria-label="Increase total participants"
           >
             +
           </button>
         </div>
       </div>
 
-      {role === 'owner' && (
-        <div className="helper-count-section">
-          <span className="helper-count-section-label">
-            Pre-pair locally{' '}
-            <span className="helper-count-section-hint">(testing only — skips QR exchange)</span>
-          </span>
-          <div className="helper-count-input">
-            <button
-              className="stepper"
-              onClick={() => onChangePrePairedCount(Math.max(0, prePairedCount - 1))}
-              disabled={prePairedCount <= 0}
-              aria-label="Decrease pre-paired helpers"
-            >
-              −
-            </button>
-            <span className="count">{prePairedCount}</span>
-            <button
-              className="stepper"
-              onClick={() => onChangePrePairedCount(Math.min(helperCount, prePairedCount + 1))}
-              disabled={prePairedCount >= helperCount}
-              aria-label="Increase pre-paired helpers"
-            >
-              +
-            </button>
-          </div>
+      <div className="participant-count-section">
+        <span className="participant-count-section-label">
+          Minimum paired to protect
+          <span className="participant-count-section-hint">Secret protection disabled below this</span>
+        </span>
+        <div className="participant-count-input">
+          <button
+            className="stepper"
+            onClick={() => {
+              const next = Math.max(1, minParticipants - 1)
+              onChangeMinParticipants(next)
+            }}
+            disabled={minParticipants <= 1}
+            aria-label="Decrease minimum participants"
+          >
+            −
+          </button>
+          <span className="count">{minParticipants}</span>
+          <button
+            className="stepper"
+            onClick={() => {
+              const next = minParticipants + 1
+              onChangeMinParticipants(next)
+              if (recommendedParticipants < next) onChangeRecommendedParticipants(next)
+            }}
+            disabled={minParticipants >= participantCount}
+            aria-label="Increase minimum participants"
+          >
+            +
+          </button>
         </div>
-      )}
+      </div>
+
+      <div className="participant-count-section">
+        <span className="participant-count-section-label">
+          Recommended paired
+          <span className="participant-count-section-hint">Warning shown below this count</span>
+        </span>
+        <div className="participant-count-input">
+          <button
+            className="stepper"
+            onClick={() => onChangeRecommendedParticipants(Math.max(minParticipants, recommendedParticipants - 1))}
+            disabled={recommendedParticipants <= minParticipants}
+            aria-label="Decrease recommended participants"
+          >
+            −
+          </button>
+          <span className="count">{recommendedParticipants}</span>
+          <button
+            className="stepper"
+            onClick={() => onChangeRecommendedParticipants(recommendedParticipants + 1)}
+            disabled={recommendedParticipants >= participantCount}
+            aria-label="Increase recommended participants"
+          >
+            +
+          </button>
+        </div>
+      </div>
+
+      <div className="participant-count-section">
+        <span className="participant-count-section-label">
+          Pre-pair locally
+          <span className="participant-count-section-hint">Testing only — skips QR exchange</span>
+        </span>
+        <div className="participant-count-input">
+          <button
+            className="stepper"
+            onClick={() => onChangePrePairedCount(Math.max(0, prePairedCount - 1))}
+            disabled={prePairedCount <= 0}
+            aria-label="Decrease pre-paired participants"
+          >
+            −
+          </button>
+          <span className="count">{prePairedCount}</span>
+          <button
+            className="stepper"
+            onClick={() => onChangePrePairedCount(Math.min(participantCount, prePairedCount + 1))}
+            disabled={prePairedCount >= participantCount}
+          >
+            +
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function StepParticipantName({
+  value,
+  onChange,
+  error,
+}: {
+  value: string
+  onChange: (v: string) => void
+  error: string | null
+}) {
+  return (
+    <div className="wizard-step">
+      <h2>Your name</h2>
+      <p>Enter the name other participants will see when you join.</p>
+      <input
+        className="full-input"
+        type="text"
+        placeholder="e.g. Bob"
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        autoFocus
+      />
+      {error && <p className="wizard-field-error">{error}</p>}
     </div>
   )
 }
@@ -218,42 +282,103 @@ function StepSessionId({
   )
 }
 
+function StepJoinPrePair({
+  prePairedCount,
+  maxParticipants,
+  onChangePrePairedCount,
+}: {
+  prePairedCount: number
+  maxParticipants: number
+  onChangePrePairedCount: (n: number) => void
+}) {
+  return (
+    <div className="wizard-step">
+      <h2>Pre-pair participants</h2>
+      <p>
+        The session has <strong>{maxParticipants}</strong> provisioned participant{maxParticipants !== 1 ? 's' : ''}.
+        Choose how many to automatically pair with (testing shortcut — skips QR exchange).
+      </p>
+
+      <div className="participant-count-section">
+        <span className="participant-count-section-label">
+          Pre-pair locally
+          <span className="participant-count-section-hint">Randomly selected from available participants</span>
+        </span>
+        <div className="participant-count-input">
+          <button
+            className="stepper"
+            onClick={() => onChangePrePairedCount(Math.max(0, prePairedCount - 1))}
+            disabled={prePairedCount <= 0}
+            aria-label="Decrease pre-paired participants"
+          >
+            −
+          </button>
+          <span className="count">{prePairedCount}</span>
+          <button
+            className="stepper"
+            onClick={() => onChangePrePairedCount(Math.min(maxParticipants, prePairedCount + 1))}
+            disabled={prePairedCount >= maxParticipants}
+            aria-label="Increase pre-paired participants"
+          >
+            +
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Flow / steps config ──────────────────────────────────────────────────────
 
 const FLOW_STEPS: Record<Flow, StepKey[]> = {
-  create: ['role', 'ownerName', 'helperCount'],
+  create: ['ownerName', 'participantCount'],
   continue: ['sessionId'],
+  join: ['sessionId', 'participantName', 'joinPrePair'],
 }
 
 // ── Main wizard ──────────────────────────────────────────────────────────────
 
 interface Props {
   onCreated: (session: OwnerSession) => void
-  /** Pre-filled session ID from the URL — auto-triggers the "Continue by ID" flow. */
+  /** Pre-filled session ID from the URL. */
   initialSessionId?: string | null
+  /** URL intent: 'join' for /session/{id}/join, 'continue' for /session/{id}. */
+  initialIntent?: 'continue' | 'join'
 }
 
-export default function NewSessionWizard({ onCreated, initialSessionId }: Props) {
-  const [flow, setFlow] = useState<Flow | null>(initialSessionId ? 'continue' : null)
-  const [stepIndex, setStepIndex] = useState(0)
+export default function NewSessionWizard({ onCreated, initialSessionId, initialIntent }: Props) {
+  const [flow, setFlow] = useState<Flow | null>(() => {
+    if (!initialSessionId) return null
+    if (initialIntent === 'join') return 'join'
+    return 'continue'
+  })
+  const [stepIndex, setStepIndex] = useState(() => {
+    // For URL-triggered join, skip the sessionId step (already pre-filled)
+    if (initialSessionId && initialIntent === 'join') return 1
+    return 0
+  })
   const [data, setData] = useState<WizardData>({
-    role: 'owner',
     ownerName: '',
-    helperCount: 3,
-    prePairedCount: 0,
+    participantCount: 7,
+    prePairedCount: 3,
+    minParticipants: 3,
+    recommendedParticipants: 5,
     sessionId: initialSessionId ?? '',
+    participantName: `${faker.person.firstName()} ${faker.person.lastName()}`,
   })
   const [creating, setCreating] = useState(false)
   const [continueError, setContinueError] = useState<string | null>(null)
+  const [joinParticipantCount, setJoinParticipantCount] = useState<number>(0)
   const { log } = useConsole()
 
   // Loaded once at mount — used to show the "Resume" shortcut on the choice screen.
   const [lastSession] = useState<OwnerSession | null>(() => loadLastSession())
 
-  // When opened with a session ID from the URL, auto-submit.
+  // When opened with a /session/{id} URL (continue intent), auto-submit.
   const didAutoSubmit = useRef(false)
   useEffect(() => {
     if (!initialSessionId || didAutoSubmit.current) return
+    if (initialIntent !== 'continue') return
     didAutoSubmit.current = true
     handleContinue()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -281,19 +406,19 @@ export default function NewSessionWizard({ onCreated, initialSessionId }: Props)
     try {
       const resp = await apiCreateSession({
         ownerName: data.ownerName,
-        additionalHelpers: data.helperCount,
+        additionalParticipants: data.participantCount,
       })
 
       const ownerActor = resp.actors.find(a => a.role === 'owner')!
       const ownerTransport = { protocol: ownerActor.transport.protocol, uri: ownerActor.transport.uri }
-      const helperActors = resp.actors.filter(a => a.role === 'helper')
+      const participantActors = resp.actors.filter(a => a.role === 'participant')
 
       const session: OwnerSession = {
         sessionId: resp.session_id,
         ownerId: ownerActor.id,
         ownerName: data.ownerName,
         transport: ownerTransport,
-        helpers: helperActors.map(a => ({
+        participants: participantActors.map(a => ({
           id: a.id,
           name: a.name,
           channelId: '',
@@ -301,24 +426,28 @@ export default function NewSessionWizard({ onCreated, initialSessionId }: Props)
           connectionStatus: 'available' as const,
           secretShares: [],
         })),
-        protectedSecrets: [],
+        secretBag: null,
         pendingPairings: [],
         prePairedCount: data.prePairedCount > 0 ? data.prePairedCount : undefined,
-        discoverableSecrets: [],
+        minParticipants: data.minParticipants,
+        recommendedParticipants: data.recommendedParticipants,
+
         recoveredSecrets: [],
         recoveryProgress: null,
+        replicas: [],
+        heldShares: [],
       }
 
       log({
         role: 'owner',
         flow: 'session',
         step: 'session_created',
-        description: `Session created with ${session.helpers.length} helper(s), ${data.prePairedCount} to auto-pair`,
+        description: `Session created with ${session.participants.length} participant(s), ${data.prePairedCount} to auto-pair`,
         payload: {
           sessionId: session.sessionId,
           ownerName: session.ownerName,
           transport: session.transport,
-          helpers: session.helpers.map(h => ({ id: h.id, name: h.name, transport: h.transport })),
+          participants: session.participants.map(h => ({ id: h.id, name: h.name, transport: h.transport })),
         },
       })
 
@@ -332,7 +461,7 @@ export default function NewSessionWizard({ onCreated, initialSessionId }: Props)
     setContinueError(null)
     const sessionId = data.sessionId.trim()
 
-    // Try localStorage first — it preserves full FE state (paired helpers, secrets, etc.)
+    // Try localStorage first — it preserves full FE state (paired participants, secrets, etc.)
     const localSession = loadSessionById(sessionId)
     if (localSession) {
       onCreated(localSession)
@@ -349,13 +478,14 @@ export default function NewSessionWizard({ onCreated, initialSessionId }: Props)
         return
       }
 
-      const helperActors = resp.actors.filter(a => a.role === 'helper')
+      const participantActors = resp.actors.filter(a => a.role === 'participant')
+      const replicaActors = resp.actors.filter(a => a.role === 'replica')
       const session: OwnerSession = {
         sessionId: resp.session_id,
         ownerId: ownerActor.id,
         ownerName: ownerActor.name,
         transport: { protocol: ownerActor.transport.protocol, uri: ownerActor.transport.uri },
-        helpers: helperActors.map(a => ({
+        participants: participantActors.map(a => ({
           id: a.id,
           name: a.name,
           channelId: a.channel_id ?? '',
@@ -364,11 +494,24 @@ export default function NewSessionWizard({ onCreated, initialSessionId }: Props)
           secretShares: [],
           pendingRecoveryChannelId: a.pending_recovery_channel_id,
         })),
-        protectedSecrets: [],
+        secretBag: null,
         pendingPairings: [],
-        discoverableSecrets: [],
+        minParticipants: 2,
+        recommendedParticipants: 5,
+
         recoveredSecrets: [],
         recoveryProgress: null,
+        replicas: replicaActors.map(a => ({
+          id: a.id,
+          name: a.name,
+          channelId: a.channel_id ?? '',
+          transport: { protocol: a.transport.protocol, uri: a.transport.uri },
+          status: a.replica_confirmed ? 'confirmed' as const
+            : a.channel_id ? 'paired' as const
+            : 'available' as const,
+          offline: a.disabled || undefined,
+        })),
+        heldShares: [],
       }
 
       log({
@@ -376,7 +519,7 @@ export default function NewSessionWizard({ onCreated, initialSessionId }: Props)
         flow: 'session',
         step: 'session_resumed',
         description: `Session resumed from server: ${sessionId}`,
-        payload: { sessionId, helperCount: helperActors.length },
+        payload: { sessionId, participantCount: participantActors.length },
       })
 
       onCreated(session)
@@ -387,12 +530,104 @@ export default function NewSessionWizard({ onCreated, initialSessionId }: Props)
     }
   }
 
+  async function handleJoin() {
+    setContinueError(null)
+    const sessionId = data.sessionId.trim()
+    const name = data.participantName.trim()
+    if (!sessionId || !name) return
+
+    setCreating(true)
+    try {
+      const resp = await apiJoinSession(sessionId, name, data.prePairedCount > 0 ? data.prePairedCount : undefined)
+
+      // All participants are shared across the session — any owner can pair with any.
+      const peerActors = resp.actors.filter(a => a.role === 'participant')
+      const replicaActors = resp.actors.filter(a => a.role === 'replica')
+
+      const session: OwnerSession = {
+        sessionId: resp.session_id,
+        ownerId: resp.actor.id,
+        ownerName: name,
+        transport: { protocol: resp.actor.transport.protocol, uri: resp.actor.transport.uri },
+        participants: peerActors.map(a => ({
+          id: a.id,
+          name: a.name,
+          channelId: '',
+          transport: { protocol: a.transport.protocol, uri: a.transport.uri },
+          connectionStatus: 'available' as const,
+          secretShares: [],
+        })),
+        secretBag: null,
+        pendingPairings: [],
+        prePairedCount: data.prePairedCount > 0 ? data.prePairedCount : undefined,
+        minParticipants: data.minParticipants,
+        recommendedParticipants: data.recommendedParticipants,
+        recoveredSecrets: [],
+        recoveryProgress: null,
+        replicas: replicaActors.map(a => ({
+          id: a.id,
+          name: a.name,
+          channelId: a.channel_id ?? '',
+          transport: { protocol: a.transport.protocol, uri: a.transport.uri },
+          status: a.replica_confirmed ? 'confirmed' as const
+            : a.channel_id ? 'paired' as const
+            : 'available' as const,
+          offline: a.disabled || undefined,
+        })),
+        heldShares: [],
+      }
+
+      log({
+        role: 'owner',
+        flow: 'session',
+        step: 'session_joined',
+        description: `Joined session ${sessionId} as "${name}" (owner mode)`,
+        payload: { sessionId, ownerId: resp.actor.id, participantCount: peerActors.length },
+      })
+
+      onCreated(session)
+    } catch (err) {
+      setContinueError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  async function handleNext() {
+    // When advancing from the sessionId step in the join flow, validate the session
+    // and fetch the participant count so the pre-pair step knows the max.
+    if (flow === 'join' && step === 'sessionId') {
+      const sessionId = data.sessionId.trim()
+      if (!sessionId) return
+      setContinueError(null)
+      setCreating(true)
+      try {
+        const resp = await apiGetSession(sessionId)
+        const count = resp.actors.filter(a => a.role === 'participant').length
+        setJoinParticipantCount(count)
+        // Cap pre-paired count to available participants
+        if (data.prePairedCount > count) {
+          setData(d => ({ ...d, prePairedCount: Math.min(d.prePairedCount, count) }))
+        }
+        setStepIndex(i => i + 1)
+      } catch (err) {
+        setContinueError(err instanceof Error ? err.message : String(err))
+      } finally {
+        setCreating(false)
+      }
+      return
+    }
+    setStepIndex(i => i + 1)
+  }
+
   const canProceed =
     step === 'sessionId'
       ? data.sessionId.trim().length > 0
       : step === 'ownerName'
         ? data.ownerName.trim().length > 0
-        : true
+        : step === 'participantName'
+          ? data.participantName.trim().length > 0
+          : true
 
   return (
     <div className="wizard">
@@ -423,25 +658,22 @@ export default function NewSessionWizard({ onCreated, initialSessionId }: Props)
             lastSession={lastSession}
           />
         )}
-        {step === 'role' && (
-          <StepRole
-            value={data.role}
-            onChange={r => setData(d => ({ ...d, role: r }))}
-          />
-        )}
         {step === 'ownerName' && (
           <StepOwnerName
             value={data.ownerName}
             onChange={v => setData(d => ({ ...d, ownerName: v }))}
           />
         )}
-        {step === 'helperCount' && (
-          <StepHelperCount
-            helperCount={data.helperCount}
+        {step === 'participantCount' && (
+          <StepParticipantCount
+            participantCount={data.participantCount}
             prePairedCount={data.prePairedCount}
-            onChangeHelperCount={n => setData(d => ({ ...d, helperCount: n }))}
+            minParticipants={data.minParticipants}
+            recommendedParticipants={data.recommendedParticipants}
+            onChangeParticipantCount={n => setData(d => ({ ...d, participantCount: n }))}
             onChangePrePairedCount={n => setData(d => ({ ...d, prePairedCount: n }))}
-            role={data.role}
+            onChangeMinParticipants={n => setData(d => ({ ...d, minParticipants: n }))}
+            onChangeRecommendedParticipants={n => setData(d => ({ ...d, recommendedParticipants: n }))}
           />
         )}
         {step === 'sessionId' && (
@@ -449,6 +681,20 @@ export default function NewSessionWizard({ onCreated, initialSessionId }: Props)
             value={data.sessionId}
             onChange={v => { setData(d => ({ ...d, sessionId: v })); setContinueError(null) }}
             error={continueError}
+          />
+        )}
+        {step === 'participantName' && (
+          <StepParticipantName
+            value={data.participantName}
+            onChange={v => { setData(d => ({ ...d, participantName: v })); setContinueError(null) }}
+            error={continueError}
+          />
+        )}
+        {step === 'joinPrePair' && (
+          <StepJoinPrePair
+            prePairedCount={data.prePairedCount}
+            maxParticipants={joinParticipantCount}
+            onChangePrePairedCount={n => setData(d => ({ ...d, prePairedCount: n }))}
           />
         )}
       </div>
@@ -460,6 +706,10 @@ export default function NewSessionWizard({ onCreated, initialSessionId }: Props)
               <button className="primary" onClick={handleCreate} disabled={creating}>
                 {creating ? 'Creating…' : 'Create'}
               </button>
+            ) : flow === 'join' ? (
+              <button className="primary" onClick={handleJoin} disabled={!canProceed || creating}>
+                {creating ? 'Joining…' : 'Join'}
+              </button>
             ) : (
               <button className="primary" onClick={handleContinue} disabled={!canProceed || creating}>
                 {creating ? 'Loading…' : 'Continue'}
@@ -468,10 +718,10 @@ export default function NewSessionWizard({ onCreated, initialSessionId }: Props)
           ) : (
             <button
               className="primary"
-              onClick={() => setStepIndex(i => i + 1)}
-              disabled={!canProceed}
+              onClick={handleNext}
+              disabled={!canProceed || creating}
             >
-              Next →
+              {creating ? 'Validating…' : 'Next →'}
             </button>
           )}
         </div>

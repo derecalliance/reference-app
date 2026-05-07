@@ -157,7 +157,7 @@
   }
 }
 
-.helper-count-input {
+.participant-count-input {
   display: flex;
   align-items: center;
   gap: 20px;
@@ -201,36 +201,42 @@
   }
 }
 
-.helper-count-group {
+.participant-count-group {
   display: flex;
   flex-direction: column;
 }
 
-.helper-count-section {
+.participant-count-section {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 20px 0;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 0;
 
-  & + .helper-count-section {
+  & + .participant-count-section {
     border-top: 1px solid var(--border);
   }
 }
 
-.helper-count-section-label {
+.participant-count-section-label {
+  flex: 1;
   font-size: 13px;
   font-weight: 600;
   color: var(--text-h);
   text-transform: uppercase;
   letter-spacing: 0.4px;
+  text-align: left;
 }
 
-.helper-count-section-hint {
+.participant-count-section-hint {
+  display: block;
   font-size: 12px;
   font-weight: 400;
   color: var(--text);
   text-transform: none;
   letter-spacing: 0;
+  margin-top: 2px;
 }
 
 .wizard-actions {

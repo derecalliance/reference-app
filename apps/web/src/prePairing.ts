@@ -13,12 +13,22 @@ import { toBase64Url } from './derecApi'
 
 // ── Storage key helpers (must match stores.ts) ────────────────────────────────
 
-function contactKey(ns: string, channelId: string): string {
+function channelKey(ns: string, channelId: string): string {
   return `derec:${ns}:contact:${channelId}`
 }
 
-function secretKey(ns: string, channelId: string, kind: 0 | 1): string {
+function secretKey(ns: string, channelId: string, kind: 0 | 1 | 2): string {
   return `derec:${ns}:secret:${channelId}:${kind}`
+}
+
+function addToChannelIndex(ns: string, channelId: string): void {
+  const indexKey = `derec:${ns}:contact-index`
+  const raw = localStorage.getItem(indexKey)
+  const ids: string[] = raw ? (JSON.parse(raw) as string[]) : []
+  if (!ids.includes(channelId)) {
+    ids.push(channelId)
+    localStorage.setItem(indexKey, JSON.stringify(ids))
+  }
 }
 
 // ── Internal result types (primitives are typed as `any` in the public API) ──
@@ -62,73 +72,73 @@ function randomChannelId(): bigint {
  * treat the channel as already established.
  *
  * @param ownerNamespace  e.g. `"owner:{ownerId}"`
- * @param helperNamespace e.g. `"helper:{helperId}"`
- * @param ownerTransport  Owner's transport advertised to the helper
- * @param helperTransport Helper's transport advertised to the owner
+ * @param participantNamespace e.g. `"participant:{participantId}"`
+ * @param ownerTransport  Owner's transport advertised to the participant
+ * @param participantTransport Participant's transport advertised to the owner
  * @returns The channel ID used for this pairing
  */
 export function prePairLocally(
   ownerNamespace: string,
-  helperNamespace: string,
+  participantNamespace: string,
   ownerTransport: { protocol: string; uri: string },
-  helperTransport: { protocol: string; uri: string },
+  participantTransport: { protocol: string; uri: string },
 ): bigint {
   const channelId = randomChannelId()
   const channelStr = channelId.toString()
 
-  // Step 1 — helper creates contact (generates its KEM/ECIES key pair)
-  const helperCreateResult = primitives.pairing.request.create_contact(
+  // Step 1 — participant creates contact (generates its KEM/ECIES key pair)
+  const participantCreateResult = primitives.pairing.request.create_contact(
     channelId,
-    helperTransport,
+    participantTransport,
   ) as CreateContactResult
 
   // Step 2 — owner produces pairing request, embedding its own contact
   const ownerRequestResult = primitives.pairing.request.produce(
     SenderKind.OwnerNonRecovery,
     ownerTransport,
-    helperCreateResult.contact_message,
+    participantCreateResult.contact_message,
   ) as ProduceRequestResult
 
-  // Step 3 — helper processes the request, produces a response, derives its shared key
-  const helperResponseResult = primitives.pairing.response.produce(
+  // Step 3 — participant processes the request, produces a response, derives its shared key
+  const participantResponseResult = primitives.pairing.response.accept(
     SenderKind.Helper,
     ownerRequestResult.envelope,
-    helperCreateResult.secret_key_material,
+    participantCreateResult.secret_key_material,
   ) as ProduceResponseResult
 
   // Step 4 — owner processes the response, derives its shared key
   const ownerResponseResult = primitives.pairing.response.process(
     ownerRequestResult.initiator_contact_message,
-    helperResponseResult.envelope,
+    participantResponseResult.envelope,
     ownerRequestResult.secret_key_material,
   ) as ProcessResponseResult
 
-  // Encode contacts to protobuf bytes (what ContactStore expects).
-  //
-  // Owner-side contact store: the helper's contact (so the owner can route to the helper).
-  const helperContactBytes: Uint8Array = primitives.pairing.request.encode_contact(
-    helperCreateResult.contact_message,
-  )
+  // Build Channel records (JSON-encoded, what ChannelStore expects).
+  // The channel store only needs channel_id, transport, and name — no crypto keys.
+  const channelIdNum = Number(channelId)
+  const participantChannel = new TextEncoder().encode(JSON.stringify({
+    channel_id: channelIdNum,
+    transport_uri: participantTransport.uri,
+    transport_protocol: 0,
+    name: '',
+  }))
 
-  // Helper-side contact store: a ContactMessage carrying the owner's transport.
-  // The protocol's peer_endpoint() only reads transport_protocol, so we create a contact
-  // with the owner's transport URI. (create_contact generates fresh crypto keys; they are
-  // harmless because they are never used — only transport_protocol is read at runtime.)
-  const ownerContactForHelper = primitives.pairing.request.create_contact(
-    channelId,
-    ownerTransport,
-  ) as CreateContactResult
-  const ownerContactBytes: Uint8Array = primitives.pairing.request.encode_contact(
-    ownerContactForHelper.contact_message,
-  )
+  const ownerChannel = new TextEncoder().encode(JSON.stringify({
+    channel_id: channelIdNum,
+    transport_uri: ownerTransport.uri,
+    transport_protocol: 0,
+    name: '',
+  }))
 
-  // Write owner-side state: helper's contact + owner's shared key
-  localStorage.setItem(contactKey(ownerNamespace, channelStr), toBase64Url(helperContactBytes))
+  // Write owner-side state: participant's channel + owner's shared key
+  localStorage.setItem(channelKey(ownerNamespace, channelStr), toBase64Url(participantChannel))
+  addToChannelIndex(ownerNamespace, channelStr)
   localStorage.setItem(secretKey(ownerNamespace, channelStr, 0), toBase64Url(ownerResponseResult.pairing_shared_key))
 
-  // Write helper-side state: owner's contact + helper's shared key
-  localStorage.setItem(contactKey(helperNamespace, channelStr), toBase64Url(ownerContactBytes))
-  localStorage.setItem(secretKey(helperNamespace, channelStr, 0), toBase64Url(helperResponseResult.pairing_shared_key))
+  // Write participant-side state: owner's channel + participant's shared key
+  localStorage.setItem(channelKey(participantNamespace, channelStr), toBase64Url(ownerChannel))
+  addToChannelIndex(participantNamespace, channelStr)
+  localStorage.setItem(secretKey(participantNamespace, channelStr, 0), toBase64Url(participantResponseResult.pairing_shared_key))
 
   return channelId
 }

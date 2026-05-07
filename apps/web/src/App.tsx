@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react'
 import './App.css'
 import NewSessionWizard from './NewSessionWizard'
-import OwnerSessionPage from './OwnerSessionPage'
+import OwnerSessionPage, { JoinQrModal, SessionIdBadge } from './OwnerSessionPage'
 import ConsolePanel from './ConsolePanel'
 import { ConsoleProvider } from './ConsoleContext'
-import type { OwnerSession } from './types'
-import { persistSession } from './sessionPersistence'
+import type { OwnerSession, ParticipantSession } from './types'
+import { persistSession, persistParticipantSession } from './sessionPersistence'
+import ParticipantSessionPage from './ParticipantSessionPage'
 import GitHubIcon from '@mui/icons-material/GitHub';
 import LinkedInIcon from '@mui/icons-material/LinkedIn';
 import XIcon from '@mui/icons-material/X';
@@ -43,20 +44,34 @@ const socialLinks = [
 
 const BASE_PATH = import.meta.env.BASE_URL.replace(/\/$/, '') // e.g. "/reference-app"
 
-function getSessionIdFromUrl(): string | null {
-  // Direct path: /reference-app/session/{id}
+interface UrlSessionInfo {
+  sessionId: string
+  intent: 'continue' | 'join'
+}
+
+function getSessionInfoFromUrl(): UrlSessionInfo | null {
   const path = window.location.pathname
   const prefix = `${BASE_PATH}/session/`
+
+  // Try direct path first: /reference-app/session/{id} or /reference-app/session/{id}/join
   if (path.startsWith(prefix)) {
-    const id = path.slice(prefix.length).replace(/\/$/, '')
-    return id || null
+    const rest = path.slice(prefix.length).replace(/\/$/, '')
+    if (rest.endsWith('/join')) {
+      const id = rest.slice(0, -'/join'.length)
+      return id ? { sessionId: id, intent: 'join' } : null
+    }
+    return rest ? { sessionId: rest, intent: 'continue' } : null
   }
 
-  // GitHub Pages SPA fallback: 404.html redirects to /?p=/session/{id}
+  // GitHub Pages SPA fallback: 404.html redirects to /?p=/session/{id}[/join]
   const redirectedPath = new URLSearchParams(window.location.search).get('p')
   if (redirectedPath?.startsWith('/session/')) {
-    const id = redirectedPath.slice('/session/'.length).replace(/\/$/, '')
-    return id || null
+    const rest = redirectedPath.slice('/session/'.length).replace(/\/$/, '')
+    if (rest.endsWith('/join')) {
+      const id = rest.slice(0, -'/join'.length)
+      return id ? { sessionId: id, intent: 'join' } : null
+    }
+    return rest ? { sessionId: rest, intent: 'continue' } : null
   }
 
   return null
@@ -69,42 +84,79 @@ function setSessionIdInUrl(sessionId: string | null) {
   }
 }
 
+type ActiveSession =
+  | { type: 'owner'; session: OwnerSession }
+  | { type: 'participant'; session: ParticipantSession }
+
 function AppContent() {
-  const [session, setSession] = useState<OwnerSession | null>(null)
+  const [activeSession, setActiveSession] = useState<ActiveSession | null>(null)
 
-  // Read session ID from URL on mount — passed to the wizard for auto-resume flow.
-  const [urlSessionId] = useState(getSessionIdFromUrl)
+  // Read session info from URL on mount — passed to the wizard for auto-resume or join flow.
+  const [urlSessionInfo] = useState(getSessionInfoFromUrl)
 
-  // Keep the URL in sync with the active session.
+  const sessionId = activeSession?.session.sessionId ?? null
+
+  // Keep the URL in sync with the active session (always use /session/{id}, not /join).
   useEffect(() => {
-    setSessionIdInUrl(session?.sessionId ?? null)
-  }, [session?.sessionId])
+    setSessionIdInUrl(sessionId)
+  }, [sessionId])
 
-  function handleUpdate(updated: OwnerSession) {
+  function handleOwnerUpdate(updated: OwnerSession) {
     persistSession(updated)
-    setSession(updated)
+    setActiveSession({ type: 'owner', session: updated })
   }
 
   function handleCreated(created: OwnerSession) {
     persistSession(created)
-    setSession(created)
+    setActiveSession({ type: 'owner', session: created })
   }
 
+  function handleJoined(session: ParticipantSession) {
+    persistParticipantSession(session)
+    setActiveSession({ type: 'participant', session })
+  }
+
+  function handleParticipantUpdate(updated: ParticipantSession) {
+    persistParticipantSession(updated)
+    setActiveSession({ type: 'participant', session: updated })
+  }
+
+  const [inviteOpen, setInviteOpen] = useState(false)
+
   function handleLeave() {
-    // Keep stored data so "Continue Session" can restore it.
-    setSession(null)
+    setActiveSession(null)
   }
 
   return (
     <>
       <header>
-        <img src="/logo-color.svg" alt="DeRec" height="32" />
+        <img src={`${BASE_PATH}/logo-color.svg`} alt="DeRec Alliance" height="32" />
+        <div className="header-spacer" />
+        {activeSession?.type === 'owner' && (
+          <SessionIdBadge id={activeSession.session.sessionId} />
+        )}
+        {activeSession?.type === 'owner' && (
+          <button className="secondary" onClick={() => setInviteOpen(true)} title="Show QR code so others can join this session">
+            Invite
+          </button>
+        )}
+        {activeSession && (
+          <button className="secondary leave-btn" onClick={handleLeave} title="Return to session list">
+            Leave
+          </button>
+        )}
       </header>
 
-      <main className={session ? 'session-mode' : undefined}>
-        {session
-          ? <OwnerSessionPage session={session} onUpdate={handleUpdate} onLeave={handleLeave} />
-          : <NewSessionWizard onCreated={handleCreated} initialSessionId={urlSessionId} />
+      {inviteOpen && activeSession?.type === 'owner' && (
+        <JoinQrModal sessionId={activeSession.session.sessionId} onClose={() => setInviteOpen(false)} />
+      )}
+
+      <main className={activeSession ? 'session-mode' : undefined}>
+        {activeSession === null
+          ? <NewSessionWizard onCreated={handleCreated} initialSessionId={urlSessionInfo?.sessionId} initialIntent={urlSessionInfo?.intent} />
+          : activeSession.type === 'owner'
+            ? <OwnerSessionPage session={activeSession.session} onUpdate={handleOwnerUpdate} />
+            : <ParticipantSessionPage session={activeSession.session} onUpdate={handleParticipantUpdate} />
         }
       </main>
 

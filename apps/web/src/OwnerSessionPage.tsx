@@ -1,12 +1,13 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
-import { DeRecProtocol, SenderKind, type ContactMessage } from '@derec-alliance/web'
+import { DeRecProtocol, SenderKind, FlowKind, type ContactMessage } from '@derec-alliance/web'
 import './OwnerSessionPage.css'
-import type { DiscoverableSecret, HelperConnectionStatus, OwnerSession, PairedHelper, PendingPairing, PreviousVersion, ProtectedSecret, RecoveredSecret, RecoveryProgress, SecretShareRef, Transport } from './types'
+import type { ParticipantConnectionStatus, OwnerSession, PairedParticipant, PairedReplica, PendingPairing, BagVersion, SecretBag, UserSecret, RecoveredSecret, ReplicaStatus, SecretShareRef, Transport, HeldShare } from './types'
 import { useConsole } from './ConsoleContext'
 import { sendMessage, pollMailbox, fromBase64Url, toBase64Url } from './derecApi'
-import { makeContactStore, makeSecretStore, makeShareStore, makeTransport } from './stores'
-import { apiAssociateChannel, apiClearPendingAssociations, apiCreateHelperContact, apiGetSession, apiStartHelperPairing, type ContactMessageDto } from './api'
+import { makeChannelStore, makeSecretStore, makeShareStore, makeTransport } from './stores'
+import { apiAddParticipant, apiAddReplica, apiAssociateChannel, apiClearPendingAssociations, apiConfirmReplicaFingerprint, apiCreateParticipantContact, apiCreateReplicaContact, apiGetBrowserContact, apiGetReplicaFingerprint, apiGetSession, apiPostBrowserContact, apiStartParticipantPairing, apiStartReplicaPairing, apiToggleParticipantStatus, apiToggleReplicaStatus, type ContactMessageDto } from './api'
+import { faker } from '@faker-js/faker'
 
 // ── Contact serialization ─────────────────────────────────────────────────────
 //
@@ -135,6 +136,32 @@ function CopyButton({ label, text }: { label: string; text: string }) {
   )
 }
 
+// ── Shared key row (participant details) ─────────────────────────────────────
+
+function SharedKeyRow({ value, label }: { value: string; label?: boolean }) {
+  const [visible, setVisible] = useState(false)
+  const content = (
+    <span className="shared-key-display">
+      <code className="shared-key-value">{visible ? value : '••••••••••••'}</code>
+      <button
+        type="button"
+        className="secondary reveal-btn"
+        onClick={() => setVisible(v => !v)}
+        aria-label={visible ? 'Hide shared key' : 'Reveal shared key'}
+      >
+        {visible ? <EyeOffIcon /> : <EyeIcon />}
+      </button>
+    </span>
+  )
+  if (label === false) return content
+  return (
+    <div className="side-detail-row">
+      <span className="side-detail-label">Shared Key</span>
+      {content}
+    </div>
+  )
+}
+
 // ── Shared modal close button ─────────────────────────────────────────────────
 
 function ModalCloseButton({ onClose }: { onClose: () => void }) {
@@ -150,102 +177,62 @@ function ModalCloseButton({ onClose }: { onClose: () => void }) {
 
 // ── Protect Secret modal ──────────────────────────────────────────────────────
 
-interface ProtectSecretFormState {
-  label: string
-  data: string
-  threshold: number
-  selectedHelperIds: Set<string>
-}
-
-type ProtectSecretStatus =
+type AddSecretStatus =
   | { kind: 'idle' }
   | { kind: 'sending' }
-  | { kind: 'confirming'; secretIdHex: string; selectedHelperIds: string[] }
+  | { kind: 'confirming'; participantIds: string[]; version: number }
   | { kind: 'error'; message: string }
 
-function ProtectSecretModal({
-  helpers,
+function AddSecretModal({
+  participants,
+  secretBag,
   onClose,
-  onProtect,
+  onAddSecret,
 }: {
-  helpers: PairedHelper[]
+  participants: PairedParticipant[]
+  secretBag: SecretBag | null
   onClose: () => void
-  onProtect: (
-    secretId: Uint8Array,
-    secretData: Uint8Array,
-    label: string,
-    version: number,
-    threshold: number,
-    helperChannelIds: bigint[],
-  ) => Promise<void>
+  onAddSecret: (name: string, data: string) => Promise<void>
 }) {
-  const pairedHelpers = helpers.filter(h => h.connectionStatus === 'paired')
+  const pairedParticipants = participants.filter(h => h.connectionStatus === 'paired')
 
-  const [form, setForm] = useState<ProtectSecretFormState>({
-    label: '',
-    data: '',
-    threshold: 2,
-    selectedHelperIds: new Set(),
-  })
-  const [status, setStatus] = useState<ProtectSecretStatus>({ kind: 'idle' })
-
-  const selectedPaired = pairedHelpers.filter(h => form.selectedHelperIds.has(h.id))
-  const n = selectedPaired.length
-
-  function toggleHelper(id: string) {
-    setForm(prev => {
-      const next = new Set(prev.selectedHelperIds)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      const newN = next.size
-      return { ...prev, selectedHelperIds: next, threshold: Math.min(prev.threshold, Math.max(2, newN)) }
-    })
-  }
+  const [form, setForm] = useState({ name: '', data: '' })
+  const [status, setStatus] = useState<AddSecretStatus>({ kind: 'idle' })
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!form.label.trim() || !form.data.trim() || n === 0 || form.threshold < 2 || form.threshold > n) return
-
-    const secretId = crypto.getRandomValues(new Uint8Array(16))
-    const secretIdHex = Array.from(secretId).map(b => b.toString(16).padStart(2, '0')).join('')
-    const secretData = new TextEncoder().encode(form.data.trim())
-    const helperChannelIds = selectedPaired.map(h => BigInt(h.channelId))
+    if (!form.name.trim() || !form.data.trim()) return
 
     setStatus({ kind: 'sending' })
     try {
-      await onProtect(secretId, secretData, form.label.trim(), 1, form.threshold, helperChannelIds)
-      setStatus({ kind: 'confirming', secretIdHex, selectedHelperIds: selectedPaired.map(h => h.id) })
+      await onAddSecret(form.name.trim(), form.data.trim())
+      const newVersion = secretBag ? secretBag.currentVersion.version + 1 : 1
+      setStatus({ kind: 'confirming', participantIds: pairedParticipants.map(h => h.id), version: newVersion })
     } catch (err) {
       setStatus({ kind: 'error', message: err instanceof Error ? err.message : String(err) })
     }
   }
 
-  // Track confirmation progress from live helper data.
+  // Track confirmation progress from the bag's current version participantIds.
   const confirming = status.kind === 'confirming' ? status : null
   const confirmationProgress = confirming
-    ? confirming.selectedHelperIds.map(id => {
-        const helper = helpers.find(h => h.id === id)
-        const confirmed = helper?.secretShares.some(
-          s => s.secretId === confirming.secretIdHex && s.status === 'confirmed',
-        ) ?? false
-        return { id, name: helper?.name ?? id, confirmed }
+    ? confirming.participantIds.map(id => {
+        const participant = participants.find(h => h.id === id)
+        const confirmed = participant?.secretShares.some(s => s.version === confirming.version && s.status === 'confirmed') ?? false
+        return { id, name: participant?.name ?? id, confirmed }
       })
     : []
   const allConfirmed = confirming !== null && confirmationProgress.every(h => h.confirmed)
 
-  const canSubmit = form.label.trim().length > 0
-    && form.data.trim().length > 0
-    && n >= 2
-    && form.threshold >= 2
-    && form.threshold <= n
-
+  const canSubmit = form.name.trim().length > 0 && form.data.trim().length > 0
   const isBlocking = status.kind === 'sending' || (status.kind === 'confirming' && !allConfirmed)
+  const isFirstSecret = !secretBag
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Protect secret">
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Add secret">
       <div className="modal">
         <div className="modal-header">
-          <h2 className="modal-title">Protect Secret</h2>
+          <h2 className="modal-title">{isFirstSecret ? 'Protect Secret' : 'Add Secret'}</h2>
           {!isBlocking && <ModalCloseButton onClose={onClose} />}
         </div>
 
@@ -299,15 +286,21 @@ function ProtectSecretModal({
           </div>
         ) : (
           <form className="modal-body" onSubmit={handleSubmit}>
+            {isFirstSecret && (
+              <p className="modal-description">
+                This will create the secret bag and distribute it to all paired participants.
+              </p>
+            )}
+
             <div className="form-field">
-              <label className="form-label" htmlFor="ps-label">Label</label>
+              <label className="form-label" htmlFor="ps-name">Name</label>
               <input
-                id="ps-label"
+                id="ps-name"
                 className="full-input"
                 type="text"
-                placeholder="e.g. Metamask Wallet V1"
-                value={form.label}
-                onChange={e => setForm(f => ({ ...f, label: e.target.value }))}
+                placeholder="e.g. Google Password"
+                value={form.name}
+                onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
                 disabled={status.kind === 'sending'}
                 autoFocus
               />
@@ -323,45 +316,19 @@ function ProtectSecretModal({
             </div>
 
             <div className="form-field">
-              <span className="form-label">Helper Set (N={n})</span>
-              {pairedHelpers.length === 0 ? (
-                <p className="empty-hint">No helpers paired yet.</p>
+              <span className="form-label">Participants ({pairedParticipants.length} paired)</span>
+              {pairedParticipants.length === 0 ? (
+                <p className="empty-hint">No participants paired yet.</p>
               ) : (
-                <ul className="helper-check-list" role="list">
-                  {pairedHelpers.map(h => (
-                    <li key={h.id} className="helper-check-item">
-                      <label className="helper-check-label">
-                        <input
-                          type="checkbox"
-                          className="helper-checkbox"
-                          checked={form.selectedHelperIds.has(h.id)}
-                          onChange={() => toggleHelper(h.id)}
-                          disabled={status.kind === 'sending'}
-                        />
-                        <span className={`helper-dot ${h.connectionStatus}`} aria-hidden="true" />
-                        <span>{h.name}</span>
-                      </label>
+                <ul className="participant-check-list" role="list">
+                  {pairedParticipants.map(h => (
+                    <li key={h.id} className="participant-check-item">
+                      <span className={`participant-dot ${h.connectionStatus}`} aria-hidden="true" />
+                      <span>{h.name}</span>
                     </li>
                   ))}
                 </ul>
               )}
-            </div>
-
-            <div className="form-field">
-              <label className="form-label" htmlFor="ps-threshold">
-                Threshold (T)
-                {n > 0 && <span className="form-label-hint"> — min shares to recover (2–{n})</span>}
-              </label>
-              <input
-                id="ps-threshold"
-                className="full-input"
-                type="number"
-                min={2}
-                max={n || 2}
-                value={form.threshold}
-                onChange={e => setForm(f => ({ ...f, threshold: Math.max(2, Math.min(n || 2, Number(e.target.value))) }))}
-                disabled={n === 0 || status.kind === 'sending'}
-              />
             </div>
 
             {status.kind === 'error' && (
@@ -373,7 +340,7 @@ function ProtectSecretModal({
                 Cancel
               </button>
               <button type="submit" className="primary" disabled={!canSubmit || status.kind === 'sending'}>
-                {status.kind === 'sending' ? 'Sending…' : 'Protect'}
+                {status.kind === 'sending' ? 'Sending…' : isFirstSecret ? 'Protect' : 'Add Secret'}
               </button>
             </div>
           </form>
@@ -386,8 +353,8 @@ function ProtectSecretModal({
 // ── Share Contact modal ───────────────────────────────────────────────────────
 //
 // Used for both flows:
-//   - Owner displays their own contact QR (helper scans it → owner-initiates flow)
-//   - Helper displays their contact QR (owner scans it → helper-initiates flow)
+//   - Owner displays their own contact QR (participant scans it → owner-initiates flow)
+//   - Participant displays their contact QR (owner scans it → participant-initiates flow)
 //
 // `createContact` abstracts the protocol instance so this component stays generic.
 
@@ -508,12 +475,18 @@ function TransportBlock({ transport }: { transport: Transport }) {
 type PairInitiatorStep =
   | { kind: 'input' }
   | { kind: 'sending' }
-  | { kind: 'result'; channelId: bigint }
+  | { kind: 'waiting'; channelId: bigint }
+  | { kind: 'success'; channelId: bigint }
+  | { kind: 'failed'; reason: string }
+
+const PAIRING_TIMEOUT_MS = 60_000
 
 function PairInitiatorModal({
   label,
   placeholder,
-  helperId,
+  participantId,
+  pairedChannelIds,
+  pairingRejectionCount,
   onClose,
   onSuccess,
   onPairingRequestSent,
@@ -521,11 +494,15 @@ function PairInitiatorModal({
 }: {
   label: string
   placeholder: string
-  /** Known helper to associate with this pairing attempt, if applicable. */
-  helperId?: string
+  /** Known participant to associate with this pairing attempt, if applicable. */
+  participantId?: string
+  /** Set of channel IDs (decimal strings) that are currently paired — used to detect pairing completion. */
+  pairedChannelIds: Set<string>
+  /** Incremented when a pairing rejection is detected — signals the modal to exit waiting. */
+  pairingRejectionCount: number
   onClose: () => void
   onSuccess: () => void
-  onPairingRequestSent: (channelId: bigint, helperId?: string) => void
+  onPairingRequestSent: (channelId: bigint, participantId?: string) => void
   startPairing: (contact: ContactMessage) => Promise<bigint>
 }) {
   const { log } = useConsole()
@@ -533,11 +510,34 @@ function PairInitiatorModal({
   const [error, setError] = useState<string | null>(null)
   const [step, setStep] = useState<PairInitiatorStep>({ kind: 'input' })
 
+  // Snapshot the rejection count when we enter the waiting state so we only
+  // react to rejections that arrive *after* the request was sent.
+  const rejectionCountAtWaitRef = useRef(pairingRejectionCount)
+
+  // Detect pairing completion by watching pairedChannelIds
   useEffect(() => {
-    if (step.kind !== 'result') return
-    onClose()
-    onSuccess()
-  }, [step, onClose, onSuccess])
+    if (step.kind !== 'waiting') return
+    if (pairedChannelIds.has(step.channelId.toString())) {
+      setStep({ kind: 'success', channelId: step.channelId })
+    }
+  }, [step, pairedChannelIds])
+
+  // Detect pairing rejection from the polling loop
+  useEffect(() => {
+    if (step.kind !== 'waiting') return
+    if (pairingRejectionCount > rejectionCountAtWaitRef.current) {
+      setStep({ kind: 'failed', reason: 'The peer rejected the pairing request.' })
+    }
+  }, [step.kind, pairingRejectionCount])
+
+  // Timeout: if still waiting after PAIRING_TIMEOUT_MS, show failure
+  useEffect(() => {
+    if (step.kind !== 'waiting') return
+    const timer = setTimeout(() => {
+      setStep({ kind: 'failed', reason: 'Pairing request timed out. The peer may not have responded.' })
+    }, PAIRING_TIMEOUT_MS)
+    return () => clearTimeout(timer)
+  }, [step.kind])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -555,8 +555,9 @@ function PairInitiatorModal({
         payload: { channelId: channelId.toString() },
       })
 
-      onPairingRequestSent(channelId, helperId)
-      setStep({ kind: 'result', channelId })
+      onPairingRequestSent(channelId, participantId)
+      rejectionCountAtWaitRef.current = pairingRejectionCount
+      setStep({ kind: 'waiting', channelId })
     } catch (err) {
       console.error('[PairInitiatorModal] start_pairing failed:', err)
       setError(`Failed: ${err instanceof Error ? err.message : String(err)}`)
@@ -564,19 +565,47 @@ function PairInitiatorModal({
     }
   }
 
+  function handleClose() {
+    if (step.kind === 'success') {
+      onSuccess()
+    }
+    onClose()
+  }
+
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="pair-modal-title">
       <div className="modal">
         <div className="modal-header">
-          <h2 className="modal-title" id="pair-modal-title">Pair</h2>
-          <ModalCloseButton onClose={onClose} />
+          <h2 className="modal-title" id="pair-modal-title">
+            {step.kind === 'success' ? 'Pairing Complete' : step.kind === 'failed' ? 'Pairing Failed' : 'Pair'}
+          </h2>
+          {step.kind !== 'waiting' && <ModalCloseButton onClose={handleClose} />}
         </div>
 
-        {step.kind === 'result' ? (
+        {step.kind === 'waiting' ? (
           <div className="modal-body">
-            <p className="modal-description">Pairing request sent. Waiting for confirmation…</p>
+            <div className="pairing-waiting-indicator">
+              <div className="spinner" />
+              <p className="modal-description">Pairing request sent. Waiting for the peer to respond…</p>
+            </div>
             <div className="modal-actions">
-              <button className="secondary" onClick={onClose}>Close</button>
+              <button type="button" className="secondary" onClick={handleClose}>Cancel</button>
+            </div>
+          </div>
+        ) : step.kind === 'success' ? (
+          <div className="modal-body">
+            <p className="modal-description">
+              Pairing completed successfully. The helper is now ready to receive shares.
+            </p>
+            <div className="modal-actions">
+              <button className="primary" onClick={handleClose}>Done</button>
+            </div>
+          </div>
+        ) : step.kind === 'failed' ? (
+          <div className="modal-body">
+            <p className="modal-description pairing-error-text">{step.reason}</p>
+            <div className="modal-actions">
+              <button className="primary" onClick={handleClose}>Close</button>
             </div>
           </div>
         ) : (
@@ -598,7 +627,7 @@ function PairInitiatorModal({
             </div>
 
             <div className="modal-actions">
-              <button type="button" className="secondary" onClick={onClose} disabled={step.kind === 'sending'}>
+              <button type="button" className="secondary" onClick={handleClose} disabled={step.kind === 'sending'}>
                 Cancel
               </button>
               <button type="submit" className="primary" disabled={payload.trim().length === 0 || step.kind === 'sending'}>
@@ -612,24 +641,191 @@ function PairInitiatorModal({
   )
 }
 
-// ── Pairing success modal ─────────────────────────────────────────────────────
+// ── Replica provisioning modal ────────────────────────────────────────────────
+//
+// Tracks the replica through: Pairing → Confirmation → Fingerprint → Done
+// The `replica` prop is live (refreshes from session state as events arrive).
 
-function PairingSuccessModal({ onClose }: { onClose: () => void }) {
+function ReplicaProvisioningModal({
+  replica,
+  onPairingRequestSent,
+  startPairing,
+  onConfirm,
+  onClose,
+}: {
+  replica: PairedReplica
+  onPairingRequestSent: (channelId: bigint, replicaId: string) => void
+  startPairing: (contact: ContactMessage) => Promise<bigint>
+  onConfirm: (replicaId: string) => void
+  onClose: () => void
+}) {
+  const { log } = useConsole()
+  const [payload, setPayload] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [phase, setPhase] = useState<'input' | 'progress'>(
+    replica.status === 'available' ? 'input' : 'progress',
+  )
+  const [sending, setSending] = useState(false)
+
+  const pairingDone = replica.status === 'paired' || replica.status === 'confirmed'
+  const isConfirmed = replica.status === 'confirmed'
+  const hasFingerprint = !!replica.replicaFingerprint
+  const isBlocking = phase === 'progress' && !pairingDone
+
+  // 5-minute countdown for fingerprint confirmation
+  const [remainingMs, setRemainingMs] = useState<number | null>(null)
+  useEffect(() => {
+    if (!replica.confirmationStartedAt || isConfirmed) {
+      setRemainingMs(null)
+      return
+    }
+    function tick() {
+      const elapsed = Date.now() - replica.confirmationStartedAt!
+      const remaining = Math.max(0, 5 * 60 * 1000 - elapsed)
+      setRemainingMs(remaining)
+    }
+    tick()
+    const id = setInterval(tick, 1000)
+    return () => clearInterval(id)
+  }, [replica.confirmationStartedAt, isConfirmed])
+
+  const timedOut = remainingMs !== null && remainingMs <= 0
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    setError(null)
+    setSending(true)
+    try {
+      const contact = deserializeContact(payload.trim())
+      const channelId = await startPairing(contact)
+
+      log({
+        role: 'owner',
+        flow: 'replica',
+        step: 'start_pairing',
+        description: `Replica pairing request sent for channel ${channelId.toString()}`,
+        payload: { channelId: channelId.toString(), replicaId: replica.id },
+      })
+
+      onPairingRequestSent(channelId, replica.id)
+      setPhase('progress')
+    } catch (err) {
+      console.error('[ReplicaProvisioningModal] start_pairing failed:', err)
+      setError(`Failed: ${err instanceof Error ? err.message : String(err)}`)
+      setSending(false)
+    }
+  }
+
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="success-title">
-      <div className="modal">
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="replica-prov-title">
+      <div className="modal verify-modal--progress">
         <div className="modal-header">
-          <h2 className="modal-title" id="success-title">Pairing Complete</h2>
-          <ModalCloseButton onClose={onClose} />
+          <h2 className="modal-title" id="replica-prov-title">Replica Provisioning</h2>
+          {!isBlocking && <ModalCloseButton onClose={onClose} />}
         </div>
-        <div className="modal-body">
-          <p className="modal-description">
-            Pairing completed successfully. The helper is now ready to receive shares.
-          </p>
-          <div className="modal-actions">
-            <button className="primary" onClick={onClose}>Done</button>
+
+        {phase === 'progress' ? (
+          <div className="modal-body">
+            <p className="modal-description">
+              Setting up {replica.name}. Protocol messages are being exchanged automatically.
+            </p>
+
+            <ul className="share-progress-list" role="list">
+              {/* Step 1: Pairing */}
+              <li className={`share-progress-item${pairingDone ? ' share-progress-item--confirmed' : ''}`}>
+                <span className="verify-progress-icon">
+                  {pairingDone
+                    ? <span className="verify-progress-icon--done" aria-label="Done">&#10003;</span>
+                    : <span className="verify-spinner" role="status" aria-label="In progress" />
+                  }
+                </span>
+                <span className="share-progress-item-name">Pairing</span>
+                <span className={`share-progress-item-status${pairingDone ? ' status--verified' : ''}`}>
+                  {pairingDone ? 'Done' : 'Exchanging messages\u2026'}
+                </span>
+              </li>
+
+              {/* Step 2: Fingerprint confirmation */}
+              {pairingDone && (
+                <li className={`share-progress-item${isConfirmed ? ' share-progress-item--confirmed' : ''}`}>
+                  <span className="verify-progress-icon">
+                    {isConfirmed
+                      ? <span className="verify-progress-icon--done" aria-label="Done">&#10003;</span>
+                      : hasFingerprint
+                        ? <span className="verify-progress-icon--action" aria-label="Action required">!</span>
+                        : <span className="verify-spinner" role="status" aria-label="Fetching fingerprint" />
+                    }
+                  </span>
+                  <span className="share-progress-item-name">Fingerprint Confirmation</span>
+                  <span className={`share-progress-item-status${isConfirmed ? ' status--verified' : ''}`}>
+                    {isConfirmed ? 'Confirmed' : hasFingerprint ? 'Awaiting confirmation' : 'Fetching fingerprint\u2026'}
+                  </span>
+                </li>
+              )}
+            </ul>
+
+            {/* Fingerprint display + confirm button */}
+            {pairingDone && hasFingerprint && !isConfirmed && !timedOut && (
+              <div className="replica-confirm-section">
+                <p className="replica-confirm-hint">
+                  Verify this fingerprint matches on the replica device:
+                </p>
+                <code className="replica-fingerprint-display">{replica.replicaFingerprint}</code>
+                {remainingMs !== null && (
+                  <p className="replica-confirm-timer">
+                    Time remaining: {Math.floor(remainingMs / 60000)}:{String(Math.floor((remainingMs % 60000) / 1000)).padStart(2, '0')}
+                  </p>
+                )}
+                <button className="primary" onClick={() => onConfirm(replica.id)}>
+                  Confirm Fingerprint
+                </button>
+              </div>
+            )}
+
+            {timedOut && !isConfirmed && (
+              <p className="replica-confirm-expired">
+                Confirmation window expired. Remove and re-pair this replica.
+              </p>
+            )}
+
+            <div className="modal-actions">
+              <button
+                type="button"
+                className={(pairingDone && (isConfirmed || timedOut)) ? 'primary' : 'secondary'}
+                onClick={onClose}
+              >
+                {isConfirmed ? 'Done' : 'Close'}
+              </button>
+            </div>
           </div>
-        </div>
+        ) : (
+          <form className="modal-body" onSubmit={handleSubmit}>
+            <div className="form-field">
+              <label className="form-label" htmlFor="replica-qr-payload">Owner Contact QR Payload</label>
+              <textarea
+                id="replica-qr-payload"
+                className="full-input mono-textarea"
+                rows={4}
+                placeholder="Paste the JSON payload from the owner's Share Contact QR code"
+                value={payload}
+                onChange={e => setPayload(e.target.value)}
+                disabled={sending}
+                autoFocus
+                spellCheck={false}
+              />
+              {error && <p className="field-error">{error}</p>}
+            </div>
+
+            <div className="modal-actions">
+              <button type="button" className="secondary" onClick={onClose} disabled={sending}>
+                Cancel
+              </button>
+              <button type="submit" className="primary" disabled={payload.trim().length === 0 || sending}>
+                {sending ? 'Sending\u2026' : 'Pair'}
+              </button>
+            </div>
+          </form>
+        )}
       </div>
     </div>
   )
@@ -637,7 +833,7 @@ function PairingSuccessModal({ onClose }: { onClose: () => void }) {
 
 // ── Session ID badge ──────────────────────────────────────────────────────────
 
-function SessionIdBadge({ id }: { id: string }) {
+export function SessionIdBadge({ id }: { id: string }) {
   const [copied, setCopied] = useState(false)
 
   function handleCopy() {
@@ -699,135 +895,46 @@ function SecretDataField({
 // ── Verify Shares wizard ──────────────────────────────────────────────────────
 //
 // Two-step modal:
-//   Step 1 — select helpers (checkbox list, all pre-selected)
+//   Step 1 — select participants (checkbox list, all pre-selected)
 //   Step 2 — progress (spinner → checkmark as ShareVerified events arrive)
 //
 // Progress updates automatically: `secret` is a prop that refreshes from session
 // state whenever a ShareVerified event is applied, so no callbacks or refs needed.
 
-type VerifyWizardStep =
-  | { kind: 'select' }
-  | { kind: 'progress'; selectedHelpers: PairedHelper[] }
-
 function VerifySharesModal({
-  secretId,
   version,
-  verifiedHelperIds,
-  confirmedHelpers,
+  verifiedParticipantIds,
+  confirmedParticipants,
   onClose,
   onVerify,
 }: {
-  secretId: string
   version: number
-  /** Live-updated list of helper IDs that have passed verification for this version. */
-  verifiedHelperIds: string[]
-  confirmedHelpers: PairedHelper[]
+  /** Live-updated list of participant IDs that have passed verification for this version. */
+  verifiedParticipantIds: string[]
+  confirmedParticipants: PairedParticipant[]
   onClose: () => void
-  onVerify: (secretId: string, version: number, selectedHelperIds: string[]) => Promise<void>
+  onVerify: (version: number) => Promise<void>
 }) {
-  const [selected, setSelected] = useState<Set<string>>(
-    () => new Set(confirmedHelpers.map(h => h.id)),
-  )
-  const [step, setStep] = useState<VerifyWizardStep>({ kind: 'select' })
-  const [sending, setSending] = useState(false)
+  const [sent, setSent] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  function toggleHelper(id: string) {
-    setSelected(prev => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }
-
-  async function handleSendChallenges() {
-    const selectedHelpers = confirmedHelpers.filter(h => selected.has(h.id))
-    if (selectedHelpers.length === 0) return
-    setSending(true)
-    setError(null)
-    try {
-      await onVerify(secretId, version, selectedHelpers.map(h => h.id))
-      setStep({ kind: 'progress', selectedHelpers })
-    } catch (err) {
+  // Send verification to all on mount.
+  useEffect(() => {
+    if (sent) return
+    setSent(true)
+    onVerify(version).catch(err => {
       setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setSending(false)
-    }
-  }
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
-  // ── Step 1: Select helpers ────────────────────────────────────────────────
-
-  if (step.kind === 'select') {
-    return (
-      <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="verify-modal-title">
-        <div className="modal">
-          <div className="modal-header">
-            <h2 className="modal-title" id="verify-modal-title">
-              Verify Shares {version > 0 && <span className="version-tag">v{version}</span>}
-            </h2>
-            <ModalCloseButton onClose={onClose} />
-          </div>
-          <div className="modal-body">
-            <p className="modal-description">
-              Select the helpers to challenge. Each will receive a verification request
-              and must respond with proof of their stored share.
-            </p>
-
-            <ul className="helper-check-list" role="list">
-              {confirmedHelpers.map(h => {
-                const wasVerified = verifiedHelperIds.includes(h.id)
-                return (
-                  <li key={h.id} className="helper-check-item">
-                    <label className="helper-check-label">
-                      <input
-                        type="checkbox"
-                        className="helper-checkbox"
-                        checked={selected.has(h.id)}
-                        onChange={() => toggleHelper(h.id)}
-                        disabled={sending}
-                      />
-                      <span className={`helper-dot ${h.connectionStatus}`} aria-hidden="true" />
-                      <span>{h.name}</span>
-                      {wasVerified && (
-                        <span className="share-status-tag verified" title="Previously verified">
-                          ✓ Verified
-                        </span>
-                      )}
-                    </label>
-                  </li>
-                )
-              })}
-            </ul>
-
-            {error && <p className="field-error">{error}</p>}
-
-            <div className="modal-actions">
-              <button type="button" className="secondary" onClick={onClose} disabled={sending}>
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="primary"
-                onClick={handleSendChallenges}
-                disabled={selected.size === 0 || sending}
-              >
-                {sending ? 'Sending…' : `Send Challenges (${selected.size})`}
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  // ── Step 2: Progress ──────────────────────────────────────────────────────
-
-  const { selectedHelpers } = step
-  const verifiedCount = selectedHelpers.filter(h => verifiedHelperIds.includes(h.id)).length
-  const allDone = verifiedCount === selectedHelpers.length
-  const pct = selectedHelpers.length > 0
-    ? Math.round((verifiedCount / selectedHelpers.length) * 100)
+  const totalCount = confirmedParticipants.length
+  const verifiedCount = confirmedParticipants.filter(
+    h => verifiedParticipantIds.includes(h.id),
+  ).length
+  const allDone = totalCount > 0 && verifiedCount === totalCount
+  const pct = totalCount > 0
+    ? Math.round((verifiedCount / totalCount) * 100)
     : 0
 
   return (
@@ -838,6 +945,7 @@ function VerifySharesModal({
           <ModalCloseButton onClose={onClose} />
         </div>
         <div className="modal-body">
+          {error && <p className="field-error">{error}</p>}
           <div className="verify-progress-bar-section">
             <div className="share-progress-bar-track">
               <div
@@ -850,13 +958,13 @@ function VerifySharesModal({
               />
             </div>
             <p className="share-progress-summary">
-              {verifiedCount} of {selectedHelpers.length} verified
+              {verifiedCount} of {totalCount} verified
             </p>
           </div>
 
           <ul className="share-progress-list" role="list">
-            {selectedHelpers.map(h => {
-              const isVerified = verifiedHelperIds.includes(h.id)
+            {confirmedParticipants.map(h => {
+              const isVerified = verifiedParticipantIds.includes(h.id)
               return (
                 <li
                   key={h.id}
@@ -892,607 +1000,363 @@ function VerifySharesModal({
   )
 }
 
-// ── Renew Secret modal ────────────────────────────────────────────────────────
-//
-// Two-step wizard:
-//   Step 1 — configure: new data, helper selection, threshold, keepList
-//   Step 2 — progress: wait for ShareConfirmed events per selected helper
-//
-// `secret` is a live prop: after the version increments in step 2, the parent
-// re-renders with the new ProtectedSecret (same secretId key), so
-// secret.helperIds fills in automatically as ShareConfirmed events arrive.
+// ── Secret Bag Panel ────────────────────────────────────────────────────────
 
-type RenewWizardStep =
-  | { kind: 'configure' }
-  | { kind: 'progress'; newVersion: number; selectedHelpers: PairedHelper[] }
+// ── SecretBagPanel ─────────────────────────────────────────────────────────
 
-interface RenewForm {
-  newData: string
-  threshold: number
-  selectedHelperIds: Set<string>
-  keepSet: Set<number>
+/** Builds a structured representation of the SecretContainer that gets protobuf-encoded and distributed. */
+function buildSecretContainerPayload(version: BagVersion) {
+  return {
+    helpers: version.helpers.map(h => ({
+      channel_id: h.channelId,
+      transport_uri: `(paired endpoint)`,
+      name: h.name,
+      shared_key: '(32-byte symmetric key)',
+    })),
+    secrets: version.secrets.map(s => ({
+      id: s.id,
+      name: s.name,
+      data: s.data,
+    })),
+  }
 }
 
-function RenewSecretModal({
-  secret,
-  pairedHelpers,
+/** Returns a hex dump of the UTF-8 JSON payload, 32 bytes per line. */
+function hexDump(data: Uint8Array): string[] {
+  const lines: string[] = []
+  const bytesPerLine = 16
+  for (let offset = 0; offset < data.length; offset += bytesPerLine) {
+    const slice = data.slice(offset, offset + bytesPerLine)
+    const hex = Array.from(slice).map(b => b.toString(16).padStart(2, '0')).join(' ')
+    const ascii = Array.from(slice).map(b => (b >= 0x20 && b < 0x7f) ? String.fromCharCode(b) : '.').join('')
+    const addr = offset.toString(16).padStart(8, '0')
+    lines.push(`${addr}  ${hex.padEnd(bytesPerLine * 3 - 1)}  ${ascii}`)
+  }
+  return lines
+}
+
+function BagPayloadModal({
+  version,
   onClose,
-  onRenew,
 }: {
-  secret: ProtectedSecret
-  pairedHelpers: PairedHelper[]
+  version: BagVersion
   onClose: () => void
-  onRenew: (
-    secretIdHex: string,
-    newSecretData: Uint8Array,
-    keepList: number[],
-    helperChannelIds: bigint[],
-    threshold: number,
-  ) => Promise<void>
 }) {
-  // All version numbers that existed before this renewal (available for keepList).
-  // Captured once at mount — must not change when secret.version increments in step 2.
-  const [previousVersionsAtOpen] = useState(() => [...secret.previousVersions.map(pv => pv.version), secret.version])
-  const newVersion = secret.version + 1
+  const [activeTab, setActiveTab] = useState<'structured' | 'raw'>('structured')
 
-  // Default helper selection: helpers that confirmed the current version.
-  const [form, setForm] = useState<RenewForm>(() => {
-    const defaultHelperIds = new Set(pairedHelpers.filter(h => secret.helperIds.includes(h.id)).map(h => h.id))
-    return {
-      newData: '',
-      threshold: secret.threshold,
-      selectedHelperIds: defaultHelperIds.size > 0 ? defaultHelperIds : new Set(pairedHelpers.map(h => h.id)),
-      keepSet: new Set(previousVersionsAtOpen),
-    }
-  })
-
-  const [step, setStep] = useState<RenewWizardStep>({ kind: 'configure' })
-  const [error, setError] = useState<string | null>(null)
-  const [sending, setSending] = useState(false)
-
-  const selectedPaired = pairedHelpers.filter(h => form.selectedHelperIds.has(h.id))
-  const n = selectedPaired.length
-
-  function toggleHelper(id: string) {
-    setForm(prev => {
-      const next = new Set(prev.selectedHelperIds)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      const newN = next.size
-      return { ...prev, selectedHelperIds: next, threshold: Math.min(prev.threshold, Math.max(2, newN)) }
-    })
-  }
-
-  function toggleVersion(v: number) {
-    setForm(prev => {
-      const next = new Set(prev.keepSet)
-      if (next.has(v)) next.delete(v)
-      else next.add(v)
-      return { ...prev, keepSet: next }
-    })
-  }
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    if (!form.newData.trim() || n === 0 || form.threshold < 2 || form.threshold > n) return
-
-    const secretData = new TextEncoder().encode(form.newData.trim())
-    const keepList = previousVersionsAtOpen.filter(v => form.keepSet.has(v))
-    const helperChannelIds = selectedPaired.map(h => BigInt(h.channelId))
-
-    setSending(true)
-    setError(null)
-    try {
-      await onRenew(secret.secretId, secretData, keepList, helperChannelIds, form.threshold)
-      setStep({ kind: 'progress', newVersion, selectedHelpers: selectedPaired })
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setSending(false)
-    }
-  }
-
-  // ── Step 2: progress ──────────────────────────────────────────────────────
-
-  if (step.kind === 'progress') {
-    const { selectedHelpers } = step
-    // secret.helperIds is updated live as ShareConfirmed events arrive.
-    const confirmedCount = selectedHelpers.filter(h => secret.helperIds.includes(h.id)).length
-    const allDone = confirmedCount === selectedHelpers.length
-    const pct = selectedHelpers.length > 0
-      ? Math.round((confirmedCount / selectedHelpers.length) * 100)
-      : 0
-
-    return (
-      <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="renew-progress-title">
-        <div className="modal verify-modal--progress">
-          <div className="modal-header">
-            <h2 className="modal-title" id="renew-progress-title">
-              Sharing Version {step.newVersion}
-            </h2>
-            <ModalCloseButton onClose={onClose} />
-          </div>
-          <div className="modal-body">
-            <div className="verify-progress-bar-section">
-              <div className="share-progress-bar-track">
-                <div
-                  className="share-progress-bar-fill"
-                  style={{ width: `${pct}%` }}
-                  role="progressbar"
-                  aria-valuenow={pct}
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                />
-              </div>
-              <p className="share-progress-summary">
-                {confirmedCount} of {selectedHelpers.length} confirmed
-              </p>
-            </div>
-
-            <ul className="share-progress-list" role="list">
-              {selectedHelpers.map(h => {
-                const isConfirmed = secret.helperIds.includes(h.id)
-                return (
-                  <li
-                    key={h.id}
-                    className={`share-progress-item ${isConfirmed ? 'share-progress-item--confirmed' : ''}`}
-                  >
-                    <span className="verify-progress-icon">
-                      {isConfirmed
-                        ? <span className="verify-progress-icon--done" aria-label="Confirmed">✓</span>
-                        : <span className="verify-spinner" role="status" aria-label="Waiting for confirmation" />
-                      }
-                    </span>
-                    <span className="share-progress-item-name">{h.name}</span>
-                    <span className={`share-progress-item-status ${isConfirmed ? 'status--verified' : ''}`}>
-                      {isConfirmed ? 'Confirmed' : 'Waiting…'}
-                    </span>
-                  </li>
-                )
-              })}
-            </ul>
-
-            <div className="modal-actions">
-              <button
-                type="button"
-                className={allDone ? 'primary' : 'secondary'}
-                onClick={onClose}
-              >
-                {allDone ? 'Done' : 'Close'}
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  // ── Step 1: configure ─────────────────────────────────────────────────────
-
-  const canSubmit = form.newData.trim().length > 0
-    && n >= 2
-    && form.threshold >= 2
-    && form.threshold <= n
+  const payload = buildSecretContainerPayload(version)
+  const jsonString = JSON.stringify(payload, null, 2)
+  const jsonBytes = new TextEncoder().encode(jsonString)
+  const dump = hexDump(jsonBytes)
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Renew secret">
-      <div className="modal">
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="payload-modal-title">
+      <div className="modal payload-modal">
         <div className="modal-header">
-          <h2 className="modal-title">Renew Secret</h2>
-          {!sending && <ModalCloseButton onClose={onClose} />}
+          <h2 className="modal-title" id="payload-modal-title">
+            Secret Bag Payload — v{version.version}
+          </h2>
+          <ModalCloseButton onClose={onClose} />
         </div>
-
-        <form className="modal-body" onSubmit={handleSubmit}>
-          <div className="form-field">
-            <span className="form-label">Secret</span>
-            <p className="form-hint">
-              {secret.label} — creating version {newVersion} ({secret.label}-{newVersion})
-            </p>
+        <div className="modal-body">
+          <div className="payload-tabs">
+            <button
+              type="button"
+              className={`payload-tab ${activeTab === 'structured' ? 'payload-tab--active' : ''}`}
+              onClick={() => setActiveTab('structured')}
+            >
+              Structured
+            </button>
+            <button
+              type="button"
+              className={`payload-tab ${activeTab === 'raw' ? 'payload-tab--active' : ''}`}
+              onClick={() => setActiveTab('raw')}
+            >
+              Raw Bytes ({jsonBytes.length} B)
+            </button>
           </div>
 
-          <div className="form-field">
-            <label className="form-label" htmlFor="rs-data">New Secret Data</label>
-            <SecretDataField
-              value={form.newData}
-              onChange={newData => setForm(f => ({ ...f, newData }))}
-              disabled={sending}
-            />
-          </div>
-
-          <div className="form-field">
-            <span className="form-label">Helpers (N={n})</span>
-            {pairedHelpers.length === 0 ? (
-              <p className="empty-hint">No paired helpers available.</p>
-            ) : (
-              <ul className="helper-check-list" role="list">
-                {pairedHelpers.map(h => (
-                  <li key={h.id} className="helper-check-item">
-                    <label className="helper-check-label">
-                      <input
-                        type="checkbox"
-                        className="helper-checkbox"
-                        checked={form.selectedHelperIds.has(h.id)}
-                        onChange={() => toggleHelper(h.id)}
-                        disabled={sending}
-                      />
-                      <span className={`helper-dot ${h.connectionStatus}`} aria-hidden="true" />
-                      <span>{h.name}</span>
-                    </label>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-
-          <div className="form-field">
-            <label className="form-label" htmlFor="rs-threshold">
-              Threshold (T)
-              {n > 0 && <span className="form-label-hint"> — min shares to recover (2–{n})</span>}
-            </label>
-            <input
-              id="rs-threshold"
-              className="full-input"
-              type="number"
-              min={2}
-              max={n || 2}
-              value={form.threshold}
-              onChange={e => setForm(f => ({ ...f, threshold: Math.max(2, Math.min(n || 2, Number(e.target.value))) }))}
-              disabled={n === 0 || sending}
-            />
-          </div>
-
-          {previousVersionsAtOpen.length > 0 && (
-            <div className="form-field">
-              <span className="form-label">Previous Versions to Retain</span>
-              <p className="form-hint">
-                Checked versions remain stored by helpers and can be recovered if needed.
-                Uncheck to instruct helpers to delete those shares.
-              </p>
-              <ul className="helper-check-list" role="list">
-                {previousVersionsAtOpen.map(v => (
-                  <li key={v} className="helper-check-item">
-                    <label className="helper-check-label">
-                      <input
-                        type="checkbox"
-                        className="helper-checkbox"
-                        checked={form.keepSet.has(v)}
-                        onChange={() => toggleVersion(v)}
-                        disabled={sending}
-                      />
-                      <span>Version {v} — <code>{secret.label}-{v}</code></span>
-                    </label>
-                  </li>
-                ))}
-              </ul>
-            </div>
+          {activeTab === 'structured' ? (
+            <pre className="payload-pre">{jsonString}</pre>
+          ) : (
+            <pre className="payload-pre payload-pre--hex">{dump.join('\n')}</pre>
           )}
-
-          {error && <p className="field-error">{error}</p>}
-
-          <div className="modal-actions">
-            <button type="button" className="secondary" onClick={onClose} disabled={sending}>
-              Cancel
-            </button>
-            <button type="submit" className="primary" disabled={!canSubmit || sending}>
-              {sending ? 'Sending…' : `Share as Version ${newVersion}`}
-            </button>
-          </div>
-        </form>
+        </div>
+        <div className="modal-actions">
+          <button type="button" className="primary" onClick={onClose}>Close</button>
+        </div>
       </div>
     </div>
   )
 }
 
-// ── Paired helper card ────────────────────────────────────────────────────────
-
-function PairedHelperCard({ helper, onUnpair }: { helper: PairedHelper; onUnpair: () => void }) {
-  const [expanded, setExpanded] = useState(false)
-
-  return (
-    <div className={`detail-card collapsible ${expanded ? 'expanded' : ''}`}>
-      <button
-        className="card-header card-toggle"
-        onClick={() => setExpanded(v => !v)}
-        aria-expanded={expanded}
-      >
-        <span className="card-title">{helper.name}</span>
-        <ClickToCopyCode label="Channel ID" value={helper.channelId} />
-        <span className={`status-tag ${helper.connectionStatus}`}>
-          {connectionStatusLabel(helper.connectionStatus)}
-        </span>
-        <ChevronIcon expanded={expanded} />
-      </button>
-
-      {expanded && (
-        <div className="card-body">
-          <dl className="field-list">
-            <div className="field-row">
-              <dt>Protocol</dt>
-              <dd><span className="protocol-badge">{helper.transport.protocol.toUpperCase()}</span></dd>
-            </div>
-            <div className="field-row">
-              <dt>URI</dt>
-              <dd><code className="uri-value">{helper.transport.uri}</code></dd>
-            </div>
-          </dl>
-
-          <div className="card-sub-section">
-            <h4 className="sub-heading">Secret Shares</h4>
-            {helper.secretShares.length === 0 ? (
-              <p className="empty-hint">No secret shares yet.</p>
-            ) : (
-              <ul className="share-list" role="list">
-                {helper.secretShares.map(share => (
-                  <li
-                    key={`${share.secretId}-${share.version}`}
-                    className={`share-item ${share.status === 'confirmed' ? 'share-item--confirmed' : 'share-item--pending'}`}
-                  >
-                    <span className="share-label">{share.label}</span>
-                    <span className="version-tag">v{share.version}</span>
-                    <span
-                      className={`share-status-tag ${share.verified ? 'verified' : share.status}`}
-                      title={share.verified ? 'Verified' : share.status === 'confirmed' ? 'Confirmed' : 'Awaiting confirmation'}
-                    >
-                      {share.verified ? '✓✓' : share.status === 'confirmed' ? '✓' : '⋯'}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-
-          <div className="card-actions">
-            <button className="primary unpair-card-btn" onClick={onUnpair}>
-              Unpair
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ── Protected secret card ─────────────────────────────────────────────────────
-
-function ProtectedSecretCard({
-  secret,
-  helpers,
+function BagVersionDetails({
+  version,
+  participants,
   onVerify,
-  onRenew,
+  onVerifyClose,
 }: {
-  secret: ProtectedSecret
-  helpers: PairedHelper[]
-  onVerify: (secretId: string, version: number, selectedHelperIds: string[]) => Promise<void>
-  onRenew: (secretIdHex: string, newSecretData: Uint8Array, keepList: number[], helperChannelIds: bigint[], threshold: number) => Promise<void>
+  version: BagVersion
+  participants: PairedParticipant[]
+  onVerify: (version: number) => Promise<void>
+  onVerifyClose?: () => void
 }) {
-  const [expanded, setExpanded] = useState(false)
-  const [secretVisible, setSecretVisible] = useState(false)
-  // null = no verify modal open; a version number = that version's modal is open
-  const [verifyingVersion, setVerifyingVersion] = useState<number | null>(null)
-  const [renewOpen, setRenewOpen] = useState(false)
-  const confirmedHelpers = helpers.filter(h => secret.helperIds.includes(h.id))
-  const pairedHelpers = helpers.filter(h => h.connectionStatus === 'paired')
-  const n = confirmedHelpers.length
-  const verifiedCount = secret.verifiedHelperIds.length
+  const [revealedSecrets, setRevealedSecrets] = useState<Set<string>>(new Set())
+  const [verifyOpen, setVerifyOpen] = useState(false)
+  const [payloadOpen, setPayloadOpen] = useState(false)
 
-  // Resolve props for whichever verify modal is open.
-  const verifyingPreviousVersion = verifyingVersion !== null && verifyingVersion !== secret.version
-    ? secret.previousVersions.find(pv => pv.version === verifyingVersion) ?? null
-    : null
-  const activeVerifiedHelperIds = verifyingVersion === secret.version
-    ? secret.verifiedHelperIds
-    : (verifyingPreviousVersion?.verifiedHelperIds ?? [])
+  function toggleSecretVisibility(secretId: string) {
+    setRevealedSecrets(prev => {
+      const next = new Set(prev)
+      if (next.has(secretId)) next.delete(secretId)
+      else next.add(secretId)
+      return next
+    })
+  }
+  const confirmedParticipants = participants.filter(h => version.participantIds.includes(h.id))
+  const verifiedCount = version.verifiedParticipantIds.length
 
   return (
-    <>
-      <div className={`detail-card collapsible ${expanded ? 'expanded' : ''}`}>
-        <button
-          className="card-header card-toggle"
-          onClick={() => setExpanded(v => !v)}
-          aria-expanded={expanded}
-        >
-          <span className="card-title">{secret.label}</span>
-          <span className="version-tag">v{secret.version}</span>
-          <ChevronIcon expanded={expanded} />
-        </button>
-
-        {expanded && (
-          <div className="card-body">
-            <dl className="field-list">
-              <div className="field-row">
-                <dt>Secret ID</dt>
-                <dd>
-                  <code className="secret-id-value" title={secret.secretId}>
-                    {secret.secretId.slice(0, 12)}…
-                  </code>
-                </dd>
-              </div>
-
-              <div className="field-row">
-                <dt>Current Value</dt>
-                <dd>
-                  <div className="shared-key-field">
-                    <code className="key-input" style={{ fontFamily: 'inherit' }}>
-                      {secretVisible ? secret.secretData : '•'.repeat(Math.min(secret.secretData.length, 24))}
-                    </code>
-                    <button
-                      type="button"
-                      className="secondary reveal-btn"
-                      onClick={() => setSecretVisible(v => !v)}
-                      aria-label={secretVisible ? 'Hide secret' : 'Reveal secret'}
-                    >
-                      {secretVisible ? <EyeOffIcon /> : <EyeIcon />}
-                    </button>
-                  </div>
-                </dd>
-              </div>
-
-              <div className="field-row">
-                <dt>Recovery threshold</dt>
-                <dd>
-                  <span className="threshold-value">
-                    {secret.threshold} of {n > 0 ? n : '?'} helpers
-                  </span>
-                </dd>
-              </div>
-            </dl>
-
-            <div className="card-sub-section">
-              <div className="sub-heading-row">
-                <h4 className="sub-heading">Helper Shares</h4>
-                {n > 0 && (
-                  <span className="verified-summary">
-                    {verifiedCount}/{n} verified
-                  </span>
-                )}
-              </div>
-              {confirmedHelpers.length === 0 ? (
-                <p className="empty-hint">Waiting for helpers to confirm…</p>
-              ) : (
-                <ul className="helper-tag-list" role="list">
-                  {confirmedHelpers.map(h => {
-                    const isVerified = secret.verifiedHelperIds.includes(h.id)
-                    return (
-                      <li key={h.id} className={`helper-tag ${isVerified ? 'helper-tag--verified' : ''}`}>
-                        <span>{h.name}</span>
-                        <span
-                          className="helper-verification-icon"
-                          title={isVerified ? 'Verified' : 'Not yet verified'}
-                          aria-label={isVerified ? 'Verified' : 'Not yet verified'}
-                        >
-                          {isVerified ? '✓' : '○'}
-                        </span>
-                      </li>
-                    )
-                  })}
-                </ul>
-              )}
-            </div>
-
-            {secret.previousVersions.length > 0 && (
-              <div className="card-sub-section">
-                <h4 className="sub-heading">Previous Versions</h4>
-                <ul className="version-history-list" role="list">
-                  {secret.previousVersions.map(pv => {
-                    const pvVerifiedCount = pv.verifiedHelperIds.length
-                    return (
-                      <li key={pv.version} className="version-history-item">
-                        <span className="version-tag">v{pv.version}</span>
-                        <span className="version-history-label">{secret.label}-{pv.version}</span>
-                        {pvVerifiedCount > 0 && (
-                          <span className="version-history-verified" title={`${pvVerifiedCount} helper(s) verified`}>
-                            ✓ {pvVerifiedCount}
-                          </span>
-                        )}
+    <div className="card-body">
+      <dl className="field-list">
+        <div className="field-row">
+          <dt>Version</dt>
+          <dd><span className="version-tag">v{version.version}</span></dd>
+        </div>
+        <div className="field-row field-row--full">
+          <dt>User Secrets ({version.secrets.length})</dt>
+          <dd>
+            <table className="secrets-table">
+              <thead>
+                <tr>
+                  <th className="secrets-table__th">Name</th>
+                  <th className="secrets-table__th">Value</th>
+                  <th className="secrets-table__th secrets-table__th--action" />
+                </tr>
+              </thead>
+              <tbody>
+                {version.secrets.map(s => {
+                  const visible = revealedSecrets.has(s.id)
+                  return (
+                    <tr key={s.id} className="secrets-table__row">
+                      <td className="secrets-table__td secrets-table__name">{s.name}</td>
+                      <td className="secrets-table__td secrets-table__value">
+                        <code>{visible ? s.data : '••••••••'}</code>
+                      </td>
+                      <td className="secrets-table__td secrets-table__td--action">
                         <button
                           type="button"
-                          className="secondary version-verify-btn"
-                          onClick={() => setVerifyingVersion(pv.version)}
+                          className="secondary reveal-btn"
+                          onClick={() => toggleSecretVisibility(s.id)}
+                          aria-label={visible ? `Hide ${s.name}` : `Reveal ${s.name}`}
                         >
-                          Verify
+                          {visible ? <EyeOffIcon /> : <EyeIcon />}
                         </button>
-                      </li>
-                    )
-                  })}
-                </ul>
-              </div>
-            )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </dd>
+        </div>
+      </dl>
 
-            <div className="card-actions">
-              {n > 0 && (
-                <>
-                  <button
-                    type="button"
-                    className="secondary verify-btn"
-                    onClick={() => setVerifyingVersion(secret.version)}
+      <div className="card-sub-section">
+        <div className="sub-heading-row">
+          <h4 className="sub-heading">Helper Shares</h4>
+          {confirmedParticipants.length > 0 && (
+            <span className="verified-summary">
+              {verifiedCount}/{confirmedParticipants.length} verified
+            </span>
+          )}
+        </div>
+        {confirmedParticipants.length === 0 ? (
+          <p className="empty-hint">Waiting for participants to confirm…</p>
+        ) : (
+          <ul className="participant-tag-list" role="list">
+            {confirmedParticipants.map(h => {
+              const isVerified = version.verifiedParticipantIds.includes(h.id)
+              return (
+                <li key={h.id} className={`participant-tag ${isVerified ? 'participant-tag--verified' : ''}`}>
+                  <span>{h.name}</span>
+                  <span
+                    className="participant-verification-icon"
+                    title={isVerified ? 'Verified' : 'Not yet verified'}
+                    aria-label={isVerified ? 'Verified' : 'Not yet verified'}
                   >
-                    Verify Shares
-                  </button>
-                  <button
-                    type="button"
-                    className="primary"
-                    onClick={() => setRenewOpen(true)}
-                  >
-                    Renew Secret
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
+                    {isVerified ? '✓' : '○'}
+                  </span>
+                </li>
+              )
+            })}
+          </ul>
         )}
       </div>
 
-      {verifyingVersion !== null && (
+      <div className="card-actions">
+        <button
+          type="button"
+          className="secondary"
+          onClick={() => setPayloadOpen(true)}
+        >
+          View Payload
+        </button>
+        {confirmedParticipants.length > 0 && (
+          <button
+            type="button"
+            className="secondary verify-btn"
+            onClick={() => setVerifyOpen(true)}
+          >
+            Verify Shares
+          </button>
+        )}
+      </div>
+
+      {verifyOpen && (
         <VerifySharesModal
-          secretId={secret.secretId}
-          version={verifyingVersion}
-          verifiedHelperIds={activeVerifiedHelperIds}
-          confirmedHelpers={confirmedHelpers}
-          onClose={() => setVerifyingVersion(null)}
+          version={version.version}
+          verifiedParticipantIds={version.verifiedParticipantIds}
+          confirmedParticipants={confirmedParticipants}
+          onClose={() => { setVerifyOpen(false); onVerifyClose?.() }}
           onVerify={onVerify}
         />
       )}
 
-      {renewOpen && (
-        <RenewSecretModal
-          secret={secret}
-          pairedHelpers={pairedHelpers}
-          onClose={() => setRenewOpen(false)}
-          onRenew={onRenew}
+      {payloadOpen && (
+        <BagPayloadModal
+          version={version}
+          onClose={() => setPayloadOpen(false)}
         />
       )}
-    </>
+    </div>
+  )
+}
+
+function SecretBagPanel({
+  bag,
+  participants,
+  onVerify,
+  onVerifyClose,
+  onAddSecret,
+}: {
+  bag: SecretBag | null
+  participants: PairedParticipant[]
+  onVerify: (version: number) => Promise<void>
+  onVerifyClose?: () => void
+  onAddSecret: () => void
+}) {
+  const [showPreviousVersions, setShowPreviousVersions] = useState(false)
+
+  if (!bag) {
+    return (
+      <div className="tab-empty-state">
+        <p>No secrets protected yet. Add a secret to create the bag and distribute it to all paired participants.</p>
+        <button type="button" className="primary" onClick={onAddSecret} style={{ marginTop: '1rem' }}>
+          Protect Secret
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="card-list">
+      <div className="detail-card">
+        <div className="card-header">
+          <span className="card-title">Secret Bag</span>
+          <span className="version-tag">v{bag.currentVersion.version}</span>
+        </div>
+
+        <BagVersionDetails
+          version={bag.currentVersion}
+          participants={participants}
+          onVerify={onVerify}
+          onVerifyClose={onVerifyClose}
+        />
+
+        {bag.previousVersions.length > 0 && (
+          <div className="card-body" style={{ borderTop: '1px solid var(--border)' }}>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => setShowPreviousVersions(v => !v)}
+              style={{ width: '100%' }}
+            >
+              {showPreviousVersions ? 'Hide' : 'Show'} Previous Versions ({bag.previousVersions.length})
+            </button>
+            {showPreviousVersions && bag.previousVersions.map(v => (
+              <div key={v.version} style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid var(--border)' }}>
+                <BagVersionDetails
+                  version={v}
+                  participants={participants}
+                  onVerify={onVerify}
+                  onVerifyClose={onVerifyClose}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="card-body" style={{ borderTop: '1px solid var(--border)' }}>
+          <dl className="field-list">
+            <div className="field-row">
+              <dt>Secret ID</dt>
+              <dd><code className="secret-id-value" title={bag.secretId}>{bag.secretId.slice(0, 12)}…</code></dd>
+            </div>
+            <div className="field-row">
+              <dt>Threshold</dt>
+              <dd><span className="threshold-value">{bag.threshold}</span></dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+    </div>
   )
 }
 
 // ── Tab panels ────────────────────────────────────────────────────────────────
 
-function PairedHelpersList({ helpers, onTogglePair }: { helpers: PairedHelper[]; onTogglePair: (id: string) => void }) {
-  const paired = helpers.filter(h => h.connectionStatus === 'paired')
-  if (paired.length === 0) {
-    return (
-      <p className="tab-empty-state">
-        No helpers paired yet. Share your Session ID with helpers so they can join.
-      </p>
-    )
-  }
-  return (
-    <div className="card-list">
-      {paired.map(h => (
-        <PairedHelperCard key={h.id} helper={h} onUnpair={() => onTogglePair(h.id)} />
-      ))}
-    </div>
-  )
-}
-
-function ProtectedSecretsList({
-  secrets,
-  helpers,
-  onVerify,
-  onRenew,
+function PairedParticipantsList({
+  participants,
+  onTogglePair,
 }: {
-  secrets: ProtectedSecret[]
-  helpers: PairedHelper[]
-  onVerify: (secretId: string, version: number, selectedHelperIds: string[]) => Promise<void>
-  onRenew: (secretIdHex: string, newSecretData: Uint8Array, keepList: number[], helperChannelIds: bigint[], threshold: number) => Promise<void>
+  participants: PairedParticipant[]
+  onTogglePair: (id: string) => void
 }) {
-  if (secrets.length === 0) {
-    return (
-      <p className="tab-empty-state">
-        No protected secrets yet. Secrets will appear here once shared with helpers.
-      </p>
-    )
+  const paired = participants.filter(h => h.connectionStatus === 'paired')
+
+  if (paired.length === 0) {
+    return <p className="tab-empty-state">No paired participants yet. Add and pair one from the side panel.</p>
   }
+
   return (
-    <div className="card-list">
-      {secrets.map(s => (
-        <ProtectedSecretCard
-          key={s.secretId}
-          secret={s}
-          helpers={helpers}
-          onVerify={onVerify}
-          onRenew={onRenew}
-        />
+    <div className="channel-table">
+      {paired.map(h => (
+        <div key={h.id} className="channel-row">
+          <div className="channel-row-top">
+            <span className={`participant-dot ${h.offline ? 'offline' : 'paired'}`} aria-hidden="true" />
+            <span className="channel-row-name">{h.name}</span>
+            <span className="channel-id-inline">{h.channelId}</span>
+            {h.offline && (
+              <span className="status-tag offline">Offline</span>
+            )}
+            <button className="channel-unpair-btn" onClick={() => onTogglePair(h.id)}>
+              Unpair
+            </button>
+          </div>
+          <div className="channel-row-bottom">
+            {h.sharedKey && (
+              <div className="channel-prop channel-prop--key">
+                <span className="channel-prop-label">Shared Key</span>
+                <SharedKeyRow value={h.sharedKey} label={false} />
+              </div>
+            )}
+            <div className="channel-prop">
+              <span className="channel-prop-label">Shares</span>
+              <span className="channel-prop-value">{h.secretShares.length}</span>
+            </div>
+          </div>
+        </div>
       ))}
     </div>
   )
@@ -1500,363 +1364,22 @@ function ProtectedSecretsList({
 
 // ── Recovery tab components ──────────────────────────────────────────────────
 
-function RecoveryHelperCard({
-  helper,
-  onRequestDiscovery,
+function RecoveryParticipantCard({
+  participant,
 }: {
-  helper: PairedHelper
-  onRequestDiscovery: (channelId: bigint) => void
+  participant: PairedParticipant
 }) {
   return (
     <div className="detail-card">
       <div className="card-header">
-        <span className={`helper-dot paired`} aria-hidden="true" />
-        <span className="card-title">{helper.name}</span>
-        <ClickToCopyCode label="Channel ID" value={helper.channelId} />
-        <span className={`status-tag ${helper.discoveryComplete ? 'paired' : 'available'}`}>
-          {helper.discoveryComplete ? 'Discovered' : 'Pending'}
+        <span className={`participant-dot paired`} aria-hidden="true" />
+        <span className="card-title">{participant.name}</span>
+        <ClickToCopyCode label="Channel ID" value={participant.channelId} />
+        <span className={`status-tag ${participant.discoveryComplete ? 'paired' : 'available'}`}>
+          {participant.discoveryComplete ? 'Discovered' : 'Pending'}
         </span>
       </div>
-      <div className="card-body">
-        <div className="card-actions">
-          <button
-            className="primary"
-            onClick={() => onRequestDiscovery(BigInt(helper.channelId))}
-          >
-            {helper.discoveryComplete ? 'Re-discover' : 'Discover'}
-          </button>
-        </div>
-      </div>
     </div>
-  )
-}
-
-// ── Recover Secret modal ─────────────────────────────────────────────────────
-
-type RecoverSecretStatus =
-  | { kind: 'selecting' }
-  | { kind: 'recovering'; selectedHelperIds: string[] }
-  | { kind: 'recovered'; secretData: string }
-  | { kind: 'error'; message: string }
-
-function RecoverSecretModal({
-  secret,
-  version,
-  helpers,
-  recoveredSecrets,
-  recoveryProgress,
-  onRecover,
-  onClose,
-}: {
-  secret: DiscoverableSecret
-  version: number
-  helpers: PairedHelper[]
-  recoveredSecrets: RecoveredSecret[]
-  recoveryProgress: RecoveryProgress | null
-  onRecover: (secretId: string, version: number, label: string, helperChannelIds: bigint[]) => Promise<void>
-  onClose: () => void
-}) {
-  const helperIds = secret.helperSharesByVersion[version] ?? []
-  const availableHelpers = helperIds
-    .map(id => helpers.find(h => h.id === id))
-    .filter((h): h is PairedHelper => h !== undefined && h.channelId !== '')
-
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set(availableHelpers.map(h => h.id)))
-  const [status, setStatus] = useState<RecoverSecretStatus>({ kind: 'selecting' })
-
-  // React to recoveredSecrets prop — transition to 'recovered' when our secret appears.
-  const recovering = status.kind === 'recovering' ? status : null
-  useEffect(() => {
-    if (!recovering) return
-    const match = recoveredSecrets.find(
-      r => r.secretId === secret.secretId && r.version === version,
-    )
-    if (match) {
-      setStatus({ kind: 'recovered', secretData: match.secretData })
-    }
-  }, [recovering, recoveredSecrets, secret.secretId, version])
-
-  // React to recoveryProgress — when all responses arrived but reconstruction failed,
-  // show an error with the reason from the library.
-  useEffect(() => {
-    if (!recovering || !recoveryProgress) return
-    if (recoveryProgress.secretId !== secret.secretId || recoveryProgress.version !== version) return
-
-    if (recoveryProgress.error) {
-      setStatus({
-        kind: 'error',
-        message: `Recovery failed: ${recoveryProgress.error}. Try selecting different helpers.`,
-      })
-    } else if (recoveryProgress.sharesReceived >= recoveryProgress.totalRequested) {
-      // All responses arrived but no SecretRecovered event — threshold not met.
-      setStatus({
-        kind: 'error',
-        message: `All ${recoveryProgress.totalRequested} helper(s) responded, but the shares were insufficient to reconstruct the secret. The secret's threshold may require more helpers than were available.`,
-      })
-    }
-  }, [recovering, recoveryProgress, secret.secretId, version])
-
-  function toggleHelper(id: string) {
-    setSelectedIds(prev => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }
-
-  async function handleConfirm() {
-    const selected = availableHelpers.filter(h => selectedIds.has(h.id))
-    if (selected.length === 0) return
-
-    const channelIds = selected.map(h => BigInt(h.channelId))
-    setStatus({ kind: 'recovering', selectedHelperIds: selected.map(h => h.id) })
-    try {
-      await onRecover(secret.secretId, version, secret.label, channelIds)
-    } catch (err) {
-      setStatus({ kind: 'error', message: err instanceof Error ? err.message : String(err) })
-    }
-  }
-
-  const selectedCount = availableHelpers.filter(h => selectedIds.has(h.id)).length
-  const isBlocking = status.kind === 'recovering'
-
-  return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Recover secret">
-      <div className="modal">
-        <div className="modal-header">
-          <h2 className="modal-title">Recover Secret</h2>
-          {!isBlocking && <ModalCloseButton onClose={onClose} />}
-        </div>
-
-        {status.kind === 'recovered' ? (
-          <div className="modal-body">
-            <p className="share-progress-summary">
-              Secret <strong>{secret.label}</strong> v{version} recovered successfully.
-            </p>
-
-            <div className="form-field">
-              <label className="form-label">Recovered Secret Data</label>
-              <pre className="recovered-secret-plaintext">{status.secretData}</pre>
-            </div>
-
-            <div className="modal-actions">
-              <button type="button" className="primary" onClick={onClose}>Done</button>
-            </div>
-          </div>
-        ) : status.kind === 'error' ? (
-          <div className="modal-body">
-            <p className="field-error" style={{ marginBottom: '1rem' }}>{status.message}</p>
-
-            <div className="modal-actions">
-              <button type="button" className="secondary" onClick={onClose}>Close</button>
-              <button
-                type="button"
-                className="primary"
-                onClick={() => setStatus({ kind: 'selecting' })}
-              >
-                Try Again
-              </button>
-            </div>
-          </div>
-        ) : status.kind === 'recovering' ? (
-          <div className="modal-body">
-            <p className="share-progress-summary" style={{ marginBottom: '0.75rem' }}>
-              Recovering <strong>{secret.label}</strong> v{version} &mdash;
-              {recoveryProgress
-                ? ` ${recoveryProgress.sharesReceived} of ${recoveryProgress.totalRequested} share(s) received`
-                : ' waiting for helper responses'}&hellip;
-            </p>
-
-            <div className="verify-progress-bar-section">
-              <div className="share-progress-bar-track">
-                <div
-                  className="share-progress-bar-fill"
-                  style={{ width: recoveryProgress ? `${Math.round((recoveryProgress.sharesReceived / recoveryProgress.totalRequested) * 100)}%` : '0%' }}
-                  role="progressbar"
-                  aria-valuenow={recoveryProgress?.sharesReceived ?? 0}
-                  aria-valuemin={0}
-                  aria-valuemax={recoveryProgress?.totalRequested ?? status.selectedHelperIds.length}
-                />
-              </div>
-            </div>
-
-            <ul className="share-progress-list" role="list">
-              {status.selectedHelperIds.map(id => {
-                const helper = helpers.find(h => h.id === id)
-                return (
-                  <li key={id} className="share-progress-item">
-                    <span className="verify-progress-icon">
-                      <span className="verify-spinner" role="status" aria-label="Waiting for response" />
-                    </span>
-                    <span className="share-progress-item-name">{helper?.name ?? id}</span>
-                    <span className="share-progress-item-status">Waiting&hellip;</span>
-                  </li>
-                )
-              })}
-            </ul>
-          </div>
-        ) : (
-          <div className="modal-body">
-            <dl className="field-list" style={{ marginBottom: '1rem' }}>
-              <div className="field-row">
-                <dt>Secret</dt>
-                <dd><strong>{secret.label}</strong></dd>
-              </div>
-              <div className="field-row">
-                <dt>Version</dt>
-                <dd><span className="version-tag">v{version}</span></dd>
-              </div>
-              <div className="field-row">
-                <dt>Secret ID</dt>
-                <dd>
-                  <code className="secret-id-value" title={secret.secretId}>
-                    {secret.secretId.slice(0, 16)}…
-                  </code>
-                </dd>
-              </div>
-            </dl>
-
-            <div className="form-field">
-              <span className="form-label">Select helpers to recover from ({selectedCount} selected)</span>
-              {availableHelpers.length === 0 ? (
-                <p className="empty-hint">No helpers with shares available for this version.</p>
-              ) : (
-                <ul className="helper-check-list" role="list">
-                  {availableHelpers.map(h => (
-                    <li key={h.id} className="helper-check-item">
-                      <label className="helper-check-label">
-                        <input
-                          type="checkbox"
-                          className="helper-checkbox"
-                          checked={selectedIds.has(h.id)}
-                          onChange={() => toggleHelper(h.id)}
-                        />
-                        <span className={`helper-dot ${h.connectionStatus}`} aria-hidden="true" />
-                        <span>{h.name}</span>
-                      </label>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-
-            <div className="modal-actions">
-              <button type="button" className="secondary" onClick={onClose}>Cancel</button>
-              <button
-                type="button"
-                className="primary"
-                onClick={handleConfirm}
-                disabled={selectedCount === 0}
-              >
-                Recover
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function DiscoverableSecretCard({
-  secret,
-  helpers,
-  recoveredSecrets,
-  recoveryProgress,
-  onRecover,
-}: {
-  secret: DiscoverableSecret
-  helpers: PairedHelper[]
-  recoveredSecrets: RecoveredSecret[]
-  recoveryProgress: RecoveryProgress | null
-  onRecover: (secretId: string, version: number, label: string, helperChannelIds: bigint[]) => Promise<void>
-}) {
-  const [expanded, setExpanded] = useState(true)
-  const [recoverModalVersion, setRecoverModalVersion] = useState<number | null>(null)
-
-  return (
-    <>
-      <div className={`detail-card collapsible ${expanded ? 'expanded' : ''}`}>
-        <button
-          className="card-header card-toggle"
-          onClick={() => setExpanded(v => !v)}
-          aria-expanded={expanded}
-        >
-          <span className="card-title">{secret.label}</span>
-          <code className="secret-id-value" title={secret.secretId}>
-            {secret.secretId.slice(0, 12)}…
-          </code>
-          <ChevronIcon expanded={expanded} />
-        </button>
-
-        {expanded && (
-          <div className="card-body">
-            <div className="card-sub-section">
-              <h4 className="sub-heading">Versions available for recovery</h4>
-              <ul className="version-history-list" role="list">
-                {secret.versions.map(v => {
-                  const helperIds = secret.helperSharesByVersion[v.version] ?? []
-                  const alreadyRecovered = recoveredSecrets.some(
-                    r => r.secretId === secret.secretId && r.version === v.version,
-                  )
-                  return (
-                    <li key={v.version} className="version-history-item">
-                      <span className="version-tag">v{v.version}</span>
-                      <span className="version-history-label">{v.description}</span>
-                      <span className="version-history-verified" title={`${helperIds.length} helper(s) have shares`}>
-                        {helperIds.length} helper{helperIds.length !== 1 ? 's' : ''}
-                      </span>
-                      {alreadyRecovered ? (
-                        <span className="status-tag paired">Recovered</span>
-                      ) : (
-                        <button
-                          type="button"
-                          className="primary version-verify-btn"
-                          onClick={() => setRecoverModalVersion(v.version)}
-                          disabled={helperIds.length === 0}
-                        >
-                          Recover
-                        </button>
-                      )}
-                    </li>
-                  )
-                })}
-              </ul>
-            </div>
-
-            <div className="card-sub-section">
-              <h4 className="sub-heading">Helper availability</h4>
-              <ul className="helper-tag-list" role="list">
-                {Object.entries(secret.helperSharesByVersion).map(([ver, ids]) =>
-                  ids.map(id => {
-                    const h = helpers.find(h => h.id === id)
-                    return (
-                      <li key={`${ver}-${id}`} className="helper-tag">
-                        <span>{h?.name ?? id}</span>
-                        <span className="version-tag">v{ver}</span>
-                      </li>
-                    )
-                  }),
-                )}
-              </ul>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {recoverModalVersion !== null && (
-        <RecoverSecretModal
-          secret={secret}
-          version={recoverModalVersion}
-          helpers={helpers}
-          recoveredSecrets={recoveredSecrets}
-          recoveryProgress={recoveryProgress}
-          onRecover={onRecover}
-          onClose={() => setRecoverModalVersion(null)}
-        />
-      )}
-    </>
   )
 }
 
@@ -1904,56 +1427,228 @@ function RecoveredSecretCard({ secret }: { secret: RecoveredSecret }) {
   )
 }
 
+// ── Replica components ───────────────────────────────────────────────────────
+
+function replicaStatusLabel(status: ReplicaStatus): string {
+  switch (status) {
+    case 'available':  return 'Available'
+    case 'paired':     return 'Paired'
+    case 'confirmed':  return 'Confirmed'
+  }
+}
+
+function ReplicaCard({
+  replica,
+  onConfirm,
+}: {
+  replica: PairedReplica
+  onConfirm?: (replicaId: string) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+
+  const isPaired = replica.status === 'paired'
+  const isConfirmed = replica.status === 'confirmed'
+  const awaitingConfirmation = isPaired && !isConfirmed && !!replica.replicaFingerprint
+
+  // 5-minute countdown
+  const [remainingMs, setRemainingMs] = useState<number | null>(null)
+  useEffect(() => {
+    if (!replica.confirmationStartedAt || isConfirmed) {
+      setRemainingMs(null)
+      return
+    }
+    function tick() {
+      const elapsed = Date.now() - replica.confirmationStartedAt!
+      const remaining = Math.max(0, 5 * 60 * 1000 - elapsed)
+      setRemainingMs(remaining)
+    }
+    tick()
+    const id = setInterval(tick, 1000)
+    return () => clearInterval(id)
+  }, [replica.confirmationStartedAt, isConfirmed])
+
+  const timedOut = remainingMs !== null && remainingMs <= 0
+
+  return (
+    <div className={`detail-card collapsible ${expanded ? 'expanded' : ''}`}>
+      <button
+        type="button"
+        className="card-header card-toggle"
+        onClick={() => setExpanded(v => !v)}
+        aria-expanded={expanded}
+      >
+        <span className="card-title">
+          <span
+            className="participant-dot"
+            style={{
+              background:
+                isConfirmed ? 'var(--clr-success, #22c55e)'
+                : isPaired ? 'var(--clr-accent)'
+                : 'var(--clr-muted)',
+            }}
+          />
+          {replica.name}
+        </span>
+        <span className={`status-tag ${replica.status}`}>
+          {replicaStatusLabel(replica.status)}
+        </span>
+        <span className="chevron" aria-hidden="true">{expanded ? '▾' : '▸'}</span>
+      </button>
+
+      {expanded && (
+        <div className="card-body">
+          <dl className="field-list">
+            <div className="field-row">
+              <dt>Protocol</dt>
+              <dd><span className="protocol-badge">{replica.transport.protocol.toUpperCase()}</span></dd>
+            </div>
+            <div className="field-row">
+              <dt>URI</dt>
+              <dd><code className="uri-value">{replica.transport.uri}</code></dd>
+            </div>
+            {replica.channelId && (
+              <div className="field-row">
+                <dt>Channel ID</dt>
+                <dd><code className="mono-value">{replica.channelId}</code></dd>
+              </div>
+            )}
+            {replica.replicaFingerprint && (
+              <div className="field-row">
+                <dt>Fingerprint</dt>
+                <dd><code className="mono-value">{replica.replicaFingerprint}</code></dd>
+              </div>
+            )}
+          </dl>
+
+          {awaitingConfirmation && !timedOut && onConfirm && (
+            <div className="replica-confirm-section">
+              <p className="replica-confirm-hint">
+                Verify the fingerprint matches on both devices, then confirm.
+              </p>
+              {remainingMs !== null && (
+                <p className="replica-confirm-timer">
+                  Time remaining: {Math.floor(remainingMs / 60000)}:{String(Math.floor((remainingMs % 60000) / 1000)).padStart(2, '0')}
+                </p>
+              )}
+              <button className="primary" onClick={() => onConfirm(replica.id)}>
+                Confirm Fingerprint
+              </button>
+            </div>
+          )}
+
+          {timedOut && !isConfirmed && (
+            <p className="replica-confirm-expired">
+              Confirmation window expired. Remove and re-pair this replica.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function HeldSharesList({
+  shares,
+  participants,
+}: {
+  shares: HeldShare[]
+  participants: PairedParticipant[]
+}) {
+  if (shares.length === 0) {
+    return (
+      <p className="tab-empty-state">
+        No shares held yet. Shares appear here when another owner sends you a secret share to store.
+      </p>
+    )
+  }
+
+  const peerName = (channelId: string) =>
+    participants.find(p => p.channelId === channelId)?.name ?? 'Unknown peer'
+
+  return (
+    <div className="card-list">
+      {shares.map((share, i) => (
+        <div key={`${share.channelId}-${share.version}-${i}`} className="detail-card">
+          <div className="detail-card-header">
+            <strong>{peerName(share.channelId)}</strong>
+            <span className="detail-card-badge">v{share.version}</span>
+          </div>
+          <div className="detail-card-meta">
+            {share.description && <span>{share.description}</span>}
+            {share.secretId && <span className="channel-id">Secret {share.secretId}</span>}
+            <span className="channel-id">Channel {share.channelId}</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function ReplicasList({
+  replicas,
+  onConfirm,
+}: {
+  replicas: PairedReplica[]
+  onConfirm: (replicaId: string) => void
+}) {
+  const paired = replicas.filter(r => r.status !== 'available')
+  if (paired.length === 0) {
+    return (
+      <p className="tab-empty-state">
+        No replicas paired yet. Add and pair a replica from the side panel.
+      </p>
+    )
+  }
+  return (
+    <div className="card-list">
+      {paired.map(r => (
+        <ReplicaCard
+          key={r.id}
+          replica={r}
+          onConfirm={onConfirm}
+        />
+      ))}
+    </div>
+  )
+}
+
 function RecoveryPanel({
   session,
   onRequestDiscovery,
   onRecover,
 }: {
   session: OwnerSession
-  onRequestDiscovery: (channelId: bigint) => void
-  onRecover: (secretId: string, version: number, label: string, helperChannelIds: bigint[]) => Promise<void>
+  onRequestDiscovery: () => Promise<void>
+  onRecover: (secretId: string, version: number, label: string, participantChannelIds: bigint[]) => Promise<void>
 }) {
-  const recoveryHelpers = session.helpers.filter(h => h.recoveryPaired && h.connectionStatus === 'paired')
-  const discoverableSecrets = session.discoverableSecrets ?? []
+  const recoveryParticipants = session.participants.filter(h => h.recoveryPaired && (h.connectionStatus === 'paired'))
   const recoveredSecrets = session.recoveredSecrets ?? []
+  const allDiscovered = recoveryParticipants.length > 0 && recoveryParticipants.every(h => h.discoveryComplete)
 
   return (
     <div className="recovery-panel">
       <div className="recovery-section">
-        <h3 className="sub-heading">Recovery-Paired Helpers</h3>
-        {recoveryHelpers.length === 0 ? (
+        <div className="section-header-row">
+          <h3 className="sub-heading">Recovery-Paired Participants</h3>
+          {recoveryParticipants.length > 0 && (
+            <button
+              className="primary"
+              onClick={() => { onRequestDiscovery() }}
+            >
+              {allDiscovered ? 'Re-discover All' : 'Discover All'}
+            </button>
+          )}
+        </div>
+        {recoveryParticipants.length === 0 ? (
           <p className="tab-empty-state">
-            No helpers paired in recovery mode yet. Use the "Pair" button while Recovery Mode is active.
+            No participants paired in recovery mode yet. Use the "Pair" button while Recovery Mode is active.
           </p>
         ) : (
           <div className="card-list">
-            {recoveryHelpers.map(h => (
-              <RecoveryHelperCard
+            {recoveryParticipants.map(h => (
+              <RecoveryParticipantCard
                 key={h.id}
-                helper={h}
-                onRequestDiscovery={onRequestDiscovery}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-
-      <div className="recovery-section">
-        <h3 className="sub-heading">Discoverable Secrets</h3>
-        {discoverableSecrets.length === 0 ? (
-          <p className="tab-empty-state">
-            No secrets discovered yet. Pair with helpers in recovery mode and associate their channels to discover available secrets.
-          </p>
-        ) : (
-          <div className="card-list">
-            {discoverableSecrets.map(s => (
-              <DiscoverableSecretCard
-                key={s.secretId}
-                secret={s}
-                helpers={session.helpers}
-                recoveredSecrets={recoveredSecrets}
-                recoveryProgress={session.recoveryProgress}
-                onRecover={onRecover}
+                participant={h}
               />
             ))}
           </div>
@@ -1976,53 +1671,60 @@ function RecoveryPanel({
 
 // ── Side panel ────────────────────────────────────────────────────────────────
 
-function connectionStatusLabel(status: HelperConnectionStatus): string {
+function connectionStatusLabel(status: ParticipantConnectionStatus): string {
   switch (status) {
     case 'paired':    return 'Paired'
     case 'available': return 'Available'
-    case 'offline':   return 'Offline'
   }
 }
 
-function SidePanelHelperItem({
-  helper,
+function SidePanelParticipantItem({
+  participant,
   sessionId,
   ownerName,
+  pairedChannelIds,
+  pairingRejectionCount,
   onTogglePair,
+  onToggleStatus,
   onPairingCreated,
   onPairingRequestSent,
   onSuccess,
-  createHelperContact,
-  startHelperPairing,
+  createParticipantContact,
+  startParticipantPairing,
 }: {
-  helper: PairedHelper
+  participant: PairedParticipant
   sessionId: string
   ownerName: string
+  pairedChannelIds: Set<string>
+  pairingRejectionCount: number
   onTogglePair: (id: string) => void
-  onPairingCreated: (channelId: bigint, helperId: string) => void
-  onPairingRequestSent: (channelId: bigint, helperId: string) => void
+  onToggleStatus: (participantId: string) => Promise<void>
+  onPairingCreated: (channelId: bigint, participantId: string) => void
+  onPairingRequestSent: (channelId: bigint, participantId: string) => void
   onSuccess: () => void
-  createHelperContact: () => Promise<ContactMessage>
-  startHelperPairing: (contact: ContactMessage) => Promise<bigint>
+  createParticipantContact: () => Promise<ContactMessage>
+  startParticipantPairing: (contact: ContactMessage) => Promise<bigint>
 }) {
   const [expanded, setExpanded] = useState(false)
   const [shareContactOpen, setShareContactOpen] = useState(false)
   const [pairWithOwnerOpen, setPairWithOwnerOpen] = useState(false)
   const [associating, setAssociating] = useState(false)
   const [assocError, setAssocError] = useState<string | null>(null)
-  const isPaired = helper.connectionStatus === 'paired'
-  const hasPendingRecovery = !!helper.pendingRecoveryChannelId
+  const [togglingStatus, setTogglingStatus] = useState(false)
+  const isPaired = participant.connectionStatus === 'paired'
+  const isOffline = !!participant.offline
+  const hasPendingRecovery = !!participant.pendingRecoveryChannelId
 
   async function handleAssociate() {
-    if (!helper.pendingRecoveryChannelId || !helper.channelId) return
+    if (!participant.pendingRecoveryChannelId || !participant.channelId) return
     setAssociating(true)
     setAssocError(null)
     try {
       await apiAssociateChannel(
         sessionId,
-        helper.id,
-        helper.channelId, // old channel
-        helper.pendingRecoveryChannelId, // new recovery channel
+        participant.id,
+        participant.channelId, // old channel
+        participant.pendingRecoveryChannelId, // new recovery channel
       )
     } catch (err) {
       setAssocError(err instanceof Error ? err.message : String(err))
@@ -2032,35 +1734,37 @@ function SidePanelHelperItem({
   }
 
   return (
-    <li className="side-helper-item">
+    <li className="side-participant-item">
       <button
-        className="side-helper-header"
+        className="side-participant-header"
         onClick={() => setExpanded(v => !v)}
         aria-expanded={expanded}
       >
-        <span className={`helper-dot ${hasPendingRecovery ? 'recovery-pending' : helper.connectionStatus}`} aria-hidden="true" />
-        <span className="side-helper-name">{helper.name}</span>
+        <span className={`participant-dot ${hasPendingRecovery ? 'recovery-pending' : isOffline ? 'offline' : participant.connectionStatus}`} aria-hidden="true" />
+        <span className="side-participant-name">{participant.name}</span>
         {hasPendingRecovery ? (
           <span className="status-tag recovery-pending">Recovery Pending</span>
+        ) : isOffline ? (
+          <span className="status-tag offline">Offline</span>
         ) : (
-          <span className={`status-tag ${helper.connectionStatus}`}>
-            {connectionStatusLabel(helper.connectionStatus)}
+          <span className={`status-tag ${participant.connectionStatus}`}>
+            {connectionStatusLabel(participant.connectionStatus)}
           </span>
         )}
         <ChevronIcon expanded={expanded} />
       </button>
 
       {expanded && (
-        <div className="side-helper-details">
+        <div className="side-participant-details">
           {hasPendingRecovery ? (
             <div className="recovery-association-prompt">
               <p className="recovery-assoc-description">
-                A recovery pairing request was received. Associate the new channel with this helper's existing contact.
+                A recovery pairing request was received. Associate the new channel with this participant's existing contact.
               </p>
               <div className="recovery-assoc-contact">
                 <span className="recovery-assoc-name">{ownerName}</span>
-                <ClickToCopyCode label="Old Channel" value={helper.channelId} />
-                <ClickToCopyCode label="New Channel" value={helper.pendingRecoveryChannelId!} />
+                <ClickToCopyCode label="Old Channel" value={participant.channelId} />
+                <ClickToCopyCode label="New Channel" value={participant.pendingRecoveryChannelId!} />
               </div>
               {assocError && <p className="field-error">{assocError}</p>}
               <button
@@ -2075,39 +1779,41 @@ function SidePanelHelperItem({
             <>
               <div className="side-detail-row">
                 <span className="side-detail-label">Channel ID</span>
-                <ClickToCopyCode value={helper.channelId} />
+                <span className="side-detail-value" title={participant.channelId}>{participant.channelId}</span>
               </div>
-              <div className="side-detail-row side-detail-shares">
+              {participant.sharedKey && (
+                <SharedKeyRow value={participant.sharedKey} />
+              )}
+              <div className="side-detail-row">
                 <span className="side-detail-label">Shares</span>
-                {helper.secretShares.length === 0 ? (
-                  <span className="empty-hint">None</span>
-                ) : (
-                  <ul className="side-share-list" role="list">
-                    {helper.secretShares.map(s => (
-                      <li key={`${s.secretId}-${s.version}`} className="side-share-item">
-                        <span>{s.label}</span>
-                        <span className="version-tag">v{s.version}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                <span className="side-detail-value">{participant.secretShares.length}</span>
               </div>
-              <div className="side-helper-actions">
+              <div className="side-participant-actions">
                 <button
                   className="secondary side-action-btn"
                   onClick={() => setShareContactOpen(true)}
                 >
                   Share Contact
                 </button>
+                <button
+                  className={`pair-action-btn ${isOffline ? 'pair' : 'unpair'}`}
+                  disabled={togglingStatus}
+                  onClick={async () => {
+                    setTogglingStatus(true)
+                    try { await onToggleStatus(participant.id) } finally { setTogglingStatus(false) }
+                  }}
+                >
+                  {togglingStatus ? '…' : isOffline ? 'Go Online' : 'Go Offline'}
+                </button>
                 {isPaired ? (
-                  <button className="pair-action-btn unpair" onClick={() => onTogglePair(helper.id)}>
+                  <button className="pair-action-btn unpair" onClick={() => onTogglePair(participant.id)}>
                     Unpair
                   </button>
-                ) : (
+                ) : !isOffline ? (
                   <button className="pair-action-btn pair" onClick={() => setPairWithOwnerOpen(true)}>
                     Pair
                   </button>
-                )}
+                ) : null}
               </div>
             </>
           )}
@@ -2116,12 +1822,12 @@ function SidePanelHelperItem({
 
       {shareContactOpen && (
         <ShareContactModal
-          title={`Share ${helper.name} Contact`}
-          transport={helper.transport}
-          createContact={createHelperContact}
+          title={`Share ${participant.name} Contact`}
+          transport={participant.transport}
+          createContact={createParticipantContact}
           onClose={() => setShareContactOpen(false)}
           onPairingCreated={channelId => {
-            onPairingCreated(channelId, helper.id)
+            onPairingCreated(channelId, participant.id)
           }}
         />
       )}
@@ -2130,113 +1836,517 @@ function SidePanelHelperItem({
         <PairInitiatorModal
           label="Owner Contact QR Payload"
           placeholder="Paste the JSON payload from the owner's Share Contact QR code"
+          pairedChannelIds={pairedChannelIds}
+          pairingRejectionCount={pairingRejectionCount}
           onClose={() => setPairWithOwnerOpen(false)}
           onSuccess={onSuccess}
-          onPairingRequestSent={(channelId) => onPairingRequestSent(channelId, helper.id)}
-          startPairing={startHelperPairing}
+          onPairingRequestSent={(channelId) => onPairingRequestSent(channelId, participant.id)}
+          startPairing={startParticipantPairing}
         />
       )}
     </li>
   )
 }
 
-function SessionHelperPanel({
-  helpers,
+// ── Join QR modal ─────────────────────────────────────────────────────────────
+
+export function JoinQrModal({ sessionId, onClose }: { sessionId: string; onClose: () => void }) {
+  const basePath = import.meta.env.BASE_URL.replace(/\/$/, '')
+  const joinUrl = `${window.location.origin}${basePath}/session/${sessionId}/join`
+
+  return (
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Invite participant">
+      <div className="modal" style={{ maxWidth: 400, textAlign: 'center' }}>
+        <div className="modal-header">
+          <h2 className="modal-title">Invite to Session</h2>
+          <ModalCloseButton onClose={onClose} />
+        </div>
+        <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem' }}>
+          <p className="modal-description">
+            Scan this QR code or share the link to join as a participant from another device.
+          </p>
+          <QRCodeSVG
+            value={joinUrl}
+            size={200}
+            bgColor="transparent"
+            fgColor="currentColor"
+          />
+          <code style={{ fontSize: '0.85rem', wordBreak: 'break-all', userSelect: 'all' }}>{joinUrl}</code>
+          <div className="modal-actions">
+            <button className="primary" onClick={onClose}>Done</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Add Participant modal ────────────────────────────────────────────────────────
+
+function AddParticipantModal({
+  existingCount,
+  onAdd,
+  onClose,
+}: {
+  existingCount: number
+  onAdd: (name: string, autoPair: boolean) => Promise<void>
+  onClose: () => void
+}) {
+  const [name, setName] = useState(() => `${faker.person.firstName()} ${faker.person.lastName()}`)
+  const [autoPair, setAutoPair] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!name.trim()) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      await onAdd(name.trim(), autoPair)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Add participant">
+      <div className="modal" style={{ maxWidth: 400 }}>
+        <div className="modal-header">
+          <h2 className="modal-title">Add Participant</h2>
+          <ModalCloseButton onClose={onClose} />
+        </div>
+        <form onSubmit={handleSubmit}>
+          <div className="modal-body">
+            <div className="form-field">
+              <label className="form-label" htmlFor="add-participant-name">Name</label>
+              <input
+                id="add-participant-name"
+                className="form-input"
+                type="text"
+                value={name}
+                onChange={e => setName(e.target.value)}
+                autoFocus
+                disabled={submitting}
+              />
+            </div>
+            <div className="form-field">
+              <label className="participant-check-label">
+                <input
+                  type="checkbox"
+                  className="participant-checkbox"
+                  checked={autoPair}
+                  onChange={e => setAutoPair(e.target.checked)}
+                  disabled={submitting}
+                />
+                <span>Auto-pair after adding</span>
+              </label>
+            </div>
+            {error && <p className="field-error">{error}</p>}
+          </div>
+          <div className="modal-actions">
+            <button type="button" className="secondary" onClick={onClose} disabled={submitting}>Cancel</button>
+            <button type="submit" className="primary" disabled={!name.trim() || submitting}>
+              {submitting ? 'Adding…' : 'Add Participant'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+function SidePanelReplicaItem({
+  replica,
+  onToggleStatus,
+  onPairingCreated,
+  onPairStarted,
+  createReplicaContact,
+}: {
+  replica: PairedReplica
+  onToggleStatus: (replicaId: string) => Promise<void>
+  onPairingCreated: (channelId: bigint, replicaId: string) => void
+  onPairStarted: (replicaId: string) => void
+  createReplicaContact: () => Promise<ContactMessage>
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const [shareContactOpen, setShareContactOpen] = useState(false)
+  const [togglingStatus, setTogglingStatus] = useState(false)
+  const [pairingInProgress, setPairingInProgress] = useState(false)
+  const isPaired = replica.status !== 'available'
+  const isOffline = !!replica.offline
+
+  // Clear pairingInProgress when the replica actually becomes paired.
+  useEffect(() => {
+    if (isPaired && pairingInProgress) setPairingInProgress(false)
+  }, [isPaired, pairingInProgress])
+
+  return (
+    <li className="side-participant-item">
+      <button
+        type="button"
+        className="side-participant-header"
+        onClick={() => setExpanded(v => !v)}
+        aria-expanded={expanded}
+      >
+        <span
+          className="participant-dot"
+          style={{
+            background:
+              isOffline ? 'var(--clr-muted)'
+              : pairingInProgress ? 'var(--clr-warning, #f59e0b)'
+              : replica.status === 'confirmed' ? 'var(--clr-success, #22c55e)'
+              : replica.status === 'paired' ? 'var(--clr-accent)'
+              : 'var(--clr-muted)',
+          }}
+        />
+        <span className="side-participant-name">{replica.name}</span>
+        {isOffline ? (
+          <span className="status-tag offline">Offline</span>
+        ) : pairingInProgress ? (
+          <span className="status-tag confirming">Pairing…</span>
+        ) : (
+          <span className={`status-tag ${replica.status}`}>
+            {replicaStatusLabel(replica.status)}
+          </span>
+        )}
+        <ChevronIcon expanded={expanded} />
+      </button>
+
+      {expanded && (
+        <div className="side-participant-details">
+          {pairingInProgress && (
+            <p className="side-detail-progress">
+              Pairing in progress — waiting for protocol messages to be exchanged…
+            </p>
+          )}
+          {replica.channelId && (
+            <div className="side-detail-row">
+              <span className="side-detail-label">Channel ID</span>
+              <ClickToCopyCode value={replica.channelId} />
+            </div>
+          )}
+          {!pairingInProgress && (
+            <div className="side-detail-row">
+              <span className="side-detail-label">Status</span>
+              <span>{replicaStatusLabel(replica.status)}</span>
+            </div>
+          )}
+          <div className="side-participant-actions">
+            <button
+              className="secondary side-action-btn"
+              onClick={() => setShareContactOpen(true)}
+            >
+              Share Contact
+            </button>
+            <button
+              className={`pair-action-btn ${isOffline ? 'pair' : 'unpair'}`}
+              disabled={togglingStatus}
+              onClick={async () => {
+                setTogglingStatus(true)
+                try { await onToggleStatus(replica.id) } finally { setTogglingStatus(false) }
+              }}
+            >
+              {togglingStatus ? '…' : isOffline ? 'Go Online' : 'Go Offline'}
+            </button>
+            {!isPaired && !isOffline && !pairingInProgress && (
+              <button className="pair-action-btn pair" onClick={() => onPairStarted(replica.id)}>
+                Pair
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {shareContactOpen && (
+        <ShareContactModal
+          title={`Share ${replica.name} Contact`}
+          transport={replica.transport}
+          createContact={createReplicaContact}
+          onClose={() => setShareContactOpen(false)}
+          onPairingCreated={channelId => {
+            onPairingCreated(channelId, replica.id)
+          }}
+        />
+      )}
+    </li>
+  )
+}
+
+function SessionParticipantPanel({
+  participants,
+  replicas,
   sessionId,
   ownerName,
+  pairedChannelIds,
+  pairingRejectionCount,
   onTogglePair,
+  onToggleParticipantStatus,
+  onToggleReplicaStatus,
   onPairingCreated,
   onPairingRequestSent,
   onSuccess,
-  getHelperFunctions,
+  onAddParticipant,
+  onAddReplica,
+  onReplicaPairStarted,
+  getParticipantFunctions,
+  getReplicaFunctions,
 }: {
-  helpers: PairedHelper[]
+  participants: PairedParticipant[]
+  replicas: PairedReplica[]
   sessionId: string
   ownerName: string
+  pairedChannelIds: Set<string>
+  pairingRejectionCount: number
   onTogglePair: (id: string) => void
-  onPairingCreated: (channelId: bigint, helperId: string) => void
-  onPairingRequestSent: (channelId: bigint, helperId: string) => void
+  onToggleParticipantStatus: (participantId: string) => Promise<void>
+  onToggleReplicaStatus: (replicaId: string) => Promise<void>
+  onPairingCreated: (channelId: bigint, actorId: string) => void
+  onPairingRequestSent: (channelId: bigint, actorId: string) => void
   onSuccess: () => void
-  getHelperFunctions: (helperId: string) => {
+  onAddParticipant: (name: string, autoPair: boolean) => Promise<void>
+  onAddReplica: (name: string) => Promise<void>
+  onReplicaPairStarted: (replicaId: string) => void
+  getParticipantFunctions: (participantId: string) => {
+    createContact: () => Promise<ContactMessage>
+    startPairing: (contact: ContactMessage) => Promise<bigint>
+  }
+  getReplicaFunctions: (replicaId: string) => {
     createContact: () => Promise<ContactMessage>
     startPairing: (contact: ContactMessage) => Promise<bigint>
   }
 }) {
+  const [addParticipantOpen, setAddParticipantOpen] = useState(false)
+  const [addingReplica, setAddingReplica] = useState(false)
+
   return (
-    <aside className="side-panel" aria-label="Session helpers">
-      <h3 className="panel-heading">Helpers</h3>
-      <p className="panel-subtitle">{helpers.length} provisioned</p>
-      <ul className="side-helper-list" role="list">
-        {helpers.map(h => {
-          const { createContact, startPairing } = getHelperFunctions(h.id)
-          return (
-            <SidePanelHelperItem
-              key={h.id}
-              helper={h}
-              sessionId={sessionId}
-              ownerName={ownerName}
-              onTogglePair={onTogglePair}
-              onPairingCreated={onPairingCreated}
-              onPairingRequestSent={onPairingRequestSent}
-              onSuccess={onSuccess}
-              createHelperContact={createContact}
-              startHelperPairing={startPairing}
-            />
-          )
-        })}
-      </ul>
+    <aside className="side-panel" aria-label="Session actors">
+      {/* ── Participants section ─────────────────────────────────────────── */}
+      <div className="side-panel-section">
+        <div className="panel-header-row">
+          <div>
+            <h3 className="panel-heading">Participants</h3>
+            <p className="panel-subtitle">{participants.length} provisioned</p>
+          </div>
+          <button
+            className="secondary small"
+            onClick={() => setAddParticipantOpen(true)}
+            title="Add a new participant to this session"
+          >
+            + Add
+          </button>
+        </div>
+        <ul className="side-participant-list" role="list">
+          {participants.map(h => {
+            const { createContact, startPairing } = getParticipantFunctions(h.id)
+            return (
+              <SidePanelParticipantItem
+                key={h.id}
+                participant={h}
+                sessionId={sessionId}
+                ownerName={ownerName}
+                pairedChannelIds={pairedChannelIds}
+                pairingRejectionCount={pairingRejectionCount}
+                onTogglePair={onTogglePair}
+                onToggleStatus={onToggleParticipantStatus}
+                onPairingCreated={onPairingCreated}
+                onPairingRequestSent={onPairingRequestSent}
+                onSuccess={onSuccess}
+                createParticipantContact={createContact}
+                startParticipantPairing={startPairing}
+              />
+            )
+          })}
+        </ul>
+      </div>
+
+      {/* ── Replicas section ────────────────────────────────────────── */}
+      <div className="side-panel-section">
+        <div className="panel-header-row">
+          <div>
+            <h3 className="panel-heading">Replicas</h3>
+            <p className="panel-subtitle">{replicas.length} provisioned</p>
+          </div>
+          <button
+            className="secondary small"
+            disabled={addingReplica}
+            onClick={async () => {
+              setAddingReplica(true)
+              try {
+                await onAddReplica(`${faker.person.firstName()} ${faker.person.lastName()}`)
+              } finally {
+                setAddingReplica(false)
+              }
+            }}
+            title="Add a new replica to this session"
+          >
+            {addingReplica ? '…' : '+ Add'}
+          </button>
+        </div>
+        {replicas.length === 0 ? (
+          <p className="panel-empty-hint">No replicas yet</p>
+        ) : (
+          <ul className="side-participant-list" role="list">
+            {replicas.map(r => {
+              const { createContact } = getReplicaFunctions(r.id)
+              return (
+                <SidePanelReplicaItem
+                  key={r.id}
+                  replica={r}
+                  onToggleStatus={onToggleReplicaStatus}
+                  onPairingCreated={onPairingCreated}
+                  onPairStarted={onReplicaPairStarted}
+                  createReplicaContact={createContact}
+                />
+              )
+            })}
+          </ul>
+        )}
+      </div>
+
+      {addParticipantOpen && (
+        <AddParticipantModal
+          existingCount={participants.length}
+          onAdd={async (name, autoPair) => {
+            await onAddParticipant(name, autoPair)
+            setAddParticipantOpen(false)
+          }}
+          onClose={() => setAddParticipantOpen(false)}
+        />
+      )}
     </aside>
+  )
+}
+
+// ── Bag state helpers ────────────────────────────────────────────────────────
+
+function updateBagVersion(bag: SecretBag, version: number, updater: (v: BagVersion) => BagVersion): SecretBag {
+  if (bag.currentVersion.version === version) {
+    return { ...bag, currentVersion: updater(bag.currentVersion) }
+  }
+  return {
+    ...bag,
+    previousVersions: bag.previousVersions.map(v => v.version === version ? updater(v) : v),
+  }
+}
+
+function updateBagParticipant(bag: SecretBag, version: number, participantId: string): SecretBag {
+  return updateBagVersion(bag, version, v =>
+    v.participantIds.includes(participantId) ? v : { ...v, participantIds: [...v.participantIds, participantId] },
+  )
+}
+
+function updateBagVerified(bag: SecretBag, version: number, participantId: string): SecretBag {
+  return updateBagVersion(bag, version, v =>
+    v.verifiedParticipantIds.includes(participantId) ? v : { ...v, verifiedParticipantIds: [...v.verifiedParticipantIds, participantId] },
   )
 }
 
 // ── Pending share tracking ────────────────────────────────────────────────────
 
 interface PendingShare {
-  secretId: string      // hex string for matching against ProtectedSecret
-  secretIdBytes: Uint8Array
-  label: string
   version: number
 }
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-type ActiveTab = 'helpers' | 'secrets' | 'recovery'
+type ActiveTab = 'participants' | 'secrets' | 'shares' | 'recovery' | 'replicas'
 
 interface Props {
   session: OwnerSession
   onUpdate: (updated: OwnerSession) => void
-  onLeave: () => void
 }
 
-export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) {
+export default function OwnerSessionPage({ session, onUpdate }: Props) {
   const { log } = useConsole()
-  const [activeTab, setActiveTab] = useState<ActiveTab>('helpers')
+  const [activeTab, setActiveTab] = useState<ActiveTab>('participants')
   const [shareOpen, setShareOpen] = useState(false)
   const [pairOpen, setPairOpen] = useState(false)
-  const [pairSuccessOpen, setPairSuccessOpen] = useState(false)
+  const [provisioningReplicaId, setProvisioningReplicaId] = useState<string | null>(null)
   const [protectOpen, setProtectOpen] = useState(false)
+  const [protocolBusy, setProtocolBusy] = useState(false)
   const [recoveryMode, setRecoveryMode] = useState(false)
   const recoveryModeRef = useRef(false)
   recoveryModeRef.current = recoveryMode
-  // Snapshot of helper state before entering recovery — restored on exit.
-  const preRecoveryHelpersRef = useRef<PairedHelper[] | null>(null)
+  // Snapshot of participant state before entering recovery — restored on exit.
+  const preRecoveryParticipantsRef = useRef<PairedParticipant[] | null>(null)
 
-  // IDs of helpers being auto-paired. Non-empty → show setup gate instead of full UI.
+  // Derived: set of channel IDs (decimal strings) for all paired participants + replicas.
+  // Used by PairInitiatorModal to detect pairing completion.
+  const pairedChannelIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const p of session.participants) {
+      if (p.connectionStatus === 'paired' && p.channelId) ids.add(p.channelId)
+    }
+    for (const r of session.replicas ?? []) {
+      if (r.status === 'paired' && r.ownerChannelId) ids.add(r.ownerChannelId)
+    }
+    return ids
+  }, [session.participants, session.replicas])
+
+  // Incremented when the polling loop detects a pairing rejection (process() error with
+  // "non-ok status"). PairInitiatorModal watches this to exit the waiting state.
+  const [pairingRejectionCount, setPairingRejectionCount] = useState(0)
+
+  // IDs of participants being auto-paired. Non-empty → show setup gate instead of full UI.
   const [autoPairingIds, setAutoPairingIds] = useState<string[]>([])
+
+  // ── Pending pairing confirmation ────────────────────────────────────────────
+  interface PendingPairingConfirmation {
+    peerName: string
+    channelId: string
+    /** Opaque action token from ActionRequired event — pass to accept() or reject(). */
+    action: Uint8Array
+  }
+
+  const [pendingPairingConfirmation, setPendingPairingConfirmation] = useState<PendingPairingConfirmation | null>(null)
+  const pendingPairingConfirmationRef = useRef<PendingPairingConfirmation | null>(null)
+  useEffect(() => { pendingPairingConfirmationRef.current = pendingPairingConfirmation }, [pendingPairingConfirmation])
+
+  // ── Pending store-share confirmation ───────────────────────────────────────────
+  interface PendingStoreShareConfirmation {
+    peerName: string
+    channelId: string
+    secretId: string
+    version: number
+    description: string
+    /** Opaque action token from ActionRequired event — pass to accept() or reject(). */
+    action: Uint8Array
+  }
+
+  const [pendingStoreShareConfirmation, setPendingStoreShareConfirmation] = useState<PendingStoreShareConfirmation | null>(null)
+  const pendingStoreShareConfirmationRef = useRef<PendingStoreShareConfirmation | null>(null)
+  useEffect(() => { pendingStoreShareConfirmationRef.current = pendingStoreShareConfirmation }, [pendingStoreShareConfirmation])
 
   // ── Protocol instances ────────────────────────────────────────────────────────
 
   const ownerProtocolRef = useRef<DeRecProtocol | null>(null)
+  const ownerShareStoreRef = useRef<ReturnType<typeof makeShareStore> | null>(null)
+
+  // Serialises access to the WASM protocol object.  WASM borrows &mut self for
+  // async calls — concurrent access triggers "recursive use of an object".
+  const protocolLockRef = useRef<Promise<void>>(Promise.resolve())
+  function withProtocolLock<T>(fn: () => Promise<T>): Promise<T> {
+    const prev = protocolLockRef.current
+    let resolve: () => void
+    protocolLockRef.current = new Promise<void>(r => { resolve = r })
+    return prev.then(fn).finally(() => resolve!())
+  }
 
   // Tracks pending shares so ShareConfirmed events can be correlated with secrets.
-  // keyed by helper channelId (bigint as string)
+  // keyed by participant channelId (bigint as string)
   const pendingSharesRef = useRef<Map<string, PendingShare>>(new Map())
 
-  // Tracks in-flight verification challenges keyed by helper channelId.
+  // Tracks in-flight verification challenges keyed by participant channelId.
   const pendingVerificationsRef = useRef<Map<string, { secretIdHex: string; version: number }>>(new Map())
 
   // Tracks in-flight recovery requests so SecretRecovered events can be correlated.
   const pendingRecoveryRef = useRef<{ secretId: string; version: number; label: string } | null>(null)
+
+  // The channel ID from the owner's contact posted for peer discovery.
+  // Tracks which channel is waiting for an incoming pairing request.
+  const ownerContactChannelRef = useRef<string | null>(null)
 
   // Use a stable session ref so polling closures always see the latest value without
   // being listed as a dependency (avoids tearing down intervals on every render).
@@ -2246,26 +2356,73 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
   useEffect(() => { onUpdateRef.current = onUpdate }, [onUpdate])
 
   useEffect(() => {
-    const { sessionId, ownerId, transport, helpers } = session
+    const { sessionId, ownerId, transport, participants } = session
 
-    // Owner protocol (WASM). Helpers run on the backend — no FE protocol needed.
+    // Derive secretId bytes: reuse existing bag's ID, or generate a fresh one.
+    const secretIdHex = session.secretBag?.secretId
+    const secretId = secretIdHex
+      ? Uint8Array.from(secretIdHex.match(/.{2}/g)!.map(b => parseInt(b, 16)))
+      : crypto.getRandomValues(new Uint8Array(16))
+
+    const shareStore = makeShareStore(`owner:${ownerId}`)
     const ownerProtocol = new DeRecProtocol(
-      makeContactStore(`owner:${ownerId}`),
-      makeShareStore(`owner:${ownerId}`),
+      makeChannelStore(`owner:${ownerId}`),
+      shareStore,
       makeSecretStore(`owner:${ownerId}`),
       makeTransport(sendMessage),
       transport.uri,
       'https',
+      session.minParticipants,  // threshold
+      3,                         // keep_versions_count
+      secretId,
+      { name: session.ownerName },  // communication_info
     )
     ownerProtocolRef.current = ownerProtocol
+    ownerShareStoreRef.current = shareStore
+
+    // Seed the owner version counter from the existing secret bag so that
+    // latestVersion() returns the correct value on session reload.
+    if (session.secretBag) {
+      shareStore.setOwnerVersion(session.secretBag.currentVersion.version)
+    }
 
     log({
       role: 'owner',
       flow: 'session',
       step: 'protocol_init',
       description: `Owner protocol initialized for session ${sessionId}`,
-      payload: { sessionId, ownerId, helperCount: helpers.length },
+      payload: { sessionId, ownerId, participantCount: participants.length },
     })
+
+    // Re-sync offline participants to the backend (its disabled_participants set is in-memory
+    // and resets on restart, but the FE persists the offline flag).
+    for (const h of participants) {
+      if (h.offline) {
+        apiToggleParticipantStatus(sessionId, h.id, true).catch(() => {})
+      }
+    }
+
+    // Post this owner's contact to the browser-contact endpoint so other owners
+    // can discover it and initiate pairing.
+    async function postOwnerContact() {
+      try {
+        const contact = await withProtocolLock(() => ownerProtocol.createContact(null))
+        ownerContactChannelRef.current = contact.channel_id
+        console.warn('[owner] contact created for peer discovery, channelId:', contact.channel_id, 'transport:', contact.transport_protocol?.uri)
+        const dto = contactMessageToDto(contact)
+        await apiPostBrowserContact(sessionId, ownerId, JSON.stringify(dto))
+        log({
+          role: 'owner',
+          flow: 'pairing',
+          step: 'owner_contact_posted',
+          description: 'Owner contact posted for peer discovery',
+          payload: { ownerId, contactChannelId: contact.channel_id },
+        })
+      } catch (err) {
+        console.error('[owner] failed to post browser contact:', err)
+      }
+    }
+    postOwnerContact()
 
     return () => {
       ownerProtocolRef.current = null
@@ -2273,7 +2430,7 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.sessionId])
 
-  // ── Auto-pair helpers on first load ───────────────────────────────────────────
+  // ── Auto-pair participants on first load ───────────────────────────────────────────
 
   const didAutoPair = useRef(false)
   useEffect(() => {
@@ -2282,34 +2439,34 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
     if (count === 0) return
     didAutoPair.current = true
 
-    const helpersToAutoPair = session.helpers.filter(h => h.connectionStatus === 'available').slice(0, count)
-    if (helpersToAutoPair.length === 0) return
+    const participantsToAutoPair = session.participants.filter(h => h.connectionStatus === 'available' && !h.browserManaged).slice(0, count)
+    if (participantsToAutoPair.length === 0) return
 
-    setAutoPairingIds(helpersToAutoPair.map(h => h.id))
+    setAutoPairingIds(participantsToAutoPair.map(h => h.id))
 
     async function autoPair() {
       const protocol = ownerProtocolRef.current
       if (!protocol) return
 
-      const newPairings: Array<{ channelId: bigint; helperId: string }> = []
+      const newPairings: Array<{ channelId: bigint; participantId: string }> = []
 
-      for (const helper of helpersToAutoPair) {
+      for (const participant of participantsToAutoPair) {
         try {
-          const dto = await apiCreateHelperContact(session.sessionId, helper.id)
+          const dto = await apiCreateParticipantContact(session.sessionId, participant.id)
           const contact = dtoToContactMessage(dto)
-          const channelId = await protocol.startPairing(SenderKind.OwnerNonRecovery, contact)
+          const channelId = await withProtocolLock(() => protocol.start(FlowKind.Pairing, { kind: SenderKind.OwnerNonRecovery, contact }) as Promise<bigint>)
 
-          newPairings.push({ channelId, helperId: helper.id })
+          newPairings.push({ channelId, participantId: participant.id })
 
           log({
             role: 'owner',
             flow: 'pairing',
             step: 'auto_pair_initiated',
-            description: `Auto-pair initiated for ${helper.name}`,
-            payload: { helperId: helper.id, channelId: channelId.toString() },
+            description: `Auto-pair initiated for ${participant.name}`,
+            payload: { participantId: participant.id, channelId: channelId.toString() },
           })
         } catch (err) {
-          console.error(`[auto-pair] failed for helper ${helper.id}:`, err)
+          console.error(`[auto-pair] failed for participant ${participant.id}:`, err)
         }
       }
 
@@ -2320,7 +2477,7 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
           prePairedCount: 0,
           pendingPairings: [
             ...snapshot.pendingPairings,
-            ...newPairings.map(({ channelId, helperId }) => ({ channelId, helperId })),
+            ...newPairings.map(({ channelId, participantId }) => ({ channelId, participantId })),
           ],
         })
       }
@@ -2330,14 +2487,14 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.sessionId])
 
-  // Clear the auto-pair gate once all targeted helpers have paired.
+  // Clear the auto-pair gate once all targeted participants have paired.
   useEffect(() => {
     if (autoPairingIds.length === 0) return
     const allPaired = autoPairingIds.every(id =>
-      session.helpers.some(h => h.id === id && h.connectionStatus === 'paired'),
+      session.participants.some(h => h.id === id && h.connectionStatus === 'paired'),
     )
     if (allPaired) setAutoPairingIds([])
-  }, [autoPairingIds, session.helpers])
+  }, [autoPairingIds, session.participants])
 
   // ── Event handlers ────────────────────────────────────────────────────────────
 
@@ -2350,37 +2507,148 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
       kind?: number
       secrets?: Array<{ secret_id: Uint8Array; versions: Array<{ version: number; description: string }> }>
       secret?: Uint8Array
+      shares_received?: number
+      error?: string
+      peer_communication_info?: Record<string, string>
     },
   ): OwnerSession {
-    if (event.type === 'PairingComplete' && event.channel_id) {
+    if (event.type === 'PairingCompleted' && event.channel_id) {
       const channelId = event.channel_id
       const isRecovery = event.kind === 1 // SenderKind.OwnerRecovery
-      const pending = current.pendingPairings.find(p => p.channelId.toString() === channelId)
-      const helperId = pending?.helperId
+
+      // Detect whether this pairing is for a replica. The pending pairing stores
+      // the replica-side channel ID (from apiStartReplicaPairing), but PairingCompleted
+      // fires with the owner-side channel ID — they differ. We also need to handle the
+      // case where the backend status poll already moved the replica to 'paired' before
+      // this event arrived (race condition), so check replicas without ownerChannelId too.
+      const replicaIds = new Set(
+        (current.replicas ?? [])
+          .filter(r => r.status === 'available' || (r.status === 'paired' && !r.ownerChannelId))
+          .map(r => r.id),
+      )
+
+      // Try matching by channel ID first (works for participants). For replicas, fall back
+      // to finding a pending pairing whose participantId is a replica.
+      let pending = current.pendingPairings.find(p => p.channelId.toString() === channelId)
+      if (!pending) {
+        pending = current.pendingPairings.find(p => p.participantId != null && replicaIds.has(p.participantId))
+      }
+      const actorId = pending?.participantId
+      const isReplica = actorId != null && replicaIds.has(actorId)
 
       log({
         role: 'owner',
         flow: 'pairing',
-        step: 'PairingComplete',
-        description: `Pairing complete for channel ${channelId}${isRecovery ? ' (recovery)' : ''}`,
-        payload: { channelId, helperId, isRecovery },
+        step: 'PairingCompleted',
+        description: `Pairing complete for channel ${channelId}${isRecovery ? ' (recovery)' : isReplica ? ' (replica)' : ''}`,
+        payload: { channelId, actorId, isRecovery, isReplica },
       })
 
-      const updated: OwnerSession = {
+      let updated: OwnerSession = {
         ...current,
-        pendingPairings: current.pendingPairings.filter(p => p.channelId.toString() !== channelId),
-        helpers: current.helpers.map(h =>
-          h.id === helperId
-            ? { ...h, channelId, connectionStatus: 'paired' as const, recoveryPaired: isRecovery || undefined }
-            : h,
-        ),
+        pendingPairings: pending
+          ? current.pendingPairings.filter(p => p !== pending)
+          : current.pendingPairings.filter(p => p.channelId.toString() !== channelId),
       }
 
-      // Discovery is NOT triggered here — the helper must first associate
+      if (isReplica) {
+        // Store the owner-side channel ID (from this event). The replica-side
+        // channel ID is already in replica.channelId from backend polling.
+        updated = {
+          ...updated,
+          replicas: (updated.replicas ?? []).map(r =>
+            r.id === actorId
+              ? { ...r, ownerChannelId: channelId, status: 'paired' as const }
+              : r,
+          ),
+        }
+      } else if (actorId && updated.participants.some(h => h.id === actorId)) {
+        // Update the existing participant's status and channelId.
+        updated = {
+          ...updated,
+          participants: updated.participants.map(h =>
+            h.id === actorId
+              ? { ...h, channelId, connectionStatus: 'paired' as const, recoveryPaired: isRecovery || undefined }
+              : h,
+          ),
+        }
+      } else {
+        // Unknown peer or pending pairing without a participantId (e.g. owner-to-
+        // owner pairing via the header "Pair" button). Add as a new paired peer.
+        // The session poll will reconcile with actual actor info.
+        const tempId = `peer-${channelId}`
+        updated = {
+          ...updated,
+          participants: [...updated.participants, {
+            id: tempId,
+            name: event.peer_communication_info?.name || 'Peer',
+            channelId,
+            transport: { protocol: 'https' as const, uri: '' },
+            connectionStatus: 'paired' as const,
+            secretShares: [],
+          }],
+        }
+
+        // Try to resolve peer identity from the backend session.
+        const sessionId = current.sessionId
+        const ownerId = current.ownerId
+        apiGetSession(sessionId).then(resp => {
+          const snapshot = sessionRef.current
+          // Find owner actors that aren't us and aren't already in our list.
+          const knownIds = new Set(snapshot.participants.map(h => h.id))
+          const peerActor = resp.actors.find(a =>
+            a.role === 'owner' && a.id !== ownerId && !knownIds.has(a.id)
+          )
+          if (!peerActor) return
+          // Replace the placeholder with real actor info.
+          onUpdateRef.current({
+            ...snapshot,
+            participants: snapshot.participants.map(h =>
+              h.id === tempId
+                ? { ...h, id: peerActor.id, name: peerActor.name, transport: { protocol: peerActor.transport.protocol, uri: peerActor.transport.uri } }
+                : h
+            ),
+          })
+        }).catch(() => {})
+      }
+
+      // Discovery is NOT triggered here — the participant must first associate
       // the new channel with the old one. Session status polling detects when
       // pendingRecoveryChannelId clears and triggers discovery at that point.
 
+      // Read the shared key from the local secret store for browser-managed peers.
+      // Backend-managed participants get their shared key from the backend poll,
+      // but for WASM-to-WASM pairing the key only exists locally.
+      const localSharedKey = localStorage.getItem(
+        `derec:owner:${current.ownerId}:secret:${channelId}:0`,
+      )
+      if (localSharedKey) {
+        const targetId = isReplica ? undefined : (actorId ?? `peer-${channelId}`)
+        if (targetId) {
+          updated = {
+            ...updated,
+            participants: updated.participants.map(h =>
+              h.id === targetId ? { ...h, sharedKey: localSharedKey } : h,
+            ),
+          }
+        }
+      }
+
       return updated
+    }
+
+    if (event.type === 'ShareStored' && event.channel_id) {
+      const channelId = event.channel_id
+      const version = event.version ?? 1
+      const existing = current.heldShares ?? []
+      const alreadyTracked = existing.some(s => s.channelId === channelId && s.version === version)
+      if (!alreadyTracked) {
+        return {
+          ...current,
+          heldShares: [...existing, { channelId, secretId: '', version, description: '' }],
+        }
+      }
+      return current
     }
 
     if (event.type === 'ShareConfirmed' && event.channel_id) {
@@ -2392,35 +2660,33 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
         role: 'owner',
         flow: 'sharing',
         step: 'ShareConfirmed',
-        description: `Share confirmed by helper on channel ${channelId}`,
-        payload: { channelId, version, secretId: pending?.secretId },
+        description: `Share confirmed by participant on channel ${channelId}`,
+        payload: { channelId, version },
       })
 
       if (!pending) return current
 
-      const helper = current.helpers.find(h => h.channelId === channelId)
-      if (!helper) return current
+      const participant = current.participants.find(h => h.channelId === channelId)
+      if (!participant) return current
 
       const shareRef: SecretShareRef = {
-        secretId: pending.secretId,
         version,
-        label: pending.label,
         status: 'confirmed',
         verified: false,
       }
 
+      // Update the bag version's participantIds
+      const bag = current.secretBag
+      const updatedBag = bag ? updateBagParticipant(bag, version, participant.id) : null
+
       return {
         ...current,
-        helpers: current.helpers.map(h =>
-          h.id === helper.id
-            ? { ...h, secretShares: [...h.secretShares.filter(s => !(s.secretId === pending.secretId && s.version === version)), shareRef] }
+        participants: current.participants.map(h =>
+          h.id === participant.id
+            ? { ...h, secretShares: [...h.secretShares.filter(s => s.version !== version), shareRef] }
             : h,
         ),
-        protectedSecrets: current.protectedSecrets.map(s =>
-          s.secretId === pending.secretId && s.version === version && !s.helperIds.includes(helper.id)
-            ? { ...s, helperIds: [...s.helperIds, helper.id] }
-            : s,
-        ),
+        secretBag: updatedBag,
       }
     }
 
@@ -2434,116 +2700,30 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
         flow: 'verification',
         step: 'ShareVerified',
         description: `Share verified for channel ${channelId}`,
-        payload: { channelId, version, secretId: pending?.secretIdHex },
+        payload: { channelId, version },
       })
 
       if (!pending) return current
 
-      const helper = current.helpers.find(h => h.channelId === channelId)
-      if (!helper) return current
+      const participant = current.participants.find(h => h.channelId === channelId)
+      if (!participant) return current
+
+      const bag = current.secretBag
+      const updatedBag = bag ? updateBagVerified(bag, version, participant.id) : null
 
       return {
         ...current,
-        helpers: current.helpers.map(h =>
-          h.id === helper.id
+        participants: current.participants.map(h =>
+          h.id === participant.id
             ? {
                 ...h,
                 secretShares: h.secretShares.map(s =>
-                  s.secretId === pending.secretIdHex && s.version === version
-                    ? { ...s, verified: true }
-                    : s,
+                  s.version === version ? { ...s, verified: true } : s,
                 ),
               }
             : h,
         ),
-        protectedSecrets: current.protectedSecrets.map(s => {
-          if (s.secretId !== pending.secretIdHex) return s
-
-          // Current version verified.
-          if (s.version === version) {
-            if (s.verifiedHelperIds.includes(helper.id)) return s
-            return { ...s, verifiedHelperIds: [...s.verifiedHelperIds, helper.id] }
-          }
-
-          // Previous version verified.
-          const pvIdx = s.previousVersions.findIndex(pv => pv.version === version)
-          if (pvIdx === -1) return s
-          if (s.previousVersions[pvIdx].verifiedHelperIds.includes(helper.id)) return s
-          return {
-            ...s,
-            previousVersions: s.previousVersions.map((pv, i) =>
-              i === pvIdx
-                ? { ...pv, verifiedHelperIds: [...pv.verifiedHelperIds, helper.id] }
-                : pv,
-            ),
-          }
-        }),
-      }
-    }
-
-    if (event.type === 'SecretsDiscovered' && event.channel_id && event.secrets) {
-      const channelId = event.channel_id
-      const helper = current.helpers.find(h => h.channelId === channelId)
-
-      log({
-        role: 'owner',
-        flow: 'recovery',
-        step: 'SecretsDiscovered',
-        description: `Discovery complete for channel ${channelId}: ${event.secrets.length} secret(s)`,
-        payload: { channelId, helperId: helper?.id, secretCount: event.secrets.length },
-      })
-
-      let discoverableSecrets = [...(current.discoverableSecrets ?? [])]
-
-      for (const entry of event.secrets) {
-        const secretIdHex = Array.from(entry.secret_id).map(b => b.toString(16).padStart(2, '0')).join('')
-        // Parse label from description "{label}-{version}" — use the first version's description.
-        const firstDesc = entry.versions[0]?.description ?? ''
-        const lastDash = firstDesc.lastIndexOf('-')
-        const label = lastDash > 0 ? firstDesc.slice(0, lastDash) : firstDesc
-
-        const existing = discoverableSecrets.find(s => s.secretId === secretIdHex)
-        if (existing) {
-          // Merge: add helper to existing versions, add any new versions.
-          const helperSharesByVersion = { ...existing.helperSharesByVersion }
-          const existingVersionNums = new Set(existing.versions.map(v => v.version))
-          const newVersions = [...existing.versions]
-
-          for (const v of entry.versions) {
-            if (!existingVersionNums.has(v.version)) {
-              newVersions.push({ version: v.version, description: v.description })
-            }
-            const arr = helperSharesByVersion[v.version] ?? []
-            if (helper && !arr.includes(helper.id)) {
-              helperSharesByVersion[v.version] = [...arr, helper.id]
-            }
-          }
-
-          discoverableSecrets = discoverableSecrets.map(s =>
-            s.secretId === secretIdHex
-              ? { ...s, versions: newVersions, helperSharesByVersion }
-              : s,
-          )
-        } else {
-          const helperSharesByVersion: Record<number, string[]> = {}
-          for (const v of entry.versions) {
-            helperSharesByVersion[v.version] = helper ? [helper.id] : []
-          }
-          discoverableSecrets.push({
-            secretId: secretIdHex,
-            label,
-            versions: entry.versions.map(v => ({ version: v.version, description: v.description })),
-            helperSharesByVersion,
-          })
-        }
-      }
-
-      return {
-        ...current,
-        discoverableSecrets,
-        helpers: current.helpers.map(h =>
-          h.channelId === channelId ? { ...h, discoveryComplete: true } : h,
-        ),
+        secretBag: updatedBag,
       }
     }
 
@@ -2552,7 +2732,7 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
         role: 'owner',
         flow: 'recovery',
         step: 'RecoveryShareReceived',
-        description: `Share received from helper (${event.shares_received} total)`,
+        description: `Share received from participant (${event.shares_received} total)`,
         payload: { channelId: event.channel_id, sharesReceived: event.shares_received },
       })
 
@@ -2561,7 +2741,7 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
 
       return {
         ...current,
-        recoveryProgress: { ...progress, sharesReceived: event.shares_received },
+        recoveryProgress: { ...progress, sharesReceived: event.shares_received ?? progress.sharesReceived },
       }
     }
 
@@ -2579,7 +2759,11 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
 
       return {
         ...current,
-        recoveryProgress: { ...progress, sharesReceived: event.shares_received, error: event.error },
+        recoveryProgress: {
+          ...progress,
+          sharesReceived: event.shares_received ?? progress.sharesReceived,
+          error: event.error ?? 'Unknown recovery error',
+        },
       }
     }
 
@@ -2625,48 +2809,191 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
   // ── Owner mailbox polling ─────────────────────────────────────────────────────
   // Poll faster (500ms) during auto-pair so the setup gate clears quickly.
 
-  const pollInterval = (autoPairingIds.length > 0 || recoveryMode) ? 500 : 5000
+  const pollInterval = (autoPairingIds.length > 0 || recoveryMode || protocolBusy) ? 500 : 5000
 
   useEffect(() => {
+    let ownerPollRunning = false
     const id = setInterval(async () => {
-      const { sessionId, ownerId } = sessionRef.current
-      const protocol = ownerProtocolRef.current
-      if (!protocol) return
-
-      let messages
+      if (ownerPollRunning) return
+      // Skip processing while a pairing confirmation modal is open.
+      if (pendingPairingConfirmationRef.current || pendingStoreShareConfirmationRef.current) return
+      ownerPollRunning = true
       try {
-        messages = await pollMailbox(sessionId, 'owners', ownerId)
-      } catch (err) {
-        console.error('[owner-poll] failed to fetch messages:', err)
-        return
-      }
+        const { sessionId, ownerId } = sessionRef.current
+        const protocol = ownerProtocolRef.current
+        if (!protocol) return
 
-      if (messages.length === 0) return
-
-      console.debug('[owner-poll] processing', messages.length, 'message(s)')
-
-      const initial = sessionRef.current
-      let updated = initial
-      for (const { bytes } of messages) {
-        let events: { type: string; channel_id?: string; version?: number; secret?: Uint8Array }[]
+        let messages
         try {
-          events = Array.from(await protocol.process(bytes)) as typeof events
+          messages = await pollMailbox(sessionId, 'owners', ownerId)
         } catch (err) {
-          console.error('[owner-poll] process() failed:', err)
-          continue
+          console.error('[owner-poll] failed to fetch messages:', err)
+          return
         }
-        console.debug('[owner-poll] events:', events.map(e => e.type))
-        for (const event of events) {
-          try {
-            updated = applyOwnerEvent(updated, event)
-          } catch (err) {
-            console.error('[owner-poll] applyOwnerEvent failed for', event.type, ':', err)
-          }
-        }
-      }
 
-      if (updated !== initial) {
-        onUpdateRef.current(updated)
+        if (messages.length === 0) return
+
+        console.warn(`[owner-poll] received ${messages.length} message(s), sizes: ${messages.map(m => m.bytes.length).join(', ')}`)
+
+        await withProtocolLock(async () => {
+          const initial = sessionRef.current
+          let updated = initial
+          let shouldBreak = false
+
+          for (const { bytes } of messages!) {
+            if (shouldBreak) break
+
+            let events: { type: string; channel_id?: string; kind?: number; version?: number; secret?: Uint8Array; shares_received?: number; error?: string; action?: Uint8Array; action_kind?: string; peer_communication_info?: Record<string, string>; share_version?: number; share_description?: string; share_secret_id?: number[] }[]
+            try {
+              events = Array.from(await protocol.process(bytes)) as typeof events
+            } catch (err) {
+              console.error('[owner-poll] process() FAILED for message:', err)
+              // Detect pairing rejection: the library returns a DEREC_ERROR with
+              // "non-ok status" when the responder rejects the pairing request.
+              const errMsg = err instanceof Error ? err.message : typeof err === 'object' && err !== null ? JSON.stringify(err) : String(err)
+              if (errMsg.includes('non-ok status')) {
+                setPairingRejectionCount(c => c + 1)
+              }
+              continue
+            }
+
+
+
+            for (const event of events) {
+              // Handle ActionRequired events: pairing needs user confirmation,
+              // all other action kinds are auto-accepted for now.
+              if (event.type === 'ActionRequired' && event.action) {
+                if (event.action_kind === 'Pairing') {
+                  // Check if this is a known pairing we initiated (backend participant or replica).
+                  // Those should be auto-accepted — only unknown peers need user confirmation.
+                  //
+                  // We check if we have ANY pending pairings with non-browser-managed actors —
+                  // those are backend participants/replicas whose PairRequest we orchestrated
+                  // via the backend API.
+                  const channelId = event.channel_id!
+                  const hasPendingBackendPairings = updated.pendingPairings.some(p => {
+                    if (!p.participantId) return false
+                    const participant = updated.participants.find(h => h.id === p.participantId)
+                    if (participant && !participant.browserManaged) return true
+                    const replica = (updated.replicas ?? []).find(r => r.id === p.participantId)
+                    if (replica) return true
+                    return false
+                  })
+
+                  if (hasPendingBackendPairings) {
+                    // Remap the pending pairing's channelId to the owner-side channel
+                    // from this event. When the participant initiates pairing (via the
+                    // "Pair" button / apiStartParticipantPairing), the pending pairing
+                    // stores the participant-side channel ID, but PairingCompleted will
+                    // fire with the owner-side channel ID. Without this fixup the
+                    // PairingCompleted handler can't match the pending pairing and falls
+                    // into the "Unknown peer" branch.
+                    const pendingIdx = updated.pendingPairings.findIndex(p => {
+                      if (!p.participantId) return false
+                      const participant = updated.participants.find(h => h.id === p.participantId)
+                      if (participant && !participant.browserManaged) return true
+                      const replica = (updated.replicas ?? []).find(r => r.id === p.participantId)
+                      if (replica) return true
+                      return false
+                    })
+                    if (pendingIdx >= 0) {
+                      updated = {
+                        ...updated,
+                        pendingPairings: updated.pendingPairings.map((p, i) =>
+                          i === pendingIdx ? { ...p, channelId: BigInt(channelId) } : p,
+                        ),
+                      }
+                    }
+
+                    try {
+                      const acceptEvents = Array.from(await protocol.accept(event.action)) as typeof events
+                      for (const e of acceptEvents) {
+                        updated = applyOwnerEvent(updated, e)
+                      }
+                    } catch (err) {
+                      console.error('[owner-poll] auto-accept known pairing failed:', err)
+                    }
+                  } else {
+                    const peerName = event.peer_communication_info?.name || 'Unknown peer'
+
+                    setPendingPairingConfirmation({
+                      peerName,
+                      channelId,
+                      action: event.action,
+                    })
+
+                    log({
+                      role: 'owner',
+                      flow: 'pairing',
+                      step: 'pairing_confirmation_pending',
+                      description: `Pairing request from "${peerName}" — waiting for user confirmation`,
+                      payload: { channelId },
+                    })
+
+                    // Skip remaining messages; they'll be picked up on next poll.
+                    shouldBreak = true
+                    break
+                  }
+                } else if (event.action_kind === 'StoreShare') {
+                  // Browser-based user must confirm before storing a share.
+                  const channelId = event.channel_id!
+                  const peer = updated.participants.find(h => h.channelId === channelId)
+                  const peerName = peer?.name || 'Unknown peer'
+
+                  const secretIdHex = Array.from(event.share_secret_id ?? [])
+                    .map(b => b.toString(16).padStart(2, '0')).join('')
+
+                  setPendingStoreShareConfirmation({
+                    peerName,
+                    channelId,
+                    secretId: secretIdHex,
+                    version: event.share_version ?? 0,
+                    description: event.share_description || '',
+                    action: event.action,
+                  })
+
+                  log({
+                    role: 'owner',
+                    flow: 'sharing',
+                    step: 'store_share_confirmation_pending',
+                    description: `Share storage request from "${peerName}" — waiting for confirmation`,
+                    payload: { channelId, version: event.share_version },
+                  })
+
+                  shouldBreak = true
+                  break
+                } else {
+                  // Auto-accept remaining requests (VerifyShare, Discovery, GetShare).
+                  try {
+                    const acceptEvents = Array.from(await protocol.accept(event.action)) as typeof events
+                    for (const e of acceptEvents) {
+                      updated = applyOwnerEvent(updated, e)
+                    }
+                  } catch (err) {
+                    console.error(`[owner-poll] auto-accept ${event.action_kind} failed:`, err)
+                  }
+                }
+                continue
+              }
+
+              console.log(`[owner-poll] applying ${event.type}`, { channelId: event.channel_id, kind: event.kind })
+              try {
+                updated = applyOwnerEvent(updated, event)
+              } catch (err) {
+                console.error('[owner-poll] applyOwnerEvent failed for', event.type, ':', err)
+              }
+            }
+          }
+
+          if (updated !== initial) {
+            sessionRef.current = updated
+            onUpdateRef.current(updated)
+          }
+        })
+      } catch (err) {
+        console.error('[owner-poll] poll failed:', err)
+      } finally {
+        ownerPollRunning = false
       }
     }, pollInterval)
 
@@ -2674,32 +3001,205 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.sessionId, pollInterval])
 
+  // ── Pairing confirmation accept/reject ──────────────────────────────────────
+
+  async function handleAcceptPairing() {
+    const confirmation = pendingPairingConfirmation
+    if (!confirmation) return
+
+    const protocol = ownerProtocolRef.current
+    if (!protocol) return
+
+    try {
+      const events = await withProtocolLock(() => protocol.accept(confirmation.action))
+      const eventArray = Array.from(events) as Array<{ type: string; channel_id?: string; kind?: number; version?: number; secret?: Uint8Array; shares_received?: number; error?: string }>
+
+      let updated = sessionRef.current
+      for (const event of eventArray) {
+        try {
+          updated = applyOwnerEvent(updated, event)
+        } catch (err) {
+          console.error('[pairing-confirm] applyOwnerEvent failed:', err)
+        }
+      }
+      if (updated !== sessionRef.current) {
+        sessionRef.current = updated
+        onUpdateRef.current(updated)
+      }
+    } catch (err) {
+      console.error('[pairing-confirm] accept failed:', err)
+    }
+
+    log({
+      role: 'owner',
+      flow: 'pairing',
+      step: 'pairing_confirmed',
+      description: `Accepted pairing request from "${confirmation.peerName}"`,
+      payload: { channelId: confirmation.channelId },
+    })
+
+    setPendingPairingConfirmation(null)
+  }
+
+  async function handleRejectPairing() {
+    const confirmation = pendingPairingConfirmation
+    if (!confirmation) return
+
+    const protocol = ownerProtocolRef.current
+    if (!protocol) return
+
+    try {
+      await withProtocolLock(() => protocol.reject(confirmation.action, 'Pairing request rejected by user'))
+
+      log({
+        role: 'owner',
+        flow: 'pairing',
+        step: 'pairing_rejected',
+        description: `Rejected pairing request from "${confirmation.peerName}"`,
+        payload: { channelId: confirmation.channelId },
+      })
+    } catch (err) {
+      console.error('[pairing-reject] reject failed:', err)
+    }
+
+    setPendingPairingConfirmation(null)
+  }
+
+  // ── Store-share confirmation accept/reject ─────────────────────────────────
+
+  async function handleAcceptStoreShare() {
+    const confirmation = pendingStoreShareConfirmation
+    if (!confirmation) return
+
+    const protocol = ownerProtocolRef.current
+    if (!protocol) return
+
+    try {
+      const events = await withProtocolLock(() => protocol.accept(confirmation.action))
+      const eventArray = Array.from(events) as Array<{ type: string; channel_id?: string; kind?: number; version?: number; secret?: Uint8Array; shares_received?: number; error?: string }>
+
+      // Record the held share with full metadata BEFORE applying events.
+      // applyOwnerEvent's ShareStored handler will see it's already tracked and skip
+      // its entry (which lacks secretId/description).
+      let updated: OwnerSession = {
+        ...sessionRef.current,
+        heldShares: [...(sessionRef.current.heldShares ?? []), {
+          channelId: confirmation.channelId,
+          secretId: confirmation.secretId,
+          version: confirmation.version,
+          description: confirmation.description,
+        }],
+      }
+
+      for (const event of eventArray) {
+        try {
+          updated = applyOwnerEvent(updated, event)
+        } catch (err) {
+          console.error('[storeshare-confirm] applyOwnerEvent failed:', err)
+        }
+      }
+
+      if (updated !== sessionRef.current) {
+        sessionRef.current = updated
+        onUpdateRef.current(updated)
+      }
+    } catch (err) {
+      console.error('[storeshare-confirm] accept failed:', err)
+    }
+
+    log({
+      role: 'owner',
+      flow: 'sharing',
+      step: 'store_share_confirmed',
+      description: `Accepted share storage from "${confirmation.peerName}" (version ${confirmation.version})`,
+      payload: { channelId: confirmation.channelId, version: confirmation.version },
+    })
+
+    setPendingStoreShareConfirmation(null)
+  }
+
+  async function handleRejectStoreShare() {
+    const confirmation = pendingStoreShareConfirmation
+    if (!confirmation) return
+
+    const protocol = ownerProtocolRef.current
+    if (!protocol) return
+
+    try {
+      await withProtocolLock(() => protocol.reject(confirmation.action, 'Share storage rejected by user'))
+
+      log({
+        role: 'owner',
+        flow: 'sharing',
+        step: 'store_share_rejected',
+        description: `Rejected share storage from "${confirmation.peerName}" (version ${confirmation.version})`,
+        payload: { channelId: confirmation.channelId, version: confirmation.version },
+      })
+    } catch (err) {
+      console.error('[storeshare-reject] reject failed:', err)
+    }
+
+    setPendingStoreShareConfirmation(null)
+  }
+
+  // Auto-reject store-share requests after timeout.
+  useEffect(() => {
+    if (!pendingStoreShareConfirmation) return
+    const timer = setTimeout(() => {
+      handleRejectStoreShare()
+    }, PAIRING_TIMEOUT_MS)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingStoreShareConfirmation])
+
   // ── Backend session status polling ───────────────────────────────────────────
-  // Syncs helper pairing status from the backend's helper_channels data.
-  // This catches helper-initiated pairings that never produce an owner-side event.
+  // Syncs participant pairing status from the backend's participant_channels data.
+  // This catches participant-initiated pairings that never produce an owner-side event.
 
   useEffect(() => {
     const id = setInterval(async () => {
-      const current = sessionRef.current
+      const { sessionId } = sessionRef.current
       try {
-        const resp = await apiGetSession(current.sessionId)
+        const resp = await apiGetSession(sessionId)
+        // Re-read after the async call so we see any updates from the owner
+        // mailbox poll that completed while the API request was in flight.
+        const current = sessionRef.current
         let updated = current
         let changed = false
 
+        // Discover new participants. All participants are shared session resources.
+        // New participants always start as 'available' — the backend's channel_id may
+        // belong to another owner's pairing. This owner's pairing status is managed
+        // exclusively via PairingCompleted events.
         for (const actor of resp.actors) {
-          const helper = updated.helpers.find(h => h.id === actor.id)
-          if (!helper) continue
+          if (actor.role !== 'participant') continue
+          if (updated.participants.some(h => h.id === actor.id)) continue
+          changed = true
+          updated = {
+            ...updated,
+            participants: [...updated.participants, {
+              id: actor.id,
+              name: actor.name,
+              channelId: '',
+              transport: { protocol: actor.transport.protocol, uri: actor.transport.uri },
+              connectionStatus: 'available' as const,
+              secretShares: [],
+            }],
+          }
+        }
 
-          // Sync pairing status from helper_channels.
-          // Skip in recovery mode — helpers are intentionally reset to 'available'
-          // and should only become 'paired' through recovery pairing events.
-          if (!recoveryModeRef.current && actor.channel_id && helper.connectionStatus !== 'paired') {
+        for (const actor of resp.actors) {
+          const participant = updated.participants.find(h => h.id === actor.id)
+          if (!participant) continue
+
+          // Sync shared key once available.
+          if (actor.shared_key && !participant.sharedKey) {
             changed = true
             updated = {
               ...updated,
-              helpers: updated.helpers.map(h =>
+              participants: updated.participants.map(h =>
                 h.id === actor.id
-                  ? { ...h, channelId: actor.channel_id!, connectionStatus: 'paired' as const }
+                  ? { ...h, sharedKey: actor.shared_key! }
                   : h,
               ),
             }
@@ -2707,20 +3207,20 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
 
           // Sync pending recovery association status — only while in recovery mode.
           if (!recoveryModeRef.current) continue
-          const currentPending = helper.pendingRecoveryChannelId ?? null
+          const currentPending = participant.pendingRecoveryChannelId ?? null
           const newPending = actor.pending_recovery_channel_id ?? null
           if (currentPending !== newPending) {
             changed = true
 
-            // Association just completed: pending cleared and helper now has a channel.
-            // Update the helper's channelId to the new recovery channel and trigger discovery.
+            // Association just completed: pending cleared and participant now has a channel.
+            // Update the participant's channelId to the new recovery channel and trigger discovery.
             const associationJustCompleted = currentPending && !newPending && actor.channel_id
             if (associationJustCompleted) {
               const recoveryChannelId = actor.channel_id!
 
               updated = {
                 ...updated,
-                helpers: updated.helpers.map(h =>
+                participants: updated.participants.map(h =>
                   h.id === actor.id
                     ? {
                         ...h,
@@ -2735,21 +3235,21 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
 
               const protocol = ownerProtocolRef.current
               if (protocol) {
-                protocol.requestDiscovery(BigInt(recoveryChannelId)).catch((err: unknown) => {
+                withProtocolLock(() => protocol.start(FlowKind.Discovery, {})).catch((err: unknown) => {
                   console.error('[recovery] requestDiscovery after association failed:', err)
                 })
                 log({
                   role: 'owner',
                   flow: 'recovery',
                   step: 'discovery_triggered',
-                  description: `Channel association complete for helper ${actor.id} — requesting discovery on channel ${recoveryChannelId}`,
-                  payload: { helperId: actor.id, channelId: recoveryChannelId },
+                  description: `Channel association complete for participant ${actor.id} — requesting discovery on all helpers`,
+                  payload: { participantId: actor.id },
                 })
               }
             } else {
               updated = {
                 ...updated,
-                helpers: updated.helpers.map(h =>
+                participants: updated.participants.map(h =>
                   h.id === actor.id
                     ? { ...h, pendingRecoveryChannelId: newPending ?? undefined }
                     : h,
@@ -2759,7 +3259,76 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
           }
         }
 
+        // Sync replica state from backend.
+        for (const actor of resp.actors) {
+          if (actor.role !== 'replica') continue
+          const replica = updated.replicas?.find(r => r.id === actor.id)
+          if (!replica) continue
+
+          let replicaUpdated = false
+          let newStatus: ReplicaStatus = replica.status
+          const newOffline = !!actor.disabled
+
+          // Sync pairing status.
+          if (actor.channel_id && replica.status === 'available') {
+            newStatus = 'paired'
+            replicaUpdated = true
+          }
+
+          // Sync confirmation status from backend.
+          if (actor.replica_confirmed && replica.status === 'paired') {
+            newStatus = 'confirmed'
+            replicaUpdated = true
+          }
+
+          // Sync offline status.
+          if (newOffline !== !!replica.offline) {
+            replicaUpdated = true
+          }
+
+          if (replicaUpdated) {
+            changed = true
+            updated = {
+              ...updated,
+              replicas: updated.replicas.map(r =>
+                r.id === actor.id
+                  ? {
+                      ...r,
+                      channelId: actor.channel_id ?? r.channelId,
+                      status: newStatus,
+                      offline: newOffline || undefined,
+                    }
+                  : r,
+              ),
+            }
+          }
+
+          // Auto-fetch fingerprint for newly paired replicas that don't have one yet.
+          if (actor.channel_id && !replica.replicaFingerprint && replica.status !== 'confirmed') {
+            apiGetReplicaFingerprint(sessionId, actor.id)
+              .then(({ fingerprint }) => {
+                const current = sessionRef.current
+                onUpdateRef.current({
+                  ...current,
+                  replicas: current.replicas.map(r =>
+                    r.id === actor.id
+                      ? {
+                          ...r,
+                          replicaFingerprint: fingerprint,
+                          confirmationStartedAt: r.confirmationStartedAt ?? Date.now(),
+                        }
+                      : r,
+                  ),
+                })
+              })
+              .catch(err => {
+                console.error(`[session-poll] failed to fetch fingerprint for replica ${actor.id}:`, err)
+              })
+          }
+        }
+
         if (changed) {
+          sessionRef.current = updated
           onUpdateRef.current(updated)
         }
       } catch {
@@ -2773,65 +3342,143 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
   // ── Protocol action callbacks ─────────────────────────────────────────────────
 
   async function createOwnerContact(): Promise<ContactMessage> {
-    const protocol = ownerProtocolRef.current
-    if (!protocol) throw new Error('Protocol not initialized')
-    return protocol.createContact(null)
+    return withProtocolLock(async () => {
+      const protocol = ownerProtocolRef.current
+      if (!protocol) throw new Error('Protocol not initialized')
+      return protocol.createContact(null)
+    })
   }
 
-  function getHelperFunctions(helperId: string) {
+  function getParticipantFunctions(participantId: string) {
+    const participant = session.participants.find(h => h.id === participantId)
+
+    // Browser-managed participants (other owners) use the browser-contact
+    // endpoint for contact exchange and the owner's own WASM for pairing.
+    if (participant?.browserManaged) {
+      return {
+        createContact: async (): Promise<ContactMessage> => {
+          const dto = await apiGetBrowserContact(session.sessionId, participantId)
+          if (!dto) throw new Error('Peer contact not available yet — they may still be loading.')
+          return dtoToContactMessage(dto)
+        },
+        startPairing: async (contact: ContactMessage): Promise<bigint> => {
+          return withProtocolLock(async () => {
+            const protocol = ownerProtocolRef.current
+            if (!protocol) throw new Error('Protocol not initialized')
+            return protocol.start(FlowKind.Pairing, { kind: SenderKind.OwnerNonRecovery, contact }) as Promise<bigint>
+          })
+        },
+      }
+    }
+
+    // Backend-managed participants use the backend's protocol instance.
     return {
       createContact: async (): Promise<ContactMessage> => {
-        const dto = await apiCreateHelperContact(session.sessionId, helperId)
+        const dto = await apiCreateParticipantContact(session.sessionId, participantId)
         return dtoToContactMessage(dto)
       },
       startPairing: async (contact: ContactMessage): Promise<bigint> => {
         const dto = contactMessageToDto(contact)
-        const resp = await apiStartHelperPairing(session.sessionId, helperId, dto)
+        const resp = await apiStartParticipantPairing(session.sessionId, participantId, dto)
+        return BigInt(resp.channel_id)
+      },
+    }
+  }
+
+  function getReplicaFunctions(replicaId: string) {
+    return {
+      createContact: async (): Promise<ContactMessage> => {
+        const dto = await apiCreateReplicaContact(session.sessionId, replicaId)
+        return dtoToContactMessage(dto)
+      },
+      startPairing: async (contact: ContactMessage): Promise<bigint> => {
+        const dto = contactMessageToDto(contact)
+        const resp = await apiStartReplicaPairing(session.sessionId, replicaId, dto)
         return BigInt(resp.channel_id)
       },
     }
   }
 
   async function ownerStartPairing(contact: ContactMessage): Promise<bigint> {
-    const protocol = ownerProtocolRef.current
-    if (!protocol) throw new Error('Protocol not initialized')
-    return protocol.startPairing(SenderKind.OwnerNonRecovery, contact)
+    console.warn('[owner] startPairing called, contact channelId:', contact.channel_id, 'transport:', contact.transport_protocol?.uri)
+    return withProtocolLock(async () => {
+      const protocol = ownerProtocolRef.current
+      if (!protocol) throw new Error('Protocol not initialized')
+      const channelId = await (protocol.start(FlowKind.Pairing, { kind: SenderKind.OwnerNonRecovery, contact }) as Promise<bigint>)
+      console.warn('[owner] startPairing succeeded, channelId:', channelId.toString())
+      return channelId
+    })
   }
 
-  async function ownerProtectSecret(
-    secretId: Uint8Array,
-    secretData: Uint8Array,
-    label: string,
-    version: number,
-    threshold: number,
-    helperChannelIds: bigint[],
-  ): Promise<void> {
+  async function ownerAddSecret(name: string, data: string): Promise<void> {
+    setProtocolBusy(true)
     const protocol = ownerProtocolRef.current
     if (!protocol) throw new Error('Protocol not initialized')
 
-    // Description follows the protocol convention: "{label}-{version}"
-    const description = `${label}-${version}`
-    await protocol.protectSecret(secretId, secretData, description, version, threshold, helperChannelIds, [])
+    const current = sessionRef.current
+    const existingBag = current.secretBag
 
-    // Register pending shares so ShareConfirmed events can be correlated.
-    const secretIdHex = Array.from(secretId).map(b => b.toString(16).padStart(2, '0')).join('')
-    const share: PendingShare = { secretId: secretIdHex, secretIdBytes: secretId, label, version }
-    for (const cid of helperChannelIds) {
-      pendingSharesRef.current.set(cid.toString(), share)
+    // Build the full list of user secrets (existing + new).
+    const newSecretId = crypto.getRandomValues(new Uint8Array(16))
+    const newSecretIdHex = Array.from(newSecretId).map(b => b.toString(16).padStart(2, '0')).join('')
+    const newUserSecret: UserSecret = { id: newSecretIdHex, name, data }
+
+    const allUserSecrets = existingBag
+      ? [...existingBag.currentVersion.secrets, newUserSecret]
+      : [newUserSecret]
+
+    // Build the JS array the WASM binding expects: Array<{ id: Uint8Array, name: string, data: Uint8Array }>
+    const wasmSecrets = allUserSecrets.map(s => ({
+      id: Uint8Array.from(s.id.match(/.{2}/g)!.map(b => parseInt(b, 16))),
+      name: s.name,
+      data: new TextEncoder().encode(s.data),
+    }))
+
+    await withProtocolLock(() => protocol.start(FlowKind.ProtectSecret, { secrets: wasmSecrets, description: 'DeRec Vault' }))
+
+    // Compute the new version and update the share store's owner version counter
+    // so that latestVersion() only tracks this owner's distributed versions — not
+    // held shares from other owners.
+    const newVersion = existingBag ? existingBag.currentVersion.version + 1 : 1
+    ownerShareStoreRef.current?.setOwnerVersion(newVersion)
+    const pairedParticipants = current.participants.filter(h => h.connectionStatus === 'paired')
+
+    // Register pending shares for correlation.
+    const pendingShare: PendingShare = { version: newVersion }
+    for (const h of pairedParticipants) {
+      if (h.channelId) pendingSharesRef.current.set(h.channelId, pendingShare)
     }
 
-    // Add the protected secret to session state immediately (helperIds fills in as events arrive).
-    const secretDataStr = new TextDecoder().decode(secretData)
-    const selectedHelpers = session.helpers.filter(h => helperChannelIds.includes(BigInt(h.channelId)))
+    // Build the new bag version
+    const newBagVersion: BagVersion = {
+      version: newVersion,
+      participantIds: [],
+      verifiedParticipantIds: [],
+      secrets: allUserSecrets,
+      rawBytes: '',
+      helpers: pairedParticipants.map(h => ({ id: h.id, name: h.name, channelId: h.channelId })),
+    }
+
+    // Build the updated secret bag
+    const updatedBag: SecretBag = existingBag
+      ? {
+          ...existingBag,
+          currentVersion: newBagVersion,
+          previousVersions: [existingBag.currentVersion, ...existingBag.previousVersions],
+        }
+      : {
+          secretId: newSecretIdHex,
+          currentVersion: newBagVersion,
+          previousVersions: [],
+          threshold: current.minParticipants,
+        }
+
     onUpdate({
-      ...session,
-      protectedSecrets: [
-        ...session.protectedSecrets,
-        { secretId: secretIdHex, version, label, secretData: secretDataStr, helperIds: [], verifiedHelperIds: [], threshold, previousVersions: [] },
-      ],
-      helpers: session.helpers.map(h =>
-        selectedHelpers.some(sh => sh.id === h.id)
-          ? { ...h, secretShares: [...h.secretShares, { secretId: secretIdHex, version, label, status: 'pending' as const, verified: false }] }
+      ...current,
+      secretBag: updatedBag,
+      participants: current.participants.map(h =>
+        pairedParticipants.some(ph => ph.id === h.id)
+          ? { ...h, secretShares: [...h.secretShares, { version: newVersion, status: 'pending' as const, verified: false }] }
           : h,
       ),
     })
@@ -2840,158 +3487,70 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
       role: 'owner',
       flow: 'sharing',
       step: 'protect_secret',
-      description: `Shares sent for "${label}" to ${helperChannelIds.length} helper(s)`,
-      payload: {
-        secretId: secretIdHex,
-        version,
-        threshold,
-        channels: helperChannelIds.map(c => c.toString()),
-      },
+      description: `Secret "${name}" added to bag (v${newVersion}), distributed to ${pairedParticipants.length} participant(s)`,
+      payload: { version: newVersion, secretCount: allUserSecrets.length },
     })
 
     setActiveTab('secrets')
   }
 
-  async function ownerVerifyShares(
-    secretIdHex: string,
-    version: number,
-    selectedHelperIds: string[],
-  ): Promise<void> {
+  async function ownerVerifyShares(version: number): Promise<void> {
+    setProtocolBusy(true)
     const protocol = ownerProtocolRef.current
     if (!protocol) throw new Error('Protocol not initialized')
 
     const current = sessionRef.current
-    // Find by secretId only — version may refer to a previous version, not current.
-    const secret = current.protectedSecrets.find(s => s.secretId === secretIdHex)
-    if (!secret) throw new Error('Secret not found')
+    const bag = current.secretBag
+    if (!bag) throw new Error('No secret bag — protect a secret first')
 
-    // Only register pending verification entries for the selected helpers so that
-    // ShareVerified events from helpers not chosen in this wizard run are ignored.
-    // Note: protocol.verifyShares() broadcasts to all confirmed helpers (WASM API
-    // limitation — per-helper targeting is not yet supported).
-    const selectedHelpers = current.helpers.filter(
-      h => secret.helperIds.includes(h.id) && h.channelId && selectedHelperIds.includes(h.id),
+    const bagVersion = bag.currentVersion.version === version
+      ? bag.currentVersion
+      : bag.previousVersions.find(v => v.version === version)
+    if (!bagVersion) throw new Error(`Version ${version} not found in bag`)
+
+    // Clear prior verification results so this run can track fresh responses.
+    const clearedBag = updateBagVersion(bag, version, v => ({ ...v, verifiedParticipantIds: [] }))
+    onUpdate({ ...current, secretBag: clearedBag })
+
+    // Register pending verifications for all confirmed participants.
+    const confirmedParticipants = current.participants.filter(
+      h => bagVersion.participantIds.includes(h.id) && h.channelId,
     )
-    for (const helper of selectedHelpers) {
-      pendingVerificationsRef.current.set(helper.channelId, { secretIdHex, version })
+    for (const participant of confirmedParticipants) {
+      pendingVerificationsRef.current.set(participant.channelId, { secretIdHex: bag.secretId, version })
     }
 
-    const secretIdBytes = Uint8Array.from(secretIdHex.match(/.{2}/g)!.map(b => parseInt(b, 16)))
-    await protocol.verifyShares(secretIdBytes, version)
+    await withProtocolLock(() => protocol.start(FlowKind.VerifyShares, { version }))
 
     log({
       role: 'owner',
       flow: 'verification',
       step: 'verify_shares',
-      description: `Verification challenges sent for "${secret.label}" to ${selectedHelpers.length} helper(s)`,
-      payload: { secretId: secretIdHex, version, helperCount: selectedHelpers.length, selectedHelperIds },
+      description: `Verification challenges sent for bag v${version} to ${confirmedParticipants.length} participant(s)`,
+      payload: { version, participantCount: confirmedParticipants.length },
     })
-  }
-
-  async function ownerRenewSecret(
-    secretIdHex: string,
-    newSecretData: Uint8Array,
-    keepList: number[],
-    helperChannelIds: bigint[],
-    threshold: number,
-  ): Promise<void> {
-    const protocol = ownerProtocolRef.current
-    if (!protocol) throw new Error('Protocol not initialized')
-
-    const current = sessionRef.current
-    const existing = current.protectedSecrets.find(s => s.secretId === secretIdHex)
-    if (!existing) throw new Error('Secret not found')
-
-    const newVersion = existing.version + 1
-    const description = `${existing.label}-${newVersion}`
-    const secretIdBytes = Uint8Array.from(secretIdHex.match(/.{2}/g)!.map(b => parseInt(b, 16)))
-
-    await protocol.protectSecret(secretIdBytes, newSecretData, description, newVersion, threshold, helperChannelIds, keepList)
-
-    // Register pending shares for correlation with ShareConfirmed events.
-    const pendingShare: PendingShare = { secretId: secretIdHex, secretIdBytes, label: existing.label, version: newVersion }
-    for (const cid of helperChannelIds) {
-      pendingSharesRef.current.set(cid.toString(), pendingShare)
-    }
-
-    // Build the new state: replace the ProtectedSecret entry with the new version.
-    // The old secret data is intentionally dropped — only the latest value is kept locally.
-    // Merge existing previous versions with the outgoing current version, then filter to
-    // those still in the new keepList. Preserve verifiedHelperIds so past verification
-    // results survive the renewal.
-    const allPreviousVersions: PreviousVersion[] = [
-      ...existing.previousVersions,
-      { version: existing.version, verifiedHelperIds: existing.verifiedHelperIds },
-    ]
-    const retainedVersions = allPreviousVersions.filter(pv => keepList.includes(pv.version))
-
-    const newEntry: ProtectedSecret = {
-      secretId: secretIdHex,
-      version: newVersion,
-      label: existing.label,
-      secretData: new TextDecoder().decode(newSecretData),
-      helperIds: [],
-      verifiedHelperIds: [],
-      threshold,
-      previousVersions: retainedVersions,
-    }
-
-    // Resolve the selected helpers from channel IDs for share ref updates.
-    // Read a fresh snapshot after the async protectSecret call to avoid overwriting
-    // state changes that arrived from polling during the await.
-    const snapshot = sessionRef.current
-    const selectedHelpers = snapshot.helpers.filter(
-      h => h.channelId && helperChannelIds.includes(BigInt(h.channelId)),
-    )
-
-    onUpdate({
-      ...snapshot,
-      protectedSecrets: snapshot.protectedSecrets.map(s =>
-        s.secretId === secretIdHex ? newEntry : s,
-      ),
-      helpers: snapshot.helpers.map(h =>
-        selectedHelpers.some(sh => sh.id === h.id)
-          ? {
-              ...h,
-              secretShares: [
-                ...h.secretShares,
-                { secretId: secretIdHex, version: newVersion, label: existing.label, status: 'pending' as const, verified: false },
-              ],
-            }
-          : h,
-      ),
-    })
-
-    log({
-      role: 'owner',
-      flow: 'sharing',
-      step: 'renew_secret',
-      description: `"${existing.label}" renewed from v${existing.version} to v${newVersion}`,
-      payload: { secretId: secretIdHex, newVersion, keepList, retainedVersions: retainedVersions.map(pv => pv.version), channels: helperChannelIds.map(c => c.toString()) },
-    })
-
-    setActiveTab('secrets')
   }
 
   // ── Recovery protocol actions ────────────────────────────────────────────────
 
   async function ownerStartRecoveryPairing(contact: ContactMessage): Promise<bigint> {
-    const protocol = ownerProtocolRef.current
-    if (!protocol) throw new Error('Protocol not initialized')
-    return protocol.startPairing(SenderKind.OwnerRecovery, contact)
+    return withProtocolLock(async () => {
+      const protocol = ownerProtocolRef.current
+      if (!protocol) throw new Error('Protocol not initialized')
+      return protocol.start(FlowKind.Pairing, { kind: SenderKind.OwnerRecovery, contact }) as Promise<bigint>
+    })
   }
 
-  async function ownerRequestDiscovery(channelId: bigint): Promise<void> {
+  async function ownerRequestDiscovery(): Promise<void> {
     const protocol = ownerProtocolRef.current
     if (!protocol) throw new Error('Protocol not initialized')
-    await protocol.requestDiscovery(channelId)
+    await withProtocolLock(() => protocol.start(FlowKind.Discovery, {}))
 
     log({
       role: 'owner',
       flow: 'recovery',
       step: 'request_discovery',
-      description: `Discovery requested for channel ${channelId}`,
-      payload: { channelId: channelId.toString() },
+      description: 'Discovery requested for all paired helpers',
     })
   }
 
@@ -2999,7 +3558,7 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
     secretId: string,
     version: number,
     label: string,
-    helperChannelIds: bigint[],
+    participantChannelIds: bigint[],
   ): Promise<void> {
     const protocol = ownerProtocolRef.current
     if (!protocol) throw new Error('Protocol not initialized')
@@ -3008,49 +3567,196 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
     pendingRecoveryRef.current = { secretId, version, label }
     onUpdate({
       ...session,
-      recoveryProgress: { secretId, version, sharesReceived: 0, totalRequested: helperChannelIds.length, error: null },
+      recoveryProgress: { secretId, version, sharesReceived: 0, totalRequested: participantChannelIds.length, error: null },
     })
-    await protocol.recoverSecret(secretIdBytes, version, helperChannelIds)
+    await withProtocolLock(() => protocol.start(FlowKind.RecoverSecret, { secretId: secretIdBytes, version }))
 
     log({
       role: 'owner',
       flow: 'recovery',
       step: 'recover_secret',
-      description: `Recovery requested for "${label}" v${version} from ${helperChannelIds.length} helper(s)`,
-      payload: { secretId, version, channels: helperChannelIds.map(c => c.toString()) },
+      description: `Recovery requested for "${label}" v${version} from ${participantChannelIds.length} participant(s)`,
+      payload: { secretId, version, channels: participantChannelIds.map(c => c.toString()) },
     })
   }
 
-  // ── Session mutation helpers ──────────────────────────────────────────────────
+  // ── Session mutation participants ──────────────────────────────────────────────────
 
-  function addPendingPairing(channelId: bigint, helperId?: string) {
-    const pending: PendingPairing = { channelId, helperId }
+  function addPendingPairing(channelId: bigint, participantId?: string) {
+    const pending: PendingPairing = { channelId, participantId }
     onUpdate({ ...session, pendingPairings: [...session.pendingPairings, pending] })
   }
 
-  function handleTogglePair(helperId: string) {
-    const helper = session.helpers.find(h => h.id === helperId)
-    if (!helper) return
-    const unpairing = helper.connectionStatus === 'paired'
-    const updatedHelpers = session.helpers.map(h =>
-      h.id !== helperId ? h : {
+  async function handleAddParticipant(name: string, autoPair: boolean) {
+    const resp = await apiAddParticipant(session.sessionId, name)
+    const newParticipant: PairedParticipant = {
+      id: resp.id,
+      name: resp.name,
+      channelId: '',
+      transport: { protocol: resp.transport.protocol, uri: resp.transport.uri },
+      connectionStatus: 'available',
+      secretShares: [],
+    }
+
+    let updated = { ...session, participants: [...session.participants, newParticipant] }
+
+    log({
+      role: 'owner',
+      flow: 'session',
+      step: 'participant_added',
+      description: `Participant "${name}" added${autoPair ? ' (auto-pair)' : ''}`,
+      payload: { participantId: resp.id, name, autoPair },
+    })
+
+    if (autoPair) {
+      const protocol = ownerProtocolRef.current
+      if (!protocol) {
+        onUpdate(updated)
+        return
+      }
+      try {
+        const dto = await apiCreateParticipantContact(session.sessionId, resp.id)
+        const contact = dtoToContactMessage(dto)
+        const channelId = await withProtocolLock(() => protocol.start(FlowKind.Pairing, { kind: SenderKind.OwnerNonRecovery, contact }) as Promise<bigint>)
+        updated = {
+          ...updated,
+          pendingPairings: [...updated.pendingPairings, { channelId, participantId: resp.id }],
+        }
+
+        log({
+          role: 'owner',
+          flow: 'pairing',
+          step: 'auto_pair_initiated',
+          description: `Auto-pair initiated for ${name}`,
+          payload: { participantId: resp.id, channelId: channelId.toString() },
+        })
+      } catch (err) {
+        console.error(`[add-participant] auto-pair failed for ${resp.id}:`, err)
+      }
+    }
+
+    onUpdate(updated)
+  }
+
+  async function handleToggleStatus(participantId: string) {
+    const resp = await apiToggleParticipantStatus(session.sessionId, participantId)
+    onUpdate({
+      ...session,
+      participants: session.participants.map(h =>
+        h.id === participantId ? { ...h, offline: resp.disabled } : h,
+      ),
+    })
+
+    log({
+      role: 'owner',
+      flow: 'session',
+      step: 'participant_status_toggled',
+      description: `${session.participants.find(h => h.id === participantId)?.name ?? participantId} is now ${resp.disabled ? 'offline' : 'online'}`,
+      payload: { participantId, disabled: resp.disabled },
+    })
+  }
+
+  async function handleToggleReplicaStatus(replicaId: string) {
+    const resp = await apiToggleReplicaStatus(session.sessionId, replicaId)
+    onUpdate({
+      ...session,
+      replicas: (session.replicas ?? []).map(r =>
+        r.id === replicaId ? { ...r, offline: resp.disabled } : r,
+      ),
+    })
+
+    log({
+      role: 'owner',
+      flow: 'replica',
+      step: 'replica_status_toggled',
+      description: `${(session.replicas ?? []).find(r => r.id === replicaId)?.name ?? replicaId} is now ${resp.disabled ? 'offline' : 'online'}`,
+      payload: { replicaId, disabled: resp.disabled },
+    })
+  }
+
+  function handleTogglePair(participantId: string) {
+    const participant = session.participants.find(h => h.id === participantId)
+    if (!participant) return
+    const unpairing = participant.connectionStatus === 'paired'
+    const updatedParticipants = session.participants.map(h =>
+      h.id !== participantId ? h : {
         ...h,
         connectionStatus: unpairing ? 'available' as const : 'paired' as const,
         secretShares: unpairing ? [] : h.secretShares,
       }
     )
-    const updatedSecrets = unpairing
-      ? session.protectedSecrets.map(s => ({ ...s, helperIds: s.helperIds.filter(id => id !== helperId) }))
-      : session.protectedSecrets
-    onUpdate({ ...session, helpers: updatedHelpers, protectedSecrets: updatedSecrets })
+    // When unpairing, remove the participant from the bag's participant lists.
+    const updatedBag = unpairing && session.secretBag
+      ? updateBagVersion(session.secretBag, session.secretBag.currentVersion.version, v => ({
+          ...v,
+          participantIds: v.participantIds.filter(id => id !== participantId),
+        }))
+      : session.secretBag
+    onUpdate({ ...session, participants: updatedParticipants, secretBag: updatedBag })
   }
+
+  // ── Replica action callbacks ──────────────────────────────────────────────────
+
+  async function handleConfirmReplica(replicaId: string) {
+    const replica = session.replicas.find(r => r.id === replicaId)
+    if (!replica || !replica.replicaFingerprint || !replica.channelId) return
+
+    try {
+      await apiConfirmReplicaFingerprint(
+        session.sessionId,
+        replicaId,
+        replica.channelId,
+        replica.replicaFingerprint,
+      )
+
+      onUpdate({
+        ...session,
+        replicas: session.replicas.map(r =>
+          r.id === replicaId ? { ...r, status: 'confirmed' as const } : r,
+        ),
+      })
+
+      log({
+        role: 'owner',
+        flow: 'replica',
+        step: 'fingerprint_confirmed',
+        description: `Replica "${replica.name}" fingerprint confirmed`,
+        payload: { replicaId, channelId: replica.channelId, fingerprint: replica.replicaFingerprint },
+      })
+    } catch (err) {
+      console.error('[handleConfirmReplica] failed:', err)
+    }
+  }
+
+  async function handleAddReplica(name: string) {
+    const resp = await apiAddReplica(session.sessionId, name)
+    const newReplica: PairedReplica = {
+      id: resp.id,
+      name: resp.name,
+      channelId: '',
+      transport: { protocol: resp.transport.protocol, uri: resp.transport.uri },
+      status: 'available',
+    }
+
+    const updated: OwnerSession = { ...session, replicas: [...(session.replicas ?? []), newReplica] }
+    onUpdate(updated)
+
+    log({
+      role: 'owner',
+      flow: 'replica',
+      step: 'replica_added',
+      description: `Replica "${name}" provisioned`,
+      payload: { replicaId: resp.id, name },
+    })
+  }
+
 
   // ── Render ────────────────────────────────────────────────────────────────────
 
   // Show a setup gate while auto-pairing is in progress.
   if (autoPairingIds.length > 0) {
     const pairedCount = autoPairingIds.filter(id =>
-      session.helpers.some(h => h.id === id && h.connectionStatus === 'paired'),
+      session.participants.some(h => h.id === id && h.connectionStatus === 'paired'),
     ).length
     const total = autoPairingIds.length
 
@@ -3058,7 +3764,7 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
       <div className="session-setup-gate">
         <h2 className="setup-gate-title">Setting up session</h2>
         <p className="setup-gate-description">
-          Pairing {total} helper{total > 1 ? 's' : ''}…
+          Pairing {total} participant{total > 1 ? 's' : ''}…
         </p>
 
         <div className="setup-gate-progress">
@@ -3077,8 +3783,8 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
 
         <ul className="share-progress-list" role="list">
           {autoPairingIds.map(id => {
-            const helper = session.helpers.find(h => h.id === id)
-            const isPaired = helper?.connectionStatus === 'paired'
+            const participant = session.participants.find(h => h.id === id)
+            const isPaired = participant?.connectionStatus === 'paired'
             return (
               <li
                 key={id}
@@ -3090,7 +3796,7 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
                     : <span className="verify-spinner" role="status" aria-label="Pairing…" />
                   }
                 </span>
-                <span className="share-progress-item-name">{helper?.name ?? id}</span>
+                <span className="share-progress-item-name">{participant?.name ?? id}</span>
                 <span className={`share-progress-item-status ${isPaired ? 'status--verified' : ''}`}>
                   {isPaired ? 'Paired' : 'Pairing…'}
                 </span>
@@ -3105,8 +3811,6 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
   return (
     <div className="session-page">
       <div className="session-info-bar">
-        <SessionIdBadge id={session.sessionId} />
-
         <div className="owner-badge">
           <span className="meta-label">Owner</span>
           <span className="owner-name">{session.ownerName}</span>
@@ -3124,43 +3828,50 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
           <button className="secondary" onClick={() => setPairOpen(true)}>
             Pair{recoveryMode ? ' (Recovery)' : ''}
           </button>
-          {!recoveryMode && (
-            <button className="primary" onClick={() => setProtectOpen(true)}>
-              Protect Secret
-            </button>
-          )}
+          {!recoveryMode && (() => {
+            const pairedCount = session.participants.filter(p => p.connectionStatus === 'paired').length
+            const belowMin = pairedCount < session.minParticipants
+            return (
+              <button
+                className="primary"
+                onClick={() => setProtectOpen(true)}
+                disabled={belowMin}
+                title={belowMin ? `Need at least ${session.minParticipants} paired participant${session.minParticipants !== 1 ? 's' : ''} (currently ${pairedCount})` : undefined}
+              >
+                {session.secretBag ? 'Add Secret' : 'Protect Secret'}
+              </button>
+            )
+          })()}
           <button
             className={`secondary ${recoveryMode ? 'recovery-active' : ''}`}
             onClick={() => {
               if (recoveryMode) {
-                // Exiting recovery: restore pre-recovery helper state and clear recovery data.
+                // Exiting recovery: restore pre-recovery participant state and clear recovery data.
                 setRecoveryMode(false)
-                setActiveTab('helpers')
+                setActiveTab('participants')
                 onUpdate({
                   ...session,
-                  helpers: preRecoveryHelpersRef.current ?? session.helpers,
-                  discoverableSecrets: [],
+                  participants: preRecoveryParticipantsRef.current ?? session.participants,
                   recoveredSecrets: [],
                   recoveryProgress: null,
                 })
-                preRecoveryHelpersRef.current = null
+                preRecoveryParticipantsRef.current = null
                 // Clear backend pending associations so re-entering recovery starts fresh.
                 apiClearPendingAssociations(session.sessionId).catch(() => {})
               } else {
-                // Entering recovery: snapshot current helpers, then reset them to unpaired.
-                preRecoveryHelpersRef.current = session.helpers
+                // Entering recovery: snapshot current participants, then reset them to unpaired.
+                preRecoveryParticipantsRef.current = session.participants
                 setRecoveryMode(true)
                 setActiveTab('recovery')
                 onUpdate({
                   ...session,
-                  helpers: session.helpers.map(h => ({
+                  participants: session.participants.map(h => ({
                     ...h,
                     connectionStatus: 'available' as const,
                     secretShares: [],
                     recoveryPaired: undefined,
                     discoveryComplete: undefined,
                   })),
-                  discoverableSecrets: [],
                   recoveredSecrets: [],
                   recoveryProgress: null,
                 })
@@ -3170,11 +3881,9 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
           >
             {recoveryMode ? 'Exit Recovery' : 'Recovery Mode'}
           </button>
-          <button className="secondary leave-btn" onClick={onLeave} title="Return to session list">
-            Leave
-          </button>
         </div>
       </div>
+
 
       {shareOpen && (
         <ShareContactModal
@@ -3190,38 +3899,73 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
 
       {pairOpen && (
         <PairInitiatorModal
-          label="Helper Contact QR Payload"
-          placeholder="Paste the JSON payload from the helper's Share Contact QR code"
+          label="Participant Contact QR Payload"
+          placeholder="Paste the JSON payload from the participant's Share Contact QR code"
+          pairedChannelIds={pairedChannelIds}
+          pairingRejectionCount={pairingRejectionCount}
           onClose={() => setPairOpen(false)}
-          onSuccess={() => setPairSuccessOpen(true)}
-          onPairingRequestSent={(channelId, helperId) => addPendingPairing(channelId, helperId)}
+          onSuccess={() => {}}
+          onPairingRequestSent={(channelId, participantId) => addPendingPairing(channelId, participantId)}
           startPairing={recoveryMode ? ownerStartRecoveryPairing : ownerStartPairing}
         />
       )}
 
-      {pairSuccessOpen && (
-        <PairingSuccessModal onClose={() => setPairSuccessOpen(false)} />
-      )}
+      {provisioningReplicaId && (() => {
+        const replica = (session.replicas ?? []).find(r => r.id === provisioningReplicaId)
+        if (!replica) return null
+        const { startPairing } = getReplicaFunctions(replica.id)
+        return (
+          <ReplicaProvisioningModal
+            replica={replica}
+            onPairingRequestSent={(channelId, replicaId) => addPendingPairing(channelId, replicaId)}
+            startPairing={startPairing}
+            onConfirm={handleConfirmReplica}
+            onClose={() => setProvisioningReplicaId(null)}
+          />
+        )
+      })()}
 
       {protectOpen && (
-        <ProtectSecretModal
-          helpers={session.helpers}
-          onClose={() => setProtectOpen(false)}
-          onProtect={ownerProtectSecret}
+        <AddSecretModal
+          participants={session.participants}
+          secretBag={session.secretBag}
+          onClose={() => { setProtectOpen(false); setProtocolBusy(false) }}
+          onAddSecret={ownerAddSecret}
         />
       )}
+
+      {(() => {
+        const pairedCount = session.participants.filter(p => p.connectionStatus === 'paired').length
+        const belowMin = pairedCount < session.minParticipants
+        const belowRecommended = !belowMin && pairedCount < session.recommendedParticipants
+        if (belowMin) {
+          return (
+            <div className="session-banner session-banner--error" role="alert">
+              Secret protection is disabled — {pairedCount} of {session.minParticipants} required participants paired.
+            </div>
+          )
+        }
+        if (belowRecommended) {
+          return (
+            <div className="session-banner session-banner--warning" role="status">
+              Only {pairedCount} of {session.recommendedParticipants} recommended participants paired. Consider pairing more before protecting secrets.
+            </div>
+          )
+        }
+        return null
+      })()}
 
       <div className="session-layout">
         <div className="session-content">
           <div className="tab-bar" role="tablist">
             <button
               role="tab"
-              className={`tab-btn ${activeTab === 'helpers' ? 'active' : ''}`}
-              onClick={() => setActiveTab('helpers')}
-              aria-selected={activeTab === 'helpers'}
+              className={`tab-btn ${activeTab === 'participants' ? 'active' : ''}`}
+              onClick={() => setActiveTab('participants')}
+              aria-selected={activeTab === 'participants'}
             >
-              Paired Helpers
-              <span className="tab-count">{session.helpers.filter(h => h.connectionStatus === 'paired').length}</span>
+              Channels
+              <span className="tab-count">{session.participants.filter(h => h.connectionStatus === 'paired').length}</span>
             </button>
             <button
               role="tab"
@@ -3229,8 +3973,26 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
               onClick={() => setActiveTab('secrets')}
               aria-selected={activeTab === 'secrets'}
             >
-              Protected Secrets
-              <span className="tab-count">{session.protectedSecrets.length}</span>
+              Secret Bag
+              <span className="tab-count">{session.secretBag?.currentVersion.secrets.length ?? 0}</span>
+            </button>
+            <button
+              role="tab"
+              className={`tab-btn ${activeTab === 'shares' ? 'active' : ''}`}
+              onClick={() => setActiveTab('shares')}
+              aria-selected={activeTab === 'shares'}
+            >
+              Shares
+              <span className="tab-count">{(session.heldShares ?? []).length}</span>
+            </button>
+            <button
+              role="tab"
+              className={`tab-btn ${activeTab === 'replicas' ? 'active' : ''}`}
+              onClick={() => setActiveTab('replicas')}
+              aria-selected={activeTab === 'replicas'}
+            >
+              Replicas
+              <span className="tab-count">{(session.replicas ?? []).filter(r => r.status !== 'available').length}</span>
             </button>
             {recoveryMode && (
               <button
@@ -3246,11 +4008,20 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
           </div>
 
           <div className="tab-panel" role="tabpanel">
-            {activeTab === 'helpers' && (
-              <PairedHelpersList helpers={session.helpers} onTogglePair={handleTogglePair} />
+            {activeTab === 'participants' && (
+              <PairedParticipantsList participants={session.participants} onTogglePair={handleTogglePair} />
             )}
             {activeTab === 'secrets' && (
-              <ProtectedSecretsList secrets={session.protectedSecrets} helpers={session.helpers} onVerify={ownerVerifyShares} onRenew={ownerRenewSecret} />
+              <SecretBagPanel bag={session.secretBag} participants={session.participants} onVerify={ownerVerifyShares} onVerifyClose={() => setProtocolBusy(false)} onAddSecret={() => setProtectOpen(true)} />
+            )}
+            {activeTab === 'shares' && (
+              <HeldSharesList shares={session.heldShares ?? []} participants={session.participants} />
+            )}
+            {activeTab === 'replicas' && (
+              <ReplicasList
+                replicas={session.replicas ?? []}
+                onConfirm={handleConfirmReplica}
+              />
             )}
             {activeTab === 'recovery' && (
               <RecoveryPanel
@@ -3262,17 +4033,79 @@ export default function OwnerSessionPage({ session, onUpdate, onLeave }: Props) 
           </div>
         </div>
 
-        <SessionHelperPanel
-          helpers={session.helpers}
+        <SessionParticipantPanel
+          participants={session.participants.filter(p => !p.browserManaged)}
+          replicas={session.replicas ?? []}
           sessionId={session.sessionId}
           ownerName={session.ownerName}
+          pairedChannelIds={pairedChannelIds}
+          pairingRejectionCount={pairingRejectionCount}
           onTogglePair={handleTogglePair}
-          onPairingCreated={(channelId, helperId) => addPendingPairing(channelId, helperId)}
-          onPairingRequestSent={(channelId, helperId) => addPendingPairing(channelId, helperId)}
-          onSuccess={() => setPairSuccessOpen(true)}
-          getHelperFunctions={getHelperFunctions}
+          onToggleParticipantStatus={handleToggleStatus}
+          onToggleReplicaStatus={handleToggleReplicaStatus}
+          onPairingCreated={(channelId, actorId) => addPendingPairing(channelId, actorId)}
+          onPairingRequestSent={(channelId, actorId) => addPendingPairing(channelId, actorId)}
+          onSuccess={() => {}}
+          onAddParticipant={handleAddParticipant}
+          onAddReplica={handleAddReplica}
+          onReplicaPairStarted={setProvisioningReplicaId}
+          getParticipantFunctions={getParticipantFunctions}
+          getReplicaFunctions={getReplicaFunctions}
         />
       </div>
+
+      {/* Pairing confirmation modal */}
+      {pendingPairingConfirmation && (
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="pairing-confirm-title">
+          <div className="modal">
+            <div className="modal-header">
+              <h2 className="modal-title" id="pairing-confirm-title">Incoming Pairing Request</h2>
+            </div>
+            <div className="modal-body">
+              <p>
+                <strong>{pendingPairingConfirmation.peerName}</strong> wants to pair with you.
+                Do you want to accept this pairing?
+              </p>
+              <div className="modal-actions">
+                <button className="secondary" onClick={handleRejectPairing}>
+                  Reject
+                </button>
+                <button className="primary" onClick={handleAcceptPairing}>
+                  Accept
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Store-share confirmation modal */}
+      {pendingStoreShareConfirmation && (
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="storeshare-confirm-title">
+          <div className="modal">
+            <div className="modal-header">
+              <h2 className="modal-title" id="storeshare-confirm-title">Incoming Share Storage Request</h2>
+            </div>
+            <div className="modal-body">
+              <p>
+                <strong>{pendingStoreShareConfirmation.peerName}</strong> wants to store
+                a secret share{pendingStoreShareConfirmation.description
+                  ? ` ("${pendingStoreShareConfirmation.description}")`
+                  : ''} — version {pendingStoreShareConfirmation.version}.
+              </p>
+              <p>Do you want to accept and store this share?</p>
+              <div className="modal-actions">
+                <button className="secondary" onClick={handleRejectStoreShare}>
+                  Reject
+                </button>
+                <button className="primary" onClick={handleAcceptStoreShare}>
+                  Accept
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
