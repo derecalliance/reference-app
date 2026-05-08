@@ -23,8 +23,8 @@ export type ParticipantConnectionStatus = 'paired' | 'available'
 
 export interface SecretShareRef {
   version: number
-  /** Whether the participant has confirmed storage. 'pending' = sent, 'confirmed' = acknowledged. */
-  status: 'pending' | 'confirmed'
+  /** Whether the participant has confirmed storage. 'pending' = sent, 'confirmed' = acknowledged, 'rejected' = counterparty refused. */
+  status: 'pending' | 'confirmed' | 'rejected'
   /** Whether the share has passed an owner-initiated verification challenge. */
   verified: boolean
 }
@@ -71,6 +71,8 @@ export interface BagVersion {
   participantIds: string[]
   /** IDs of participants whose share passed verification for this version */
   verifiedParticipantIds: string[]
+  /** Participants that rejected or timed out for this version */
+  failedParticipantIds: { id: string; status: number; memo: string }[]
   /** User secrets contained in this version */
   secrets: UserSecret[]
   /** Raw bag bytes (hex), for display */

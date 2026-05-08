@@ -486,7 +486,6 @@
   align-items: center;
   gap: 16px;
   padding-top: 4px;
-  padding-left: 18px;
 }
 
 .channel-prop {
@@ -501,7 +500,8 @@
   min-width: 0;
   overflow: hidden;
 
-  .shared-key-display {
+  .shared-key-display,
+  .share-data-display {
     flex: 1;
     min-width: 0;
   }
@@ -998,6 +998,74 @@
   }
 }
 
+.participant-tag--failed {
+  border-color: #dc2626;
+  background: rgba(239, 68, 68, 0.08);
+  color: #b91c1c;
+}
+
+@media (prefers-color-scheme: dark) {
+  .participant-tag--failed {
+    border-color: #f87171;
+    background: rgba(248, 113, 113, 0.1);
+    color: #f87171;
+  }
+}
+
+.participant-failure-reason {
+  font-size: 10px;
+  opacity: 0.8;
+  font-style: italic;
+}
+
+.failed-helpers-section {
+  margin-top: 0.5rem;
+}
+
+.sub-heading--failed {
+  color: #dc2626;
+}
+
+@media (prefers-color-scheme: dark) {
+  .sub-heading--failed {
+    color: #f87171;
+  }
+}
+
+.threshold-failure-banner,
+.threshold-warning-banner {
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+  margin-top: 0.75rem;
+}
+
+.threshold-failure-banner {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid #dc2626;
+  color: #b91c1c;
+}
+
+.threshold-warning-banner {
+  background: rgba(234, 179, 8, 0.1);
+  border: 1px solid #ca8a04;
+  color: #a16207;
+}
+
+@media (prefers-color-scheme: dark) {
+  .threshold-failure-banner {
+    background: rgba(248, 113, 113, 0.1);
+    border-color: #f87171;
+    color: #fca5a5;
+  }
+  .threshold-warning-banner {
+    background: rgba(250, 204, 21, 0.1);
+    border-color: #facc15;
+    color: #fde047;
+  }
+}
+
 .participant-verification-icon {
   font-size: 11px;
   line-height: 1;
@@ -1207,6 +1275,46 @@ button.small {
 .shared-key-display .reveal-btn {
   padding: 2px 4px;
   flex-shrink: 0;
+}
+
+/* ── Share data display (Shares tab) ─────────────────────────────────────────── */
+
+.share-data-display {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  flex: 1;
+}
+
+.share-data-value {
+  flex: 1;
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  color: var(--text-h);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.share-data-empty {
+  font-size: 11px;
+  color: var(--text-m);
+  font-style: italic;
+}
+
+.share-format-btn {
+  padding: 1px 6px;
+  flex-shrink: 0;
+  font-size: 10px;
+  font-family: var(--mono, monospace);
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: none;
+  border-radius: 4px;
+  line-height: 1.4;
 }
 
 /* ── Unpair button on participant card ──────────────────────────────────────────── */
@@ -1474,9 +1582,18 @@ button.small {
   color: #16a34a;
 }
 
+.verify-progress-icon--failed {
+  font-size: 13px;
+  font-weight: 700;
+  color: #dc2626;
+}
+
 @media (prefers-color-scheme: dark) {
   .verify-progress-icon--done {
     color: #4ade80;
+  }
+  .verify-progress-icon--failed {
+    color: #f87171;
   }
 }
 
@@ -1502,9 +1619,17 @@ button.small {
   font-weight: 600;
 }
 
+.share-progress-item-status.status--failed {
+  color: #dc2626;
+  font-weight: 600;
+}
+
 @media (prefers-color-scheme: dark) {
   .share-progress-item-status.status--verified {
     color: #4ade80;
+  }
+  .share-progress-item-status.status--failed {
+    color: #f87171;
   }
 }
 
