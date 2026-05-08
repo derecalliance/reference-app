@@ -186,11 +186,13 @@ type AddSecretStatus =
 function AddSecretModal({
   participants,
   secretBag,
+  threshold,
   onClose,
   onAddSecret,
 }: {
   participants: PairedParticipant[]
   secretBag: SecretBag | null
+  threshold: number
   onClose: () => void
   onAddSecret: (name: string, data: string) => Promise<void>
 }) {
@@ -218,14 +220,22 @@ function AddSecretModal({
   const confirmationProgress = confirming
     ? confirming.participantIds.map(id => {
         const participant = participants.find(h => h.id === id)
-        const confirmed = participant?.secretShares.some(s => s.version === confirming.version && s.status === 'confirmed') ?? false
-        return { id, name: participant?.name ?? id, confirmed }
+        const share = participant?.secretShares.find(s => s.version === confirming.version)
+        return {
+          id,
+          name: participant?.name ?? id,
+          confirmed: share?.status === 'confirmed',
+          rejected: share?.status === 'rejected',
+        }
       })
     : []
-  const allConfirmed = confirming !== null && confirmationProgress.every(h => h.confirmed)
+  const allResolved = confirming !== null && confirmationProgress.every(h => h.confirmed || h.rejected)
+  const confirmedCount = confirmationProgress.filter(h => h.confirmed).length
+  const rejectedCount = confirmationProgress.filter(h => h.rejected).length
+  const thresholdMet = allResolved && confirmedCount >= threshold
 
   const canSubmit = form.name.trim().length > 0 && form.data.trim().length > 0
-  const isBlocking = status.kind === 'sending' || (status.kind === 'confirming' && !allConfirmed)
+  const isBlocking = status.kind === 'sending' || (status.kind === 'confirming' && !allResolved)
   const isFirstSecret = !secretBag
 
   return (
@@ -242,15 +252,17 @@ function AddSecretModal({
               <div className="share-progress-bar-track">
                 <div
                   className="share-progress-bar-fill"
-                  style={{ width: `${confirmationProgress.length > 0 ? Math.round((confirmationProgress.filter(h => h.confirmed).length / confirmationProgress.length) * 100) : 0}%` }}
+                  style={{ width: `${confirmationProgress.length > 0 ? Math.round((confirmationProgress.filter(h => h.confirmed || h.rejected).length / confirmationProgress.length) * 100) : 0}%` }}
                   role="progressbar"
-                  aria-valuenow={confirmationProgress.filter(h => h.confirmed).length}
+                  aria-valuenow={confirmationProgress.filter(h => h.confirmed || h.rejected).length}
                   aria-valuemin={0}
                   aria-valuemax={confirmationProgress.length}
                 />
               </div>
               <p className="share-progress-summary">
-                {confirmationProgress.filter(h => h.confirmed).length} of {confirmationProgress.length} confirmed
+                {confirmedCount} of {confirmationProgress.length} confirmed
+                {rejectedCount > 0 && ` · ${rejectedCount} rejected`}
+                {!allResolved && ` (need ${threshold})`}
               </p>
             </div>
 
@@ -258,29 +270,46 @@ function AddSecretModal({
               {confirmationProgress.map(h => (
                 <li
                   key={h.id}
-                  className={`share-progress-item ${h.confirmed ? 'share-progress-item--confirmed' : ''}`}
+                  className={`share-progress-item ${h.confirmed ? 'share-progress-item--confirmed' : ''} ${h.rejected ? 'share-progress-item--failed' : ''}`}
                 >
                   <span className="verify-progress-icon">
                     {h.confirmed
                       ? <span className="verify-progress-icon--done" aria-label="Confirmed">&#10003;</span>
-                      : <span className="verify-spinner" role="status" aria-label="Waiting for confirmation" />
+                      : h.rejected
+                        ? <span className="verify-progress-icon--failed" aria-label="Rejected">&#10007;</span>
+                        : <span className="verify-spinner" role="status" aria-label="Waiting for confirmation" />
                     }
                   </span>
                   <span className="share-progress-item-name">{h.name}</span>
-                  <span className={`share-progress-item-status ${h.confirmed ? 'status--verified' : ''}`}>
-                    {h.confirmed ? 'Confirmed' : 'Waiting\u2026'}
+                  <span className={`share-progress-item-status ${h.confirmed ? 'status--verified' : ''} ${h.rejected ? 'status--failed' : ''}`}>
+                    {h.confirmed ? 'Confirmed' : h.rejected ? 'Rejected' : 'Waiting\u2026'}
                   </span>
                 </li>
               ))}
             </ul>
 
+            {allResolved && !thresholdMet && (
+              <div className="threshold-failure-banner" role="alert">
+                <strong>Secret protection failed.</strong>{' '}
+                Only {confirmedCount} of the required {threshold} helpers confirmed.
+                The secret bag has been rolled back.
+              </div>
+            )}
+
+            {allResolved && thresholdMet && rejectedCount > 0 && (
+              <div className="threshold-warning-banner" role="status">
+                Secret protected successfully, but {rejectedCount} helper{rejectedCount > 1 ? 's' : ''} failed.
+                The secret is recoverable with the {confirmedCount} confirmed helper{confirmedCount > 1 ? 's' : ''}.
+              </div>
+            )}
+
             <div className="modal-actions">
               <button
                 type="button"
-                className={allConfirmed ? 'primary' : 'secondary'}
+                className={allResolved ? 'primary' : 'secondary'}
                 onClick={onClose}
               >
-                {allConfirmed ? 'Done' : 'Close'}
+                {allResolved ? 'Done' : 'Close'}
               </button>
             </div>
           </div>
@@ -480,6 +509,25 @@ type PairInitiatorStep =
   | { kind: 'failed'; reason: string }
 
 const PAIRING_TIMEOUT_MS = 60_000
+
+interface NonOkStatus {
+  status: number
+  memo: string
+  channelId?: string
+}
+
+/** Extract structured NonOkStatus from a WASM process() error, or null if it's a different error. */
+function asNonOkStatus(err: unknown): NonOkStatus | null {
+  if (typeof err === 'object' && err !== null && 'code' in err && (err as Record<string, unknown>).code === 'NON_OK_STATUS') {
+    const obj = err as Record<string, unknown>
+    return {
+      status: obj.status as number,
+      memo: (obj.memo as string) ?? '',
+      channelId: obj.channel_id as string | undefined,
+    }
+  }
+  return null
+}
 
 function PairInitiatorModal({
   label,
@@ -917,6 +965,7 @@ function VerifySharesModal({
 }) {
   const [sent, setSent] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [timedOut, setTimedOut] = useState<Set<string>>(new Set())
 
   // Send verification to all on mount.
   useEffect(() => {
@@ -928,13 +977,32 @@ function VerifySharesModal({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Mark remaining participants as timed out after PAIRING_TIMEOUT_MS.
+  useEffect(() => {
+    if (!sent) return
+    const timer = setTimeout(() => {
+      const pending = confirmedParticipants.filter(
+        h => !verifiedParticipantIds.includes(h.id),
+      )
+      if (pending.length > 0) {
+        setTimedOut(new Set(pending.map(h => h.channelId)))
+      }
+    }, PAIRING_TIMEOUT_MS)
+    return () => clearTimeout(timer)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sent])
+
   const totalCount = confirmedParticipants.length
   const verifiedCount = confirmedParticipants.filter(
     h => verifiedParticipantIds.includes(h.id),
   ).length
-  const allDone = totalCount > 0 && verifiedCount === totalCount
+  const failedCount = confirmedParticipants.filter(
+    h => timedOut.has(h.channelId),
+  ).length
+  const resolvedCount = verifiedCount + failedCount
+  const allDone = totalCount > 0 && resolvedCount === totalCount
   const pct = totalCount > 0
-    ? Math.round((verifiedCount / totalCount) * 100)
+    ? Math.round((resolvedCount / totalCount) * 100)
     : 0
 
   return (
@@ -959,26 +1027,41 @@ function VerifySharesModal({
             </div>
             <p className="share-progress-summary">
               {verifiedCount} of {totalCount} verified
+              {failedCount > 0 && ` · ${failedCount} failed`}
             </p>
           </div>
 
           <ul className="share-progress-list" role="list">
             {confirmedParticipants.map(h => {
               const isVerified = verifiedParticipantIds.includes(h.id)
+              const isTimedOut = timedOut.has(h.channelId)
+
+              let icon: React.ReactNode
+              let statusText: string
+              let statusClass = ''
+
+              if (isVerified) {
+                icon = <span className="verify-progress-icon--done" aria-label="Verified">✓</span>
+                statusText = 'Verified'
+                statusClass = 'status--verified'
+              } else if (isTimedOut) {
+                icon = <span className="verify-progress-icon--failed" aria-label="Timed out">✗</span>
+                statusText = 'Verification timed out'
+                statusClass = 'status--failed'
+              } else {
+                icon = <span className="verify-spinner" role="status" aria-label="Waiting for response" />
+                statusText = 'Waiting…'
+              }
+
               return (
                 <li
                   key={h.id}
-                  className={`share-progress-item ${isVerified ? 'share-progress-item--confirmed' : ''}`}
+                  className={`share-progress-item ${isVerified ? 'share-progress-item--confirmed' : ''} ${isTimedOut ? 'share-progress-item--failed' : ''}`}
                 >
-                  <span className="verify-progress-icon">
-                    {isVerified
-                      ? <span className="verify-progress-icon--done" aria-label="Verified">✓</span>
-                      : <span className="verify-spinner" role="status" aria-label="Waiting for response" />
-                    }
-                  </span>
+                  <span className="verify-progress-icon">{icon}</span>
                   <span className="share-progress-item-name">{h.name}</span>
-                  <span className={`share-progress-item-status ${isVerified ? 'status--verified' : ''}`}>
-                    {isVerified ? 'Verified' : 'Waiting…'}
+                  <span className={`share-progress-item-status ${statusClass}`}>
+                    {statusText}
                   </span>
                 </li>
               )
@@ -1114,6 +1197,10 @@ function BagVersionDetails({
     })
   }
   const confirmedParticipants = participants.filter(h => version.participantIds.includes(h.id))
+  const failedEntries = (version.failedParticipantIds ?? []).map(f => ({
+    ...f,
+    name: participants.find(h => h.id === f.id)?.name ?? f.id,
+  }))
   const verifiedCount = version.verifiedParticipantIds.length
 
   return (
@@ -1191,6 +1278,22 @@ function BagVersionDetails({
               )
             })}
           </ul>
+        )}
+        {failedEntries.length > 0 && (
+          <div className="failed-helpers-section">
+            <h5 className="sub-heading sub-heading--failed">Failed ({failedEntries.length})</h5>
+            <ul className="participant-tag-list" role="list">
+              {failedEntries.map(f => {
+                const reason = f.memo || (f.status === 10 ? 'Rejected' : `Status ${f.status}`)
+                return (
+                  <li key={f.id} className="participant-tag participant-tag--failed">
+                    <span>{f.name}</span>
+                    <span className="participant-failure-reason" title={reason}>{reason}</span>
+                  </li>
+                )
+              })}
+            </ul>
+          </div>
         )}
       </div>
 
@@ -1335,8 +1438,9 @@ function PairedParticipantsList({
         <div key={h.id} className="channel-row">
           <div className="channel-row-top">
             <span className={`participant-dot ${h.offline ? 'offline' : 'paired'}`} aria-hidden="true" />
-            <span className="channel-row-name">{h.name}</span>
+            <span className="channel-row-name" style={{ flex: 'none' }}>{h.name}</span>
             <span className="channel-id-inline">{h.channelId}</span>
+            <span style={{ flex: 1 }} />
             {h.offline && (
               <span className="status-tag offline">Offline</span>
             )}
@@ -1547,12 +1651,42 @@ function ReplicaCard({
   )
 }
 
+type ShareFormat = 'base64' | 'protobuf'
+
+function ShareDataRow({ channelId, version, ownerId }: { channelId: string; version: number; ownerId: string }) {
+  const [format, setFormat] = useState<ShareFormat>('base64')
+
+  const raw = localStorage.getItem(`derec:owner:${ownerId}:share:${channelId}:${version}`)
+  if (!raw) return <span className="share-data-empty">Share data not found in local storage</span>
+
+  const display = format === 'base64'
+    ? raw
+    : Array.from(fromBase64Url(raw), b => b.toString(16).padStart(2, '0')).join(' ')
+
+  return (
+    <span className="share-data-display">
+      <code className="share-data-value">{display}</code>
+      <button
+        type="button"
+        className="secondary share-format-btn"
+        onClick={() => setFormat(f => f === 'base64' ? 'protobuf' : 'base64')}
+        title={format === 'base64' ? 'Switch to protobuf hex' : 'Switch to base64'}
+        aria-label={format === 'base64' ? 'Switch to protobuf hex' : 'Switch to base64'}
+      >
+        {format === 'base64' ? 'b64' : 'hex'}
+      </button>
+    </span>
+  )
+}
+
 function HeldSharesList({
   shares,
   participants,
+  ownerId,
 }: {
   shares: HeldShare[]
   participants: PairedParticipant[]
+  ownerId: string
 }) {
   if (shares.length === 0) {
     return (
@@ -1566,17 +1700,24 @@ function HeldSharesList({
     participants.find(p => p.channelId === channelId)?.name ?? 'Unknown peer'
 
   return (
-    <div className="card-list">
+    <div className="channel-table">
       {shares.map((share, i) => (
-        <div key={`${share.channelId}-${share.version}-${i}`} className="detail-card">
-          <div className="detail-card-header">
-            <strong>{peerName(share.channelId)}</strong>
+        <div key={`${share.channelId}-${share.version}-${i}`} className="channel-row">
+          <div className="channel-row-top">
+            <span className="channel-row-name" style={{ flex: 'none' }}>
+              {peerName(share.channelId)}
+            </span>
+            <span className="channel-id-inline">{share.channelId}</span>
+            <span style={{ flex: 1 }} />
+            {share.description && <span className="channel-id-inline">{share.description}</span>}
+            {share.secretId && <span className="detail-card-badge">id {share.secretId}</span>}
             <span className="detail-card-badge">v{share.version}</span>
           </div>
-          <div className="detail-card-meta">
-            {share.description && <span>{share.description}</span>}
-            {share.secretId && <span className="channel-id">Secret {share.secretId}</span>}
-            <span className="channel-id">Channel {share.channelId}</span>
+          <div className="channel-row-bottom">
+            <div className="channel-prop channel-prop--key">
+              <span className="channel-prop-label">Share</span>
+              <ShareDataRow channelId={share.channelId} version={share.version} ownerId={ownerId} />
+            </div>
           </div>
         </div>
       ))}
@@ -2319,6 +2460,19 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
   const pendingStoreShareConfirmationRef = useRef<PendingStoreShareConfirmation | null>(null)
   useEffect(() => { pendingStoreShareConfirmationRef.current = pendingStoreShareConfirmation }, [pendingStoreShareConfirmation])
 
+  interface PendingVerifyShareConfirmation {
+    peerName: string
+    channelId: string
+    version: number
+    secretId: string
+    /** Opaque action token from ActionRequired event — pass to accept() or reject(). */
+    action: Uint8Array
+  }
+
+  const [pendingVerifyShareConfirmation, setPendingVerifyShareConfirmation] = useState<PendingVerifyShareConfirmation | null>(null)
+  const pendingVerifyShareConfirmationRef = useRef<PendingVerifyShareConfirmation | null>(null)
+  useEffect(() => { pendingVerifyShareConfirmationRef.current = pendingVerifyShareConfirmation }, [pendingVerifyShareConfirmation])
+
   // ── Protocol instances ────────────────────────────────────────────────────────
 
   const ownerProtocolRef = useRef<DeRecProtocol | null>(null)
@@ -2338,8 +2492,13 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
   // keyed by participant channelId (bigint as string)
   const pendingSharesRef = useRef<Map<string, PendingShare>>(new Map())
 
+  // Holds the bag version being built during a sharing round. Committed only when
+  // SharingComplete arrives with threshold_met=true; discarded otherwise.
+  const pendingBagRef = useRef<{ bag: SecretBag; version: number; secretIdHex: string } | null>(null)
+
   // Tracks in-flight verification challenges keyed by participant channelId.
   const pendingVerificationsRef = useRef<Map<string, { secretIdHex: string; version: number }>>(new Map())
+
 
   // Tracks in-flight recovery requests so SecretRecovered events can be correlated.
   const pendingRecoveryRef = useRef<{ secretId: string; version: number; label: string } | null>(null)
@@ -2509,7 +2668,13 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
       secret?: Uint8Array
       shares_received?: number
       error?: string
+      reason?: string
       peer_communication_info?: Record<string, string>
+      status?: number
+      memo?: string
+      confirmed_count?: number
+      failed_count?: number
+      threshold_met?: boolean
     },
   ): OwnerSession {
     if (event.type === 'PairingCompleted' && event.channel_id) {
@@ -2675,9 +2840,13 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
         verified: false,
       }
 
-      // Update the bag version's participantIds
-      const bag = current.secretBag
-      const updatedBag = bag ? updateBagParticipant(bag, version, participant.id) : null
+      // Update the pending bag (not yet committed to session state).
+      if (pendingBagRef.current && pendingBagRef.current.version === version) {
+        pendingBagRef.current = {
+          ...pendingBagRef.current,
+          bag: updateBagParticipant(pendingBagRef.current.bag, version, participant.id),
+        }
+      }
 
       return {
         ...current,
@@ -2686,8 +2855,97 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
             ? { ...h, secretShares: [...h.secretShares.filter(s => s.version !== version), shareRef] }
             : h,
         ),
-        secretBag: updatedBag,
       }
+    }
+
+    if (event.type === 'ShareRejected' && event.channel_id) {
+      const channelId = event.channel_id
+      const version = event.version ?? 1
+      const status = event.status ?? 0
+      const memo = event.memo ?? ''
+
+      log({
+        role: 'owner',
+        flow: 'sharing',
+        step: 'ShareRejected',
+        description: `Share rejected by participant on channel ${channelId} (status=${status}, memo=${memo})`,
+        payload: { channelId, version, status, memo },
+      })
+
+      pendingSharesRef.current.delete(channelId)
+
+      const participant = current.participants.find(h => h.channelId === channelId)
+      if (!participant) return current
+
+      const rejectedRef: SecretShareRef = {
+        version,
+        status: 'rejected',
+        verified: false,
+      }
+
+      // Track the failure in the pending bag (not yet committed to session state).
+      if (pendingBagRef.current && pendingBagRef.current.version === version) {
+        pendingBagRef.current = {
+          ...pendingBagRef.current,
+          bag: updateBagVersion(pendingBagRef.current.bag, version, v => ({
+            ...v,
+            failedParticipantIds: [
+              ...(v.failedParticipantIds ?? []),
+              { id: participant.id, status, memo },
+            ],
+          })),
+        }
+      }
+
+      return {
+        ...current,
+        participants: current.participants.map(h =>
+          h.id === participant.id
+            ? { ...h, secretShares: [...h.secretShares.filter(s => s.version !== version), rejectedRef] }
+            : h,
+        ),
+      }
+    }
+
+    if (event.type === 'SharingComplete') {
+      const version = event.version ?? 1
+      const confirmedCount = event.confirmed_count ?? 0
+      const failedCount = event.failed_count ?? 0
+      const thresholdMet = event.threshold_met ?? false
+
+      log({
+        role: 'owner',
+        flow: 'sharing',
+        step: 'SharingComplete',
+        description: `Sharing round v${version} complete: ${confirmedCount} confirmed, ${failedCount} failed${thresholdMet ? '' : ' — threshold NOT met'}`,
+        payload: { version, confirmedCount, failedCount, thresholdMet },
+      })
+
+      const pending = pendingBagRef.current
+      pendingBagRef.current = null
+
+      if (thresholdMet && pending && pending.version === version) {
+        // Threshold met — commit the pending bag and advance the owner version
+        // counter so the next ProtectSecret starts at version + 1.
+        ownerShareStoreRef.current?.setOwnerVersion(version)
+        return {
+          ...current,
+          secretBag: pending.bag,
+        }
+      }
+
+      if (!thresholdMet) {
+        // Threshold not met — discard the pending bag and reset the owner version
+        // counter so the next attempt reuses the same version number.
+        const previousVersion = current.secretBag?.currentVersion.version ?? null
+        if (previousVersion !== null) {
+          ownerShareStoreRef.current?.setOwnerVersion(previousVersion)
+        } else {
+          ownerShareStoreRef.current?.clearOwnerVersion()
+        }
+      }
+
+      return current
     }
 
     if (event.type === 'ShareVerified' && event.channel_id) {
@@ -2816,7 +3074,7 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
     const id = setInterval(async () => {
       if (ownerPollRunning) return
       // Skip processing while a pairing confirmation modal is open.
-      if (pendingPairingConfirmationRef.current || pendingStoreShareConfirmationRef.current) return
+      if (pendingPairingConfirmationRef.current || pendingStoreShareConfirmationRef.current || pendingVerifyShareConfirmationRef.current) return
       ownerPollRunning = true
       try {
         const { sessionId, ownerId } = sessionRef.current
@@ -2843,16 +3101,26 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
           for (const { bytes } of messages!) {
             if (shouldBreak) break
 
-            let events: { type: string; channel_id?: string; kind?: number; version?: number; secret?: Uint8Array; shares_received?: number; error?: string; action?: Uint8Array; action_kind?: string; peer_communication_info?: Record<string, string>; share_version?: number; share_description?: string; share_secret_id?: number[] }[]
+            let events: { type: string; channel_id?: string; kind?: number; version?: number; secret?: Uint8Array; shares_received?: number; error?: string; reason?: string; action?: Uint8Array; action_kind?: string; peer_communication_info?: Record<string, string>; share_version?: number; share_description?: string; share_secret_id?: number[]; status?: number; memo?: string; confirmed_count?: number; failed_count?: number; threshold_met?: boolean }[]
             try {
               events = Array.from(await protocol.process(bytes)) as typeof events
             } catch (err) {
-              console.error('[owner-poll] process() FAILED for message:', err)
-              // Detect pairing rejection: the library returns a DEREC_ERROR with
-              // "non-ok status" when the responder rejects the pairing request.
-              const errMsg = err instanceof Error ? err.message : typeof err === 'object' && err !== null ? JSON.stringify(err) : String(err)
-              if (errMsg.includes('non-ok status')) {
+              const nonOk = asNonOkStatus(err)
+              if (nonOk) {
+                console.warn(`[owner-poll] non-ok status (status=${nonOk.status}, channel=${nonOk.channelId ?? '?'}): ${nonOk.memo}`)
+                log({
+                  role: 'owner',
+                  flow: 'protocol',
+                  step: 'non_ok_status',
+                  description: `Counterparty responded with status ${nonOk.status}: ${nonOk.memo}`,
+                  payload: { status: nonOk.status, memo: nonOk.memo, channelId: nonOk.channelId },
+                })
+
+                // Sharing rejections are now emitted as ShareRejected events (not errors),
+                // so any NonOkStatus error here is a pairing or other flow rejection.
                 setPairingRejectionCount(c => c + 1)
+              } else {
+                console.error('[owner-poll] process() FAILED for message:', err)
               }
               continue
             }
@@ -2962,8 +3230,35 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
 
                   shouldBreak = true
                   break
+                } else if (event.action_kind === 'VerifyShare') {
+                  // Browser-based user must confirm before responding to verification.
+                  const channelId = event.channel_id!
+                  const peer = updated.participants.find(h => h.channelId === channelId)
+                  const peerName = peer?.name || 'Unknown peer'
+
+                  const secretIdHex = Array.from(event.share_secret_id ?? [])
+                    .map(b => b.toString(16).padStart(2, '0')).join('')
+
+                  setPendingVerifyShareConfirmation({
+                    peerName,
+                    channelId,
+                    version: event.share_version ?? 0,
+                    secretId: secretIdHex,
+                    action: event.action,
+                  })
+
+                  log({
+                    role: 'owner',
+                    flow: 'verification',
+                    step: 'verify_share_confirmation_pending',
+                    description: `Verification request from "${peerName}" — waiting for confirmation`,
+                    payload: { channelId, version: event.share_version },
+                  })
+
+                  shouldBreak = true
+                  break
                 } else {
-                  // Auto-accept remaining requests (VerifyShare, Discovery, GetShare).
+                  // Auto-accept remaining requests (Discovery, GetShare).
                   try {
                     const acceptEvents = Array.from(await protocol.accept(event.action)) as typeof events
                     for (const e of acceptEvents) {
@@ -3049,7 +3344,7 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
     if (!protocol) return
 
     try {
-      await withProtocolLock(() => protocol.reject(confirmation.action, 'Pairing request rejected by user'))
+      await withProtocolLock(() => protocol.reject(confirmation.action, /* REJECTED */ 10, 'Pairing request rejected by user'))
 
       log({
         role: 'owner',
@@ -3126,7 +3421,7 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
     if (!protocol) return
 
     try {
-      await withProtocolLock(() => protocol.reject(confirmation.action, 'Share storage rejected by user'))
+      await withProtocolLock(() => protocol.reject(confirmation.action, /* REJECTED */ 10, 'Share storage rejected by user'))
 
       log({
         role: 'owner',
@@ -3151,6 +3446,81 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
     return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingStoreShareConfirmation])
+
+  // ── Verify-share confirmation (helper side) ─────────────────────────────────
+
+  async function handleAcceptVerifyShare() {
+    const confirmation = pendingVerifyShareConfirmation
+    if (!confirmation) return
+
+    const protocol = ownerProtocolRef.current
+    if (!protocol) return
+
+    try {
+      const events = await withProtocolLock(() => protocol.accept(confirmation.action))
+      const eventArray = Array.from(events) as Array<{ type: string; channel_id?: string; kind?: number; version?: number }>
+
+      let updated = sessionRef.current
+      for (const event of eventArray) {
+        try {
+          updated = applyOwnerEvent(updated, event)
+        } catch (err) {
+          console.error('[verifyshare-confirm] applyOwnerEvent failed:', err)
+        }
+      }
+
+      if (updated !== sessionRef.current) {
+        sessionRef.current = updated
+        onUpdateRef.current(updated)
+      }
+    } catch (err) {
+      console.error('[verifyshare-confirm] accept failed:', err)
+    }
+
+    log({
+      role: 'owner',
+      flow: 'verification',
+      step: 'verify_share_confirmed',
+      description: `Accepted verification from "${confirmation.peerName}" (version ${confirmation.version})`,
+      payload: { channelId: confirmation.channelId, version: confirmation.version },
+    })
+
+    setPendingVerifyShareConfirmation(null)
+  }
+
+  async function handleRejectVerifyShare() {
+    const confirmation = pendingVerifyShareConfirmation
+    if (!confirmation) return
+
+    const protocol = ownerProtocolRef.current
+    if (!protocol) return
+
+    try {
+      await withProtocolLock(() => protocol.reject(confirmation.action, /* REJECTED */ 10, 'Helper rejected the verification request'))
+
+      log({
+        role: 'owner',
+        flow: 'verification',
+        step: 'verify_share_rejected',
+        description: `Rejected verification from "${confirmation.peerName}" (version ${confirmation.version})`,
+        payload: { channelId: confirmation.channelId, version: confirmation.version },
+      })
+    } catch (err) {
+      console.error('[verifyshare-reject] reject failed:', err)
+    }
+
+    setPendingVerifyShareConfirmation(null)
+  }
+
+  // Auto-reject verify-share requests after timeout.
+  useEffect(() => {
+    if (!pendingVerifyShareConfirmation) return
+    const timer = setTimeout(() => {
+      handleRejectVerifyShare()
+    }, PAIRING_TIMEOUT_MS)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingVerifyShareConfirmation])
 
   // ── Backend session status polling ───────────────────────────────────────────
   // Syncs participant pairing status from the backend's participant_channels data.
@@ -3436,11 +3806,10 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
 
     await withProtocolLock(() => protocol.start(FlowKind.ProtectSecret, { secrets: wasmSecrets, description: 'DeRec Vault' }))
 
-    // Compute the new version and update the share store's owner version counter
-    // so that latestVersion() only tracks this owner's distributed versions — not
-    // held shares from other owners.
+    // Compute the new version. The share store's owner version counter is NOT
+    // updated here — it is deferred to the SharingComplete handler so that a
+    // failed round doesn't advance the version.
     const newVersion = existingBag ? existingBag.currentVersion.version + 1 : 1
-    ownerShareStoreRef.current?.setOwnerVersion(newVersion)
     const pairedParticipants = current.participants.filter(h => h.connectionStatus === 'paired')
 
     // Register pending shares for correlation.
@@ -3449,18 +3818,18 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
       if (h.channelId) pendingSharesRef.current.set(h.channelId, pendingShare)
     }
 
-    // Build the new bag version
+    // Build the new bag version (not committed to session yet — waits for SharingComplete).
     const newBagVersion: BagVersion = {
       version: newVersion,
       participantIds: [],
       verifiedParticipantIds: [],
+      failedParticipantIds: [],
       secrets: allUserSecrets,
       rawBytes: '',
       helpers: pairedParticipants.map(h => ({ id: h.id, name: h.name, channelId: h.channelId })),
     }
 
-    // Build the updated secret bag
-    const updatedBag: SecretBag = existingBag
+    const pendingBag: SecretBag = existingBag
       ? {
           ...existingBag,
           currentVersion: newBagVersion,
@@ -3472,13 +3841,16 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
           previousVersions: [],
           threshold: current.minParticipants,
         }
+    pendingBagRef.current = { bag: pendingBag, version: newVersion, secretIdHex: newSecretIdHex }
 
+    // Mark participants with pending shares so the modal can track progress,
+    // but do NOT commit the bag to session state yet. Clear any stale refs for
+    // this version from a previous failed attempt.
     onUpdate({
       ...current,
-      secretBag: updatedBag,
       participants: current.participants.map(h =>
         pairedParticipants.some(ph => ph.id === h.id)
-          ? { ...h, secretShares: [...h.secretShares, { version: newVersion, status: 'pending' as const, verified: false }] }
+          ? { ...h, secretShares: [...h.secretShares.filter(s => s.version !== newVersion), { version: newVersion, status: 'pending' as const, verified: false }] }
           : h,
       ),
     })
@@ -3512,15 +3884,16 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
     const clearedBag = updateBagVersion(bag, version, v => ({ ...v, verifiedParticipantIds: [] }))
     onUpdate({ ...current, secretBag: clearedBag })
 
-    // Register pending verifications for all confirmed participants.
+    // Register pending verifications only for participants that confirmed this version.
     const confirmedParticipants = current.participants.filter(
       h => bagVersion.participantIds.includes(h.id) && h.channelId,
     )
+    const targetChannelIds = confirmedParticipants.map(h => BigInt(h.channelId))
     for (const participant of confirmedParticipants) {
       pendingVerificationsRef.current.set(participant.channelId, { secretIdHex: bag.secretId, version })
     }
 
-    await withProtocolLock(() => protocol.start(FlowKind.VerifyShares, { version }))
+    await withProtocolLock(() => protocol.start(FlowKind.VerifyShares, { version, target: targetChannelIds }))
 
     log({
       role: 'owner',
@@ -3929,6 +4302,7 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
         <AddSecretModal
           participants={session.participants}
           secretBag={session.secretBag}
+          threshold={session.minParticipants}
           onClose={() => { setProtectOpen(false); setProtocolBusy(false) }}
           onAddSecret={ownerAddSecret}
         />
@@ -4015,7 +4389,7 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
               <SecretBagPanel bag={session.secretBag} participants={session.participants} onVerify={ownerVerifyShares} onVerifyClose={() => setProtocolBusy(false)} onAddSecret={() => setProtectOpen(true)} />
             )}
             {activeTab === 'shares' && (
-              <HeldSharesList shares={session.heldShares ?? []} participants={session.participants} />
+              <HeldSharesList shares={session.heldShares ?? []} participants={session.participants} ownerId={session.ownerId} />
             )}
             {activeTab === 'replicas' && (
               <ReplicasList
@@ -4099,6 +4473,38 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
                   Reject
                 </button>
                 <button className="primary" onClick={handleAcceptStoreShare}>
+                  Accept
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Verify-share confirmation modal */}
+      {pendingVerifyShareConfirmation && (
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="verifyshare-confirm-title">
+          <div className="modal">
+            <div className="modal-header">
+              <h2 className="modal-title" id="verifyshare-confirm-title">Incoming Verification Request</h2>
+            </div>
+            <div className="modal-body">
+              <p>
+                <strong>{pendingVerifyShareConfirmation.peerName}</strong> wants to verify
+                that you still hold version {pendingVerifyShareConfirmation.version} of
+                their secret share.
+              </p>
+              {pendingVerifyShareConfirmation.secretId && (
+                <p className="verify-confirm-detail">
+                  Secret ID: <code>{pendingVerifyShareConfirmation.secretId}</code>
+                </p>
+              )}
+              <p>Do you want to respond to this verification challenge?</p>
+              <div className="modal-actions">
+                <button className="secondary" onClick={handleRejectVerifyShare}>
+                  Reject
+                </button>
+                <button className="primary" onClick={handleAcceptVerifyShare}>
                   Accept
                 </button>
               </div>

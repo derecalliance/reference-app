@@ -159,6 +159,11 @@ export function makeShareStore(namespace: string) {
     setOwnerVersion(version: number): void {
       localStorage.setItem(ownerVersionKey(namespace), String(version))
     },
+
+    /** Reset the owner-distributed version counter (e.g. after a failed sharing round). */
+    clearOwnerVersion(): void {
+      localStorage.removeItem(ownerVersionKey(namespace))
+    },
   }
 }
 
