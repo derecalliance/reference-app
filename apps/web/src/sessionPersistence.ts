@@ -1,13 +1,9 @@
-// ── Session persistence ───────────────────────────────────────────────────────
-//
-// Saves and restores OwnerSession to/from localStorage.
-//
-// The only non-JSON-serializable field is PendingPairing.channelId (bigint).
+// PendingPairing.channelId is a bigint and can't be JSON-serialized directly.
 // We encode it as { __bigint: "<decimal string>" } and decode on the way back.
 
 import type { OwnerSession, ParticipantSession } from './types'
 
-export type AnySession =
+type AnySession =
   | { type: 'owner'; session: OwnerSession }
   | { type: 'participant'; session: ParticipantSession }
 
@@ -70,6 +66,7 @@ function normalizeSession(raw: Partial<OwnerSession> & Pick<OwnerSession, 'sessi
     recoveryProgress: raw.recoveryProgress ?? null,
     replicas: raw.replicas ?? [],
     heldShares: raw.heldShares ?? [],
+    recoveryChannelLinks: raw.recoveryChannelLinks ?? [],
     participants: (raw.participants ?? []).map(h => ({
       ...h,
       secretShares: h.secretShares ?? [],
@@ -104,20 +101,17 @@ export function loadLastSession(): OwnerSession | null {
   }
 }
 
-export function loadParticipantSessionBySessionId(sessionId: string): ParticipantSession | null {
-  const prefix = `derec:participant-session:${sessionId}:`
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i)
-    if (!key?.startsWith(prefix)) continue
-    try {
-      const parsed = JSON.parse(localStorage.getItem(key)!, reviver)
-      const session = parsed?.session ?? parsed
-      if (session?.sessionId === sessionId) return session as ParticipantSession
-    } catch { /* skip corrupted entries */ }
+export function deleteSession(sessionId: string): void {
+  localStorage.removeItem(sessionStorageKey(sessionId))
+  if (localStorage.getItem(ACTIVE_KEY) === sessionId) {
+    localStorage.removeItem(ACTIVE_KEY)
   }
-  return null
 }
 
-export function clearActiveSession(): void {
-  localStorage.removeItem(ACTIVE_KEY)
+export function deleteParticipantSession(sessionId: string, participantId: string): void {
+  const key = `derec:participant-session:${sessionId}:${participantId}`
+  localStorage.removeItem(key)
+  if (localStorage.getItem(ACTIVE_KEY) === sessionId) {
+    localStorage.removeItem(ACTIVE_KEY)
+  }
 }

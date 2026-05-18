@@ -1,25 +1,27 @@
 import { fromBase64Url, toBase64Url } from './derecApi'
 
-// ── Storage key helpers ───────────────────────────────────────────────────────
-
 function contactKey(ns: string, channelId: string): string {
   return `derec:${ns}:contact:${channelId}`
+}
+
+/**
+ * Clears all localStorage entries for a given namespace prefix.
+ * Must be called before entering recovery mode to simulate a fresh device
+ * with no prior protocol state.
+ */
+export function clearNamespace(ns: string): void {
+  const prefix = `derec:${ns}:`
+  const toRemove: string[] = []
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i)
+    if (key && key.startsWith(prefix)) toRemove.push(key)
+  }
+  for (const key of toRemove) localStorage.removeItem(key)
 }
 
 function secretKey(ns: string, channelId: string, kind: 0 | 1 | 2): string {
   return `derec:${ns}:secret:${channelId}:${kind}`
 }
-
-// ── ChannelStore ──────────────────────────────────────────────────────────────
-//
-// Stores JSON-encoded Channel records per channel.
-// The library uses these to route outgoing messages back to the peer.
-//
-// JS interface contract:
-//   load(channelId: string): Promise<Uint8Array | null | undefined>
-//   save(channelId: string, bytes: Uint8Array): Promise<void>
-//   remove(channelId: string): Promise<boolean>
-//   listChannels(): Promise<string[]>
 
 const CONTACT_INDEX_SUFFIX = ':contact-index'
 
@@ -61,19 +63,7 @@ export function makeChannelStore(namespace: string) {
   }
 }
 
-// ── SecretStore ───────────────────────────────────────────────────────────────
-//
-// Stores ephemeral pairing key material and established shared keys per channel.
-//
-//   kind 0 = SharedKey       (32 raw bytes, established after pairing)
-//   kind 1 = PairingSecret   (ark-serialized, ephemeral — discarded after pairing)
-//   kind 2 = PairingContact  (protobuf-encoded ContactMessage, ephemeral — discarded after pairing)
-//
-// JS interface contract:
-//   load(channelId: string, kind: 0 | 1 | 2): Promise<Uint8Array | null | undefined>
-//   save(channelId: string, kind: 0 | 1 | 2, value: Uint8Array): Promise<void>
-//   remove(channelId: string, kind: 0 | 1 | 2): Promise<void>
-
+// kind 0 = SharedKey (32 raw bytes), kind 1 = PairingSecret (ephemeral), kind 2 = PairingContact (ephemeral)
 export function makeSecretStore(namespace: string) {
   return {
     async load(channelId: string, kind: 0 | 1 | 2): Promise<Uint8Array | null> {
@@ -88,19 +78,6 @@ export function makeSecretStore(namespace: string) {
     },
   }
 }
-
-// ── ShareStore ────────────────────────────────────────────────────────────────
-//
-// Stores committed shares keyed by (channelId, version). In the single-secret-bag
-// model there is one secret per channel, so secret_id is implicit.
-//
-// Two indexes support the required lookup patterns:
-//   - by-version: which channels hold a given version
-//   - by-channel: which versions a channel holds
-//
-// JS interface contract (matches WASM trait):
-//   load(channelId: string, versions: number[]): Promise<Array<[number, Uint8Array]>>
-//   save(channelId: string, version: number, encoded: Uint8Array): Promise<void>
 
 function shareDataKey(ns: string, channelId: string, version: number): string {
   return `derec:${ns}:share:${channelId}:${version}`
@@ -139,7 +116,6 @@ export function makeShareStore(namespace: string) {
     async save(channelId: string, version: number, encoded: Uint8Array): Promise<void> {
       localStorage.setItem(shareDataKey(namespace, channelId, version), toBase64Url(encoded))
 
-      // Update by-channel index (versions held by this channel)
       const cKey = channelVersionsKey(namespace, channelId)
       const storedVersions = loadNumberArray(cKey)
       if (!storedVersions.includes(version)) {
@@ -148,33 +124,41 @@ export function makeShareStore(namespace: string) {
       }
     },
 
+    /**
+     * Copies all shares from `fromChannelId` to `toChannelId`.
+     * Called when a recovery pairing is accepted so the WASM can serve
+     * discovery and get-share requests on the new channel.
+     */
+    async copyShares(fromChannelId: string, toChannelId: string): Promise<void> {
+      const versions = loadNumberArray(channelVersionsKey(namespace, fromChannelId))
+      for (const version of versions) {
+        const raw = localStorage.getItem(shareDataKey(namespace, fromChannelId, version))
+        if (!raw) continue
+        localStorage.setItem(shareDataKey(namespace, toChannelId, version), raw)
+        const cKey = channelVersionsKey(namespace, toChannelId)
+        const existing = loadNumberArray(cKey)
+        if (!existing.includes(version)) {
+          existing.push(version)
+          localStorage.setItem(cKey, JSON.stringify(existing))
+        }
+      }
+    },
+
     async latestVersion(): Promise<number | null> {
-      // Return only the owner's distributed version — NOT held shares from other owners.
-      // This counter is updated by setOwnerVersion() after a successful ProtectSecret flow.
+      // Tracks only this owner's distributed version, not shares held for other owners.
       const raw = localStorage.getItem(ownerVersionKey(namespace))
       return raw ? Number(raw) : null
     },
 
-    /** Update the owner-distributed version counter after a successful ProtectSecret. */
     setOwnerVersion(version: number): void {
       localStorage.setItem(ownerVersionKey(namespace), String(version))
     },
 
-    /** Reset the owner-distributed version counter (e.g. after a failed sharing round). */
     clearOwnerVersion(): void {
       localStorage.removeItem(ownerVersionKey(namespace))
     },
   }
 }
-
-// ── Transport ─────────────────────────────────────────────────────────────────
-//
-// Sends raw protobuf-encoded DeRec wire bytes to a peer's transport endpoint.
-// The `send` method is called internally by DeRecProtocolWasm for all outbound
-// messages (pairing, sharing, verification, recovery, discovery).
-//
-// JS interface contract:
-//   send(endpoint: { protocol: string; uri: string }, message: Uint8Array): Promise<void>
 
 export function makeTransport(sendFn: (uri: string, message: Uint8Array) => Promise<void>) {
   return {

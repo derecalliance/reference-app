@@ -153,6 +153,31 @@ impl InMemoryShareStore {
         }
         count
     }
+
+    /// Copy ALL share entries (from any channel) to `new_channel_id`.
+    ///
+    /// Used during recovery re-pairing when the channel ID under which shares
+    /// were originally stored may differ from the channel ID recorded in
+    /// `participant_channels` (the two can diverge depending on which party's
+    /// contact was used during the initial pairing). Since the reference app
+    /// provisions one actor per owner, it is safe to migrate every share held
+    /// to the new recovery channel.
+    ///
+    /// Does NOT delete existing entries and does NOT overwrite entries that are
+    /// already present under `new_channel_id`.
+    pub fn associate_all_to_channel(&mut self, new_channel_id: u64) -> usize {
+        let entries: Vec<_> = self
+            .data
+            .iter()
+            .filter(|((cid, _), _)| *cid != new_channel_id)
+            .map(|((_, ver), val)| ((new_channel_id, *ver), val.clone()))
+            .collect();
+        let count = entries.len();
+        for (key, val) in entries {
+            self.data.entry(key).or_insert(val);
+        }
+        count
+    }
 }
 
 impl InMemorySecretStore {

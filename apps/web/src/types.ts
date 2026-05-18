@@ -1,13 +1,9 @@
-// ── Transport ─────────────────────────────────────────────────────────────────
-
 export type TransportProtocol = 'https'  // only HTTPS supported in v1
 
 export interface Transport {
   protocol: TransportProtocol
   uri: string
 }
-
-// ── Held Shares ────────────────────────────────────────────────────────────────────
 
 /** A share this owner holds on behalf of another owner (helper role). */
 export interface HeldShare {
@@ -16,8 +12,6 @@ export interface HeldShare {
   version: number
   description: string
 }
-
-// ── Participants ───────────────────────────────────────────────────────────────────
 
 export type ParticipantConnectionStatus = 'paired' | 'available'
 
@@ -42,17 +36,21 @@ export interface PairedParticipant {
   offline?: boolean
   /** Whether this participant was paired in recovery mode */
   recoveryPaired?: boolean
+  /**
+   * When the peer re-pairs in recovery mode, this holds the new (recovery)
+   * channel ID. The original `channelId` is kept so shares can still be
+   * served on the original channel.
+   */
+  recoveryChannelId?: string
   /** Whether discovery has been requested and completed for this participant */
   discoveryComplete?: boolean
+  /** Secret versions this helper reported during discovery (populated after SecretsDiscovered) */
+  discoveredVersions?: Array<{ secretId: string; version: number; description: string }>
   /** Shared symmetric key for the owner–participant channel (base64url-encoded) */
   sharedKey?: string
-  /** New channel ID from a recovery pairing, awaiting association */
-  pendingRecoveryChannelId?: string
   /** True for participants running WASM in their browser (no backend protocol) */
   browserManaged?: boolean
 }
-
-// ── Secret Bag ──────────────────────────────────────────────────────────────
 
 /** A single user-facing secret within the bag. */
 export interface UserSecret {
@@ -93,15 +91,11 @@ export interface SecretBag {
   threshold: number
 }
 
-// ── Pairing ───────────────────────────────────────────────────────────────────
-
 export interface PendingPairing {
   channelId: bigint
   /** Set when this pairing belongs to a specific provisioned participant */
   participantId?: string
 }
-
-// ── Replicas ─────────────────────────────────────────────────────────────────
 
 export type ReplicaStatus = 'available' | 'paired' | 'confirmed'
 
@@ -121,8 +115,6 @@ export interface PairedReplica {
   /** Timestamp (ms since epoch) when fingerprint confirmation window started */
   confirmationStartedAt?: number
 }
-
-// ── Recovery ─────────────────────────────────────────────────────────────────
 
 /** A successfully recovered secret. */
 export interface RecoveredSecret {
@@ -144,8 +136,6 @@ export interface RecoveryProgress {
   /** Non-null when recovery failed for a reason other than insufficient shares */
   error: string | null
 }
-
-// ── Session ───────────────────────────────────────────────────────────────────
 
 export interface ParticipantSession {
   sessionId: string
@@ -194,4 +184,18 @@ export interface OwnerSession {
   replicas: PairedReplica[]
   /** Shares this owner holds on behalf of other owners (helper role) */
   heldShares: HeldShare[]
+  /**
+   * Links established during recovery pairings: maps a new (recovery) channel ID
+   * to the old channel ID whose shares should be served. Populated when Alice
+   * accepts a recovery pairing and manually links new Bob to old Bob.
+   */
+  recoveryChannelLinks: RecoveryChannelLink[]
+}
+
+/** Maps a new recovery channel to the original channel whose shares it inherits. */
+export interface RecoveryChannelLink {
+  /** The channel ID established during the recovery pairing (new Bob). */
+  newChannelId: string
+  /** The original channel ID whose shares are served to the recovering peer. */
+  oldChannelId: string
 }

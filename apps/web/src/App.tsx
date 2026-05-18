@@ -5,7 +5,7 @@ import OwnerSessionPage, { JoinQrModal, SessionIdBadge } from './OwnerSessionPag
 import ConsolePanel from './ConsolePanel'
 import { ConsoleProvider } from './ConsoleContext'
 import type { OwnerSession, ParticipantSession } from './types'
-import { persistSession, persistParticipantSession } from './sessionPersistence'
+import { persistSession, persistParticipantSession, deleteSession, deleteParticipantSession } from './sessionPersistence'
 import ParticipantSessionPage from './ParticipantSessionPage'
 import GitHubIcon from '@mui/icons-material/GitHub';
 import LinkedInIcon from '@mui/icons-material/LinkedIn';
@@ -111,19 +111,32 @@ function AppContent() {
     setActiveSession({ type: 'owner', session: created })
   }
 
-  function handleJoined(session: ParticipantSession) {
-    persistParticipantSession(session)
-    setActiveSession({ type: 'participant', session })
-  }
-
   function handleParticipantUpdate(updated: ParticipantSession) {
     persistParticipantSession(updated)
     setActiveSession({ type: 'participant', session: updated })
   }
 
   const [inviteOpen, setInviteOpen] = useState(false)
+  const [leaveDialogOpen, setLeaveDialogOpen] = useState(false)
 
-  function handleLeave() {
+  function handleLeaveOnly() {
+    setLeaveDialogOpen(false)
+    setActiveSession(null)
+  }
+
+  function handleRemoveFromBrowser() {
+    setLeaveDialogOpen(false)
+    if (activeSession) {
+      try {
+        if (activeSession.type === 'owner') {
+          deleteSession(activeSession.session.sessionId)
+        } else {
+          deleteParticipantSession(activeSession.session.sessionId, activeSession.session.participantId)
+        }
+      } catch {
+        // Storage errors are non-fatal — proceed with leaving.
+      }
+    }
     setActiveSession(null)
   }
 
@@ -141,7 +154,7 @@ function AppContent() {
           </button>
         )}
         {activeSession && (
-          <button className="secondary leave-btn" onClick={handleLeave} title="Return to session list">
+          <button className="secondary leave-btn" onClick={() => setLeaveDialogOpen(true)} title="Return to session list">
             Leave
           </button>
         )}
@@ -159,6 +172,28 @@ function AppContent() {
             : <ParticipantSessionPage session={activeSession.session} onUpdate={handleParticipantUpdate} />
         }
       </main>
+
+      {leaveDialogOpen && (
+        <div className="leave-dialog-overlay" role="dialog" aria-modal="true" aria-labelledby="leave-dialog-title">
+          <div className="leave-dialog">
+            <h2 id="leave-dialog-title" className="leave-dialog-title">Leave session?</h2>
+            <p className="leave-dialog-body">
+              Do you want to leave this session or also remove it from this browser?
+            </p>
+            <div className="leave-dialog-actions">
+              <button className="secondary" onClick={() => setLeaveDialogOpen(false)}>
+                Cancel
+              </button>
+              <button className="secondary" onClick={handleLeaveOnly}>
+                Leave
+              </button>
+              <button onClick={handleRemoveFromBrowser}>
+                Remove from browser
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <ConsolePanel />
 

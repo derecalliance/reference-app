@@ -30,12 +30,10 @@ pub async fn create(
 
     let caller = provisioned_actor(Role::Owner, &req.name, session_id, &state.base_url);
 
-    // Register the owner's browser inbox.
     register_browser_actor(&state, caller.id);
 
     let mut actors: Vec<Actor> = vec![caller.clone()];
 
-    // Provision the requested number of additional participants.
     for _ in 1..=req.additional_participants {
         let participant = provisioned_actor(
             Role::Participant,
@@ -51,6 +49,8 @@ pub async fn create(
     let session = Session {
         _id: session_id,
         actors: actors.clone(),
+        min_participants: req.min_participants.unwrap_or(2),
+        recommended_participants: req.recommended_participants.unwrap_or(5),
     };
 
     state.sessions.insert(session_id, session);
@@ -70,34 +70,6 @@ pub async fn create(
     )
 }
 
-/// DELETE /sessions/:session_id/pending-associations
-pub async fn clear_pending_associations(
-    State(state): State<Arc<AppState>>,
-    Path(session_id): Path<Uuid>,
-) -> Response {
-    let session = match state.sessions.get(&session_id) {
-        Some(s) => s.value().clone(),
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "session not found" })),
-            )
-                .into_response();
-        }
-    };
-
-    let mut cleared = 0usize;
-    for actor in &session.actors {
-        if state.pending_associations.remove(&actor.id).is_some() {
-            cleared += 1;
-        }
-    }
-
-    info!(session_id = %session_id, cleared, "pending associations cleared");
-
-    (StatusCode::OK, Json(serde_json::json!({ "cleared": cleared }))).into_response()
-}
-
 /// GET /sessions/:session_id
 pub async fn get(
     State(state): State<Arc<AppState>>,
@@ -105,8 +77,14 @@ pub async fn get(
 ) -> Response {
     match state.sessions.get(&session_id) {
         Some(entry) => {
-            let actors = enrich_actors(&state, &entry.value().actors).await;
-            (StatusCode::OK, Json(GetSessionResponse { session_id, actors })).into_response()
+            let session = entry.value().clone();
+            let actors = enrich_actors(&state, &session.actors).await;
+            (StatusCode::OK, Json(GetSessionResponse {
+                session_id,
+                actors,
+                min_participants: session.min_participants,
+                recommended_participants: session.recommended_participants,
+            })).into_response()
         }
         None => (
             StatusCode::NOT_FOUND,
@@ -215,7 +193,18 @@ pub async fn join(
         "owner joined session"
     );
 
-    (StatusCode::OK, Json(JoinSessionResponse { session_id, actor, actors })).into_response()
+    let (min_participants, recommended_participants) = {
+        let session = state.sessions.get(&session_id).unwrap();
+        (session.min_participants, session.recommended_participants)
+    };
+
+    (StatusCode::OK, Json(JoinSessionResponse {
+        session_id,
+        actor,
+        actors,
+        min_participants,
+        recommended_participants,
+    })).into_response()
 }
 
 /// POST /sessions/:session_id/participants/:participant_id/browser-contact
@@ -254,16 +243,12 @@ pub async fn get_browser_contact(
     }
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-/// Register a browser-managed actor (owner or browser participant).
 fn register_browser_actor(state: &AppState, actor_id: Uuid) {
     let (tx, rx) = mpsc::unbounded_channel();
     state.actor_inboxes.insert(actor_id, ActorInbox::Browser(tx));
     state.browser_receivers.insert(actor_id, Arc::new(Mutex::new(rx)));
 }
 
-/// Create a DeRecProtocol, start an Actix actor for it, and register the inbox.
 fn spawn_provisioned(state: &AppState, actor_id: Uuid, session_id: Uuid, role: Role, transport_uri: &str, name: Option<String>) {
     let protocol = create_protocol(state, transport_uri, name);
     let app_state = Arc::new(state.clone());
@@ -275,7 +260,6 @@ fn spawn_provisioned(state: &AppState, actor_id: Uuid, session_id: Uuid, role: R
     state.actor_inboxes.insert(actor_id, ActorInbox::Provisioned(addr));
 }
 
-/// Create a DeRecProtocol instance for a provisioned actor.
 fn create_protocol(state: &AppState, transport_uri: &str, name: Option<String>) -> crate::stores::ActorProtocol {
     let transport = HttpTransport::new(state.http_client.clone());
     let own_transport = derec_proto::TransportProtocol {
@@ -299,7 +283,6 @@ fn create_protocol(state: &AppState, transport_uri: &str, name: Option<String>) 
         .build()
 }
 
-/// Build `ActorWithStatus` list from a session's actors.
 async fn enrich_actors(state: &AppState, actors: &[Actor]) -> Vec<ActorWithStatus> {
     let mut result = Vec::with_capacity(actors.len());
 
@@ -307,7 +290,6 @@ async fn enrich_actors(state: &AppState, actors: &[Actor]) -> Vec<ActorWithStatu
         let channel_id = state.participant_channels.get(&a.id)
             .and_then(|v| v.value().last().cloned())
             .or_else(|| state.replica_channels.get(&a.id).and_then(|v| v.value().last().cloned()));
-        let pending_recovery_channel_id = state.pending_associations.get(&a.id).map(|v| v.value().clone());
 
         let disabled = if state.disabled_participants.contains_key(&a.id) || state.disabled_replicas.contains_key(&a.id) {
             Some(true)
@@ -340,7 +322,7 @@ async fn enrich_actors(state: &AppState, actors: &[Actor]) -> Vec<ActorWithStatu
             None
         };
 
-        let browser_managed = if a.role == Role::Participant && state.browser_receivers.contains_key(&a.id) {
+        let browser_managed = if state.browser_receivers.contains_key(&a.id) {
             Some(true)
         } else {
             None
@@ -355,7 +337,6 @@ async fn enrich_actors(state: &AppState, actors: &[Actor]) -> Vec<ActorWithStatu
         result.push(ActorWithStatus {
             actor: a.clone(),
             channel_id,
-            pending_recovery_channel_id,
             shared_key,
             disabled,
             browser_managed,
@@ -366,7 +347,6 @@ async fn enrich_actors(state: &AppState, actors: &[Actor]) -> Vec<ActorWithStatu
     result
 }
 
-/// Build a backend-provisioned actor whose transport URI points at this relay.
 fn provisioned_actor(role: Role, name: &str, session_id: Uuid, base_url: &str) -> Actor {
     let actor_id = Uuid::new_v4();
     let role_segment = match role {

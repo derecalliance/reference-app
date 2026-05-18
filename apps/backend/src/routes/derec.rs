@@ -18,8 +18,6 @@ use crate::{
     state::{ActorInbox, AppState},
 };
 
-// ── Response types ────────────────────────────────────────────────────────────
-
 #[derive(Debug, Serialize)]
 pub struct MailboxMessage {
     /// Raw wire bytes, base64url-encoded for JSON transport.
@@ -31,8 +29,6 @@ pub struct PollMessagesResponse {
     pub messages: Vec<MailboxMessage>,
 }
 
-// ── Role validation ───────────────────────────────────────────────────────────
-
 fn parse_role(s: &str) -> Option<Role> {
     match s {
         "owners" => Some(Role::Owner),
@@ -42,14 +38,7 @@ fn parse_role(s: &str) -> Option<Role> {
     }
 }
 
-// ── Handlers ──────────────────────────────────────────────────────────────────
-
 /// POST /derec/sessions/:session_id/:role/:actor_id
-///
-/// Delivers a raw protobuf-encoded DeRec wire message to an actor's inbox.
-/// All actors use the same delivery path: the message is pushed into the
-/// actor's inbox (either an mpsc channel for browser actors or the Actix
-/// mailbox for provisioned actors).
 pub async fn deliver_message(
     State(state): State<Arc<AppState>>,
     Path((session_id, role, actor_id)): Path<(Uuid, String, Uuid)>,
@@ -93,7 +82,6 @@ pub async fn deliver_message(
             .into_response();
     }
 
-    // If this actor is disabled (offline simulation), silently drop the message.
     if state.disabled_participants.contains_key(&actor_id)
         || state.disabled_replicas.contains_key(&actor_id)
     {
@@ -106,7 +94,6 @@ pub async fn deliver_message(
         return StatusCode::ACCEPTED.into_response();
     }
 
-    // Uniform delivery: push to the actor's inbox.
     match state.actor_inboxes.get(&actor_id) {
         Some(entry) => {
             match entry.value() {
@@ -137,8 +124,6 @@ pub async fn deliver_message(
 }
 
 /// GET /derec/sessions/:session_id/:role/:actor_id/mailbox
-///
-/// Drains and returns all pending messages from a browser actor's inbox.
 pub async fn poll_mailbox(
     State(state): State<Arc<AppState>>,
     Path((session_id, role, actor_id)): Path<(Uuid, String, Uuid)>,

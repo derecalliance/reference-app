@@ -7,13 +7,10 @@ use tracing::{info, error};
 use uuid::Uuid;
 
 use derec_library::protocol::{DeRecEvent, DeRecFlow, PendingAction};
-use derec_proto::SenderKind;
 
 use crate::models::Role;
 use crate::state::AppState;
 use crate::stores::ActorProtocol;
-
-// ── Actor ────────────────────────────────────────────────────────────────────
 
 pub struct ProvisionedActor {
     protocol: Option<ActorProtocol>,
@@ -40,35 +37,73 @@ impl ProvisionedActor {
         }
     }
 
-    fn handle_events(&self, events: Vec<DeRecEvent>, ctx: &mut Context<Self>) {
+    fn handle_events(&mut self, events: Vec<DeRecEvent>, ctx: &mut Context<Self>) {
         for event in events {
             match event {
-                DeRecEvent::PairingCompleted { channel_id, kind, .. } => {
+                DeRecEvent::PairingCompleted { channel_id, .. } => {
                     let cid = channel_id.0.to_string();
                     match self.role {
                         Role::Participant => {
-                            if kind == SenderKind::Helper {
-                                // Recovery pairing (owner sent OwnerRecovery → participant sees Helper)
-                                self.state.pending_associations.insert(self.actor_id, cid.clone());
-                                info!(
-                                    session_id = %self.session_id,
-                                    actor_id = %self.actor_id,
-                                    channel_id = channel_id.0,
-                                    "recovery pairing complete — awaiting channel association"
-                                );
-                            } else {
-                                // Normal pairing — append channel
-                                self.state.participant_channels
-                                    .entry(self.actor_id)
-                                    .or_default()
-                                    .push(cid.clone());
-                                info!(
-                                    session_id = %self.session_id,
-                                    actor_id = %self.actor_id,
-                                    channel_id = channel_id.0,
-                                    "participant pairing complete — channel recorded"
-                                );
+                            let actor_id = self.actor_id;
+                            let new_cid: u64 = channel_id.0;
+
+                            // If the participant already has a channel, this is a re-pairing
+                            // (recovery or replacement). Auto-migrate shares so GetShare
+                            // succeeds immediately on the new channel.
+                            let old_cid_opt = {
+                                let entry = self.state.participant_channels.get(&actor_id);
+                                entry.as_deref()
+                                    .and_then(|v| v.last())
+                                    .and_then(|s| s.parse::<u64>().ok())
+                            };
+
+                            if let Some(old_cid) = old_cid_opt {
+                                // Only migrate when the channel actually changed.  The /pair
+                                // endpoint may already have done this eagerly; guard avoids
+                                // a redundant self-copy and spurious log noise.
+                                if old_cid != new_cid {
+                                    if let Some(protocol) = self.protocol.as_mut() {
+                                        // Try the precise channel first. If that finds nothing
+                                        // (the stored channel_id may differ from what
+                                        // participant_channels records, depending on which
+                                        // party's contact was used during initial pairing),
+                                        // fall back to migrating all shares held by this actor.
+                                        let migrated = {
+                                            let precise = protocol.share_store.associate_channel(old_cid, new_cid);
+                                            if precise == 0 {
+                                                protocol.share_store.associate_all_to_channel(new_cid)
+                                            } else {
+                                                precise
+                                            }
+                                        };
+                                        protocol.secret_store.associate_channel(old_cid, new_cid);
+                                        info!(
+                                            session_id = %self.session_id,
+                                            actor_id = %actor_id,
+                                            old_channel_id = old_cid,
+                                            new_channel_id = new_cid,
+                                            migrated_shares = migrated,
+                                            "re-pairing — channels auto-associated"
+                                        );
+                                    }
+                                    let old_str = old_cid.to_string();
+                                    self.state.participant_channels
+                                        .entry(actor_id)
+                                        .or_default()
+                                        .retain(|c| *c != old_str);
+                                }
                             }
+
+                            self.state.participant_channels
+                                .entry(actor_id)
+                                .or_default()
+                                .push(cid.clone());
+                            info!(
+                                session_id = %self.session_id,
+                                actor_id = %actor_id,
+                                channel_id = new_cid,
+                                "participant pairing complete — channel recorded"
+                            );
                         }
                         Role::Replica => {
                             self.state.replica_channels
@@ -109,34 +144,29 @@ impl Actor for ProvisionedActor {
     }
 }
 
-// ── Messages ─────────────────────────────────────────────────────────────────
-
 /// Incoming protocol bytes from a peer. Schedules processing after a random delay.
 #[derive(Message)]
 #[rtype(result = "()")]
 pub struct IncomingMessage(pub Vec<u8>);
 
-/// Internal: processes protocol bytes after the stagger delay.
+// Delayed so concurrent messages from the same sender don't race through WASM in lockstep.
 #[derive(Message)]
 #[rtype(result = "()")]
 struct ProcessDelayed(Vec<u8>);
 
-/// Internal: auto-accepts a pending action from an ActionRequired event.
 #[derive(Message)]
 #[rtype(result = "()")]
 struct AcceptAction(PendingAction);
 
-/// Creates a DeRec contact for this actor.
 #[derive(Message)]
 #[rtype(result = "Result<derec_proto::ContactMessage, derec_library::Error>")]
 pub struct CreateContactMsg;
 
-/// Initiates a protocol flow (pairing, sharing, etc.).
 #[derive(Message)]
 #[rtype(result = "Result<Option<u64>, derec_library::Error>")]
 pub struct StartFlowMsg(pub DeRecFlow);
 
-/// Associates a recovery channel with an old channel (copies shares + secrets).
+/// Copies shares and secrets from `old_cid` to `new_cid` in the actor's stores.
 #[derive(Message)]
 #[rtype(result = "AssociateChannelResult")]
 pub struct AssociateChannelMsg {
@@ -148,25 +178,20 @@ pub struct AssociateChannelResult {
     pub migrated_shares: usize,
 }
 
-/// Returns the shared key for a channel, if available.
 #[derive(Message)]
 #[rtype(result = "Option<[u8; 32]>")]
 pub struct LoadSharedKeyMsg(pub u64);
 
-/// Computes the fingerprint for a paired channel.
 #[derive(Message)]
 #[rtype(result = "Result<String, derec_library::Error>")]
 pub struct GetFingerprintMsg(pub u64);
 
-/// Verifies a fingerprint against the locally computed one.
 #[derive(Message)]
 #[rtype(result = "Result<bool, derec_library::Error>")]
 pub struct VerifyFingerprintMsg {
     pub channel_id: u64,
     pub fingerprint: String,
 }
-
-// ── Handlers ─────────────────────────────────────────────────────────────────
 
 impl Handler<IncomingMessage> for ProvisionedActor {
     type Result = ();
@@ -300,8 +325,7 @@ impl Handler<AssociateChannelMsg> for ProvisionedActor {
 
     fn handle(&mut self, msg: AssociateChannelMsg, _ctx: &mut Context<Self>) -> Self::Result {
         let Some(protocol) = self.protocol.as_mut() else {
-            // Protocol is temporarily taken by an in-flight async handler.
-            // Return 0 migrated; the caller can retry.
+            // Protocol is taken by an in-flight async handler; caller can retry.
             return MessageResult(AssociateChannelResult { migrated_shares: 0 });
         };
         let migrated_shares = protocol.share_store.associate_channel(msg.old_cid, msg.new_cid);
@@ -315,8 +339,6 @@ impl Handler<LoadSharedKeyMsg> for ProvisionedActor {
 
     fn handle(&mut self, msg: LoadSharedKeyMsg, _ctx: &mut Context<Self>) -> Self::Result {
         let Some(protocol) = self.protocol.as_ref() else {
-            // Protocol is temporarily taken by an in-flight async handler
-            // (e.g. AcceptAction). Return None; the caller will retry on next poll.
             return None;
         };
         protocol.secret_store.load_shared_key(msg.0)

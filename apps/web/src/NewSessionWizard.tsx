@@ -6,8 +6,6 @@ import { useConsole } from './ConsoleContext'
 import { loadLastSession, loadSessionById } from './sessionPersistence'
 import { faker } from '@faker-js/faker'
 
-// ── Types ────────────────────────────────────────────────────────────────────
-
 type Flow = 'create' | 'continue' | 'join'
 type StepKey = 'choice' | 'ownerName' | 'participantCount' | 'sessionId' | 'participantName' | 'joinPrePair'
 
@@ -20,8 +18,6 @@ interface WizardData {
   sessionId: string
   participantName: string
 }
-
-// ── Step components ──────────────────────────────────────────────────────────
 
 function StepChoice({
   onSelect,
@@ -328,21 +324,15 @@ function StepJoinPrePair({
   )
 }
 
-// ── Flow / steps config ──────────────────────────────────────────────────────
-
 const FLOW_STEPS: Record<Flow, StepKey[]> = {
   create: ['ownerName', 'participantCount'],
   continue: ['sessionId'],
   join: ['sessionId', 'participantName', 'joinPrePair'],
 }
 
-// ── Main wizard ──────────────────────────────────────────────────────────────
-
 interface Props {
   onCreated: (session: OwnerSession) => void
-  /** Pre-filled session ID from the URL. */
   initialSessionId?: string | null
-  /** URL intent: 'join' for /session/{id}/join, 'continue' for /session/{id}. */
   initialIntent?: 'continue' | 'join'
 }
 
@@ -353,7 +343,6 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
     return 'continue'
   })
   const [stepIndex, setStepIndex] = useState(() => {
-    // For URL-triggered join, skip the sessionId step (already pre-filled)
     if (initialSessionId && initialIntent === 'join') return 1
     return 0
   })
@@ -371,10 +360,8 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
   const [joinParticipantCount, setJoinParticipantCount] = useState<number>(0)
   const { log } = useConsole()
 
-  // Loaded once at mount — used to show the "Resume" shortcut on the choice screen.
   const [lastSession] = useState<OwnerSession | null>(() => loadLastSession())
 
-  // When opened with a /session/{id} URL (continue intent), auto-submit.
   const didAutoSubmit = useRef(false)
   useEffect(() => {
     if (!initialSessionId || didAutoSubmit.current) return
@@ -407,6 +394,8 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
       const resp = await apiCreateSession({
         ownerName: data.ownerName,
         additionalParticipants: data.participantCount,
+        minParticipants: data.minParticipants,
+        recommendedParticipants: data.recommendedParticipants,
       })
 
       const ownerActor = resp.actors.find(a => a.role === 'owner')!
@@ -436,6 +425,7 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
         recoveryProgress: null,
         replicas: [],
         heldShares: [],
+        recoveryChannelLinks: [],
       }
 
       log({
@@ -461,14 +451,14 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
     setContinueError(null)
     const sessionId = data.sessionId.trim()
 
-    // Try localStorage first — it preserves full FE state (paired participants, secrets, etc.)
+    // localStorage preserves full FE state (paired participants, secrets, etc.);
+    // falling back to the BE works cross-browser but starts with a fresh FE state.
     const localSession = loadSessionById(sessionId)
     if (localSession) {
       onCreated(localSession)
       return
     }
 
-    // Fall back to the BE — works cross-browser/device but starts with fresh FE state.
     setCreating(true)
     try {
       const resp = await apiGetSession(sessionId)
@@ -492,12 +482,11 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
           transport: { protocol: a.transport.protocol, uri: a.transport.uri },
           connectionStatus: a.channel_id ? 'paired' as const : 'available' as const,
           secretShares: [],
-          pendingRecoveryChannelId: a.pending_recovery_channel_id,
         })),
         secretBag: null,
         pendingPairings: [],
-        minParticipants: 2,
-        recommendedParticipants: 5,
+        minParticipants: resp.min_participants,
+        recommendedParticipants: resp.recommended_participants,
 
         recoveredSecrets: [],
         recoveryProgress: null,
@@ -512,6 +501,7 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
           offline: a.disabled || undefined,
         })),
         heldShares: [],
+        recoveryChannelLinks: [],
       }
 
       log({
@@ -540,7 +530,6 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
     try {
       const resp = await apiJoinSession(sessionId, name, data.prePairedCount > 0 ? data.prePairedCount : undefined)
 
-      // All participants are shared across the session — any owner can pair with any.
       const peerActors = resp.actors.filter(a => a.role === 'participant')
       const replicaActors = resp.actors.filter(a => a.role === 'replica')
 
@@ -560,8 +549,8 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
         secretBag: null,
         pendingPairings: [],
         prePairedCount: data.prePairedCount > 0 ? data.prePairedCount : undefined,
-        minParticipants: data.minParticipants,
-        recommendedParticipants: data.recommendedParticipants,
+        minParticipants: resp.min_participants,
+        recommendedParticipants: resp.recommended_participants,
         recoveredSecrets: [],
         recoveryProgress: null,
         replicas: replicaActors.map(a => ({
@@ -575,6 +564,7 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
           offline: a.disabled || undefined,
         })),
         heldShares: [],
+        recoveryChannelLinks: [],
       }
 
       log({
@@ -594,8 +584,6 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
   }
 
   async function handleNext() {
-    // When advancing from the sessionId step in the join flow, validate the session
-    // and fetch the participant count so the pre-pair step knows the max.
     if (flow === 'join' && step === 'sessionId') {
       const sessionId = data.sessionId.trim()
       if (!sessionId) return
@@ -605,7 +593,6 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
         const resp = await apiGetSession(sessionId)
         const count = resp.actors.filter(a => a.role === 'participant').length
         setJoinParticipantCount(count)
-        // Cap pre-paired count to available participants
         if (data.prePairedCount > count) {
           setData(d => ({ ...d, prePairedCount: Math.min(d.prePairedCount, count) }))
         }

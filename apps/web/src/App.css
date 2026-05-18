@@ -74,6 +74,46 @@ button {
   }
 }
 
+.leave-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.leave-dialog {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 24px;
+  width: 360px;
+  max-width: calc(100vw - 48px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+}
+
+.leave-dialog-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-h);
+  margin: 0 0 8px;
+}
+
+.leave-dialog-body {
+  font-size: 14px;
+  color: var(--text);
+  margin: 0 0 20px;
+  line-height: 1.5;
+}
+
+.leave-dialog-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 footer {
   display: flex;
   align-items: center;
