@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
-import { DeRecProtocol, SenderKind, type ContactMessage } from '@derec-alliance/web'
+import { DeRecProtocol, type ContactMessage } from '@derec-alliance/web'
 import type { ParticipantSession } from './types'
 import { useConsole } from './ConsoleContext'
-import { sendMessage, pollMailbox, toBase64Url, fromBase64Url } from './derecApi'
+import { sendMessage, pollMailbox, toBase64Url } from './derecApi'
 import { makeChannelStore, makeSecretStore, makeShareStore, makeTransport } from './stores'
 import { apiPostBrowserContact, type ContactMessageDto } from './api'
 import './ParticipantSessionPage.css'
@@ -89,7 +89,7 @@ export default function ParticipantSessionPage({ session, onUpdate }: Props) {
           payload: { channelId: dto.channel_id },
         })
       } catch (err) {
-        console.error('[participant] failed to post contact:', err)
+
         addEvent('Error', `Failed to post contact: ${err}`)
       }
     }
@@ -98,8 +98,6 @@ export default function ParticipantSessionPage({ session, onUpdate }: Props) {
     return () => { protocolRef.current = null }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.sessionId, session.participantId])
-
-  // ── Mailbox polling ───────────────────────────────────────────────────────
 
   useEffect(() => {
     let running = false
@@ -115,7 +113,7 @@ export default function ParticipantSessionPage({ session, onUpdate }: Props) {
         try {
           messages = await pollMailbox(sessionId, 'participants', participantId)
         } catch (err) {
-          console.error('[participant-poll] failed to fetch messages:', err)
+
           return
         }
 
@@ -128,12 +126,11 @@ export default function ParticipantSessionPage({ session, onUpdate }: Props) {
           try {
             events = Array.from(await protocol.process(bytes)) as typeof events
           } catch (err) {
-            console.error('[participant-poll] process() failed:', err)
             continue
           }
 
           for (const event of events) {
-            console.log('[participant-poll] event:', event.type, event)
+
             addEvent(event.type, event.channel_id ? `channel=${event.channel_id}` : undefined)
 
             if (event.type === 'PairingCompleted' && event.channel_id) {
@@ -163,6 +160,7 @@ export default function ParticipantSessionPage({ session, onUpdate }: Props) {
     }, 1000)
 
     return () => clearInterval(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.sessionId, session.participantId])
 
   const isPaired = session.connectionStatus === 'paired'

@@ -6,20 +6,16 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use derec_library::protocol::DeRecFlow;
-use derec_proto::SenderKind;
 use tracing::info;
 use uuid::Uuid;
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    actor::{CreateContactMsg, GetFingerprintMsg, StartFlowMsg, VerifyFingerprintMsg},
-    routes::participants::{ContactMessageDto, PairResponse, SetStatusRequest, ToggleStatusResponse, contact_to_dto, dto_to_contact},
+    actor::{GetFingerprintMsg, VerifyFingerprintMsg},
+    routes::participants::{SetStatusRequest, ToggleStatusResponse},
     state::{ActorInbox, AppState},
 };
-
-// ── Helpers ────────────────────────────────────────────────────────────────
 
 fn get_provisioned_addr(state: &AppState, actor_id: &Uuid) -> Option<actix::Addr<crate::actor::ProvisionedActor>> {
     state.actor_inboxes.get(actor_id).and_then(|entry| {
@@ -28,115 +24,6 @@ fn get_provisioned_addr(state: &AppState, actor_id: &Uuid) -> Option<actix::Addr
             _ => None,
         }
     })
-}
-
-// ── Handlers ────────────────────────────────────────────────────────────────
-
-/// POST /sessions/:session_id/replicas/:replica_id/create-contact
-pub async fn create_contact(
-    State(state): State<Arc<AppState>>,
-    Path((session_id, replica_id)): Path<(Uuid, Uuid)>,
-) -> Response {
-    if !state.sessions.contains_key(&session_id) {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "session not found" })),
-        )
-            .into_response();
-    }
-
-    let addr = match get_provisioned_addr(&state, &replica_id) {
-        Some(a) => a,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "replica not found" })),
-            )
-                .into_response();
-        }
-    };
-
-    match addr.send(CreateContactMsg).await {
-        Ok(Ok(contact)) => {
-            let dto = contact_to_dto(&contact);
-            info!(
-                session_id = %session_id,
-                replica_id = %replica_id,
-                channel_id = %dto.channel_id,
-                "replica contact created"
-            );
-            (StatusCode::OK, Json(dto)).into_response()
-        }
-        Ok(Err(e)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": format!("create_contact failed: {e}") })),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": format!("actor mailbox error: {e}") })),
-        )
-            .into_response(),
-    }
-}
-
-/// POST /sessions/:session_id/replicas/:replica_id/pair
-pub async fn pair(
-    State(state): State<Arc<AppState>>,
-    Path((session_id, replica_id)): Path<(Uuid, Uuid)>,
-    Json(dto): Json<ContactMessageDto>,
-) -> Response {
-    if !state.sessions.contains_key(&session_id) {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "session not found" })),
-        )
-            .into_response();
-    }
-
-    let addr = match get_provisioned_addr(&state, &replica_id) {
-        Some(a) => a,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "replica not found" })),
-            )
-                .into_response();
-        }
-    };
-
-    let contact = dto_to_contact(&dto);
-
-    match addr.send(StartFlowMsg(DeRecFlow::Pairing {
-        kind: SenderKind::Replica,
-        contact,
-        name: None,
-    })).await {
-        Ok(Ok(Some(channel_id))) => {
-            info!(
-                session_id = %session_id,
-                replica_id = %replica_id,
-                channel_id = channel_id,
-                "replica pairing initiated"
-            );
-            (StatusCode::OK, Json(PairResponse { channel_id: channel_id.to_string() })).into_response()
-        }
-        Ok(Ok(None)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": "pairing did not return a channel_id" })),
-        )
-            .into_response(),
-        Ok(Err(e)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": format!("start failed: {e}") })),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": format!("actor mailbox error: {e}") })),
-        )
-            .into_response(),
-    }
 }
 
 /// POST /sessions/:session_id/replicas/:replica_id/toggle-status
@@ -182,8 +69,6 @@ pub async fn toggle_status(
     (StatusCode::OK, Json(ToggleStatusResponse { disabled: want_disabled })).into_response()
 }
 
-// ── Fingerprint confirmation ────────────────────────────────────────────────
-
 #[derive(Debug, Serialize)]
 pub struct GetFingerprintResponse {
     pub fingerprint: String,
@@ -196,10 +81,6 @@ pub struct ConfirmFingerprintRequest {
 }
 
 /// GET /sessions/:session_id/replicas/:replica_id/fingerprint
-///
-/// Returns the fingerprint for the replica's paired channel.
-/// The fingerprint is a 16-digit decimal string formatted as `XXXX-XXXX-XXXX-XXXX`,
-/// derived from the channel's shared key via SHA-256.
 pub async fn get_fingerprint(
     State(state): State<Arc<AppState>>,
     Path((session_id, replica_id)): Path<(Uuid, Uuid)>,
@@ -269,9 +150,6 @@ pub async fn get_fingerprint(
 }
 
 /// POST /sessions/:session_id/replicas/:replica_id/confirm-fingerprint
-///
-/// Verifies the provided fingerprint matches the one derived from the channel's
-/// shared key. If it matches, marks the replica as confirmed.
 pub async fn confirm_fingerprint(
     State(state): State<Arc<AppState>>,
     Path((session_id, replica_id)): Path<(Uuid, Uuid)>,

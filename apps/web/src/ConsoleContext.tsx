@@ -6,7 +6,6 @@ import {
   type ReactNode,
 } from 'react'
 
-// ── Types ─────────────────────────────────────────────────────────────────────
 
 export type ConsoleRole = 'owner' | 'participant'
 export type ConsoleFlow = 'session' | 'pairing' | 'sharing' | 'verification' | 'recovery' | 'replica'
@@ -24,7 +23,6 @@ export interface ConsoleEntry {
   response?: unknown
 }
 
-// ── Reducer ───────────────────────────────────────────────────────────────────
 
 interface State {
   entries: ConsoleEntry[]
@@ -43,7 +41,6 @@ function reducer(state: State, action: Action): State {
   }
 }
 
-// ── Context ───────────────────────────────────────────────────────────────────
 
 interface ConsoleContextValue {
   entries: ConsoleEntry[]
@@ -53,7 +50,6 @@ interface ConsoleContextValue {
 
 const ConsoleContext = createContext<ConsoleContextValue | null>(null)
 
-// ── Provider ──────────────────────────────────────────────────────────────────
 
 export function ConsoleProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, { entries: [] })
@@ -74,8 +70,7 @@ export function ConsoleProvider({ children }: { children: ReactNode }) {
   )
 }
 
-// ── Hook ──────────────────────────────────────────────────────────────────────
-
+// eslint-disable-next-line react-refresh/only-export-components
 export function useConsole(): ConsoleContextValue {
   const ctx = useContext(ConsoleContext)
   if (!ctx) throw new Error('useConsole must be used within a ConsoleProvider')

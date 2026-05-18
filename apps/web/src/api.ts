@@ -1,8 +1,4 @@
-// ── Config ────────────────────────────────────────────────────────────────────
-
 const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:5000'
-
-// ── Wire types (BE contract) ──────────────────────────────────────────────────
 
 interface BETransport {
   protocol: 'https'
@@ -23,7 +19,6 @@ interface CreateSessionResponse {
 
 interface BEActorWithStatus extends BEActor {
   channel_id?: string
-  pending_recovery_channel_id?: string
   shared_key?: string
   disabled?: boolean
   browser_managed?: boolean
@@ -34,22 +29,24 @@ interface BEActorWithStatus extends BEActor {
 export interface GetSessionResponse {
   session_id: string
   actors: BEActorWithStatus[]
+  min_participants: number
+  recommended_participants: number
 }
 
 export interface JoinSessionResponse {
   session_id: string
   actor: BEActor
   actors: BEActorWithStatus[]
+  min_participants: number
+  recommended_participants: number
 }
-
-// ── Session ───────────────────────────────────────────────────────────────────
 
 export interface CreateSessionParams {
   ownerName: string
   additionalParticipants: number
+  minParticipants: number
+  recommendedParticipants: number
 }
-
-// ── Participant contact DTO (matches BE ContactMessageDto) ────────────────────────
 
 export interface ContactMessageDto {
   channel_id: string
@@ -59,38 +56,19 @@ export interface ContactMessageDto {
   ecies_public_key: string
 }
 
-export async function apiCreateParticipantContact(
+export async function apiCreateActorContact(
   sessionId: string,
-  participantId: string,
+  actorId: string,
 ): Promise<ContactMessageDto> {
-  const res = await fetch(`${API_BASE}/sessions/${sessionId}/participants/${participantId}/create-contact`, {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/actors/${actorId}/contact`, {
     method: 'POST',
   })
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
-    throw new Error((body as { error?: string }).error ?? `create-contact failed: ${res.status}`)
+    throw new Error((body as { error?: string }).error ?? `create actor contact failed: ${res.status}`)
   }
   return res.json() as Promise<ContactMessageDto>
 }
-
-export async function apiStartParticipantPairing(
-  sessionId: string,
-  participantId: string,
-  ownerContact: ContactMessageDto,
-): Promise<{ channel_id: string }> {
-  const res = await fetch(`${API_BASE}/sessions/${sessionId}/participants/${participantId}/pair`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(ownerContact),
-  })
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw new Error((body as { error?: string }).error ?? `pair failed: ${res.status}`)
-  }
-  return res.json() as Promise<{ channel_id: string }>
-}
-
-// ── Participant status toggle ────────────────────────────────────────────────────
 
 export async function apiToggleParticipantStatus(
   sessionId: string,
@@ -111,40 +89,6 @@ export async function apiToggleParticipantStatus(
   return res.json() as Promise<{ disabled: boolean }>
 }
 
-// ── Channel association (recovery) ───────────────────────────────────────────
-
-export async function apiAssociateChannel(
-  sessionId: string,
-  participantId: string,
-  oldChannelId: string,
-  newChannelId: string,
-): Promise<{ migrated_shares: number }> {
-  const res = await fetch(`${API_BASE}/sessions/${sessionId}/participants/${participantId}/associate-channel`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ old_channel_id: oldChannelId, new_channel_id: newChannelId }),
-  })
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw new Error((body as { error?: string }).error ?? `associate-channel failed: ${res.status}`)
-  }
-  return res.json() as Promise<{ migrated_shares: number }>
-}
-
-// ── Recovery ─────────────────────────────────────────────────────────────────
-
-export async function apiClearPendingAssociations(sessionId: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/pending-associations`, {
-    method: 'DELETE',
-  })
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw new Error((body as { error?: string }).error ?? `clear pending associations failed: ${res.status}`)
-  }
-}
-
-// ── Session ───────────────────────────────────────────────────────────────────
-
 export async function apiGetSession(sessionId: string): Promise<GetSessionResponse> {
   const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}`)
   if (res.status === 404) {
@@ -155,8 +99,6 @@ export async function apiGetSession(sessionId: string): Promise<GetSessionRespon
   }
   return res.json() as Promise<GetSessionResponse>
 }
-
-// ── Add participant ──────────────────────────────────────────────────────────────
 
 export interface AddParticipantResponse {
   id: string
@@ -181,8 +123,6 @@ export async function apiAddParticipant(
   return res.json() as Promise<AddParticipantResponse>
 }
 
-// ── Replica endpoints ───────────────────────────────────────────────────────
-
 export interface AddReplicaResponse {
   id: string
   role: 'replica'
@@ -204,37 +144,6 @@ export async function apiAddReplica(
     throw new Error((body as { error?: string }).error ?? `add-replica failed: ${res.status}`)
   }
   return res.json() as Promise<AddReplicaResponse>
-}
-
-export async function apiCreateReplicaContact(
-  sessionId: string,
-  replicaId: string,
-): Promise<ContactMessageDto> {
-  const res = await fetch(`${API_BASE}/sessions/${sessionId}/replicas/${replicaId}/create-contact`, {
-    method: 'POST',
-  })
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw new Error((body as { error?: string }).error ?? `replica create-contact failed: ${res.status}`)
-  }
-  return res.json() as Promise<ContactMessageDto>
-}
-
-export async function apiStartReplicaPairing(
-  sessionId: string,
-  replicaId: string,
-  ownerContact: ContactMessageDto,
-): Promise<{ channel_id: string }> {
-  const res = await fetch(`${API_BASE}/sessions/${sessionId}/replicas/${replicaId}/pair`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(ownerContact),
-  })
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw new Error((body as { error?: string }).error ?? `replica pair failed: ${res.status}`)
-  }
-  return res.json() as Promise<{ channel_id: string }>
 }
 
 export async function apiGetReplicaFingerprint(
@@ -286,8 +195,6 @@ export async function apiToggleReplicaStatus(
   return res.json() as Promise<{ disabled: boolean }>
 }
 
-// ── Session creation ────────────────────────────────────────────────────────
-
 export async function apiCreateSession(params: CreateSessionParams): Promise<CreateSessionResponse> {
   const res = await fetch(`${API_BASE}/sessions`, {
     method: 'POST',
@@ -295,6 +202,8 @@ export async function apiCreateSession(params: CreateSessionParams): Promise<Cre
     body: JSON.stringify({
       name: params.ownerName,
       additional_participants: params.additionalParticipants,
+      min_participants: params.minParticipants,
+      recommended_participants: params.recommendedParticipants,
     }),
   })
 
@@ -304,8 +213,6 @@ export async function apiCreateSession(params: CreateSessionParams): Promise<Cre
 
   return res.json() as Promise<CreateSessionResponse>
 }
-
-// ── Join session ────────────────────────────────────────────────────────────
 
 export async function apiJoinSession(
   sessionId: string,
@@ -326,8 +233,6 @@ export async function apiJoinSession(
   return res.json() as Promise<JoinSessionResponse>
 }
 
-// ── Browser-managed participant contact signaling ───────────────────────────
-
 export async function apiPostBrowserContact(
   sessionId: string,
   participantId: string,
@@ -341,6 +246,23 @@ export async function apiPostBrowserContact(
   if (!res.ok) {
     throw new Error(`post browser-contact failed: ${res.status}`)
   }
+}
+
+export async function apiStartActorPairing(
+  sessionId: string,
+  actorId: string,
+  contact: ContactMessageDto,
+): Promise<{ channel_id: string }> {
+  const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/actors/${encodeURIComponent(actorId)}/start-pairing`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(contact),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error((body as { error?: string }).error ?? `start-pairing failed: ${res.status}`)
+  }
+  return res.json() as Promise<{ channel_id: string }>
 }
 
 export async function apiGetBrowserContact(

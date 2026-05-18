@@ -2,18 +2,14 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import { DeRecProtocol, SenderKind, FlowKind, type ContactMessage } from '@derec-alliance/web'
 import './OwnerSessionPage.css'
-import type { ParticipantConnectionStatus, OwnerSession, PairedParticipant, PairedReplica, PendingPairing, BagVersion, SecretBag, UserSecret, RecoveredSecret, ReplicaStatus, SecretShareRef, Transport, HeldShare } from './types'
+import type { ParticipantConnectionStatus, OwnerSession, PairedParticipant, PairedReplica, PendingPairing, BagVersion, SecretBag, UserSecret, RecoveredSecret, ReplicaStatus, SecretShareRef, Transport, HeldShare, RecoveryChannelLink } from './types'
 import { useConsole } from './ConsoleContext'
 import { sendMessage, pollMailbox, fromBase64Url, toBase64Url } from './derecApi'
-import { makeChannelStore, makeSecretStore, makeShareStore, makeTransport } from './stores'
-import { apiAddParticipant, apiAddReplica, apiAssociateChannel, apiClearPendingAssociations, apiConfirmReplicaFingerprint, apiCreateParticipantContact, apiCreateReplicaContact, apiGetBrowserContact, apiGetReplicaFingerprint, apiGetSession, apiPostBrowserContact, apiStartParticipantPairing, apiStartReplicaPairing, apiToggleParticipantStatus, apiToggleReplicaStatus, type ContactMessageDto } from './api'
+import { makeChannelStore, makeSecretStore, makeShareStore, makeTransport, clearNamespace } from './stores'
+import { apiAddParticipant, apiAddReplica, apiConfirmReplicaFingerprint, apiCreateActorContact, apiGetBrowserContact, apiGetReplicaFingerprint, apiGetSession, apiPostBrowserContact, apiStartActorPairing, apiToggleParticipantStatus, apiToggleReplicaStatus, type ContactMessageDto } from './api'
 import { faker } from '@faker-js/faker'
 
-// ── Contact serialization ─────────────────────────────────────────────────────
-//
-// QR / clipboard encoding is app-level. We use JSON with binary fields
-// base64url-encoded so the payload is text-safe and human-readable.
-
+// QR/clipboard payload: binary fields base64url-encoded, so the string is text-safe.
 function serializeContact(contact: ContactMessage): string {
   return JSON.stringify({
     channel_id: contact.channel_id,
@@ -41,8 +37,6 @@ function deserializeContact(payload: string): ContactMessage {
   }
 }
 
-// ── Backend DTO ↔ FE ContactMessage conversion ───────────────────────────────
-
 function dtoToContactMessage(dto: ContactMessageDto): ContactMessage {
   return {
     channel_id: dto.channel_id,
@@ -62,8 +56,6 @@ function contactMessageToDto(c: ContactMessage): ContactMessageDto {
     ecies_public_key: toBase64Url(c.ecies_public_key),
   }
 }
-
-// ── Shared SVG eye icons ──────────────────────────────────────────────────────
 
 const EyeIcon = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -98,8 +90,6 @@ function ChevronIcon({ expanded }: { expanded: boolean }) {
     </svg>
   )
 }
-
-// ── Copy button ───────────────────────────────────────────────────────────────
 
 function ClickToCopyCode({ label, value }: { label?: string; value: string }) {
   const [copied, setCopied] = useState(false)
@@ -136,8 +126,6 @@ function CopyButton({ label, text }: { label: string; text: string }) {
   )
 }
 
-// ── Shared key row (participant details) ─────────────────────────────────────
-
 function SharedKeyRow({ value, label }: { value: string; label?: boolean }) {
   const [visible, setVisible] = useState(false)
   const content = (
@@ -162,8 +150,6 @@ function SharedKeyRow({ value, label }: { value: string; label?: boolean }) {
   )
 }
 
-// ── Shared modal close button ─────────────────────────────────────────────────
-
 function ModalCloseButton({ onClose }: { onClose: () => void }) {
   return (
     <button className="modal-close" onClick={onClose} aria-label="Close">
@@ -174,8 +160,6 @@ function ModalCloseButton({ onClose }: { onClose: () => void }) {
     </button>
   )
 }
-
-// ── Protect Secret modal ──────────────────────────────────────────────────────
 
 type AddSecretStatus =
   | { kind: 'idle' }
@@ -215,7 +199,6 @@ function AddSecretModal({
     }
   }
 
-  // Track confirmation progress from the bag's current version participantIds.
   const confirming = status.kind === 'confirming' ? status : null
   const confirmationProgress = confirming
     ? confirming.participantIds.map(id => {
@@ -379,15 +362,9 @@ function AddSecretModal({
   )
 }
 
-// ── Share Contact modal ───────────────────────────────────────────────────────
-//
-// Used for both flows:
-//   - Owner displays their own contact QR (participant scans it → owner-initiates flow)
-//   - Participant displays their contact QR (owner scans it → participant-initiates flow)
-//
-// `createContact` abstracts the protocol instance so this component stays generic.
-
-
+// Works for both directions: owner showing their QR (participant scans) and
+// participant showing their QR (owner scans). `createContact` abstracts which
+// protocol instance to call.
 type ShareContactStep =
   | { kind: 'loading' }
   | { kind: 'error'; message: string }
@@ -404,7 +381,7 @@ function ShareContactModal({
   transport: Transport
   createContact: () => Promise<ContactMessage>
   onClose: () => void
-  onPairingCreated: (channelId: bigint) => void
+  onPairingCreated?: (channelId: bigint) => void
 }) {
   const { log } = useConsole()
   const [step, setStep] = useState<ShareContactStep>({ kind: 'loading' })
@@ -421,7 +398,7 @@ function ShareContactModal({
         // Binary fields are base64url-encoded so the payload is text-safe.
         const qrPayload = serializeContact(contact)
         setStep({ kind: 'ready', channelId, qrPayload, rawHex: contact.channel_id })
-        onPairingCreated(channelId)
+        onPairingCreated?.(channelId)
         log({
           role: 'owner',
           flow: 'pairing',
@@ -479,8 +456,6 @@ function ShareContactModal({
   )
 }
 
-// ── Transport display ─────────────────────────────────────────────────────────
-
 function TransportBlock({ transport }: { transport: Transport }) {
   return (
     <div className="transport-block">
@@ -496,11 +471,8 @@ function TransportBlock({ transport }: { transport: Transport }) {
   )
 }
 
-// ── Pair Initiator modal ──────────────────────────────────────────────────────
-//
-// The user pastes/scans a peer's contact QR payload (base64url protobuf bytes).
-// `startPairing` abstracts which protocol instance handles it.
-
+// Handles scanning/pasting a peer's contact QR. `startPairing` abstracts
+// which protocol instance (owner or recovery) to route the request through.
 type PairInitiatorStep =
   | { kind: 'input' }
   | { kind: 'sending' }
@@ -535,9 +507,11 @@ function PairInitiatorModal({
   participantId,
   pairedChannelIds,
   pairingRejectionCount,
+  pairingCompletedSignal,
   onClose,
   onSuccess,
   onPairingRequestSent,
+  resolveParticipantId,
   startPairing,
 }: {
   label: string
@@ -548,9 +522,22 @@ function PairInitiatorModal({
   pairedChannelIds: Set<string>
   /** Incremented when a pairing rejection is detected — signals the modal to exit waiting. */
   pairingRejectionCount: number
+  /**
+   * Incremented when any PairingCompleted event fires. Used as a fallback success signal
+   * for recovery pairings where the established channel ID may differ from the one returned
+   * by protocol.start() — making the pairedChannelIds set check unreliable.
+   */
+  pairingCompletedSignal: number
   onClose: () => void
   onSuccess: () => void
   onPairingRequestSent: (channelId: bigint, participantId?: string) => void
+  /**
+   * Optional: given a contact, resolve which participant ID it belongs to.
+   * Used to associate a PairingCompleted event with the correct provisioned
+   * participant when the caller doesn't already know the participant ID.
+   * Resolved by matching contact.transport_protocol.uri against participant.transport.uri.
+   */
+  resolveParticipantId?: (contact: ContactMessage) => string | undefined
   startPairing: (contact: ContactMessage) => Promise<bigint>
 }) {
   const { log } = useConsole()
@@ -558,27 +545,44 @@ function PairInitiatorModal({
   const [error, setError] = useState<string | null>(null)
   const [step, setStep] = useState<PairInitiatorStep>({ kind: 'input' })
 
-  // Snapshot the rejection count when we enter the waiting state so we only
-  // react to rejections that arrive *after* the request was sent.
+  // Snapshotted when entering the waiting state so we only react to events after the request.
   const rejectionCountAtWaitRef = useRef(pairingRejectionCount)
+  const completedSignalAtWaitRef = useRef(pairingCompletedSignal)
 
-  // Detect pairing completion by watching pairedChannelIds
+  // For non-recovery pairings: pairedChannelIds contains the new channel ID once
+  // PairingCompleted fires, so we can detect success here.
+  // For recovery pairings the new channel goes into participant.recoveryChannelId
+  // instead, so this check won't fire — the signal fallback below handles that case.
   useEffect(() => {
     if (step.kind !== 'waiting') return
-    if (pairedChannelIds.has(step.channelId.toString())) {
+    const channelIdStr = step.channelId.toString()
+    const found = pairedChannelIds.has(channelIdStr)
+
+    if (found) {
+
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setStep({ kind: 'success', channelId: step.channelId })
     }
   }, [step, pairedChannelIds])
 
-  // Detect pairing rejection from the polling loop
+  // Fallback for recovery pairings (see comment above).
+  useEffect(() => {
+    if (step.kind !== 'waiting') return
+    if (pairingCompletedSignal > completedSignalAtWaitRef.current) {
+
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setStep({ kind: 'success', channelId: step.channelId })
+    }
+  }, [step.kind, step.channelId, pairingCompletedSignal])
+
   useEffect(() => {
     if (step.kind !== 'waiting') return
     if (pairingRejectionCount > rejectionCountAtWaitRef.current) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setStep({ kind: 'failed', reason: 'The peer rejected the pairing request.' })
     }
   }, [step.kind, pairingRejectionCount])
 
-  // Timeout: if still waiting after PAIRING_TIMEOUT_MS, show failure
   useEffect(() => {
     if (step.kind !== 'waiting') return
     const timer = setTimeout(() => {
@@ -603,11 +607,16 @@ function PairInitiatorModal({
         payload: { channelId: channelId.toString() },
       })
 
-      onPairingRequestSent(channelId, participantId)
+      // Resolve participant ID from the contact's transport URI when it wasn't
+      // provided statically. This handles the case where a provisioned participant's
+      // contact JSON is pasted into the generic Pair modal.
+      const resolvedParticipantId = participantId ?? resolveParticipantId?.(contact)
+      onPairingRequestSent(channelId, resolvedParticipantId)
       rejectionCountAtWaitRef.current = pairingRejectionCount
+      completedSignalAtWaitRef.current = pairingCompletedSignal
       setStep({ kind: 'waiting', channelId })
     } catch (err) {
-      console.error('[PairInitiatorModal] start_pairing failed:', err)
+
       setError(`Failed: ${err instanceof Error ? err.message : String(err)}`)
       setStep({ kind: 'input' })
     }
@@ -689,7 +698,6 @@ function PairInitiatorModal({
   )
 }
 
-// ── Replica provisioning modal ────────────────────────────────────────────────
 //
 // Tracks the replica through: Pairing → Confirmation → Fingerprint → Done
 // The `replica` prop is live (refreshes from session state as events arrive).
@@ -720,10 +728,10 @@ function ReplicaProvisioningModal({
   const hasFingerprint = !!replica.replicaFingerprint
   const isBlocking = phase === 'progress' && !pairingDone
 
-  // 5-minute countdown for fingerprint confirmation
   const [remainingMs, setRemainingMs] = useState<number | null>(null)
   useEffect(() => {
     if (!replica.confirmationStartedAt || isConfirmed) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setRemainingMs(null)
       return
     }
@@ -758,7 +766,7 @@ function ReplicaProvisioningModal({
       onPairingRequestSent(channelId, replica.id)
       setPhase('progress')
     } catch (err) {
-      console.error('[ReplicaProvisioningModal] start_pairing failed:', err)
+
       setError(`Failed: ${err instanceof Error ? err.message : String(err)}`)
       setSending(false)
     }
@@ -879,8 +887,6 @@ function ReplicaProvisioningModal({
   )
 }
 
-// ── Session ID badge ──────────────────────────────────────────────────────────
-
 export function SessionIdBadge({ id }: { id: string }) {
   const [copied, setCopied] = useState(false)
 
@@ -901,8 +907,6 @@ export function SessionIdBadge({ id }: { id: string }) {
     </div>
   )
 }
-
-// ── Secret data field ─────────────────────────────────────────────────────────
 
 function SecretDataField({
   value,
@@ -940,7 +944,6 @@ function SecretDataField({
   )
 }
 
-// ── Verify Shares wizard ──────────────────────────────────────────────────────
 //
 // Two-step modal:
 //   Step 1 — select participants (checkbox list, all pre-selected)
@@ -967,7 +970,6 @@ function VerifySharesModal({
   const [error, setError] = useState<string | null>(null)
   const [timedOut, setTimedOut] = useState<Set<string>>(new Set())
 
-  // Send verification to all on mount.
   useEffect(() => {
     if (sent) return
     setSent(true)
@@ -977,7 +979,6 @@ function VerifySharesModal({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Mark remaining participants as timed out after PAIRING_TIMEOUT_MS.
   useEffect(() => {
     if (!sent) return
     const timer = setTimeout(() => {
@@ -1082,10 +1083,6 @@ function VerifySharesModal({
     </div>
   )
 }
-
-// ── Secret Bag Panel ────────────────────────────────────────────────────────
-
-// ── SecretBagPanel ─────────────────────────────────────────────────────────
 
 /** Builds a structured representation of the SecretContainer that gets protobuf-encoded and distributed. */
 function buildSecretContainerPayload(version: BagVersion) {
@@ -1417,8 +1414,6 @@ function SecretBagPanel({
   )
 }
 
-// ── Tab panels ────────────────────────────────────────────────────────────────
-
 function PairedParticipantsList({
   participants,
   onTogglePair,
@@ -1441,6 +1436,11 @@ function PairedParticipantsList({
             <span className="channel-row-name" style={{ flex: 'none' }}>{h.name}</span>
             <span className="channel-id-inline">{h.channelId}</span>
             <span style={{ flex: 1 }} />
+            {h.recoveryChannelId && (
+              <span className="status-tag recovery-channel" title={`Recovery channel: ${h.recoveryChannelId}`}>
+                Recovery
+              </span>
+            )}
             {h.offline && (
               <span className="status-tag offline">Offline</span>
             )}
@@ -1449,6 +1449,12 @@ function PairedParticipantsList({
             </button>
           </div>
           <div className="channel-row-bottom">
+            {h.recoveryChannelId && (
+              <div className="channel-prop">
+                <span className="channel-prop-label">Recovery Ch.</span>
+                <code className="channel-id-inline">{h.recoveryChannelId}</code>
+              </div>
+            )}
             {h.sharedKey && (
               <div className="channel-prop channel-prop--key">
                 <span className="channel-prop-label">Shared Key</span>
@@ -1465,8 +1471,6 @@ function PairedParticipantsList({
     </div>
   )
 }
-
-// ── Recovery tab components ──────────────────────────────────────────────────
 
 function RecoveryParticipantCard({
   participant,
@@ -1531,8 +1535,6 @@ function RecoveredSecretCard({ secret }: { secret: RecoveredSecret }) {
   )
 }
 
-// ── Replica components ───────────────────────────────────────────────────────
-
 function replicaStatusLabel(status: ReplicaStatus): string {
   switch (status) {
     case 'available':  return 'Available'
@@ -1554,10 +1556,10 @@ function ReplicaCard({
   const isConfirmed = replica.status === 'confirmed'
   const awaitingConfirmation = isPaired && !isConfirmed && !!replica.replicaFingerprint
 
-  // 5-minute countdown
   const [remainingMs, setRemainingMs] = useState<number | null>(null)
   useEffect(() => {
     if (!replica.confirmationStartedAt || isConfirmed) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setRemainingMs(null)
       return
     }
@@ -1762,40 +1764,139 @@ function RecoveryPanel({
   onRequestDiscovery: () => Promise<void>
   onRecover: (secretId: string, version: number, label: string, participantChannelIds: bigint[]) => Promise<void>
 }) {
-  const recoveryParticipants = session.participants.filter(h => h.recoveryPaired && (h.connectionStatus === 'paired'))
+  const recoveryParticipants = session.participants.filter(
+    h => h.recoveryPaired && h.connectionStatus === 'paired',
+  )
   const recoveredSecrets = session.recoveredSecrets ?? []
-  const allDiscovered = recoveryParticipants.length > 0 && recoveryParticipants.every(h => h.discoveryComplete)
+  const alreadyRecoveredKeys = new Set(recoveredSecrets.map(s => `${s.secretId}:${s.version}`))
+  const recoveryProgress = session.recoveryProgress
+
+  // Aggregate discovered versions from all recovery-paired helpers.
+  // Each entry carries which helpers have that (secretId, version) so we can
+  // check whether the threshold is met before enabling the Recover button.
+  type AggregatedEntry = {
+    secretId: string
+    version: number
+    description: string
+    helperChannelIds: bigint[]
+    helperNames: string[]
+  }
+  const entryMap = new Map<string, AggregatedEntry>()
+  for (const h of recoveryParticipants) {
+    for (const v of h.discoveredVersions ?? []) {
+      const key = `${v.secretId}:${v.version}`
+      const existing = entryMap.get(key)
+      if (existing) {
+        existing.helperChannelIds.push(BigInt(h.channelId))
+        existing.helperNames.push(h.name)
+      } else {
+        entryMap.set(key, {
+          secretId: v.secretId,
+          version: v.version,
+          description: v.description,
+          helperChannelIds: [BigInt(h.channelId)],
+          helperNames: [h.name],
+        })
+      }
+    }
+  }
+  const availableSecrets = Array.from(entryMap.values()).sort((a, b) => a.version - b.version)
 
   return (
     <div className="recovery-panel">
+      {/* Recovery-paired helpers */}
       <div className="recovery-section">
         <div className="section-header-row">
-          <h3 className="sub-heading">Recovery-Paired Participants</h3>
+          <h3 className="sub-heading">Recovery-Paired Helpers</h3>
           {recoveryParticipants.length > 0 && (
-            <button
-              className="primary"
-              onClick={() => { onRequestDiscovery() }}
-            >
-              {allDiscovered ? 'Re-discover All' : 'Discover All'}
+            <button className="primary" onClick={() => onRequestDiscovery()}>
+              {recoveryParticipants.every(h => h.discoveryComplete) ? 'Re-discover All' : 'Discover All'}
             </button>
           )}
         </div>
         {recoveryParticipants.length === 0 ? (
           <p className="tab-empty-state">
-            No participants paired in recovery mode yet. Use the "Pair" button while Recovery Mode is active.
+            No helpers paired in recovery mode yet. Use the "Pair" button while Recovery Mode is active.
           </p>
         ) : (
           <div className="card-list">
             {recoveryParticipants.map(h => (
-              <RecoveryParticipantCard
-                key={h.id}
-                participant={h}
-              />
+              <RecoveryParticipantCard key={h.id} participant={h} />
             ))}
           </div>
         )}
       </div>
 
+      {/* Available secrets discovered from helpers */}
+      {availableSecrets.length > 0 && (
+        <div className="recovery-section">
+          <h3 className="sub-heading">Available Secrets</h3>
+          <div className="card-list">
+            {availableSecrets.map(entry => {
+              const key = `${entry.secretId}:${entry.version}`
+              const alreadyRecovered = alreadyRecoveredKeys.has(key)
+              const helperCount = entry.helperChannelIds.length
+              const isInProgress = recoveryProgress?.secretId === entry.secretId &&
+                recoveryProgress?.version === entry.version &&
+                !recoveryProgress?.error
+              const entryError = recoveryProgress?.secretId === entry.secretId &&
+                recoveryProgress?.version === entry.version
+                  ? recoveryProgress.error
+                  : null
+              const insufficientShares = entryError != null
+              return (
+                <div key={key} className="detail-card">
+                  <div className="card-header">
+                    <span className="card-title">{entry.description || 'Untitled secret'}</span>
+                    <span className="mono-tag">{entry.secretId.slice(0, 8)}…</span>
+                    <span className="version-tag">v{entry.version}</span>
+                    <span className={`status-tag ${alreadyRecovered ? 'paired' : isInProgress ? 'available' : entryError ? 'offline' : 'available'}`}>
+                      {alreadyRecovered ? 'Recovered' : isInProgress ? 'Recovering…' : entryError ? 'Incomplete' : 'Ready'}
+                    </span>
+                  </div>
+                  <div className="card-body">
+                    <dl className="field-list">
+                      <div className="field-row">
+                        <dt>Helpers</dt>
+                        <dd className="recovery-helper-count">
+                          {helperCount} helper{helperCount !== 1 ? 's' : ''} available
+                          {entry.helperNames.length > 0 && (
+                            <span className="recovery-helper-names"> ({entry.helperNames.join(', ')})</span>
+                          )}
+                        </dd>
+                      </div>
+                      {isInProgress && (
+                        <div className="field-row">
+                          <dt>Progress</dt>
+                          <dd>{recoveryProgress!.sharesReceived} share{recoveryProgress!.sharesReceived !== 1 ? 's' : ''} received…</dd>
+                        </div>
+                      )}
+                    </dl>
+                    {insufficientShares && (
+                      <p className="recovery-insufficient-notice">
+                        Not enough shares — pair with more helpers and try again.
+                      </p>
+                    )}
+                    {!alreadyRecovered && (
+                      <div className="recovery-action-row">
+                        <button
+                          className="primary"
+                          disabled={isInProgress}
+                          onClick={() => onRecover(entry.secretId, entry.version, entry.description || 'secret', entry.helperChannelIds)}
+                        >
+                          {entryError ? 'Try Again' : 'Recover'}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Recovered secrets */}
       {recoveredSecrets.length > 0 && (
         <div className="recovery-section">
           <h3 className="sub-heading">Recovered Secrets</h3>
@@ -1810,8 +1911,6 @@ function RecoveryPanel({
   )
 }
 
-// ── Side panel ────────────────────────────────────────────────────────────────
-
 function connectionStatusLabel(status: ParticipantConnectionStatus): string {
   switch (status) {
     case 'paired':    return 'Paired'
@@ -1821,56 +1920,58 @@ function connectionStatusLabel(status: ParticipantConnectionStatus): string {
 
 function SidePanelParticipantItem({
   participant,
-  sessionId,
-  ownerName,
-  pairedChannelIds,
-  pairingRejectionCount,
   onTogglePair,
   onToggleStatus,
-  onPairingCreated,
   onPairingRequestSent,
-  onSuccess,
   createParticipantContact,
   startParticipantPairing,
+  startPairingAsInitiator,
+  pairedChannelIds,
+  pairingRejectionCount,
+  pairingCompletedSignal,
 }: {
   participant: PairedParticipant
-  sessionId: string
-  ownerName: string
-  pairedChannelIds: Set<string>
-  pairingRejectionCount: number
   onTogglePair: (id: string) => void
   onToggleStatus: (participantId: string) => Promise<void>
-  onPairingCreated: (channelId: bigint, participantId: string) => void
   onPairingRequestSent: (channelId: bigint, participantId: string) => void
-  onSuccess: () => void
   createParticipantContact: () => Promise<ContactMessage>
   startParticipantPairing: (contact: ContactMessage) => Promise<bigint>
+  /**
+   * When defined, the Pair button opens a modal for the user to paste the owner's
+   * contact JSON. The backend actor then initiates pairing using that contact.
+   */
+  startPairingAsInitiator?: (ownerContact: ContactMessage) => Promise<bigint>
+  pairedChannelIds: Set<string>
+  pairingRejectionCount: number
+  pairingCompletedSignal: number
 }) {
   const [expanded, setExpanded] = useState(false)
   const [shareContactOpen, setShareContactOpen] = useState(false)
-  const [pairWithOwnerOpen, setPairWithOwnerOpen] = useState(false)
-  const [associating, setAssociating] = useState(false)
-  const [assocError, setAssocError] = useState<string | null>(null)
+  const [pairAsInitiatorOpen, setPairAsInitiatorOpen] = useState(false)
+  const [isPairing, setIsPairing] = useState(false)
+  const [pairError, setPairError] = useState<string | null>(null)
   const [togglingStatus, setTogglingStatus] = useState(false)
   const isPaired = participant.connectionStatus === 'paired'
   const isOffline = !!participant.offline
-  const hasPendingRecovery = !!participant.pendingRecoveryChannelId
 
-  async function handleAssociate() {
-    if (!participant.pendingRecoveryChannelId || !participant.channelId) return
-    setAssociating(true)
-    setAssocError(null)
+  async function handlePair() {
+    if (startPairingAsInitiator) {
+      // Flow 1: open a modal so the user can paste the owner's contact JSON.
+      // The backend actor will initiate pairing using that contact.
+      setPairAsInitiatorOpen(true)
+      return
+    }
+    // Flow 2: owner's WASM fetches the participant's contact and initiates pairing.
+    setIsPairing(true)
+    setPairError(null)
     try {
-      await apiAssociateChannel(
-        sessionId,
-        participant.id,
-        participant.channelId, // old channel
-        participant.pendingRecoveryChannelId, // new recovery channel
-      )
+      const contact = await createParticipantContact()
+      const channelId = await startParticipantPairing(contact)
+      onPairingRequestSent(channelId, participant.id)
     } catch (err) {
-      setAssocError(err instanceof Error ? err.message : String(err))
+      setPairError(err instanceof Error ? err.message : String(err))
     } finally {
-      setAssociating(false)
+      setIsPairing(false)
     }
   }
 
@@ -1881,11 +1982,9 @@ function SidePanelParticipantItem({
         onClick={() => setExpanded(v => !v)}
         aria-expanded={expanded}
       >
-        <span className={`participant-dot ${hasPendingRecovery ? 'recovery-pending' : isOffline ? 'offline' : participant.connectionStatus}`} aria-hidden="true" />
+        <span className={`participant-dot ${isOffline ? 'offline' : participant.connectionStatus}`} aria-hidden="true" />
         <span className="side-participant-name">{participant.name}</span>
-        {hasPendingRecovery ? (
-          <span className="status-tag recovery-pending">Recovery Pending</span>
-        ) : isOffline ? (
+        {isOffline ? (
           <span className="status-tag offline">Offline</span>
         ) : (
           <span className={`status-tag ${participant.connectionStatus}`}>
@@ -1897,67 +1996,51 @@ function SidePanelParticipantItem({
 
       {expanded && (
         <div className="side-participant-details">
-          {hasPendingRecovery ? (
-            <div className="recovery-association-prompt">
-              <p className="recovery-assoc-description">
-                A recovery pairing request was received. Associate the new channel with this participant's existing contact.
-              </p>
-              <div className="recovery-assoc-contact">
-                <span className="recovery-assoc-name">{ownerName}</span>
-                <ClickToCopyCode label="Old Channel" value={participant.channelId} />
-                <ClickToCopyCode label="New Channel" value={participant.pendingRecoveryChannelId!} />
-              </div>
-              {assocError && <p className="field-error">{assocError}</p>}
-              <button
-                className="primary"
-                onClick={handleAssociate}
-                disabled={associating}
-              >
-                {associating ? 'Associating…' : `Associate with ${ownerName}`}
-              </button>
-            </div>
-          ) : (
-            <>
-              <div className="side-detail-row">
-                <span className="side-detail-label">Channel ID</span>
-                <span className="side-detail-value" title={participant.channelId}>{participant.channelId}</span>
-              </div>
-              {participant.sharedKey && (
-                <SharedKeyRow value={participant.sharedKey} />
-              )}
-              <div className="side-detail-row">
-                <span className="side-detail-label">Shares</span>
-                <span className="side-detail-value">{participant.secretShares.length}</span>
-              </div>
-              <div className="side-participant-actions">
-                <button
-                  className="secondary side-action-btn"
-                  onClick={() => setShareContactOpen(true)}
-                >
-                  Share Contact
-                </button>
-                <button
-                  className={`pair-action-btn ${isOffline ? 'pair' : 'unpair'}`}
-                  disabled={togglingStatus}
-                  onClick={async () => {
-                    setTogglingStatus(true)
-                    try { await onToggleStatus(participant.id) } finally { setTogglingStatus(false) }
-                  }}
-                >
-                  {togglingStatus ? '…' : isOffline ? 'Go Online' : 'Go Offline'}
-                </button>
-                {isPaired ? (
-                  <button className="pair-action-btn unpair" onClick={() => onTogglePair(participant.id)}>
-                    Unpair
-                  </button>
-                ) : !isOffline ? (
-                  <button className="pair-action-btn pair" onClick={() => setPairWithOwnerOpen(true)}>
-                    Pair
-                  </button>
-                ) : null}
-              </div>
-            </>
+          <div className="side-detail-row">
+            <span className="side-detail-label">Channel ID</span>
+            <span className="side-detail-value" title={participant.channelId}>{participant.channelId}</span>
+          </div>
+          {participant.sharedKey && (
+            <SharedKeyRow value={participant.sharedKey} />
           )}
+          <div className="side-detail-row">
+            <span className="side-detail-label">Shares</span>
+            <span className="side-detail-value">{participant.secretShares.length}</span>
+          </div>
+          {pairError && <p className="field-error">{pairError}</p>}
+          <div className="side-participant-actions">
+            <button
+              className="secondary side-action-btn"
+              onClick={() => setShareContactOpen(true)}
+            >
+              Share Contact
+            </button>
+            {!participant.browserManaged && (
+              <button
+                className={`pair-action-btn ${isOffline ? 'pair' : 'unpair'}`}
+                disabled={togglingStatus}
+                onClick={async () => {
+                  setTogglingStatus(true)
+                  try { await onToggleStatus(participant.id) } finally { setTogglingStatus(false) }
+                }}
+              >
+                {togglingStatus ? '…' : isOffline ? 'Go Online' : 'Go Offline'}
+              </button>
+            )}
+            {isPaired ? (
+              <button className="pair-action-btn unpair" onClick={() => onTogglePair(participant.id)}>
+                Unpair
+              </button>
+            ) : !isOffline ? (
+              <button
+                className="pair-action-btn pair"
+                disabled={isPairing}
+                onClick={handlePair}
+              >
+                {isPairing ? 'Pairing…' : 'Pair'}
+              </button>
+            ) : null}
+          </div>
         </div>
       )}
 
@@ -1967,29 +2050,28 @@ function SidePanelParticipantItem({
           transport={participant.transport}
           createContact={createParticipantContact}
           onClose={() => setShareContactOpen(false)}
-          onPairingCreated={channelId => {
-            onPairingCreated(channelId, participant.id)
-          }}
         />
       )}
 
-      {pairWithOwnerOpen && (
+      {pairAsInitiatorOpen && startPairingAsInitiator && (
         <PairInitiatorModal
-          label="Owner Contact QR Payload"
+          label="Owner Contact (QR Payload)"
           placeholder="Paste the JSON payload from the owner's Share Contact QR code"
           pairedChannelIds={pairedChannelIds}
           pairingRejectionCount={pairingRejectionCount}
-          onClose={() => setPairWithOwnerOpen(false)}
-          onSuccess={onSuccess}
-          onPairingRequestSent={(channelId) => onPairingRequestSent(channelId, participant.id)}
-          startPairing={startParticipantPairing}
+          pairingCompletedSignal={pairingCompletedSignal}
+          onClose={() => setPairAsInitiatorOpen(false)}
+          onSuccess={() => setPairAsInitiatorOpen(false)}
+          onPairingRequestSent={(channelId) => {
+            setPairAsInitiatorOpen(false)
+            onPairingRequestSent(channelId, participant.id)
+          }}
+          startPairing={startPairingAsInitiator}
         />
       )}
     </li>
   )
 }
-
-// ── Join QR modal ─────────────────────────────────────────────────────────────
 
 export function JoinQrModal({ sessionId, onClose }: { sessionId: string; onClose: () => void }) {
   const basePath = import.meta.env.BASE_URL.replace(/\/$/, '')
@@ -2022,14 +2104,10 @@ export function JoinQrModal({ sessionId, onClose }: { sessionId: string; onClose
   )
 }
 
-// ── Add Participant modal ────────────────────────────────────────────────────────
-
 function AddParticipantModal({
-  existingCount,
   onAdd,
   onClose,
 }: {
-  existingCount: number
   onAdd: (name: string, autoPair: boolean) => Promise<void>
   onClose: () => void
 }) {
@@ -2118,7 +2196,6 @@ function SidePanelReplicaItem({
   const isPaired = replica.status !== 'available'
   const isOffline = !!replica.offline
 
-  // Clear pairingInProgress when the replica actually becomes paired.
   useEffect(() => {
     if (isPaired && pairingInProgress) setPairingInProgress(false)
   }, [isPaired, pairingInProgress])
@@ -2220,43 +2297,44 @@ function SessionParticipantPanel({
   replicas,
   sessionId,
   ownerName,
-  pairedChannelIds,
-  pairingRejectionCount,
   onTogglePair,
   onToggleParticipantStatus,
   onToggleReplicaStatus,
   onPairingCreated,
   onPairingRequestSent,
-  onSuccess,
   onAddParticipant,
   onAddReplica,
   onReplicaPairStarted,
   getParticipantFunctions,
   getReplicaFunctions,
+  pairedChannelIds,
+  pairingRejectionCount,
+  pairingCompletedSignal,
 }: {
   participants: PairedParticipant[]
   replicas: PairedReplica[]
   sessionId: string
   ownerName: string
-  pairedChannelIds: Set<string>
-  pairingRejectionCount: number
   onTogglePair: (id: string) => void
   onToggleParticipantStatus: (participantId: string) => Promise<void>
   onToggleReplicaStatus: (replicaId: string) => Promise<void>
   onPairingCreated: (channelId: bigint, actorId: string) => void
   onPairingRequestSent: (channelId: bigint, actorId: string) => void
-  onSuccess: () => void
   onAddParticipant: (name: string, autoPair: boolean) => Promise<void>
   onAddReplica: (name: string) => Promise<void>
   onReplicaPairStarted: (replicaId: string) => void
   getParticipantFunctions: (participantId: string) => {
     createContact: () => Promise<ContactMessage>
     startPairing: (contact: ContactMessage) => Promise<bigint>
+    startPairingAsInitiator?: (ownerContact: ContactMessage) => Promise<bigint>
   }
   getReplicaFunctions: (replicaId: string) => {
     createContact: () => Promise<ContactMessage>
     startPairing: (contact: ContactMessage) => Promise<bigint>
   }
+  pairedChannelIds: Set<string>
+  pairingRejectionCount: number
+  pairingCompletedSignal: number
 }) {
   const [addParticipantOpen, setAddParticipantOpen] = useState(false)
   const [addingReplica, setAddingReplica] = useState(false)
@@ -2267,7 +2345,7 @@ function SessionParticipantPanel({
       <div className="side-panel-section">
         <div className="panel-header-row">
           <div>
-            <h3 className="panel-heading">Participants</h3>
+            <h3 className="panel-heading">Provisioned participants</h3>
             <p className="panel-subtitle">{participants.length} provisioned</p>
           </div>
           <button
@@ -2280,22 +2358,20 @@ function SessionParticipantPanel({
         </div>
         <ul className="side-participant-list" role="list">
           {participants.map(h => {
-            const { createContact, startPairing } = getParticipantFunctions(h.id)
+            const { createContact, startPairing, startPairingAsInitiator } = getParticipantFunctions(h.id)
             return (
               <SidePanelParticipantItem
                 key={h.id}
                 participant={h}
-                sessionId={sessionId}
-                ownerName={ownerName}
-                pairedChannelIds={pairedChannelIds}
-                pairingRejectionCount={pairingRejectionCount}
                 onTogglePair={onTogglePair}
                 onToggleStatus={onToggleParticipantStatus}
-                onPairingCreated={onPairingCreated}
                 onPairingRequestSent={onPairingRequestSent}
-                onSuccess={onSuccess}
                 createParticipantContact={createContact}
                 startParticipantPairing={startPairing}
+                startPairingAsInitiator={startPairingAsInitiator}
+                pairedChannelIds={pairedChannelIds}
+                pairingRejectionCount={pairingRejectionCount}
+                pairingCompletedSignal={pairingCompletedSignal}
               />
             )
           })}
@@ -2348,7 +2424,6 @@ function SessionParticipantPanel({
 
       {addParticipantOpen && (
         <AddParticipantModal
-          existingCount={participants.length}
           onAdd={async (name, autoPair) => {
             await onAddParticipant(name, autoPair)
             setAddParticipantOpen(false)
@@ -2359,8 +2434,6 @@ function SessionParticipantPanel({
     </aside>
   )
 }
-
-// ── Bag state helpers ────────────────────────────────────────────────────────
 
 function updateBagVersion(bag: SecretBag, version: number, updater: (v: BagVersion) => BagVersion): SecretBag {
   if (bag.currentVersion.version === version) {
@@ -2384,13 +2457,9 @@ function updateBagVerified(bag: SecretBag, version: number, participantId: strin
   )
 }
 
-// ── Pending share tracking ────────────────────────────────────────────────────
-
 interface PendingShare {
   version: number
 }
-
-// ── Page ──────────────────────────────────────────────────────────────────────
 
 type ActiveTab = 'participants' | 'secrets' | 'shares' | 'recovery' | 'replicas'
 
@@ -2410,11 +2479,12 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
   const [recoveryMode, setRecoveryMode] = useState(false)
   const recoveryModeRef = useRef(false)
   recoveryModeRef.current = recoveryMode
-  // Snapshot of participant state before entering recovery — restored on exit.
+  // Preserved on recovery entry so we can restore them when the user exits recovery mode.
   const preRecoveryParticipantsRef = useRef<PairedParticipant[] | null>(null)
+  const preRecoverySecretBagRef = useRef<import('./types').SecretBag | null>(null)
+  const preRecoveryHeldSharesRef = useRef<HeldShare[] | null>(null)
 
-  // Derived: set of channel IDs (decimal strings) for all paired participants + replicas.
-  // Used by PairInitiatorModal to detect pairing completion.
+  // Set of paired channel IDs watched by PairInitiatorModal to detect when pairing completes.
   const pairedChannelIds = useMemo(() => {
     const ids = new Set<string>()
     for (const p of session.participants) {
@@ -2426,17 +2496,29 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
     return ids
   }, [session.participants, session.replicas])
 
-  // Incremented when the polling loop detects a pairing rejection (process() error with
-  // "non-ok status"). PairInitiatorModal watches this to exit the waiting state.
+  // Polled by PairInitiatorModal — incremented on process() errors with "non-ok status".
   const [pairingRejectionCount, setPairingRejectionCount] = useState(0)
 
-  // IDs of participants being auto-paired. Non-empty → show setup gate instead of full UI.
+  // Fallback success signal for recovery pairings where protocol.start() returns a
+  // different channel ID than PairingCompleted.channel_id (so pairedChannelIds won't match).
+  const [pairingCompletedSignal, setPairingCompletedSignal] = useState(0)
+
+  // Non-empty while participants are being auto-paired; shows a setup gate in the UI.
   const [autoPairingIds, setAutoPairingIds] = useState<string[]>([])
 
-  // ── Pending pairing confirmation ────────────────────────────────────────────
   interface PendingPairingConfirmation {
     peerName: string
     channelId: string
+    /** True when the peer initiated pairing in recovery mode (SenderKind.OwnerRecovery). */
+    isRecovery: boolean
+    /**
+     * For recovery pairings only — drives the two-step modal:
+     * - 'confirm': show recovery notice, user clicks "Continue"
+     * - 'link': user selects the old contact to link; "Link & Accept" sends the response
+     */
+    step: 'confirm' | 'link'
+    /** The old channel ID chosen by Alice in the 'link' step. null until chosen. */
+    selectedOldChannelId: string | null
     /** Opaque action token from ActionRequired event — pass to accept() or reject(). */
     action: Uint8Array
   }
@@ -2445,7 +2527,6 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
   const pendingPairingConfirmationRef = useRef<PendingPairingConfirmation | null>(null)
   useEffect(() => { pendingPairingConfirmationRef.current = pendingPairingConfirmation }, [pendingPairingConfirmation])
 
-  // ── Pending store-share confirmation ───────────────────────────────────────────
   interface PendingStoreShareConfirmation {
     peerName: string
     channelId: string
@@ -2473,8 +2554,6 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
   const pendingVerifyShareConfirmationRef = useRef<PendingVerifyShareConfirmation | null>(null)
   useEffect(() => { pendingVerifyShareConfirmationRef.current = pendingVerifyShareConfirmation }, [pendingVerifyShareConfirmation])
 
-  // ── Protocol instances ────────────────────────────────────────────────────────
-
   const ownerProtocolRef = useRef<DeRecProtocol | null>(null)
   const ownerShareStoreRef = useRef<ReturnType<typeof makeShareStore> | null>(null)
 
@@ -2488,8 +2567,7 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
     return prev.then(fn).finally(() => resolve!())
   }
 
-  // Tracks pending shares so ShareConfirmed events can be correlated with secrets.
-  // keyed by participant channelId (bigint as string)
+  // Pending shares keyed by participant channelId; matched against ShareConfirmed events.
   const pendingSharesRef = useRef<Map<string, PendingShare>>(new Map())
 
   // Holds the bag version being built during a sharing round. Committed only when
@@ -2499,12 +2577,10 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
   // Tracks in-flight verification challenges keyed by participant channelId.
   const pendingVerificationsRef = useRef<Map<string, { secretIdHex: string; version: number }>>(new Map())
 
-
   // Tracks in-flight recovery requests so SecretRecovered events can be correlated.
   const pendingRecoveryRef = useRef<{ secretId: string; version: number; label: string } | null>(null)
 
-  // The channel ID from the owner's contact posted for peer discovery.
-  // Tracks which channel is waiting for an incoming pairing request.
+  // Channel ID for the contact this owner posted to the signaling endpoint.
   const ownerContactChannelRef = useRef<string | null>(null)
 
   // Use a stable session ref so polling closures always see the latest value without
@@ -2517,17 +2593,24 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
   useEffect(() => {
     const { sessionId, ownerId, transport, participants } = session
 
-    // Derive secretId bytes: reuse existing bag's ID, or generate a fresh one.
-    const secretIdHex = session.secretBag?.secretId
+    // Recovery mode uses a separate namespace so the protocol starts with no
+    // pre-existing channels. This mirrors real lost-device recovery: only
+    // helpers explicitly re-paired in recovery mode are available to
+    // RecoverSecret, so the library properly fails with RecoveryShareError
+    // when fewer than `threshold` shares are collected.
+    const ns = recoveryMode ? `owner:${ownerId}:recovery` : `owner:${ownerId}`
+
+    // In recovery mode there is no existing bag to reuse; generate a fresh ID.
+    const secretIdHex = recoveryMode ? null : session.secretBag?.secretId
     const secretId = secretIdHex
       ? Uint8Array.from(secretIdHex.match(/.{2}/g)!.map(b => parseInt(b, 16)))
       : crypto.getRandomValues(new Uint8Array(16))
 
-    const shareStore = makeShareStore(`owner:${ownerId}`)
+    const shareStore = makeShareStore(ns)
     const ownerProtocol = new DeRecProtocol(
-      makeChannelStore(`owner:${ownerId}`),
+      makeChannelStore(ns),
       shareStore,
-      makeSecretStore(`owner:${ownerId}`),
+      makeSecretStore(ns),
       makeTransport(sendMessage),
       transport.uri,
       'https',
@@ -2541,7 +2624,8 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
 
     // Seed the owner version counter from the existing secret bag so that
     // latestVersion() returns the correct value on session reload.
-    if (session.secretBag) {
+    // Not applicable in recovery mode (no bag exists yet on this namespace).
+    if (!recoveryMode && session.secretBag) {
       shareStore.setOwnerVersion(session.secretBag.currentVersion.version)
     }
 
@@ -2549,47 +2633,50 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
       role: 'owner',
       flow: 'session',
       step: 'protocol_init',
-      description: `Owner protocol initialized for session ${sessionId}`,
-      payload: { sessionId, ownerId, participantCount: participants.length },
+      description: `Owner protocol initialized for session ${sessionId} (${recoveryMode ? 'recovery' : 'normal'} mode)`,
+      payload: { sessionId, ownerId, participantCount: participants.length, recoveryMode },
     })
 
-    // Re-sync offline participants to the backend (its disabled_participants set is in-memory
-    // and resets on restart, but the FE persists the offline flag).
-    for (const h of participants) {
-      if (h.offline) {
-        apiToggleParticipantStatus(sessionId, h.id, true).catch(() => {})
+    // In recovery mode Alice is not protecting secrets and doesn't need to be
+    // discoverable by other owners, so skip the normal-mode setup below.
+    if (!recoveryMode) {
+      // The backend's disabled_participants set is in-memory and resets on restart;
+      // re-apply any offline flags the FE has persisted.
+      for (const h of participants) {
+        if (h.offline) {
+          apiToggleParticipantStatus(sessionId, h.id, true).catch(() => {})
+        }
       }
-    }
 
-    // Post this owner's contact to the browser-contact endpoint so other owners
-    // can discover it and initiate pairing.
-    async function postOwnerContact() {
-      try {
-        const contact = await withProtocolLock(() => ownerProtocol.createContact(null))
-        ownerContactChannelRef.current = contact.channel_id
-        console.warn('[owner] contact created for peer discovery, channelId:', contact.channel_id, 'transport:', contact.transport_protocol?.uri)
-        const dto = contactMessageToDto(contact)
-        await apiPostBrowserContact(sessionId, ownerId, JSON.stringify(dto))
-        log({
-          role: 'owner',
-          flow: 'pairing',
-          step: 'owner_contact_posted',
-          description: 'Owner contact posted for peer discovery',
-          payload: { ownerId, contactChannelId: contact.channel_id },
-        })
-      } catch (err) {
-        console.error('[owner] failed to post browser contact:', err)
+      async function postOwnerContact() {
+        try {
+          const contact = await withProtocolLock(() => ownerProtocol.createContact(null))
+          ownerContactChannelRef.current = contact.channel_id
+
+          const dto = contactMessageToDto(contact)
+          await apiPostBrowserContact(sessionId, ownerId, JSON.stringify(dto))
+          log({
+            role: 'owner',
+            flow: 'pairing',
+            step: 'owner_contact_posted',
+            description: 'Owner contact posted for peer discovery',
+            payload: { ownerId, contactChannelId: contact.channel_id },
+          })
+        } catch (err) {
+
+        }
       }
+      postOwnerContact()
     }
-    postOwnerContact()
 
     return () => {
       ownerProtocolRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session.sessionId])
+  }, [session.sessionId, recoveryMode])
 
-  // ── Auto-pair participants on first load ───────────────────────────────────────────
+  // Throttle for retrying discovery when a recovery-paired helper returned empty secrets.
+  const lastDiscoveryRetryRef = useRef(0)
 
   const didAutoPair = useRef(false)
   useEffect(() => {
@@ -2611,7 +2698,7 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
 
       for (const participant of participantsToAutoPair) {
         try {
-          const dto = await apiCreateParticipantContact(session.sessionId, participant.id)
+          const dto = await apiCreateActorContact(session.sessionId, participant.id)
           const contact = dtoToContactMessage(dto)
           const channelId = await withProtocolLock(() => protocol.start(FlowKind.Pairing, { kind: SenderKind.OwnerNonRecovery, contact }) as Promise<bigint>)
 
@@ -2625,7 +2712,7 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
             payload: { participantId: participant.id, channelId: channelId.toString() },
           })
         } catch (err) {
-          console.error(`[auto-pair] failed for participant ${participant.id}:`, err)
+
         }
       }
 
@@ -2655,8 +2742,6 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
     if (allPaired) setAutoPairingIds([])
   }, [autoPairingIds, session.participants])
 
-  // ── Event handlers ────────────────────────────────────────────────────────────
-
   function applyOwnerEvent(
     current: OwnerSession,
     event: {
@@ -2679,11 +2764,14 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
   ): OwnerSession {
     if (event.type === 'PairingCompleted' && event.channel_id) {
       const channelId = event.channel_id
-      const isRecovery = event.kind === 1 // SenderKind.OwnerRecovery
+      // isRecovery when: the peer announced OwnerRecovery (Alice is someone else's helper),
+      // OR Alice herself is in recovery mode (any pairing she completes is a recovery pairing,
+      // regardless of the peer's sender kind — provisioned participants may use a different kind).
+      const isRecovery = event.kind === SenderKind.OwnerRecovery || recoveryModeRef.current
 
       // Detect whether this pairing is for a replica. The pending pairing stores
-      // the replica-side channel ID (from apiStartReplicaPairing), but PairingCompleted
-      // fires with the owner-side channel ID — they differ. We also need to handle the
+      // the channel ID returned by ownerStartPairing, but PairingCompleted fires with
+      // the owner-side channel ID — they match when Alice initiates. We also handle the
       // case where the backend status poll already moved the replica to 'paired' before
       // this event arrived (race condition), so check replicas without ownerChannelId too.
       const replicaIds = new Set(
@@ -2738,19 +2826,23 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
           ),
         }
       } else {
-        // Unknown peer or pending pairing without a participantId (e.g. owner-to-
-        // owner pairing via the header "Pair" button). Add as a new paired peer.
-        // The session poll will reconcile with actual actor info.
+        // Unknown peer — no pending pairing with a participant ID.
+        // This is the normal path for browser-to-browser owner pairings
+        // (e.g. Bob initiating with Alice, or Alice using the "Pair" modal
+        // without resolveParticipantId matching a known actor).
+        const peerName = event.peer_communication_info?.name || 'Peer'
+
         const tempId = `peer-${channelId}`
         updated = {
           ...updated,
           participants: [...updated.participants, {
             id: tempId,
-            name: event.peer_communication_info?.name || 'Peer',
+            name: peerName,
             channelId,
             transport: { protocol: 'https' as const, uri: '' },
             connectionStatus: 'paired' as const,
             secretShares: [],
+            recoveryPaired: isRecovery || undefined,
           }],
         }
 
@@ -2770,7 +2862,7 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
             ...snapshot,
             participants: snapshot.participants.map(h =>
               h.id === tempId
-                ? { ...h, id: peerActor.id, name: peerActor.name, transport: { protocol: peerActor.transport.protocol, uri: peerActor.transport.uri } }
+                ? { ...h, id: peerActor.id, name: peerActor.name, transport: { protocol: peerActor.transport.protocol, uri: peerActor.transport.uri }, browserManaged: peerActor.browser_managed ?? false }
                 : h
             ),
           })
@@ -2985,21 +3077,83 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
       }
     }
 
+    if (event.type === 'SecretsDiscovered' && event.channel_id && event.secrets) {
+      const channelId = event.channel_id
+      const participant = current.participants.find(
+        h => h.channelId === channelId || h.recoveryChannelId === channelId
+      )
+      if (!participant) return current
+
+      // serde-wasm-bindgen serialises Vec<u8> as Array<number>, not Uint8Array.
+      const discoveredVersions = event.secrets.flatMap(s => {
+        const secretIdHex = Array.from(s.secret_id as number[])
+          .map(b => b.toString(16).padStart(2, '0')).join('')
+        return s.versions.map(v => ({
+          secretId: secretIdHex,
+          version: v.version,
+          description: v.description,
+        }))
+      })
+
+      // If the response is empty it is likely a race condition: the helper
+      // processed our discovery request before processing our acceptance (the
+      // backend adds a random 500–3000 ms delay per message, so ordering is
+      // not guaranteed). Don't mark as discovered; the polling loop will retry.
+      if (discoveredVersions.length === 0) {
+        log({
+          role: 'owner',
+          flow: 'recovery',
+          step: 'SecretsDiscovered',
+          description: `Discovery returned 0 secrets from ${participant.name} — will retry`,
+          payload: { channelId },
+        })
+        return current
+      }
+
+      log({
+        role: 'owner',
+        flow: 'recovery',
+        step: 'SecretsDiscovered',
+        description: `Discovered ${discoveredVersions.length} version(s) from ${participant.name}`,
+        payload: { channelId, versions: discoveredVersions },
+      })
+
+      return {
+        ...current,
+        participants: current.participants.map(h =>
+          h.id === participant.id
+            ? { ...h, discoveryComplete: true, discoveredVersions }
+            : h,
+        ),
+      }
+    }
+
     if (event.type === 'RecoveryShareReceived') {
+      const progress = current.recoveryProgress
+      if (!progress) return current
+
+      const sharesReceived = event.shares_received ?? progress.sharesReceived
+
+      // The library emits RecoveryShareReceived (not RecoveryShareError) when
+      // InsufficientShares — it keeps the bucket open waiting for more shares.
+      // The frontend must detect when all requested responses are in and
+      // reconstruction still failed, then surface the error itself.
+      const allResponsesIn = sharesReceived >= progress.totalRequested
+      const error = allResponsesIn
+        ? 'Not enough shares to reconstruct the secret. Pair with more helpers and try again.'
+        : null
+
       log({
         role: 'owner',
         flow: 'recovery',
         step: 'RecoveryShareReceived',
-        description: `Share received from participant (${event.shares_received} total)`,
-        payload: { channelId: event.channel_id, sharesReceived: event.shares_received },
+        description: `Share received (${sharesReceived}/${progress.totalRequested})${allResponsesIn ? ' — insufficient, giving up' : ''}`,
+        payload: { channelId: event.channel_id, sharesReceived, totalRequested: progress.totalRequested },
       })
-
-      const progress = current.recoveryProgress
-      if (!progress) return current
 
       return {
         ...current,
-        recoveryProgress: { ...progress, sharesReceived: event.shares_received ?? progress.sharesReceived },
+        recoveryProgress: { ...progress, sharesReceived, error },
       }
     }
 
@@ -3064,7 +3218,6 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
     return current
   }
 
-  // ── Owner mailbox polling ─────────────────────────────────────────────────────
   // Poll faster (500ms) during auto-pair so the setup gate clears quickly.
 
   const pollInterval = (autoPairingIds.length > 0 || recoveryMode || protocolBusy) ? 500 : 5000
@@ -3085,13 +3238,11 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
         try {
           messages = await pollMailbox(sessionId, 'owners', ownerId)
         } catch (err) {
-          console.error('[owner-poll] failed to fetch messages:', err)
+
           return
         }
 
         if (messages.length === 0) return
-
-        console.warn(`[owner-poll] received ${messages.length} message(s), sizes: ${messages.map(m => m.bytes.length).join(', ')}`)
 
         await withProtocolLock(async () => {
           const initial = sessionRef.current
@@ -3107,7 +3258,6 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
             } catch (err) {
               const nonOk = asNonOkStatus(err)
               if (nonOk) {
-                console.warn(`[owner-poll] non-ok status (status=${nonOk.status}, channel=${nonOk.channelId ?? '?'}): ${nonOk.memo}`)
                 log({
                   role: 'owner',
                   flow: 'protocol',
@@ -3120,88 +3270,41 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
                 // so any NonOkStatus error here is a pairing or other flow rejection.
                 setPairingRejectionCount(c => c + 1)
               } else {
-                console.error('[owner-poll] process() FAILED for message:', err)
               }
               continue
             }
-
-
 
             for (const event of events) {
               // Handle ActionRequired events: pairing needs user confirmation,
               // all other action kinds are auto-accepted for now.
               if (event.type === 'ActionRequired' && event.action) {
                 if (event.action_kind === 'Pairing') {
-                  // Check if this is a known pairing we initiated (backend participant or replica).
-                  // Those should be auto-accepted — only unknown peers need user confirmation.
-                  //
-                  // We check if we have ANY pending pairings with non-browser-managed actors —
-                  // those are backend participants/replicas whose PairRequest we orchestrated
-                  // via the backend API.
+                  // Alice always initiates pairing with provisioned actors, so any
+                  // ActionRequired(Pairing) here is from a browser peer (another owner)
+                  // who initiated WITH Alice — show user confirmation.
                   const channelId = event.channel_id!
-                  const hasPendingBackendPairings = updated.pendingPairings.some(p => {
-                    if (!p.participantId) return false
-                    const participant = updated.participants.find(h => h.id === p.participantId)
-                    if (participant && !participant.browserManaged) return true
-                    const replica = (updated.replicas ?? []).find(r => r.id === p.participantId)
-                    if (replica) return true
-                    return false
+                  const peerName = event.peer_communication_info?.name || 'Unknown peer'
+                  const isRecovery = event.sender_kind === SenderKind.OwnerRecovery
+                  setPendingPairingConfirmation({
+                    peerName,
+                    channelId,
+                    isRecovery,
+                    step: 'confirm',
+                    selectedOldChannelId: null,
+                    action: event.action,
                   })
 
-                  if (hasPendingBackendPairings) {
-                    // Remap the pending pairing's channelId to the owner-side channel
-                    // from this event. When the participant initiates pairing (via the
-                    // "Pair" button / apiStartParticipantPairing), the pending pairing
-                    // stores the participant-side channel ID, but PairingCompleted will
-                    // fire with the owner-side channel ID. Without this fixup the
-                    // PairingCompleted handler can't match the pending pairing and falls
-                    // into the "Unknown peer" branch.
-                    const pendingIdx = updated.pendingPairings.findIndex(p => {
-                      if (!p.participantId) return false
-                      const participant = updated.participants.find(h => h.id === p.participantId)
-                      if (participant && !participant.browserManaged) return true
-                      const replica = (updated.replicas ?? []).find(r => r.id === p.participantId)
-                      if (replica) return true
-                      return false
-                    })
-                    if (pendingIdx >= 0) {
-                      updated = {
-                        ...updated,
-                        pendingPairings: updated.pendingPairings.map((p, i) =>
-                          i === pendingIdx ? { ...p, channelId: BigInt(channelId) } : p,
-                        ),
-                      }
-                    }
+                  log({
+                    role: 'owner',
+                    flow: 'pairing',
+                    step: 'pairing_confirmation_pending',
+                    description: `Pairing request from "${peerName}" — waiting for user confirmation`,
+                    payload: { channelId },
+                  })
 
-                    try {
-                      const acceptEvents = Array.from(await protocol.accept(event.action)) as typeof events
-                      for (const e of acceptEvents) {
-                        updated = applyOwnerEvent(updated, e)
-                      }
-                    } catch (err) {
-                      console.error('[owner-poll] auto-accept known pairing failed:', err)
-                    }
-                  } else {
-                    const peerName = event.peer_communication_info?.name || 'Unknown peer'
-
-                    setPendingPairingConfirmation({
-                      peerName,
-                      channelId,
-                      action: event.action,
-                    })
-
-                    log({
-                      role: 'owner',
-                      flow: 'pairing',
-                      step: 'pairing_confirmation_pending',
-                      description: `Pairing request from "${peerName}" — waiting for user confirmation`,
-                      payload: { channelId },
-                    })
-
-                    // Skip remaining messages; they'll be picked up on next poll.
-                    shouldBreak = true
-                    break
-                  }
+                  // Skip remaining messages; they'll be picked up on next poll.
+                  shouldBreak = true
+                  break
                 } else if (event.action_kind === 'StoreShare') {
                   // Browser-based user must confirm before storing a share.
                   const channelId = event.channel_id!
@@ -3265,17 +3368,40 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
                       updated = applyOwnerEvent(updated, e)
                     }
                   } catch (err) {
-                    console.error(`[owner-poll] auto-accept ${event.action_kind} failed:`, err)
+
                   }
                 }
                 continue
               }
 
-              console.log(`[owner-poll] applying ${event.type}`, { channelId: event.channel_id, kind: event.kind })
               try {
                 updated = applyOwnerEvent(updated, event)
               } catch (err) {
-                console.error('[owner-poll] applyOwnerEvent failed for', event.type, ':', err)
+
+              }
+
+              // Signal any waiting PairInitiatorModal that a pairing completed.
+              // This is the fallback path for recovery pairings where protocol.start()
+              // returns a different channel ID than PairingCompleted.channel_id.
+              if (event.type === 'PairingCompleted') {
+                setPairingCompletedSignal(c => c + 1)
+              }
+
+              // After a recovery pairing completes, immediately send a Discovery request
+              // so the owner learns which shares the new helper holds.
+              if (event.type === 'PairingCompleted' && (event.kind === SenderKind.OwnerRecovery || recoveryModeRef.current) && event.channel_id) {
+                try {
+                  await protocol.start(FlowKind.Discovery, { target: BigInt(event.channel_id) })
+                  log({
+                    role: 'owner',
+                    flow: 'recovery',
+                    step: 'discovery_sent',
+                    description: `Discovery sent to recovery helper on channel ${event.channel_id}`,
+                    payload: { channelId: event.channel_id },
+                  })
+                } catch (err) {
+
+                }
               }
             }
           }
@@ -3284,9 +3410,37 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
             sessionRef.current = updated
             onUpdateRef.current(updated)
           }
+
+          // Retry discovery for recovery-paired helpers that returned empty secrets.
+          // This handles the race where the helper processes the discovery request
+          // before processing the acceptance (due to random backend message delays),
+          // causing it to respond with no shares. We retry at most once every 3 s.
+          if (recoveryModeRef.current) {
+            const hasUndiscovered = updated.participants.some(
+              h => h.recoveryPaired && h.connectionStatus === 'paired' && !h.discoveryComplete && h.channelId,
+            )
+            if (hasUndiscovered) {
+              const now = Date.now()
+              if (now - lastDiscoveryRetryRef.current >= 3000) {
+                lastDiscoveryRetryRef.current = now
+                try {
+                  await protocol.start(FlowKind.Discovery, {})
+                  log({
+                    role: 'owner',
+                    flow: 'recovery',
+                    step: 'discovery_retry',
+                    description: 'Retrying discovery for undiscovered recovery helpers',
+                    payload: {},
+                  })
+                } catch (err) {
+
+                }
+              }
+            }
+          }
         })
       } catch (err) {
-        console.error('[owner-poll] poll failed:', err)
+
       } finally {
         ownerPollRunning = false
       }
@@ -3296,7 +3450,10 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.sessionId, pollInterval])
 
-  // ── Pairing confirmation accept/reject ──────────────────────────────────────
+  /** For recovery pairings: advance from 'confirm' to the 'link' step. */
+  function handleContinueToLinkStep() {
+    setPendingPairingConfirmation(prev => prev ? { ...prev, step: 'link' } : null)
+  }
 
   async function handleAcceptPairing() {
     const confirmation = pendingPairingConfirmation
@@ -3305,31 +3462,104 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
     const protocol = ownerProtocolRef.current
     if (!protocol) return
 
+    // For recovery pairings the user must have selected an old contact.
+    if (confirmation.isRecovery && !confirmation.selectedOldChannelId) return
+
     try {
       const events = await withProtocolLock(() => protocol.accept(confirmation.action))
       const eventArray = Array.from(events) as Array<{ type: string; channel_id?: string; kind?: number; version?: number; secret?: Uint8Array; shares_received?: number; error?: string }>
 
       let updated = sessionRef.current
+      let pairingCompleted = false
+      let pairingCompletedChannelId: string | undefined
       for (const event of eventArray) {
         try {
           updated = applyOwnerEvent(updated, event)
         } catch (err) {
-          console.error('[pairing-confirm] applyOwnerEvent failed:', err)
+
+        }
+        if (event.type === 'PairingCompleted') {
+          pairingCompleted = true
+          pairingCompletedChannelId = event.channel_id
         }
       }
+      if (pairingCompleted) {
+        setPairingCompletedSignal(c => c + 1)
+        // In recovery mode, auto-discover shares from the newly confirmed helper.
+        if (recoveryModeRef.current && pairingCompletedChannelId) {
+          try {
+            await withProtocolLock(() => protocol.start(FlowKind.Discovery, { target: BigInt(pairingCompletedChannelId!) }))
+            log({
+              role: 'owner',
+              flow: 'recovery',
+              step: 'discovery_sent',
+              description: `Discovery sent to recovery helper on channel ${pairingCompletedChannelId} (manual accept)`,
+              payload: { channelId: pairingCompletedChannelId },
+            })
+          } catch (err) {
+
+          }
+        }
+      }
+
+      // For recovery pairings: the library emits PairingCompleted with kind=Helper on
+      // the acceptor side, so applyOwnerEvent cannot detect the recovery context and falls
+      // back to creating a new participant entry. Merge the new channel into the existing
+      // participant (identified by selectedOldChannelId) and remove the duplicate.
+      if (confirmation.isRecovery && confirmation.selectedOldChannelId) {
+        const oldChannelId = confirmation.selectedOldChannelId
+        const newChannelId = confirmation.channelId
+        updated = {
+          ...updated,
+          participants: updated.participants
+            .filter(p => p.channelId !== newChannelId)  // remove duplicate entry for new channel
+            .map(p =>
+              p.channelId === oldChannelId
+                ? { ...p, recoveryChannelId: newChannelId, recoveryPaired: true }
+                : p,
+            ),
+        }
+      }
+
+      // For recovery pairings: mirror shares from the old channel to the new one so
+      // that the library can serve Discovery and GetShare requests on the new channel.
+      if (confirmation.isRecovery && confirmation.selectedOldChannelId) {
+        const shareStore = ownerShareStoreRef.current
+        if (shareStore) {
+          await shareStore.copyShares(confirmation.selectedOldChannelId, confirmation.channelId)
+        }
+
+        const link: RecoveryChannelLink = {
+          newChannelId: confirmation.channelId,
+          oldChannelId: confirmation.selectedOldChannelId,
+        }
+        updated = {
+          ...updated,
+          recoveryChannelLinks: [...(updated.recoveryChannelLinks ?? []), link],
+        }
+
+        log({
+          role: 'owner',
+          flow: 'pairing',
+          step: 'recovery_channel_linked',
+          description: `Linked new channel ${confirmation.channelId} → old channel ${confirmation.selectedOldChannelId} for recovery`,
+          payload: { newChannelId: confirmation.channelId, oldChannelId: confirmation.selectedOldChannelId },
+        })
+      }
+
       if (updated !== sessionRef.current) {
         sessionRef.current = updated
         onUpdateRef.current(updated)
       }
     } catch (err) {
-      console.error('[pairing-confirm] accept failed:', err)
+
     }
 
     log({
       role: 'owner',
       flow: 'pairing',
       step: 'pairing_confirmed',
-      description: `Accepted pairing request from "${confirmation.peerName}"`,
+      description: `Accepted pairing request from "${confirmation.peerName}"${confirmation.isRecovery ? ' (recovery)' : ''}`,
       payload: { channelId: confirmation.channelId },
     })
 
@@ -3354,13 +3584,11 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
         payload: { channelId: confirmation.channelId },
       })
     } catch (err) {
-      console.error('[pairing-reject] reject failed:', err)
+
     }
 
     setPendingPairingConfirmation(null)
   }
-
-  // ── Store-share confirmation accept/reject ─────────────────────────────────
 
   async function handleAcceptStoreShare() {
     const confirmation = pendingStoreShareConfirmation
@@ -3390,7 +3618,7 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
         try {
           updated = applyOwnerEvent(updated, event)
         } catch (err) {
-          console.error('[storeshare-confirm] applyOwnerEvent failed:', err)
+
         }
       }
 
@@ -3399,7 +3627,7 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
         onUpdateRef.current(updated)
       }
     } catch (err) {
-      console.error('[storeshare-confirm] accept failed:', err)
+
     }
 
     log({
@@ -3431,7 +3659,7 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
         payload: { channelId: confirmation.channelId, version: confirmation.version },
       })
     } catch (err) {
-      console.error('[storeshare-reject] reject failed:', err)
+
     }
 
     setPendingStoreShareConfirmation(null)
@@ -3446,8 +3674,6 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
     return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingStoreShareConfirmation])
-
-  // ── Verify-share confirmation (helper side) ─────────────────────────────────
 
   async function handleAcceptVerifyShare() {
     const confirmation = pendingVerifyShareConfirmation
@@ -3465,7 +3691,7 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
         try {
           updated = applyOwnerEvent(updated, event)
         } catch (err) {
-          console.error('[verifyshare-confirm] applyOwnerEvent failed:', err)
+
         }
       }
 
@@ -3474,7 +3700,7 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
         onUpdateRef.current(updated)
       }
     } catch (err) {
-      console.error('[verifyshare-confirm] accept failed:', err)
+
     }
 
     log({
@@ -3506,7 +3732,7 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
         payload: { channelId: confirmation.channelId, version: confirmation.version },
       })
     } catch (err) {
-      console.error('[verifyshare-reject] reject failed:', err)
+
     }
 
     setPendingVerifyShareConfirmation(null)
@@ -3522,7 +3748,6 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingVerifyShareConfirmation])
 
-  // ── Backend session status polling ───────────────────────────────────────────
   // Syncs participant pairing status from the backend's participant_channels data.
   // This catches participant-initiated pairings that never produce an owner-side event.
 
@@ -3554,6 +3779,7 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
               transport: { protocol: actor.transport.protocol, uri: actor.transport.uri },
               connectionStatus: 'available' as const,
               secretShares: [],
+              browserManaged: actor.browser_managed ?? false,
             }],
           }
         }
@@ -3575,58 +3801,6 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
             }
           }
 
-          // Sync pending recovery association status — only while in recovery mode.
-          if (!recoveryModeRef.current) continue
-          const currentPending = participant.pendingRecoveryChannelId ?? null
-          const newPending = actor.pending_recovery_channel_id ?? null
-          if (currentPending !== newPending) {
-            changed = true
-
-            // Association just completed: pending cleared and participant now has a channel.
-            // Update the participant's channelId to the new recovery channel and trigger discovery.
-            const associationJustCompleted = currentPending && !newPending && actor.channel_id
-            if (associationJustCompleted) {
-              const recoveryChannelId = actor.channel_id!
-
-              updated = {
-                ...updated,
-                participants: updated.participants.map(h =>
-                  h.id === actor.id
-                    ? {
-                        ...h,
-                        channelId: recoveryChannelId,
-                        connectionStatus: 'paired' as const,
-                        pendingRecoveryChannelId: undefined,
-                        recoveryPaired: true,
-                      }
-                    : h,
-                ),
-              }
-
-              const protocol = ownerProtocolRef.current
-              if (protocol) {
-                withProtocolLock(() => protocol.start(FlowKind.Discovery, {})).catch((err: unknown) => {
-                  console.error('[recovery] requestDiscovery after association failed:', err)
-                })
-                log({
-                  role: 'owner',
-                  flow: 'recovery',
-                  step: 'discovery_triggered',
-                  description: `Channel association complete for participant ${actor.id} — requesting discovery on all helpers`,
-                  payload: { participantId: actor.id },
-                })
-              }
-            } else {
-              updated = {
-                ...updated,
-                participants: updated.participants.map(h =>
-                  h.id === actor.id
-                    ? { ...h, pendingRecoveryChannelId: newPending ?? undefined }
-                    : h,
-                ),
-              }
-            }
-          }
         }
 
         // Sync replica state from backend.
@@ -3639,7 +3813,6 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
           let newStatus: ReplicaStatus = replica.status
           const newOffline = !!actor.disabled
 
-          // Sync pairing status.
           if (actor.channel_id && replica.status === 'available') {
             newStatus = 'paired'
             replicaUpdated = true
@@ -3692,7 +3865,7 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
                 })
               })
               .catch(err => {
-                console.error(`[session-poll] failed to fetch fingerprint for replica ${actor.id}:`, err)
+
               })
           }
         }
@@ -3707,9 +3880,8 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
     }, pollInterval)
 
     return () => clearInterval(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.sessionId, pollInterval])
-
-  // ── Protocol action callbacks ─────────────────────────────────────────────────
 
   async function createOwnerContact(): Promise<ContactMessage> {
     return withProtocolLock(async () => {
@@ -3722,8 +3894,8 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
   function getParticipantFunctions(participantId: string) {
     const participant = session.participants.find(h => h.id === participantId)
 
-    // Browser-managed participants (other owners) use the browser-contact
-    // endpoint for contact exchange and the owner's own WASM for pairing.
+    // Browser-managed participants (other owners) post their own contact via the
+    // browser-contact endpoint. Pairing is always initiated by Alice's WASM.
     if (participant?.browserManaged) {
       return {
         createContact: async (): Promise<ContactMessage> => {
@@ -3735,22 +3907,37 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
           return withProtocolLock(async () => {
             const protocol = ownerProtocolRef.current
             if (!protocol) throw new Error('Protocol not initialized')
-            return protocol.start(FlowKind.Pairing, { kind: SenderKind.OwnerNonRecovery, contact }) as Promise<bigint>
+            return (recoveryMode
+              ? protocol.start(FlowKind.Pairing, { kind: SenderKind.OwnerRecovery, contact })
+              : protocol.start(FlowKind.Pairing, { kind: SenderKind.OwnerNonRecovery, contact })) as Promise<bigint>
           })
         },
+        startPairingAsInitiator: undefined,
       }
     }
 
-    // Backend-managed participants use the backend's protocol instance.
+    // Backend-managed participants: the actor initiates pairing using the owner's contact (Flow 1).
+    // The owner's WASM creates a contact and the backend actor calls protocol.start with it.
     return {
       createContact: async (): Promise<ContactMessage> => {
-        const dto = await apiCreateParticipantContact(session.sessionId, participantId)
+        const dto = await apiCreateActorContact(session.sessionId, participantId)
         return dtoToContactMessage(dto)
       },
       startPairing: async (contact: ContactMessage): Promise<bigint> => {
-        const dto = contactMessageToDto(contact)
-        const resp = await apiStartParticipantPairing(session.sessionId, participantId, dto)
-        return BigInt(resp.channel_id)
+        return withProtocolLock(async () => {
+          const protocol = ownerProtocolRef.current
+          if (!protocol) throw new Error('Protocol not initialized')
+          return (recoveryMode
+            ? protocol.start(FlowKind.Pairing, { kind: SenderKind.OwnerRecovery, contact })
+            : protocol.start(FlowKind.Pairing, { kind: SenderKind.OwnerNonRecovery, contact })) as Promise<bigint>
+        })
+      },
+      startPairingAsInitiator: async (ownerContact: ContactMessage): Promise<bigint> => {
+        // The user provides the owner's contact (pasted from QR).
+        // The backend actor calls protocol.start with it, initiating pairing.
+        const dto = contactMessageToDto(ownerContact)
+        const result = await apiStartActorPairing(session.sessionId, participantId, dto)
+        return BigInt(result.channel_id)
       },
     }
   }
@@ -3758,24 +3945,19 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
   function getReplicaFunctions(replicaId: string) {
     return {
       createContact: async (): Promise<ContactMessage> => {
-        const dto = await apiCreateReplicaContact(session.sessionId, replicaId)
+        const dto = await apiCreateActorContact(session.sessionId, replicaId)
         return dtoToContactMessage(dto)
       },
-      startPairing: async (contact: ContactMessage): Promise<bigint> => {
-        const dto = contactMessageToDto(contact)
-        const resp = await apiStartReplicaPairing(session.sessionId, replicaId, dto)
-        return BigInt(resp.channel_id)
-      },
+      startPairing: (contact: ContactMessage): Promise<bigint> => ownerStartPairing(contact),
     }
   }
 
   async function ownerStartPairing(contact: ContactMessage): Promise<bigint> {
-    console.warn('[owner] startPairing called, contact channelId:', contact.channel_id, 'transport:', contact.transport_protocol?.uri)
+
     return withProtocolLock(async () => {
       const protocol = ownerProtocolRef.current
       if (!protocol) throw new Error('Protocol not initialized')
       const channelId = await (protocol.start(FlowKind.Pairing, { kind: SenderKind.OwnerNonRecovery, contact }) as Promise<bigint>)
-      console.warn('[owner] startPairing succeeded, channelId:', channelId.toString())
       return channelId
     })
   }
@@ -3904,8 +4086,6 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
     })
   }
 
-  // ── Recovery protocol actions ────────────────────────────────────────────────
-
   async function ownerStartRecoveryPairing(contact: ContactMessage): Promise<bigint> {
     return withProtocolLock(async () => {
       const protocol = ownerProtocolRef.current
@@ -3938,10 +4118,10 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
 
     const secretIdBytes = Uint8Array.from(secretId.match(/.{2}/g)!.map(b => parseInt(b, 16)))
     pendingRecoveryRef.current = { secretId, version, label }
-    onUpdate({
-      ...session,
-      recoveryProgress: { secretId, version, sharesReceived: 0, totalRequested: participantChannelIds.length, error: null },
-    })
+    const current = sessionRef.current
+    const updated = { ...current, recoveryProgress: { secretId, version, sharesReceived: 0, totalRequested: participantChannelIds.length, error: null } }
+    sessionRef.current = updated
+    onUpdateRef.current(updated)
     await withProtocolLock(() => protocol.start(FlowKind.RecoverSecret, { secretId: secretIdBytes, version }))
 
     log({
@@ -3953,11 +4133,12 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
     })
   }
 
-  // ── Session mutation participants ──────────────────────────────────────────────────
-
   function addPendingPairing(channelId: bigint, participantId?: string) {
     const pending: PendingPairing = { channelId, participantId }
-    onUpdate({ ...session, pendingPairings: [...session.pendingPairings, pending] })
+    const current = sessionRef.current
+    const updated = { ...current, pendingPairings: [...current.pendingPairings, pending] }
+    sessionRef.current = updated
+    onUpdateRef.current(updated)
   }
 
   async function handleAddParticipant(name: string, autoPair: boolean) {
@@ -3988,7 +4169,7 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
         return
       }
       try {
-        const dto = await apiCreateParticipantContact(session.sessionId, resp.id)
+        const dto = await apiCreateActorContact(session.sessionId, resp.id)
         const contact = dtoToContactMessage(dto)
         const channelId = await withProtocolLock(() => protocol.start(FlowKind.Pairing, { kind: SenderKind.OwnerNonRecovery, contact }) as Promise<bigint>)
         updated = {
@@ -4004,7 +4185,7 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
           payload: { participantId: resp.id, channelId: channelId.toString() },
         })
       } catch (err) {
-        console.error(`[add-participant] auto-pair failed for ${resp.id}:`, err)
+
       }
     }
 
@@ -4068,8 +4249,6 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
     onUpdate({ ...session, participants: updatedParticipants, secretBag: updatedBag })
   }
 
-  // ── Replica action callbacks ──────────────────────────────────────────────────
-
   async function handleConfirmReplica(replicaId: string) {
     const replica = session.replicas.find(r => r.id === replicaId)
     if (!replica || !replica.replicaFingerprint || !replica.channelId) return
@@ -4097,7 +4276,7 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
         payload: { replicaId, channelId: replica.channelId, fingerprint: replica.replicaFingerprint },
       })
     } catch (err) {
-      console.error('[handleConfirmReplica] failed:', err)
+
     }
   }
 
@@ -4122,9 +4301,6 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
       payload: { replicaId: resp.id, name },
     })
   }
-
-
-  // ── Render ────────────────────────────────────────────────────────────────────
 
   // Show a setup gate while auto-pairing is in progress.
   if (autoPairingIds.length > 0) {
@@ -4219,31 +4395,42 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
             className={`secondary ${recoveryMode ? 'recovery-active' : ''}`}
             onClick={() => {
               if (recoveryMode) {
-                // Exiting recovery: restore pre-recovery participant state and clear recovery data.
+                // Exiting recovery: restore pre-recovery state and clear recovery data.
                 setRecoveryMode(false)
                 setActiveTab('participants')
                 onUpdate({
                   ...session,
                   participants: preRecoveryParticipantsRef.current ?? session.participants,
+                  secretBag: preRecoverySecretBagRef.current,
+                  heldShares: preRecoveryHeldSharesRef.current ?? session.heldShares,
                   recoveredSecrets: [],
                   recoveryProgress: null,
                 })
                 preRecoveryParticipantsRef.current = null
-                // Clear backend pending associations so re-entering recovery starts fresh.
-                apiClearPendingAssociations(session.sessionId).catch(() => {})
+                preRecoverySecretBagRef.current = null
+                preRecoveryHeldSharesRef.current = null
               } else {
-                // Entering recovery: snapshot current participants, then reset them to unpaired.
+                // Entering recovery: snapshot current state, then reset to a clean slate.
+                // Bob has lost his device — he has no secrets yet until recovery completes.
                 preRecoveryParticipantsRef.current = session.participants
+                preRecoverySecretBagRef.current = session.secretBag
+                preRecoveryHeldSharesRef.current = session.heldShares ?? []
+                // Clear the recovery namespace so every recovery entry starts
+                // with empty stores, matching real lost-device behaviour.
+                clearNamespace(`owner:${session.ownerId}:recovery`)
                 setRecoveryMode(true)
                 setActiveTab('recovery')
                 onUpdate({
                   ...session,
+                  secretBag: null,
+                  heldShares: [],
                   participants: session.participants.map(h => ({
                     ...h,
                     connectionStatus: 'available' as const,
                     secretShares: [],
                     recoveryPaired: undefined,
                     discoveryComplete: undefined,
+                    discoveredVersions: undefined,
                   })),
                   recoveredSecrets: [],
                   recoveryProgress: null,
@@ -4257,16 +4444,12 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
         </div>
       </div>
 
-
       {shareOpen && (
         <ShareContactModal
           title="Share Owner Contact"
           transport={session.transport}
           createContact={createOwnerContact}
           onClose={() => setShareOpen(false)}
-          onPairingCreated={channelId => {
-            addPendingPairing(channelId)
-          }}
         />
       )}
 
@@ -4276,9 +4459,13 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
           placeholder="Paste the JSON payload from the participant's Share Contact QR code"
           pairedChannelIds={pairedChannelIds}
           pairingRejectionCount={pairingRejectionCount}
+          pairingCompletedSignal={pairingCompletedSignal}
           onClose={() => setPairOpen(false)}
           onSuccess={() => {}}
           onPairingRequestSent={(channelId, participantId) => addPendingPairing(channelId, participantId)}
+          resolveParticipantId={contact =>
+            session.participants.find(p => p.transport.uri === contact.transport_protocol?.uri)?.id
+          }
           startPairing={recoveryMode ? ownerStartRecoveryPairing : ownerStartPairing}
         />
       )}
@@ -4412,46 +4599,131 @@ export default function OwnerSessionPage({ session, onUpdate }: Props) {
           replicas={session.replicas ?? []}
           sessionId={session.sessionId}
           ownerName={session.ownerName}
-          pairedChannelIds={pairedChannelIds}
-          pairingRejectionCount={pairingRejectionCount}
           onTogglePair={handleTogglePair}
           onToggleParticipantStatus={handleToggleStatus}
           onToggleReplicaStatus={handleToggleReplicaStatus}
           onPairingCreated={(channelId, actorId) => addPendingPairing(channelId, actorId)}
           onPairingRequestSent={(channelId, actorId) => addPendingPairing(channelId, actorId)}
-          onSuccess={() => {}}
           onAddParticipant={handleAddParticipant}
           onAddReplica={handleAddReplica}
           onReplicaPairStarted={setProvisioningReplicaId}
           getParticipantFunctions={getParticipantFunctions}
           getReplicaFunctions={getReplicaFunctions}
+          pairedChannelIds={pairedChannelIds}
+          pairingRejectionCount={pairingRejectionCount}
+          pairingCompletedSignal={pairingCompletedSignal}
         />
       </div>
 
       {/* Pairing confirmation modal */}
-      {pendingPairingConfirmation && (
-        <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="pairing-confirm-title">
-          <div className="modal">
-            <div className="modal-header">
-              <h2 className="modal-title" id="pairing-confirm-title">Incoming Pairing Request</h2>
+      {pendingPairingConfirmation && (() => {
+        const conf = pendingPairingConfirmation
+
+        if (!conf.isRecovery || conf.step === 'confirm') {
+          return (
+            <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="pairing-confirm-title">
+              <div className="modal">
+                <div className="modal-header">
+                  <h2 className="modal-title" id="pairing-confirm-title">
+                    {conf.isRecovery ? 'Incoming Recovery Pairing Request' : 'Incoming Pairing Request'}
+                  </h2>
+                </div>
+                <div className="modal-body">
+                  {conf.isRecovery && (
+                    <div className="recovery-pairing-notice" role="status">
+                      <span className="recovery-pairing-notice__icon" aria-hidden="true">⚠</span>
+                      <span>
+                        This peer is requesting to pair in <strong>recovery mode</strong>. They may have
+                        lost access to their original device and need to retrieve their secrets.
+                        Only proceed if you can verify their identity out-of-band.
+                      </span>
+                    </div>
+                  )}
+                  <p>
+                    <strong>{conf.peerName}</strong>{' '}
+                    {conf.isRecovery
+                      ? 'needs your help to recover their secrets. In the next step you will link their new identity to their previous contact so you can serve them the shares you hold.'
+                      : 'wants to pair with you. Do you want to accept this pairing?'}
+                  </p>
+                  <div className="modal-actions">
+                    <button className="secondary" onClick={handleRejectPairing}>Reject</button>
+                    {conf.isRecovery
+                      ? <button className="primary" onClick={handleContinueToLinkStep}>Continue</button>
+                      : <button className="primary" onClick={handleAcceptPairing}>Accept</button>
+                    }
+                  </div>
+                </div>
+              </div>
             </div>
-            <div className="modal-body">
-              <p>
-                <strong>{pendingPairingConfirmation.peerName}</strong> wants to pair with you.
-                Do you want to accept this pairing?
-              </p>
-              <div className="modal-actions">
-                <button className="secondary" onClick={handleRejectPairing}>
-                  Reject
-                </button>
-                <button className="primary" onClick={handleAcceptPairing}>
-                  Accept
-                </button>
+          )
+        }
+
+        // Build list of linkable contacts from session.participants (for names) cross-
+        // referenced with heldShares (to know which participants we actually hold shares for).
+        // If no heldShares data exists yet (old sessions), fall back to all paired participants.
+        const alreadyLinkedOld = new Set((session.recoveryChannelLinks ?? []).map(l => l.oldChannelId))
+
+        // Show all paired participants — the user decides who the recovering peer is.
+        // No filtering by heldShares: in a real deployment participants are not pre-labelled.
+        const linkableContacts = session.participants.filter(p =>
+          p.channelId && !alreadyLinkedOld.has(p.channelId),
+        )
+
+        return (
+          <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="pairing-link-title">
+            <div className="modal">
+              <div className="modal-header">
+                <h2 className="modal-title" id="pairing-link-title">Link to Previous Contact</h2>
+              </div>
+              <div className="modal-body">
+                <p>
+                  Select the original contact that <strong>{conf.peerName}</strong> corresponds to.
+                  Their shares will be made available to the new pairing once you confirm.
+                </p>
+                {linkableContacts.length === 0 ? (
+                  <p className="recovery-pairing-notice" role="status">
+                    <span className="recovery-pairing-notice__icon" aria-hidden="true">⚠</span>
+                    <span>No paired contacts found. Make sure this node has accepted pairing and shares from an owner before they can recover.</span>
+                  </p>
+                ) : (
+                  <div className="recovery-link-list" role="listbox" aria-label="Original contacts">
+                    {linkableContacts.map(p => {
+                      const isSelected = conf.selectedOldChannelId === p.channelId
+                      const heldShare = (session.heldShares ?? []).find(hs => hs.channelId === p.channelId)
+                      return (
+                        <button
+                          key={p.id}
+                          role="option"
+                          aria-selected={isSelected}
+                          className={`recovery-link-option${isSelected ? ' recovery-link-option--selected' : ''}`}
+                          onClick={() => setPendingPairingConfirmation(prev => prev ? { ...prev, selectedOldChannelId: p.channelId } : null)}
+                        >
+                          <span className="recovery-link-option__name">{p.name}</span>
+                          <span className="recovery-link-option__meta">
+                            {heldShare ? `${heldShare.description} · ` : ''}channel {p.channelId.slice(0, 8)}…
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+                <div className="modal-actions">
+                  <button className="secondary" onClick={() => setPendingPairingConfirmation(prev => prev ? { ...prev, step: 'confirm' } : null)}>
+                    Back
+                  </button>
+                  <button
+                    className="primary"
+                    onClick={handleAcceptPairing}
+                    disabled={!conf.selectedOldChannelId}
+                  >
+                    Link &amp; Accept
+                  </button>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {/* Store-share confirmation modal */}
       {pendingStoreShareConfirmation && (

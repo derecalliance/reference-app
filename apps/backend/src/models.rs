@@ -1,8 +1,6 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-// ── Transport ─────────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransportProtocol {
@@ -14,8 +12,6 @@ pub struct Transport {
     pub protocol: TransportProtocol,
     pub uri: String,
 }
-
-// ── Actor ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -33,15 +29,15 @@ pub struct Actor {
     pub transport: Transport,
 }
 
-// ── Session ───────────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone)]
 pub struct Session {
     pub _id: Uuid,
     pub actors: Vec<Actor>,
+    /// Minimum number of participants required to protect a secret.
+    pub min_participants: u8,
+    /// Recommended number of participants for optimal protection.
+    pub recommended_participants: u8,
 }
-
-// ── Request / Response DTOs ───────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 pub struct CreateSessionRequest {
@@ -49,6 +45,10 @@ pub struct CreateSessionRequest {
     pub name: String,
     /// Number of additional participants to provision in the session.
     pub additional_participants: u8,
+    /// Minimum participants required to protect a secret.
+    pub min_participants: Option<u8>,
+    /// Recommended participants for optimal protection.
+    pub recommended_participants: Option<u8>,
 }
 
 #[derive(Debug, Serialize)]
@@ -66,9 +66,6 @@ pub struct ActorWithStatus {
     /// Protocol channel ID, present only if pairing has completed for this actor.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel_id: Option<String>,
-    /// New channel ID from a recovery pairing, awaiting association by the participant.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pending_recovery_channel_id: Option<String>,
     /// Shared symmetric key for the participant channel (base64url-encoded), present only for participants.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shared_key: Option<String>,
@@ -88,6 +85,8 @@ pub struct ActorWithStatus {
 pub struct GetSessionResponse {
     pub session_id: Uuid,
     pub actors: Vec<ActorWithStatus>,
+    pub min_participants: u8,
+    pub recommended_participants: u8,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,10 +115,7 @@ pub struct AddReplicaResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct JoinSessionRequest {
-    /// Display name for the joining owner.
     pub name: String,
-    /// Number of participants the joining owner wants pre-paired (frontend uses this locally).
-    pub pre_paired_count: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -130,4 +126,6 @@ pub struct JoinSessionResponse {
     /// All actors in the session (enriched with pairing status), so the
     /// joining participant can discover the owner and other participants.
     pub actors: Vec<ActorWithStatus>,
+    pub min_participants: u8,
+    pub recommended_participants: u8,
 }

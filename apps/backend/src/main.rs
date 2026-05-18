@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::{
-    routing::{delete, get, post},
+    routing::{get, post},
     Router,
 };
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
@@ -31,9 +31,9 @@ async fn main() {
 
     let http_client = reqwest::Client::new();
 
-    // Start an Actix system on a background thread. This provides the runtime
-    // that Actix actors need (!Send). The arbiter handle is used to spawn
-    // provisioned actors from Axum handlers.
+    // Actix actors are !Send, so they need their own single-threaded runtime.
+    // We spin one up on a dedicated OS thread and hand back an arbiter handle
+    // that Axum handlers can use to spawn actors from the Tokio thread pool.
     let shutdown = Arc::new(tokio::sync::Notify::new());
     let (arbiter_handle, arbiter_stopper) = {
         let shutdown = Arc::clone(&shutdown);
@@ -88,11 +88,6 @@ fn build_router(state: Arc<AppState>) -> Router {
             post(routes::sessions::join),
         )
         .route(
-            "/sessions/{session_id}/pending-associations",
-            delete(routes::sessions::clear_pending_associations),
-        )
-        // ── DeRec protocol transport endpoints ────────────────────────────────
-        .route(
             "/derec/sessions/{session_id}/{role}/{actor_id}",
             post(routes::derec::deliver_message),
         )
@@ -100,14 +95,13 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/derec/sessions/{session_id}/{role}/{actor_id}/mailbox",
             get(routes::derec::poll_mailbox),
         )
-        // ── Participant control endpoints ─────────────────────────────────────────
         .route(
-            "/sessions/{session_id}/participants/{participant_id}/create-contact",
-            post(routes::participants::create_contact),
+            "/sessions/{session_id}/actors/{actor_id}/contact",
+            post(routes::actors::create_contact),
         )
         .route(
-            "/sessions/{session_id}/participants/{participant_id}/pair",
-            post(routes::participants::pair),
+            "/sessions/{session_id}/actors/{actor_id}/start-pairing",
+            post(routes::actors::start_pairing),
         )
         .route(
             "/sessions/{session_id}/participants/{participant_id}/associate-channel",
@@ -117,23 +111,13 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/sessions/{session_id}/participants/{participant_id}/toggle-status",
             post(routes::participants::toggle_status),
         )
-        // ── Browser-managed participant contact signaling ─────────────────────
         .route(
             "/sessions/{session_id}/participants/{participant_id}/browser-contact",
             post(routes::sessions::post_browser_contact).get(routes::sessions::get_browser_contact),
         )
-        // ── Replica control endpoints ───────────────────────────────────────
         .route(
             "/sessions/{session_id}/replicas",
             post(routes::sessions::add_replica),
-        )
-        .route(
-            "/sessions/{session_id}/replicas/{replica_id}/create-contact",
-            post(routes::replicas::create_contact),
-        )
-        .route(
-            "/sessions/{session_id}/replicas/{replica_id}/pair",
-            post(routes::replicas::pair),
         )
         .route(
             "/sessions/{session_id}/replicas/{replica_id}/toggle-status",
