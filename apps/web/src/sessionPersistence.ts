@@ -1,11 +1,18 @@
 // PendingPairing.channelId is a bigint and can't be JSON-serialized directly.
 // We encode it as { __bigint: "<decimal string>" } and decode on the way back.
 
-import type { OwnerSession, ParticipantSession } from './types'
+import type { OwnerSession } from './types'
+import {
+  DEFAULT_AUTHENTICATION_METHOD,
+  DEFAULT_AUTO_ACCEPT_UNPAIR_REQUESTS,
+  DEFAULT_PROTOCOL_TIMEOUT_SECS,
+  DEFAULT_UNPAIR_ACK,
+  normalizeAuthenticationMethod,
+  normalizeUnpairAck,
+} from './config'
 
 type AnySession =
   | { type: 'owner'; session: OwnerSession }
-  | { type: 'participant'; session: ParticipantSession }
 
 const ACTIVE_KEY = 'derec:active-session'
 
@@ -38,17 +45,6 @@ export function persistSession(session: OwnerSession): void {
   }
 }
 
-export function persistParticipantSession(session: ParticipantSession): void {
-  try {
-    const wrapped: AnySession = { type: 'participant', session }
-    // Use a distinct key so participant and owner sessions for the same session ID don't collide.
-    const key = `derec:participant-session:${session.sessionId}:${session.participantId}`
-    localStorage.setItem(key, JSON.stringify(wrapped, replacer))
-    localStorage.setItem(ACTIVE_KEY, session.sessionId)
-  } catch {
-    // Storage quota exceeded or private browsing — silently ignore.
-  }
-}
 
 /**
  * Backfill fields that were added after sessions were already persisted.
@@ -64,9 +60,23 @@ function normalizeSession(raw: Partial<OwnerSession> & Pick<OwnerSession, 'sessi
     recommendedParticipants: raw.recommendedParticipants ?? 5,
     recoveredSecrets: raw.recoveredSecrets ?? [],
     recoveryProgress: raw.recoveryProgress ?? null,
+    recoveryFailures: raw.recoveryFailures ?? [],
+    recoveryMode: raw.recoveryMode ?? false,
     replicas: raw.replicas ?? [],
     heldShares: raw.heldShares ?? [],
-    recoveryChannelLinks: raw.recoveryChannelLinks ?? [],
+    mainChannels: raw.mainChannels ?? [],
+    config: {
+      protocolTimeoutSecs:
+        raw.config?.protocolTimeoutSecs ?? DEFAULT_PROTOCOL_TIMEOUT_SECS,
+      authenticationMethod: normalizeAuthenticationMethod(
+        raw.config?.authenticationMethod ?? DEFAULT_AUTHENTICATION_METHOD,
+      ),
+      unpairAck: normalizeUnpairAck(
+        raw.config?.unpairAck ?? DEFAULT_UNPAIR_ACK,
+      ),
+      autoAcceptUnpairRequests:
+        raw.config?.autoAcceptUnpairRequests ?? DEFAULT_AUTO_ACCEPT_UNPAIR_REQUESTS,
+    },
     participants: (raw.participants ?? []).map(h => ({
       ...h,
       secretShares: h.secretShares ?? [],
@@ -108,10 +118,3 @@ export function deleteSession(sessionId: string): void {
   }
 }
 
-export function deleteParticipantSession(sessionId: string, participantId: string): void {
-  const key = `derec:participant-session:${sessionId}:${participantId}`
-  localStorage.removeItem(key)
-  if (localStorage.getItem(ACTIVE_KEY) === sessionId) {
-    localStorage.removeItem(ACTIVE_KEY)
-  }
-}

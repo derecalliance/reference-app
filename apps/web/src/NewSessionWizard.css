@@ -249,6 +249,201 @@
   }
 }
 
+/* ── Radio section (e.g. authentication method) ────────────────────────────── */
+
+.wizard-radio-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 0;
+  border-top: 1px solid var(--border);
+}
+
+.wizard-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wizard-radio-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--text-h);
+  background: transparent;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+
+.wizard-radio-option:hover:not(.wizard-radio-option--disabled),
+.wizard-radio-option:focus-within:not(.wizard-radio-option--disabled) {
+  border-color: var(--accent-border);
+  background: var(--accent-bg);
+}
+
+.wizard-radio-option input[type='radio'] {
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
+.wizard-radio-option--disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.wizard-radio-option__label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+.wizard-radio-option__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.wizard-radio-option__hint {
+  font-size: 12px;
+  color: var(--text);
+  font-weight: 400;
+}
+
+.wizard-radio-option__badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--border);
+  color: var(--text);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* ── Compact toggle group (binary segmented control) ────────────────────────── */
+
+.wizard-toggle-group {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg);
+  align-self: flex-start;
+}
+
+.wizard-toggle-option {
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+  white-space: nowrap;
+}
+
+.wizard-toggle-option + .wizard-toggle-option {
+  border-left: 1px solid var(--border);
+}
+
+.wizard-toggle-option:hover:not([aria-checked='true']):not(:disabled) {
+  background: var(--accent-bg);
+  color: var(--text-h);
+  opacity: 1;
+}
+
+.wizard-toggle-option[aria-checked='true'] {
+  background: var(--accent);
+  color: #fff;
+  cursor: default;
+}
+
+.wizard-toggle-option:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.wizard-toggle-option:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: -2px;
+}
+
+.wizard-toggle-option__badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--border);
+  color: var(--text);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  line-height: 1.4;
+  vertical-align: middle;
+}
+
+.wizard-toggle-option[aria-checked='true'] .wizard-toggle-option__badge {
+  background: rgba(255, 255, 255, 0.25);
+  color: #fff;
+}
+
+.wizard-toggle-hint {
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.4;
+  margin: 0;
+}
+
+/* ── Grouped settings (e.g. "Unpair flow") ─────────────────────────────────── */
+
+.wizard-section-group {
+  border-top: 1px solid var(--border);
+  padding: 16px 0 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wizard-section-group__legend {
+  margin: 0 0 4px;
+  padding: 0;
+  text-align: left;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-h);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+/* Single-row config: [Label] [Toggle] [(?)] */
+.wizard-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.wizard-row__label {
+  flex: none;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.wizard-row__spacer {
+  flex: 1;
+}
+
 /* ── Resume card ────────────────────────────────────────────────────────────── */
 
 .resume-card {

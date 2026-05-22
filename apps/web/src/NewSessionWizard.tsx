@@ -4,10 +4,34 @@ import type { OwnerSession } from './types'
 import { apiCreateSession, apiGetSession, apiJoinSession } from './api'
 import { useConsole } from './ConsoleContext'
 import { loadLastSession, loadSessionById } from './sessionPersistence'
+import {
+  DEFAULT_AUTHENTICATION_METHOD,
+  DEFAULT_AUTO_ACCEPT_UNPAIR_REQUESTS,
+  DEFAULT_PROTOCOL_TIMEOUT_SECS,
+  DEFAULT_UNPAIR_ACK,
+  type AuthenticationMethod,
+  type UnpairAck,
+} from './config'
+import { InfoTooltip } from './InfoTooltip'
 import { faker } from '@faker-js/faker'
 
-type Flow = 'create' | 'continue' | 'join'
-type StepKey = 'choice' | 'ownerName' | 'participantCount' | 'sessionId' | 'participantName' | 'joinPrePair'
+type Flow = 'create' | 'continue' | 'join' | 'joinRecovery'
+type StepKey =
+  | 'choice'
+  | 'ownerName'
+  | 'participantCount'
+  | 'protocolSettings'
+  | 'sessionId'
+  | 'participantName'
+  | 'joinPrePair'
+  | 'claimActor'
+
+/** Minimal view of an existing actor surfaced by the picker. Mirrors the
+ *  fields the wizard renders; not a full BE DTO. */
+interface ClaimableActor {
+  id: string
+  name: string
+}
 
 interface WizardData {
   ownerName: string
@@ -15,8 +39,14 @@ interface WizardData {
   prePairedCount: number
   minParticipants: number
   recommendedParticipants: number
+  protocolTimeoutSecs: number
+  authenticationMethod: AuthenticationMethod
+  unpairAck: UnpairAck
+  autoAcceptUnpairRequests: boolean
   sessionId: string
   participantName: string
+  /** UUID of the existing owner actor to claim during recovery-join. */
+  claimActorId: string
 }
 
 function StepChoice({
@@ -52,6 +82,13 @@ function StepChoice({
         </button>
         <button className="secondary" onClick={() => onSelect('join')}>
           Join Session
+        </button>
+        <button
+          className="secondary"
+          onClick={() => onSelect('joinRecovery')}
+          title="Join a session and start directly in recovery mode — empty state, ready to pair helpers and reconstruct."
+        >
+          Join in Recovery Mode
         </button>
         <button className="secondary" onClick={() => onSelect('continue')}>
           Continue by ID
@@ -226,6 +263,241 @@ function StepParticipantCount({
   )
 }
 
+interface ToggleOption<T extends string> {
+  value: T
+  label: string
+  /** Optional hint shown below the toggle when this option is the active one. */
+  hint?: string
+  /** When `true`, the option is rendered but cannot be selected (e.g. a
+   *  feature that's not yet shipped). */
+  disabled?: boolean
+  /** Optional short tag (e.g. "Coming soon") rendered inline next to the
+   *  label. Visually deemphasised. */
+  badge?: string
+  /** Native browser tooltip shown on hover — useful for disabled options
+   *  where we want to explain *why* without burning UI space. */
+  title?: string
+}
+
+/**
+ * Compact segmented control for binary (or small N-way) string-valued
+ * configuration. Renders as `[ optionA | optionB ]` with the selected option
+ * highlighted. Exposed semantics mirror a native radiogroup so screen readers
+ * announce it correctly.
+ *
+ * When the active option carries a `hint`, that hint is rendered as a single
+ * line below the toggle — replacing the longer per-option descriptions that
+ * the vertical radio layout used.
+ */
+function ToggleGroup<T extends string>({
+  ariaLabel,
+  value,
+  options,
+  onChange,
+}: {
+  ariaLabel: string
+  value: T
+  options: ReadonlyArray<ToggleOption<T>>
+  onChange: (next: T) => void
+}) {
+  const activeHint = options.find(o => o.value === value)?.hint
+  return (
+    <>
+      <div className="wizard-toggle-group" role="radiogroup" aria-label={ariaLabel}>
+        {options.map(opt => {
+          const selected = opt.value === value
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              aria-disabled={opt.disabled || undefined}
+              disabled={opt.disabled}
+              title={opt.title}
+              className="wizard-toggle-option"
+              onClick={() => {
+                if (selected || opt.disabled) return
+                onChange(opt.value)
+              }}
+            >
+              {opt.label}
+              {opt.badge && (
+                <span className="wizard-toggle-option__badge">{opt.badge}</span>
+              )}
+            </button>
+          )
+        })}
+      </div>
+      {activeHint && <p className="wizard-toggle-hint">{activeHint}</p>}
+    </>
+  )
+}
+
+function StepProtocolSettings({
+  protocolTimeoutSecs,
+  onChangeProtocolTimeoutSecs,
+  authenticationMethod,
+  onChangeAuthenticationMethod,
+  unpairAck,
+  onChangeUnpairAck,
+  autoAcceptUnpairRequests,
+  onChangeAutoAcceptUnpairRequests,
+}: {
+  protocolTimeoutSecs: number
+  onChangeProtocolTimeoutSecs: (n: number) => void
+  authenticationMethod: AuthenticationMethod
+  onChangeAuthenticationMethod: (m: AuthenticationMethod) => void
+  unpairAck: UnpairAck
+  onChangeUnpairAck: (v: UnpairAck) => void
+  autoAcceptUnpairRequests: boolean
+  onChangeAutoAcceptUnpairRequests: (v: boolean) => void
+}) {
+  return (
+    <div className="wizard-step">
+      <h2>Session settings</h2>
+      <p>Tune how this session behaves. Sensible defaults are pre-filled.</p>
+
+      <div className="participant-count-section">
+        <span className="participant-count-section-label">
+          Protocol timeout (seconds)
+          <InfoTooltip label="About protocol timeout">
+            The single timeout used everywhere. The protocol uses it passively
+            to ignore expired messages; the app uses it as the active deadline —
+            if a peer doesn't respond within this window the operation fails and
+            the UI recovers. Lower = snappier failures; higher = more tolerant
+            of slow peers.
+          </InfoTooltip>
+        </span>
+        <div className="participant-count-input">
+          <button
+            className="stepper"
+            onClick={() => onChangeProtocolTimeoutSecs(Math.max(10, protocolTimeoutSecs - 30))}
+            disabled={protocolTimeoutSecs <= 10}
+            aria-label="Decrease protocol timeout"
+          >
+            −
+          </button>
+          <span className="count">{protocolTimeoutSecs}</span>
+          <button
+            className="stepper"
+            onClick={() => onChangeProtocolTimeoutSecs(protocolTimeoutSecs + 30)}
+            aria-label="Increase protocol timeout"
+          >
+            +
+          </button>
+        </div>
+      </div>
+
+      <div className="wizard-radio-section">
+        <div className="wizard-row">
+          <span className="wizard-row__label">Authentication method</span>
+          <ToggleGroup<AuthenticationMethod>
+            ariaLabel="Authentication method"
+            value={authenticationMethod}
+            onChange={onChangeAuthenticationMethod}
+            options={[
+              { value: 'user', label: 'User' },
+              {
+                value: 'application',
+                label: 'Application',
+                disabled: true,
+                title: 'Coming soon',
+              },
+            ]}
+          />
+          <span className="wizard-row__spacer" />
+          <InfoTooltip label="About authentication method">
+            How the app decides that two pairing channels belong to the same
+            user — an app-level concern, not part of the protocol.
+            <ul>
+              <li>
+                <strong>User</strong> — the helper manually links channels when
+                accepting a pairing request, so a recovering owner can re-pair
+                and inherit its prior shares.
+              </li>
+              <li>
+                <strong>Application</strong> <em>(not yet enabled)</em> — the
+                app would supply identity automatically; reserved for a future
+                release.
+              </li>
+            </ul>
+          </InfoTooltip>
+        </div>
+      </div>
+
+      <div
+        className="wizard-section-group"
+        role="group"
+        aria-labelledby="unpair-flow-heading"
+      >
+        <h3 id="unpair-flow-heading" className="wizard-section-group__legend">
+          Unpair flow
+        </h3>
+
+        <div className="wizard-row">
+          <span className="wizard-row__label">Acknowledgement</span>
+          <ToggleGroup<UnpairAck>
+            ariaLabel="Unpair acknowledgement"
+            value={unpairAck}
+            onChange={onChangeUnpairAck}
+            options={[
+              { value: 'required', label: 'Required' },
+              { value: 'not_required', label: 'Fire-and-forget' },
+            ]}
+          />
+          <span className="wizard-row__spacer" />
+          <InfoTooltip label="About unpair acknowledgement">
+            Protocol-level: how the initiator of an unpair flow handles the
+            peer's response. Echoed to every joiner so the whole session
+            agrees.
+            <ul>
+              <li>
+                <strong>Required</strong> — wait for the peer's acknowledgement
+                before dropping local state (the initiator keeps state until
+                ACK or until the protocol timeout fires).
+              </li>
+              <li>
+                <strong>Fire-and-forget</strong> — drop local state
+                immediately on <code>start(Unpair)</code>; ignore any later
+                peer response.
+              </li>
+            </ul>
+          </InfoTooltip>
+        </div>
+
+        <div className="wizard-row">
+          <span className="wizard-row__label">Incoming requests</span>
+          <ToggleGroup<'auto' | 'prompt'>
+            ariaLabel="Incoming unpair requests"
+            value={autoAcceptUnpairRequests ? 'auto' : 'prompt'}
+            onChange={next => onChangeAutoAcceptUnpairRequests(next === 'auto')}
+            options={[
+              { value: 'auto', label: 'Auto-accept' },
+              { value: 'prompt', label: 'Show modal' },
+            ]}
+          />
+          <span className="wizard-row__spacer" />
+          <InfoTooltip label="About incoming unpair handling">
+            UI-only (not part of the protocol). Stored per session on this
+            device only.
+            <ul>
+              <li>
+                <strong>Auto-accept</strong> — quietly accept and let the
+                channel disappear with a toast.
+              </li>
+              <li>
+                <strong>Show modal</strong> — surface a confirmation dialog so
+                the operator can accept or reject each request.
+              </li>
+            </ul>
+          </InfoTooltip>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function StepParticipantName({
   value,
   onChange,
@@ -324,10 +596,94 @@ function StepJoinPrePair({
   )
 }
 
+/**
+ * Step where a recovering joiner picks an existing owner actor whose mailbox
+ * the new tab will adopt. Two equivalent inputs are offered:
+ *  - select from the loaded list of browser-based (`role === 'owner'`)
+ *    actors in the session;
+ *  - paste a UUID directly (matches the "in a real app, auth hands you the
+ *    id" model and works when the picker doesn't surface the right entry).
+ *
+ * `selectedId` reflects whichever input was used last. Listing and paste
+ * keep each other in sync — clicking a row fills the paste field, typing
+ * a valid UUID highlights the matching row.
+ */
+function StepClaimActor({
+  actors,
+  selectedId,
+  onChange,
+  error,
+}: {
+  actors: ClaimableActor[]
+  selectedId: string
+  onChange: (id: string) => void
+  error: string | null
+}) {
+  return (
+    <div className="wizard-step">
+      <h2>Recover as which owner?</h2>
+      <p>
+        Pick an existing owner from the session below, or paste their actor
+        ID. After recovery your tab adopts that actor's mailbox so helpers'
+        replies — verification, share retrieval, future protect rounds — keep
+        flowing to the same transport URI they already know.
+      </p>
+
+      {actors.length === 0 ? (
+        <p className="wizard-field-hint">
+          No other owners found in this session. Paste an actor ID below if
+          you have one.
+        </p>
+      ) : (
+        <div
+          className="link-channel-list"
+          role="listbox"
+          aria-label="Existing owners in this session"
+        >
+          {actors.map(a => {
+            const isSelected = selectedId.trim() === a.id
+            return (
+              <button
+                key={a.id}
+                type="button"
+                role="option"
+                aria-selected={isSelected}
+                className={`link-channel-option${isSelected ? ' link-channel-option--selected' : ''}`}
+                onClick={() => onChange(a.id)}
+              >
+                <span className="link-channel-option__name">{a.name}</span>
+                <span className="link-channel-option__meta">{a.id}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+
+      <label className="wizard-field-label" style={{ marginTop: 16, display: 'block' }}>
+        Or paste an actor ID
+        <input
+          className="full-input"
+          type="text"
+          placeholder="e.g. a1b2c3d4-…"
+          value={selectedId}
+          onChange={e => onChange(e.target.value)}
+        />
+      </label>
+
+      {error && <p className="wizard-field-error">{error}</p>}
+    </div>
+  )
+}
+
 const FLOW_STEPS: Record<Flow, StepKey[]> = {
-  create: ['ownerName', 'participantCount'],
+  create: ['ownerName', 'participantCount', 'protocolSettings'],
   continue: ['sessionId'],
   join: ['sessionId', 'participantName', 'joinPrePair'],
+  // Recovery joiners pair helpers manually (one at a time, by linking against
+  // their old channels), so the `joinPrePair` step doesn't apply here.
+  // Instead they pick an existing owner actor to *claim* — that's whose
+  // mailbox the new tab will adopt so helpers' replies arrive.
+  joinRecovery: ['sessionId', 'claimActor'],
 }
 
 interface Props {
@@ -352,12 +708,21 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
     prePairedCount: 3,
     minParticipants: 3,
     recommendedParticipants: 5,
+    protocolTimeoutSecs: DEFAULT_PROTOCOL_TIMEOUT_SECS,
+    authenticationMethod: DEFAULT_AUTHENTICATION_METHOD,
+    unpairAck: DEFAULT_UNPAIR_ACK,
+    autoAcceptUnpairRequests: DEFAULT_AUTO_ACCEPT_UNPAIR_REQUESTS,
     sessionId: initialSessionId ?? '',
     participantName: `${faker.person.firstName()} ${faker.person.lastName()}`,
+    claimActorId: '',
   })
   const [creating, setCreating] = useState(false)
   const [continueError, setContinueError] = useState<string | null>(null)
   const [joinParticipantCount, setJoinParticipantCount] = useState<number>(0)
+  // Owner actors in the session, fetched when entering the recovery-join
+  // flow. Empty if the lookup hasn't run yet or surfaced no owners — the
+  // paste-UUID input is the fallback in either case.
+  const [claimableActors, setClaimableActors] = useState<ClaimableActor[]>([])
   const { log } = useConsole()
 
   const [lastSession] = useState<OwnerSession | null>(() => loadLastSession())
@@ -396,6 +761,10 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
         additionalParticipants: data.participantCount,
         minParticipants: data.minParticipants,
         recommendedParticipants: data.recommendedParticipants,
+        protocolTimeoutSecs: data.protocolTimeoutSecs,
+        authenticationMethod: data.authenticationMethod,
+        unpairAck: data.unpairAck,
+        autoAcceptUnpairRequests: data.autoAcceptUnpairRequests,
       })
 
       const ownerActor = resp.actors.find(a => a.role === 'owner')!
@@ -423,9 +792,16 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
 
         recoveredSecrets: [],
         recoveryProgress: null,
+        recoveryFailures: [],
         replicas: [],
         heldShares: [],
-        recoveryChannelLinks: [],
+        mainChannels: [],
+        config: {
+          protocolTimeoutSecs: data.protocolTimeoutSecs,
+          authenticationMethod: data.authenticationMethod,
+          unpairAck: data.unpairAck,
+          autoAcceptUnpairRequests: data.autoAcceptUnpairRequests,
+        },
       }
 
       log({
@@ -490,6 +866,7 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
 
         recoveredSecrets: [],
         recoveryProgress: null,
+        recoveryFailures: [],
         replicas: replicaActors.map(a => ({
           id: a.id,
           name: a.name,
@@ -501,7 +878,13 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
           offline: a.disabled || undefined,
         })),
         heldShares: [],
-        recoveryChannelLinks: [],
+        mainChannels: [],
+        config: {
+          protocolTimeoutSecs: resp.protocol_timeout_secs,
+          authenticationMethod: resp.authentication_method,
+          unpairAck: resp.unpair_ack,
+          autoAcceptUnpairRequests: resp.auto_accept_unpair_requests,
+        },
       }
 
       log({
@@ -520,15 +903,43 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
     }
   }
 
-  async function handleJoin() {
+  async function handleJoin(recovery: boolean = false) {
     setContinueError(null)
     const sessionId = data.sessionId.trim()
-    const name = data.participantName.trim()
-    if (!sessionId || !name) return
+    const claimActorId = data.claimActorId.trim()
+    // The claimed actor's display name is authoritative in recovery (the
+    // user is *resuming* that identity, not creating a new one). For normal
+    // join the wizard-entered name applies; `name` is sent to the backend
+    // either way — it's ignored on the claim path.
+    const name = recovery
+      ? (claimableActors.find(a => a.id === claimActorId)?.name ?? 'recovering owner')
+      : data.participantName.trim()
+
+    if (!sessionId) return
+    if (recovery) {
+      if (!claimActorId) {
+        setContinueError('Pick an actor to recover into, or paste an actor ID.')
+        return
+      }
+    } else if (!name) {
+      return
+    }
+
+    // Pre-pairing is meaningless in recovery — the helpers we want to pair
+    // with are the *old* ones, and we'll pair manually with each to link
+    // against pre-recovery channels.
+    const prePairedCount = recovery
+      ? undefined
+      : (data.prePairedCount > 0 ? data.prePairedCount : undefined)
 
     setCreating(true)
     try {
-      const resp = await apiJoinSession(sessionId, name, data.prePairedCount > 0 ? data.prePairedCount : undefined)
+      const resp = await apiJoinSession(
+        sessionId,
+        name,
+        prePairedCount,
+        recovery ? claimActorId : undefined,
+      )
 
       const peerActors = resp.actors.filter(a => a.role === 'participant')
       const replicaActors = resp.actors.filter(a => a.role === 'replica')
@@ -536,7 +947,9 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
       const session: OwnerSession = {
         sessionId: resp.session_id,
         ownerId: resp.actor.id,
-        ownerName: name,
+        // In recovery (claim) mode the backend echoes the *existing* actor's
+        // name regardless of what we sent — use it so the FE matches.
+        ownerName: recovery ? resp.actor.name : name,
         transport: { protocol: resp.actor.transport.protocol, uri: resp.actor.transport.uri },
         participants: peerActors.map(a => ({
           id: a.id,
@@ -548,11 +961,13 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
         })),
         secretBag: null,
         pendingPairings: [],
-        prePairedCount: data.prePairedCount > 0 ? data.prePairedCount : undefined,
+        prePairedCount,
         minParticipants: resp.min_participants,
         recommendedParticipants: resp.recommended_participants,
         recoveredSecrets: [],
         recoveryProgress: null,
+        recoveryFailures: [],
+        recoveryMode: recovery,
         replicas: replicaActors.map(a => ({
           id: a.id,
           name: a.name,
@@ -564,15 +979,28 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
           offline: a.disabled || undefined,
         })),
         heldShares: [],
-        recoveryChannelLinks: [],
+        mainChannels: [],
+        config: {
+          protocolTimeoutSecs: resp.protocol_timeout_secs,
+          authenticationMethod: resp.authentication_method,
+          unpairAck: resp.unpair_ack,
+          autoAcceptUnpairRequests: resp.auto_accept_unpair_requests,
+        },
       }
 
       log({
         role: 'owner',
         flow: 'session',
-        step: 'session_joined',
-        description: `Joined session ${sessionId} as "${name}" (owner mode)`,
-        payload: { sessionId, ownerId: resp.actor.id, participantCount: peerActors.length },
+        step: recovery ? 'session_joined_recovery' : 'session_joined',
+        description: recovery
+          ? `Joined session ${sessionId} as "${name}" (recovery mode)`
+          : `Joined session ${sessionId} as "${name}" (owner mode)`,
+        payload: {
+          sessionId,
+          ownerId: resp.actor.id,
+          participantCount: peerActors.length,
+          recovery,
+        },
       })
 
       onCreated(session)
@@ -584,17 +1012,29 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
   }
 
   async function handleNext() {
-    if (flow === 'join' && step === 'sessionId') {
+    // The session-id lookahead matters for two flows:
+    //  - regular `join`: needs the participant count to bound prePair.
+    //  - `joinRecovery`: needs the existing owner actors for the claim picker.
+    // Both call `apiGetSession`; we tease apart the data each one consumes.
+    if (step === 'sessionId' && (flow === 'join' || flow === 'joinRecovery')) {
       const sessionId = data.sessionId.trim()
       if (!sessionId) return
       setContinueError(null)
       setCreating(true)
       try {
         const resp = await apiGetSession(sessionId)
-        const count = resp.actors.filter(a => a.role === 'participant').length
-        setJoinParticipantCount(count)
-        if (data.prePairedCount > count) {
-          setData(d => ({ ...d, prePairedCount: Math.min(d.prePairedCount, count) }))
+        if (flow === 'join') {
+          const count = resp.actors.filter(a => a.role === 'participant').length
+          setJoinParticipantCount(count)
+          if (data.prePairedCount > count) {
+            setData(d => ({ ...d, prePairedCount: Math.min(d.prePairedCount, count) }))
+          }
+        } else {
+          // joinRecovery: collect browser-based owners as claim candidates.
+          const owners: ClaimableActor[] = resp.actors
+            .filter(a => a.role === 'owner')
+            .map(a => ({ id: a.id, name: a.name }))
+          setClaimableActors(owners)
         }
         setStepIndex(i => i + 1)
       } catch (err) {
@@ -614,7 +1054,9 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
         ? data.ownerName.trim().length > 0
         : step === 'participantName'
           ? data.participantName.trim().length > 0
-          : true
+          : step === 'claimActor'
+            ? data.claimActorId.trim().length > 0
+            : true
 
   return (
     <div className="wizard">
@@ -663,6 +1105,18 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
             onChangeRecommendedParticipants={n => setData(d => ({ ...d, recommendedParticipants: n }))}
           />
         )}
+        {step === 'protocolSettings' && (
+          <StepProtocolSettings
+            protocolTimeoutSecs={data.protocolTimeoutSecs}
+            onChangeProtocolTimeoutSecs={n => setData(d => ({ ...d, protocolTimeoutSecs: n }))}
+            authenticationMethod={data.authenticationMethod}
+            onChangeAuthenticationMethod={m => setData(d => ({ ...d, authenticationMethod: m }))}
+            unpairAck={data.unpairAck}
+            onChangeUnpairAck={v => setData(d => ({ ...d, unpairAck: v }))}
+            autoAcceptUnpairRequests={data.autoAcceptUnpairRequests}
+            onChangeAutoAcceptUnpairRequests={v => setData(d => ({ ...d, autoAcceptUnpairRequests: v }))}
+          />
+        )}
         {step === 'sessionId' && (
           <StepSessionId
             value={data.sessionId}
@@ -684,6 +1138,14 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
             onChangePrePairedCount={n => setData(d => ({ ...d, prePairedCount: n }))}
           />
         )}
+        {step === 'claimActor' && (
+          <StepClaimActor
+            actors={claimableActors}
+            selectedId={data.claimActorId}
+            onChange={v => { setData(d => ({ ...d, claimActorId: v })); setContinueError(null) }}
+            error={continueError}
+          />
+        )}
       </div>
 
       {flow !== null && (
@@ -694,8 +1156,12 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
                 {creating ? 'Creating…' : 'Create'}
               </button>
             ) : flow === 'join' ? (
-              <button className="primary" onClick={handleJoin} disabled={!canProceed || creating}>
+              <button className="primary" onClick={() => handleJoin(false)} disabled={!canProceed || creating}>
                 {creating ? 'Joining…' : 'Join'}
+              </button>
+            ) : flow === 'joinRecovery' ? (
+              <button className="primary" onClick={() => handleJoin(true)} disabled={!canProceed || creating}>
+                {creating ? 'Joining…' : 'Join (Recovery)'}
               </button>
             ) : (
               <button className="primary" onClick={handleContinue} disabled={!canProceed || creating}>

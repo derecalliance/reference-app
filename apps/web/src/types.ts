@@ -1,3 +1,5 @@
+import type { AuthenticationMethod, UnpairAck } from './config'
+
 export type TransportProtocol = 'https'  // only HTTPS supported in v1
 
 export interface Transport {
@@ -23,6 +25,9 @@ export interface SecretShareRef {
   verified: boolean
 }
 
+/** The role this node plays on a given channel. */
+export type ChannelRole = 'owner' | 'helper'
+
 export interface PairedParticipant {
   id: string
   /** Human-readable name given by the owner when pairing */
@@ -32,16 +37,12 @@ export interface PairedParticipant {
   transport: Transport
   secretShares: SecretShareRef[]
   connectionStatus: ParticipantConnectionStatus
+  /** The role this node plays on this channel. */
+  role?: ChannelRole
   /** When true, the backend silently drops all messages to/from this participant */
   offline?: boolean
   /** Whether this participant was paired in recovery mode */
   recoveryPaired?: boolean
-  /**
-   * When the peer re-pairs in recovery mode, this holds the new (recovery)
-   * channel ID. The original `channelId` is kept so shares can still be
-   * served on the original channel.
-   */
-  recoveryChannelId?: string
   /** Whether discovery has been requested and completed for this participant */
   discoveryComplete?: boolean
   /** Secret versions this helper reported during discovery (populated after SecretsDiscovered) */
@@ -81,7 +82,7 @@ export interface BagVersion {
 
 /** The single secret bag managed by the protocol. */
 export interface SecretBag {
-  /** Hex-encoded secret container ID */
+  /** Protocol-level secret identifier (u64 as decimal string) */
   secretId: string
   /** Current (latest) version */
   currentVersion: BagVersion
@@ -116,13 +117,43 @@ export interface PairedReplica {
   confirmationStartedAt?: number
 }
 
+/** Structured representation of the recovered secret bag, decoded by the
+ *  WASM `decodeRecoveredSecretBag` helper. Mirrors the shape used in the
+ *  protect-time "View Payload" modal so the recovered view is visually
+ *  identical to what was originally distributed. */
+export interface RecoveredSecretBagHelper {
+  /** u64 channel id as decimal string. */
+  channelId: string
+  transportUri: string
+  /** App-level identity metadata; opaque to the protocol. */
+  communicationInfo: Record<string, string>
+  /** 32-byte shared key (hex-encoded for display, full key persisted). */
+  sharedKeyHex: string
+}
+
+export interface RecoveredSecretBagSecret {
+  /** App-defined identifier (hex-encoded). */
+  id: string
+  name: string
+  /** Raw secret bytes UTF-8 decoded (reference app stores text secrets). */
+  data: string
+}
+
+export interface RecoveredSecretBag {
+  helpers: RecoveredSecretBagHelper[]
+  secrets: RecoveredSecretBagSecret[]
+}
+
 /** A successfully recovered secret. */
 export interface RecoveredSecret {
   secretId: string
   version: number
   label: string
-  /** UTF-8 decoded secret data */
-  secretData: string
+  /** Decoded bag: the same structure the owner originally protected. */
+  bag: RecoveredSecretBag
+  /** Raw recovered bytes (DeRecSecret wire form) hex-encoded for persistence,
+   *  needed to call `restoreFromRecoveredBag` later. */
+  rawBytesHex: string
 }
 
 /** Tracks live progress of a recovery attempt. */
@@ -137,26 +168,20 @@ export interface RecoveryProgress {
   error: string | null
 }
 
-export interface ParticipantSession {
-  sessionId: string
-  /** This participant's actor ID — used for mailbox polling */
-  participantId: string
-  participantName: string
-  /** This participant's transport endpoint */
-  transport: Transport
-  /** The owner's name */
-  ownerName: string
-  /** The owner's actor ID */
-  ownerId: string
-  /** The owner's transport endpoint — needed for addressing messages */
-  ownerTransport: Transport
-  /** Channel ID once paired with the owner */
-  channelId: string
-  /** Pairing status */
-  connectionStatus: ParticipantConnectionStatus
-  /** Snapshot of session actors at join time (for display) */
-  actors?: Array<{ id: string; name: string; role: string }>
+/**
+ * Record of a per-version recovery failure that should survive subsequent
+ * Recover clicks on *other* versions. `recoveryProgress` is a singleton
+ * tracking the in-flight attempt; once a new attempt starts, the old
+ * progress is overwritten and its error vanishes. This list preserves the
+ * outcome of past attempts so the version row keeps its "Incomplete" status
+ * until the user retries that specific version (which clears its entry).
+ */
+export interface RecoveryFailure {
+  secretId: string
+  version: number
+  error: string
 }
+
 
 export interface OwnerSession {
   sessionId: string
@@ -180,22 +205,61 @@ export interface OwnerSession {
   recoveredSecrets: RecoveredSecret[]
   /** Live progress of the current recovery attempt (null when idle) */
   recoveryProgress: RecoveryProgress | null
+  /**
+   * Past per-version recovery failures whose visual state must persist
+   * across Recover clicks on other versions. Cleared when the user retries
+   * that specific version, or globally on entering/exiting recovery mode.
+   */
+  recoveryFailures: RecoveryFailure[]
+  /**
+   * Whether this session is currently in recovery mode. Set by the
+   * "Join in recovery" wizard flow and by the recovery-mode toggle button;
+   * cleared on "Recover from bag" / explicit exit. Persisted so reload
+   * preserves the mode.
+   */
+  recoveryMode?: boolean
   /** Paired replicas (second Owner devices) */
   replicas: PairedReplica[]
   /** Shares this owner holds on behalf of other owners (helper role) */
   heldShares: HeldShare[]
   /**
-   * Links established during recovery pairings: maps a new (recovery) channel ID
-   * to the old channel ID whose shares should be served. Populated when Alice
-   * accepts a recovery pairing and manually links new Bob to old Bob.
+   * Presentation hint for linked-channel groups: channel IDs designated as the
+   * "main" (name-bearing) channel of their link group. The channel-link graph
+   * itself is undirected (in the channel store); this records which member
+   * drives the group header per the UI's main-selection rule.
    */
-  recoveryChannelLinks: RecoveryChannelLink[]
+  mainChannels: string[]
+  /** Per-session protocol configuration chosen in the create-session wizard. */
+  config: SessionConfig
 }
 
-/** Maps a new recovery channel to the original channel whose shares it inherits. */
-export interface RecoveryChannelLink {
-  /** The channel ID established during the recovery pairing (new Bob). */
-  newChannelId: string
-  /** The original channel ID whose shares are served to the recovering peer. */
-  oldChannelId: string
+/** User-tunable protocol configuration, fixed at session creation. */
+export interface SessionConfig {
+  /**
+   * General protocol timeout in seconds. Drives both the library's passive
+   * `process()` expiry (via the WASM constructor) and the app's active
+   * wall-clock watchdog / auto-reject / pairing-wait timers.
+   */
+  protocolTimeoutSecs: number
+  /**
+   * How the app decides that two pairing channels belong to the same user.
+   * App-level concern (not protocol). Drives the incoming-pairing modal: with
+   * `user`, the helper can atomically "accept and link" against an existing
+   * paired channel; `application` is reserved for a future identity-driven
+   * mode and is not yet selectable in the wizard.
+   */
+  authenticationMethod: AuthenticationMethod
+  /**
+   * Protocol-level unpair acknowledgement policy. Threaded into the WASM
+   * `DeRecProtocol` constructor and echoed by the backend so all participants
+   * agree on the semantics.
+   */
+  unpairAck: UnpairAck
+  /**
+   * FE-only UI preference: when `true`, incoming Unpair requests from a peer
+   * are auto-accepted; when `false`, the Owner sees a confirmation modal.
+   * Purely a UI concern — not threaded into the protocol and not echoed by the
+   * backend.
+   */
+  autoAcceptUnpairRequests: boolean
 }
