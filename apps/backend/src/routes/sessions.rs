@@ -17,7 +17,7 @@ use fake::faker::name::en::{FirstName, LastName};
 
 use crate::{
     actor::{LoadSharedKeyMsg, ProvisionedActor},
-    models::{Actor, ActorWithStatus, AddParticipantRequest, AddParticipantResponse, AddReplicaRequest, AddReplicaResponse, CreateSessionRequest, CreateSessionResponse, GetSessionResponse, JoinSessionRequest, JoinSessionResponse, Role, Session, Transport, TransportProtocol},
+    models::{Actor, ActorWithStatus, AddParticipantRequest, AddParticipantResponse, AddReplicaRequest, AddReplicaResponse, CreateSessionRequest, CreateSessionResponse, GetSessionResponse, JoinSessionRequest, JoinSessionResponse, Role, Session, Transport, TransportProtocol, UnpairAck},
     state::{ActorInbox, AppState},
     stores::{HttpTransport, InMemoryChannelStore, InMemorySecretStore, InMemoryShareStore},
 };
@@ -27,6 +27,10 @@ pub async fn create(
     Json(req): Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
     let session_id = Uuid::new_v4();
+    let protocol_timeout_secs = req.protocol_timeout_secs.unwrap_or(300);
+    let authentication_method = req.authentication_method.unwrap_or_default();
+    let unpair_ack = req.unpair_ack.unwrap_or_default();
+    let auto_accept_unpair_requests = req.auto_accept_unpair_requests.unwrap_or(true);
 
     let caller = provisioned_actor(Role::Owner, &req.name, session_id, &state.base_url);
 
@@ -42,7 +46,7 @@ pub async fn create(
             &state.base_url,
         );
 
-        spawn_provisioned(&state, participant.id, session_id, Role::Participant, &participant.transport.uri, Some(participant.name.clone()));
+        spawn_provisioned(&state, participant.id, session_id, Role::Participant, &participant.transport.uri, Some(participant.name.clone()), protocol_timeout_secs, unpair_ack);
         actors.push(participant);
     }
 
@@ -51,6 +55,10 @@ pub async fn create(
         actors: actors.clone(),
         min_participants: req.min_participants.unwrap_or(2),
         recommended_participants: req.recommended_participants.unwrap_or(5),
+        protocol_timeout_secs,
+        authentication_method,
+        unpair_ack,
+        auto_accept_unpair_requests,
     };
 
     state.sessions.insert(session_id, session);
@@ -84,6 +92,10 @@ pub async fn get(
                 actors,
                 min_participants: session.min_participants,
                 recommended_participants: session.recommended_participants,
+                protocol_timeout_secs: session.protocol_timeout_secs,
+                authentication_method: session.authentication_method,
+                unpair_ack: session.unpair_ack,
+                auto_accept_unpair_requests: session.auto_accept_unpair_requests,
             })).into_response()
         }
         None => (
@@ -113,7 +125,7 @@ pub async fn add_participant(
 
     let participant = provisioned_actor(Role::Participant, &req.name, session_id, &state.base_url);
 
-    spawn_provisioned(&state, participant.id, session_id, Role::Participant, &participant.transport.uri, Some(participant.name.clone()));
+    spawn_provisioned(&state, participant.id, session_id, Role::Participant, &participant.transport.uri, Some(participant.name.clone()), session.protocol_timeout_secs, session.unpair_ack);
     session.actors.push(participant.clone());
 
     info!(
@@ -145,7 +157,7 @@ pub async fn add_replica(
 
     let replica = provisioned_actor(Role::Replica, &req.name, session_id, &state.base_url);
 
-    spawn_provisioned(&state, replica.id, session_id, Role::Replica, &replica.transport.uri, Some(replica.name.clone()));
+    spawn_provisioned(&state, replica.id, session_id, Role::Replica, &replica.transport.uri, Some(replica.name.clone()), session.protocol_timeout_secs, session.unpair_ack);
     session.actors.push(replica.clone());
 
     info!(
@@ -159,6 +171,15 @@ pub async fn add_replica(
 }
 
 /// POST /sessions/:session_id/join
+///
+/// Two modes:
+///   - **Normal**: creates a new owner actor and registers its mailbox.
+///   - **Claim** (when `req.claim_actor_id` is set): adopts an existing
+///     owner actor's identity. Used by the recovery-join flow so the
+///     recovering user can poll the mailbox tied to an old transport URI
+///     that the network still recognizes (helpers' channel stores still
+///     point at it). The mailbox tx/rx is rebound to a fresh pair so the
+///     new tab starts receiving; any previous tab silently stops.
 pub async fn join(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<Uuid>,
@@ -173,6 +194,67 @@ pub async fn join(
             .into_response();
     }
 
+    // ── Claim path ───────────────────────────────────────────────────────
+    if let Some(claim_actor_id) = req.claim_actor_id {
+        let claimed: Option<Actor> = {
+            let session = state.sessions.get(&session_id).unwrap();
+            session
+                .actors
+                .iter()
+                .find(|a| a.id == claim_actor_id && a.role == Role::Owner)
+                .cloned()
+        };
+
+        let actor = match claimed {
+            Some(a) => a,
+            None => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({
+                        "error": "claim_actor_id not found in session, or is not an owner"
+                    })),
+                )
+                    .into_response();
+            }
+        };
+
+        // Rebind the browser receiver. `insert` replaces any prior entry,
+        // so the previous tab's tx is dropped and its `pollMailbox` returns
+        // empty from here on — the new tab now owns the rx.
+        register_browser_actor(&state, actor.id);
+
+        info!(
+            session_id = %session_id,
+            actor_id = %actor.id,
+            name = %actor.name,
+            "owner actor reclaimed in recovery mode"
+        );
+
+        // Snapshot actors before the async enrich so we don't hold a dashmap
+        // guard across an await.
+        let actors_snapshot: Vec<Actor> = state
+            .sessions
+            .get(&session_id)
+            .unwrap()
+            .actors
+            .clone();
+        let actors = enrich_actors(&state, &actors_snapshot).await;
+
+        let session = state.sessions.get(&session_id).unwrap();
+        return (StatusCode::OK, Json(JoinSessionResponse {
+            session_id,
+            actor,
+            actors,
+            min_participants: session.min_participants,
+            recommended_participants: session.recommended_participants,
+            protocol_timeout_secs: session.protocol_timeout_secs,
+            authentication_method: session.authentication_method,
+            unpair_ack: session.unpair_ack,
+            auto_accept_unpair_requests: session.auto_accept_unpair_requests,
+        })).into_response();
+    }
+
+    // ── Normal path ──────────────────────────────────────────────────────
     let actor = provisioned_actor(Role::Owner, &req.name, session_id, &state.base_url);
     register_browser_actor(&state, actor.id);
 
@@ -193,9 +275,16 @@ pub async fn join(
         "owner joined session"
     );
 
-    let (min_participants, recommended_participants) = {
+    let (min_participants, recommended_participants, protocol_timeout_secs, authentication_method, unpair_ack, auto_accept_unpair_requests) = {
         let session = state.sessions.get(&session_id).unwrap();
-        (session.min_participants, session.recommended_participants)
+        (
+            session.min_participants,
+            session.recommended_participants,
+            session.protocol_timeout_secs,
+            session.authentication_method,
+            session.unpair_ack,
+            session.auto_accept_unpair_requests,
+        )
     };
 
     (StatusCode::OK, Json(JoinSessionResponse {
@@ -204,6 +293,10 @@ pub async fn join(
         actors,
         min_participants,
         recommended_participants,
+        protocol_timeout_secs,
+        authentication_method,
+        unpair_ack,
+        auto_accept_unpair_requests,
     })).into_response()
 }
 
@@ -249,8 +342,8 @@ fn register_browser_actor(state: &AppState, actor_id: Uuid) {
     state.browser_receivers.insert(actor_id, Arc::new(Mutex::new(rx)));
 }
 
-fn spawn_provisioned(state: &AppState, actor_id: Uuid, session_id: Uuid, role: Role, transport_uri: &str, name: Option<String>) {
-    let protocol = create_protocol(state, transport_uri, name);
+fn spawn_provisioned(state: &AppState, actor_id: Uuid, session_id: Uuid, role: Role, transport_uri: &str, name: Option<String>, timeout_secs: u32, unpair_ack: UnpairAck) {
+    let protocol = create_protocol(state, transport_uri, name, timeout_secs, unpair_ack);
     let app_state = Arc::new(state.clone());
 
     let addr = ProvisionedActor::start_in_arbiter(&state.arbiter, move |_ctx| {
@@ -260,7 +353,7 @@ fn spawn_provisioned(state: &AppState, actor_id: Uuid, session_id: Uuid, role: R
     state.actor_inboxes.insert(actor_id, ActorInbox::Provisioned(addr));
 }
 
-fn create_protocol(state: &AppState, transport_uri: &str, name: Option<String>) -> crate::stores::ActorProtocol {
+fn create_protocol(state: &AppState, transport_uri: &str, name: Option<String>, timeout_secs: u32, unpair_ack: UnpairAck) -> crate::stores::ActorProtocol {
     let transport = HttpTransport::new(state.http_client.clone());
     let own_transport = derec_proto::TransportProtocol {
         uri: transport_uri.to_owned(),
@@ -278,8 +371,9 @@ fn create_protocol(state: &AppState, transport_uri: &str, name: Option<String>) 
         .with_own_transport(own_transport)
         .with_threshold(2)
         .with_keep_versions_count(3)
-        .with_timeout_in_secs(300)
+        .with_timeout_in_secs(timeout_secs as u64)
         .with_communication_info(info)
+        .with_unpair_ack(unpair_ack.to_library())
         .build()
 }
 

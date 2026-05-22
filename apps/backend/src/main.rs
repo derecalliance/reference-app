@@ -104,10 +104,6 @@ fn build_router(state: Arc<AppState>) -> Router {
             post(routes::actors::start_pairing),
         )
         .route(
-            "/sessions/{session_id}/participants/{participant_id}/associate-channel",
-            post(routes::participants::associate_channel),
-        )
-        .route(
             "/sessions/{session_id}/participants/{participant_id}/toggle-status",
             post(routes::participants::toggle_status),
         )

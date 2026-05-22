@@ -6,7 +6,8 @@ use rand::Rng as _;
 use tracing::{info, error};
 use uuid::Uuid;
 
-use derec_library::protocol::{DeRecEvent, DeRecFlow, PendingAction};
+use derec_library::protocol::{DeRecChannelStore, DeRecEvent, DeRecFlow, PendingAction};
+use derec_library::types::ChannelId;
 
 use crate::models::Role;
 use crate::state::AppState;
@@ -40,70 +41,35 @@ impl ProvisionedActor {
     fn handle_events(&mut self, events: Vec<DeRecEvent>, ctx: &mut Context<Self>) {
         for event in events {
             match event {
-                DeRecEvent::PairingCompleted { channel_id, .. } => {
+                DeRecEvent::PairingCompleted { channel_id, peer_communication_info, .. } => {
                     let cid = channel_id.0.to_string();
+                    let peer_name = peer_communication_info
+                        .get("name")
+                        .cloned()
+                        .unwrap_or_default();
+
                     match self.role {
                         Role::Participant => {
-                            let actor_id = self.actor_id;
-                            let new_cid: u64 = channel_id.0;
-
-                            // If the participant already has a channel, this is a re-pairing
-                            // (recovery or replacement). Auto-migrate shares so GetShare
-                            // succeeds immediately on the new channel.
-                            let old_cid_opt = {
-                                let entry = self.state.participant_channels.get(&actor_id);
-                                entry.as_deref()
-                                    .and_then(|v| v.last())
-                                    .and_then(|s| s.parse::<u64>().ok())
-                            };
-
-                            if let Some(old_cid) = old_cid_opt {
-                                // Only migrate when the channel actually changed.  The /pair
-                                // endpoint may already have done this eagerly; guard avoids
-                                // a redundant self-copy and spurious log noise.
-                                if old_cid != new_cid {
-                                    if let Some(protocol) = self.protocol.as_mut() {
-                                        // Try the precise channel first. If that finds nothing
-                                        // (the stored channel_id may differ from what
-                                        // participant_channels records, depending on which
-                                        // party's contact was used during initial pairing),
-                                        // fall back to migrating all shares held by this actor.
-                                        let migrated = {
-                                            let precise = protocol.share_store.associate_channel(old_cid, new_cid);
-                                            if precise == 0 {
-                                                protocol.share_store.associate_all_to_channel(new_cid)
-                                            } else {
-                                                precise
-                                            }
-                                        };
-                                        protocol.secret_store.associate_channel(old_cid, new_cid);
-                                        info!(
-                                            session_id = %self.session_id,
-                                            actor_id = %actor_id,
-                                            old_channel_id = old_cid,
-                                            new_channel_id = new_cid,
-                                            migrated_shares = migrated,
-                                            "re-pairing — channels auto-associated"
-                                        );
-                                    }
-                                    let old_str = old_cid.to_string();
-                                    self.state.participant_channels
-                                        .entry(actor_id)
-                                        .or_default()
-                                        .retain(|c| *c != old_str);
-                                }
-                            }
-
                             self.state.participant_channels
-                                .entry(actor_id)
+                                .entry(self.actor_id)
                                 .or_default()
                                 .push(cid.clone());
+
                             info!(
                                 session_id = %self.session_id,
-                                actor_id = %actor_id,
-                                channel_id = new_cid,
+                                actor_id = %self.actor_id,
+                                channel_id = channel_id.0,
+                                peer_name = %peer_name,
                                 "participant pairing complete — channel recorded"
                             );
+
+                            // Auto-link new channel to any existing channel from the same owner name.
+                            if !peer_name.is_empty() {
+                                ctx.notify(AutoLinkByName {
+                                    new_channel_id: channel_id.0,
+                                    peer_name,
+                                });
+                            }
                         }
                         Role::Replica => {
                             self.state.replica_channels
@@ -123,6 +89,25 @@ impl ProvisionedActor {
 
                 DeRecEvent::ActionRequired { action, .. } => {
                     ctx.notify(AcceptAction(action));
+                }
+
+                DeRecEvent::Unpaired { channel_id } => {
+                    let cid = channel_id.0.to_string();
+                    // Drop the channel from the per-actor index so the
+                    // session-status enrichment stops reporting this actor
+                    // as paired on a channel that no longer exists.
+                    if let Some(mut entry) = self.state.participant_channels.get_mut(&self.actor_id) {
+                        entry.retain(|c| c != &cid);
+                    }
+                    if let Some(mut entry) = self.state.replica_channels.get_mut(&self.actor_id) {
+                        entry.retain(|c| c != &cid);
+                    }
+                    info!(
+                        session_id = %self.session_id,
+                        actor_id = %self.actor_id,
+                        channel_id = channel_id.0,
+                        "channel torn down via unpair flow"
+                    );
                 }
 
                 _ => {}
@@ -159,24 +144,19 @@ struct ProcessDelayed(Vec<u8>);
 struct AcceptAction(PendingAction);
 
 #[derive(Message)]
+#[rtype(result = "()")]
+struct AutoLinkByName {
+    new_channel_id: u64,
+    peer_name: String,
+}
+
+#[derive(Message)]
 #[rtype(result = "Result<derec_proto::ContactMessage, derec_library::Error>")]
 pub struct CreateContactMsg;
 
 #[derive(Message)]
 #[rtype(result = "Result<Option<u64>, derec_library::Error>")]
 pub struct StartFlowMsg(pub DeRecFlow);
-
-/// Copies shares and secrets from `old_cid` to `new_cid` in the actor's stores.
-#[derive(Message)]
-#[rtype(result = "AssociateChannelResult")]
-pub struct AssociateChannelMsg {
-    pub old_cid: u64,
-    pub new_cid: u64,
-}
-
-pub struct AssociateChannelResult {
-    pub migrated_shares: usize,
-}
 
 #[derive(Message)]
 #[rtype(result = "Option<[u8; 32]>")]
@@ -244,6 +224,7 @@ impl Handler<AcceptAction> for ProvisionedActor {
             PendingAction::VerifyShare { .. } => "VerifyShare",
             PendingAction::Discovery { .. } => "Discovery",
             PendingAction::GetShare { .. } => "GetShare",
+            PendingAction::Unpair { .. } => "Unpair",
         };
 
         info!(
@@ -273,6 +254,90 @@ impl Handler<AcceptAction> for ProvisionedActor {
                             "auto-accept failed"
                         );
                     }
+                }
+            }),
+        )
+    }
+}
+
+impl Handler<AutoLinkByName> for ProvisionedActor {
+    type Result = ResponseActFuture<Self, ()>;
+
+    fn handle(&mut self, msg: AutoLinkByName, _ctx: &mut Context<Self>) -> Self::Result {
+        let mut protocol = self.protocol.take().expect("protocol taken while linking channels");
+        let new_cid = msg.new_channel_id;
+        let peer_name = msg.peer_name;
+        let peer_name_for_log = peer_name.clone();
+        let session_id = self.session_id;
+        let actor_id = self.actor_id;
+
+        Box::pin(
+            async move {
+                // Collect all channels that share the same peer name (excluding the new one).
+                let channels_result: Result<Vec<_>, _> = protocol.channel_store.channels().await;
+                let channels_to_link: Vec<u64> = match channels_result {
+                    // App-level identity match: the protocol exposes the
+                    // peer's free-form `communication_info`; we treat the
+                    // optional `"name"` key as the display-name convention
+                    // and link channels with the same one. The protocol
+                    // itself does not understand this key.
+                    Ok(channels) => channels
+                        .into_iter()
+                        .filter(|ch| {
+                            ch.id.0 != new_cid
+                                && ch
+                                    .communication_info
+                                    .get("name")
+                                    .map(String::as_str)
+                                    == Some(peer_name.as_str())
+                        })
+                        .map(|ch| ch.id.0)
+                        .collect(),
+                    Err(e) => {
+                        error!(
+                            session_id = %session_id,
+                            actor_id = %actor_id,
+                            error = %e,
+                            "AutoLinkByName: failed to load channels"
+                        );
+                        return (protocol, 0usize);
+                    }
+                };
+
+                let mut linked = 0usize;
+                for existing_cid in &channels_to_link {
+                    if let Err(e) = protocol
+                        .channel_store
+                        .link_channel(ChannelId(*existing_cid), ChannelId(new_cid))
+                        .await
+                    {
+                        error!(
+                            session_id = %session_id,
+                            actor_id = %actor_id,
+                            existing_channel_id = existing_cid,
+                            new_channel_id = new_cid,
+                            error = %e,
+                            "AutoLinkByName: link_channel failed"
+                        );
+                    } else {
+                        linked += 1;
+                    }
+                }
+
+                (protocol, linked)
+            }
+            .into_actor(self)
+            .map(move |(protocol, linked), actor, _ctx| {
+                actor.protocol = Some(protocol);
+                if linked > 0 {
+                    info!(
+                        session_id = %actor.session_id,
+                        actor_id = %actor.actor_id,
+                        new_channel_id = new_cid,
+                        peer_name = %peer_name_for_log,
+                        linked_channels = linked,
+                        "auto-linked new channel to existing channels by owner name"
+                    );
                 }
             }),
         )
@@ -317,20 +382,6 @@ impl Handler<StartFlowMsg> for ProvisionedActor {
                 result
             }),
         )
-    }
-}
-
-impl Handler<AssociateChannelMsg> for ProvisionedActor {
-    type Result = MessageResult<AssociateChannelMsg>;
-
-    fn handle(&mut self, msg: AssociateChannelMsg, _ctx: &mut Context<Self>) -> Self::Result {
-        let Some(protocol) = self.protocol.as_mut() else {
-            // Protocol is taken by an in-flight async handler; caller can retry.
-            return MessageResult(AssociateChannelResult { migrated_shares: 0 });
-        };
-        let migrated_shares = protocol.share_store.associate_channel(msg.old_cid, msg.new_cid);
-        protocol.secret_store.associate_channel(msg.old_cid, msg.new_cid);
-        MessageResult(AssociateChannelResult { migrated_shares })
     }
 }
 

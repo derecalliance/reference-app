@@ -1,0 +1,108 @@
+.info-tooltip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.info-tooltip-trigger {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 700;
+  font-family: inherit;
+  line-height: 1;
+  text-transform: none;
+  letter-spacing: 0;
+  cursor: help;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.12s ease, border-color 0.12s ease, background-color 0.12s ease;
+}
+
+.info-tooltip-trigger:hover,
+.info-tooltip-trigger:focus-visible {
+  color: var(--text-h);
+  border-color: var(--text-h);
+  background: var(--accent-bg);
+  outline: none;
+}
+
+.info-tooltip-content {
+  position: absolute;
+  left: 50%;
+  z-index: 50;
+  width: max-content;
+  max-width: 280px;
+  padding: 8px 10px;
+  background: var(--text-h);
+  color: var(--bg);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  letter-spacing: 0;
+  text-transform: none;
+  text-align: left;
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.info-tooltip-content--top {
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%);
+}
+
+.info-tooltip-content--bottom {
+  top: calc(100% + 8px);
+  transform: translateX(-50%);
+}
+
+.info-tooltip-content::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+}
+
+.info-tooltip-content--top::after {
+  top: 100%;
+  border-top-color: var(--text-h);
+}
+
+.info-tooltip-content--bottom::after {
+  bottom: 100%;
+  border-bottom-color: var(--text-h);
+}
+
+.info-tooltip:hover .info-tooltip-content,
+.info-tooltip:focus-within .info-tooltip-content {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.info-tooltip-content ul {
+  margin: 6px 0 0;
+  padding-left: 16px;
+}
+
+.info-tooltip-content li + li {
+  margin-top: 4px;
+}
+
+.info-tooltip-content code {
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.12);
+  padding: 0 4px;
+  border-radius: 3px;
+}

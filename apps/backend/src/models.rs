@@ -21,6 +21,57 @@ pub enum Role {
     Replica,
 }
 
+/// How the app decides that two pairing channels belong to the same user.
+///
+/// This is an **app-level** concern (the DeRec protocol is identity-blind).
+/// The backend stores the choice and echoes it back to every joiner so the FE
+/// renders a consistent pairing-confirmation UX across the session.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthenticationMethod {
+    /// Helper manually links channels (the in-modal "accept + link" flow).
+    User,
+    /// Reserved for a future automatic-linking mode; not yet implemented.
+    Application,
+}
+
+impl Default for AuthenticationMethod {
+    fn default() -> Self {
+        AuthenticationMethod::User
+    }
+}
+
+/// Protocol-level acknowledgement policy for the unpair flow. Mirrors
+/// `derec_library::protocol::UnpairAck`; chosen at session creation and
+/// echoed back to every joiner so all participants agree on the semantics.
+///
+/// - `Required` (default): the initiator keeps local state until the peer
+///   ACKs or the timeout elapses.
+/// - `NotRequired`: fire-and-forget — state drops immediately on
+///   `start(Unpair)`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UnpairAck {
+    Required,
+    NotRequired,
+}
+
+impl Default for UnpairAck {
+    fn default() -> Self {
+        UnpairAck::Required
+    }
+}
+
+impl UnpairAck {
+    /// Convert to the lib's enum for protocol builder consumption.
+    pub fn to_library(self) -> derec_library::protocol::UnpairAck {
+        match self {
+            UnpairAck::Required => derec_library::protocol::UnpairAck::Required,
+            UnpairAck::NotRequired => derec_library::protocol::UnpairAck::NotRequired,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Actor {
     pub id: Uuid,
@@ -37,6 +88,20 @@ pub struct Session {
     pub min_participants: u8,
     /// Recommended number of participants for optimal protection.
     pub recommended_participants: u8,
+    /// General protocol timeout in seconds (passive message/round expiry in
+    /// `process()`, and the active wall-clock deadline at the app layer).
+    pub protocol_timeout_secs: u32,
+    /// App-level authentication method (no protocol semantics). Stored here so
+    /// every joiner sees the same choice.
+    pub authentication_method: AuthenticationMethod,
+    /// Protocol-level unpair acknowledgement policy applied to every actor in
+    /// this session.
+    pub unpair_ack: UnpairAck,
+    /// FE-only UI preference echoed back to every joiner so the whole
+    /// session presents a consistent UX for incoming unpair requests.
+    /// When `false`, the Owner's UI shows a confirmation modal; when
+    /// `true`, the FE auto-accepts. Not consulted by the protocol layer.
+    pub auto_accept_unpair_requests: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,6 +114,14 @@ pub struct CreateSessionRequest {
     pub min_participants: Option<u8>,
     /// Recommended participants for optimal protection.
     pub recommended_participants: Option<u8>,
+    /// General protocol timeout in seconds. Defaults to 300 when omitted.
+    pub protocol_timeout_secs: Option<u32>,
+    /// App-level authentication method. Defaults to `user` when omitted.
+    pub authentication_method: Option<AuthenticationMethod>,
+    /// Unpair acknowledgement policy. Defaults to `required` when omitted.
+    pub unpair_ack: Option<UnpairAck>,
+    /// FE-only UX preference. Defaults to `true` (auto-accept) when omitted.
+    pub auto_accept_unpair_requests: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -87,6 +160,10 @@ pub struct GetSessionResponse {
     pub actors: Vec<ActorWithStatus>,
     pub min_participants: u8,
     pub recommended_participants: u8,
+    pub protocol_timeout_secs: u32,
+    pub authentication_method: AuthenticationMethod,
+    pub unpair_ack: UnpairAck,
+    pub auto_accept_unpair_requests: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,6 +193,18 @@ pub struct AddReplicaResponse {
 #[derive(Debug, Deserialize)]
 pub struct JoinSessionRequest {
     pub name: String,
+    /// When set, the caller **claims an existing owner actor's identity**
+    /// rather than creating a new actor. Used by the recovery-join flow so a
+    /// recovering user can resume polling the mailbox of an old owner whose
+    /// helpers still hold the old transport URI on their channel records.
+    ///
+    /// The claim is **unauthenticated here** — for a reference app, this is
+    /// intentional. A real app would gate this behind server-side auth.
+    /// On a successful claim the actor's mailbox tx/rx is rebound to a fresh
+    /// pair, so the new tab starts receiving messages and any previous tab
+    /// silently stops.
+    #[serde(default)]
+    pub claim_actor_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize)]
@@ -128,4 +217,8 @@ pub struct JoinSessionResponse {
     pub actors: Vec<ActorWithStatus>,
     pub min_participants: u8,
     pub recommended_participants: u8,
+    pub protocol_timeout_secs: u32,
+    pub authentication_method: AuthenticationMethod,
+    pub unpair_ack: UnpairAck,
+    pub auto_accept_unpair_requests: bool,
 }

@@ -94,7 +94,7 @@ export function prePairLocally(
 
   // Step 2 — owner produces pairing request, embedding its own contact
   const ownerRequestResult = primitives.pairing.request.produce(
-    SenderKind.OwnerNonRecovery,
+    SenderKind.Owner,
     ownerTransport,
     participantCreateResult.contact_message,
   ) as ProduceRequestResult

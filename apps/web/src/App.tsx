@@ -4,9 +4,9 @@ import NewSessionWizard from './NewSessionWizard'
 import OwnerSessionPage, { JoinQrModal, SessionIdBadge } from './OwnerSessionPage'
 import ConsolePanel from './ConsolePanel'
 import { ConsoleProvider } from './ConsoleContext'
-import type { OwnerSession, ParticipantSession } from './types'
-import { persistSession, persistParticipantSession, deleteSession, deleteParticipantSession } from './sessionPersistence'
-import ParticipantSessionPage from './ParticipantSessionPage'
+import { ToastProvider } from './Toast'
+import type { OwnerSession } from './types'
+import { persistSession, deleteSession } from './sessionPersistence'
 import GitHubIcon from '@mui/icons-material/GitHub';
 import LinkedInIcon from '@mui/icons-material/LinkedIn';
 import XIcon from '@mui/icons-material/X';
@@ -86,7 +86,6 @@ function setSessionIdInUrl(sessionId: string | null) {
 
 type ActiveSession =
   | { type: 'owner'; session: OwnerSession }
-  | { type: 'participant'; session: ParticipantSession }
 
 function AppContent() {
   const [activeSession, setActiveSession] = useState<ActiveSession | null>(null)
@@ -111,11 +110,6 @@ function AppContent() {
     setActiveSession({ type: 'owner', session: created })
   }
 
-  function handleParticipantUpdate(updated: ParticipantSession) {
-    persistParticipantSession(updated)
-    setActiveSession({ type: 'participant', session: updated })
-  }
-
   const [inviteOpen, setInviteOpen] = useState(false)
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false)
 
@@ -128,11 +122,7 @@ function AppContent() {
     setLeaveDialogOpen(false)
     if (activeSession) {
       try {
-        if (activeSession.type === 'owner') {
-          deleteSession(activeSession.session.sessionId)
-        } else {
-          deleteParticipantSession(activeSession.session.sessionId, activeSession.session.participantId)
-        }
+        deleteSession(activeSession.session.sessionId)
       } catch {
         // Storage errors are non-fatal — proceed with leaving.
       }
@@ -167,9 +157,7 @@ function AppContent() {
       <main className={activeSession ? 'session-mode' : undefined}>
         {activeSession === null
           ? <NewSessionWizard onCreated={handleCreated} initialSessionId={urlSessionInfo?.sessionId} initialIntent={urlSessionInfo?.intent} />
-          : activeSession.type === 'owner'
-            ? <OwnerSessionPage session={activeSession.session} onUpdate={handleOwnerUpdate} />
-            : <ParticipantSessionPage session={activeSession.session} onUpdate={handleParticipantUpdate} />
+          : <OwnerSessionPage session={activeSession.session} onUpdate={handleOwnerUpdate} />
         }
       </main>
 
@@ -216,8 +204,10 @@ function AppContent() {
 
 export default function App() {
   return (
-    <ConsoleProvider>
-      <AppContent />
-    </ConsoleProvider>
+    <ToastProvider>
+      <ConsoleProvider>
+        <AppContent />
+      </ConsoleProvider>
+    </ToastProvider>
   )
 }

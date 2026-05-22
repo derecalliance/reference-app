@@ -186,7 +186,10 @@ pub async fn start_pairing(
     let flow = DeRecFlow::Pairing {
         kind: derec_proto::SenderKind::Helper,
         contact,
-        name: None,
+        // The provisioned actor doesn't carry an app-level label for the
+        // initiator; the peer's `communication_info` arrives on the wire
+        // with the pair-request and is what the responder side stores.
+        peer_communication_info: std::collections::HashMap::new(),
     };
 
     match addr.send(StartFlowMsg(flow)).await {
