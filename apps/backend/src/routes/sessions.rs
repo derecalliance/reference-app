@@ -16,10 +16,9 @@ use fake::Fake;
 use fake::faker::name::en::{FirstName, LastName};
 
 use crate::{
-    actor::{LoadSharedKeyMsg, ProvisionedActor},
+    actor::{LoadSharedKeyMsg, ProtocolConfig, ProvisionedActor},
     models::{Actor, ActorWithStatus, AddParticipantRequest, AddParticipantResponse, AddReplicaRequest, AddReplicaResponse, CreateSessionRequest, CreateSessionResponse, GetSessionResponse, JoinSessionRequest, JoinSessionResponse, Role, Session, Transport, TransportProtocol, UnpairAck},
     state::{ActorInbox, AppState},
-    stores::{HttpTransport, InMemoryChannelStore, InMemorySecretStore, InMemoryShareStore},
 };
 
 pub async fn create(
@@ -46,7 +45,7 @@ pub async fn create(
             &state.base_url,
         );
 
-        spawn_provisioned(&state, participant.id, session_id, Role::Participant, &participant.transport.uri, Some(participant.name.clone()), protocol_timeout_secs, unpair_ack);
+        spawn_provisioned(&state, &participant, session_id, protocol_timeout_secs, unpair_ack);
         actors.push(participant);
     }
 
@@ -125,7 +124,7 @@ pub async fn add_participant(
 
     let participant = provisioned_actor(Role::Participant, &req.name, session_id, &state.base_url);
 
-    spawn_provisioned(&state, participant.id, session_id, Role::Participant, &participant.transport.uri, Some(participant.name.clone()), session.protocol_timeout_secs, session.unpair_ack);
+    spawn_provisioned(&state, &participant, session_id, session.protocol_timeout_secs, session.unpair_ack);
     session.actors.push(participant.clone());
 
     info!(
@@ -157,7 +156,7 @@ pub async fn add_replica(
 
     let replica = provisioned_actor(Role::Replica, &req.name, session_id, &state.base_url);
 
-    spawn_provisioned(&state, replica.id, session_id, Role::Replica, &replica.transport.uri, Some(replica.name.clone()), session.protocol_timeout_secs, session.unpair_ack);
+    spawn_provisioned(&state, &replica, session_id, session.protocol_timeout_secs, session.unpair_ack);
     session.actors.push(replica.clone());
 
     info!(
@@ -232,12 +231,16 @@ pub async fn join(
 
         // Snapshot actors before the async enrich so we don't hold a dashmap
         // guard across an await.
-        let actors_snapshot: Vec<Actor> = state
-            .sessions
-            .get(&session_id)
-            .unwrap()
-            .actors
-            .clone();
+        let actors_snapshot: Vec<Actor> = match state.sessions.get(&session_id) {
+            Some(s) => s.actors.clone(),
+            None => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({ "error": "session not found" })),
+                )
+                    .into_response();
+            }
+        };
         let actors = enrich_actors(&state, &actors_snapshot).await;
 
         let session = state.sessions.get(&session_id).unwrap();
@@ -263,10 +266,13 @@ pub async fn join(
         session.actors.push(actor.clone());
     }
 
-    let actors = {
+    // Snapshot before the async enrich — holding a dashmap guard across an
+    // await risks deadlocking any writer for this shard.
+    let actors_snapshot: Vec<Actor> = {
         let session = state.sessions.get(&session_id).unwrap();
-        enrich_actors(&state, &session.actors).await
+        session.actors.clone()
     };
+    let actors = enrich_actors(&state, &actors_snapshot).await;
 
     info!(
         session_id = %session_id,
@@ -301,6 +307,12 @@ pub async fn join(
 }
 
 /// POST /sessions/:session_id/participants/:participant_id/browser-contact
+///
+/// Contacts are scoped to a secret. Pairing binds both parties to one
+/// `secret_id`, and the responder's contact is minted by the protocol instance
+/// bound to it — so a node willing to help several owners publishes one contact
+/// per owner secret. `?secret_id=` selects which; omitting it means the session
+/// owner's.
 pub async fn post_browser_contact(
     State(state): State<Arc<AppState>>,
     Path((session_id, participant_id)): Path<(Uuid, Uuid)>,
@@ -314,7 +326,11 @@ pub async fn post_browser_contact(
             .into_response();
     }
     state.browser_participant_contacts.insert(participant_id, body);
-    info!(session_id = %session_id, participant_id = %participant_id, "browser contact stored");
+    info!(
+        session_id = %session_id,
+        participant_id = %participant_id,
+        "browser contact stored"
+    );
     StatusCode::OK.into_response()
 }
 
@@ -342,8 +358,52 @@ fn register_browser_actor(state: &AppState, actor_id: Uuid) {
     state.browser_receivers.insert(actor_id, Arc::new(Mutex::new(rx)));
 }
 
-fn spawn_provisioned(state: &AppState, actor_id: Uuid, session_id: Uuid, role: Role, transport_uri: &str, name: Option<String>, timeout_secs: u32, unpair_ack: UnpairAck) {
-    let protocol = create_protocol(state, transport_uri, name, timeout_secs, unpair_ack);
+/// Spawn a backend-managed actor.
+///
+/// No protocol instance is created here: an instance is bound to one
+/// `secret_id`, and which secret this actor will serve is only known once a
+/// pairing is driven against it. The actor builds instances on demand from
+/// this config — see [`ProvisionedActor`].
+fn spawn_provisioned(state: &AppState, actor: &Actor, session_id: Uuid, timeout_secs: u32, unpair_ack: UnpairAck) {
+    let actor_id = actor.id;
+    let role = actor.role;
+    let transport_uri = actor.transport.uri.as_str();
+    let name = Some(actor.name.clone());
+    let secret_id: u64 = match actor.secret_id.parse() {
+        Ok(v) => v,
+        Err(_) => {
+            tracing::error!(actor_id = %actor_id, "actor has an unparseable secret_id; not spawning");
+            return;
+        }
+    };
+
+    let mut communication_info = std::collections::HashMap::new();
+    if let Some(n) = name {
+        communication_info.insert("name".to_owned(), n);
+    }
+
+    let config = ProtocolConfig {
+        secret_id,
+        transport_uri: transport_uri.to_owned(),
+        communication_info,
+        timeout_secs,
+        unpair_ack,
+        threshold: 2,
+        keep_versions_count: 3,
+        // Only replicas take part in replica-mode pairing, and doing so
+        // requires a stable per-device id.
+        replica_id: (role == Role::Replica).then(|| rand::random::<u64>()),
+        http_client: state.http_client.clone(),
+    };
+
+    let protocol = match crate::actor::build_protocol(&config) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!(actor_id = %actor_id, error = %e, "failed to build protocol; not spawning");
+            return;
+        }
+    };
+
     let app_state = Arc::new(state.clone());
 
     let addr = ProvisionedActor::start_in_arbiter(&state.arbiter, move |_ctx| {
@@ -351,30 +411,6 @@ fn spawn_provisioned(state: &AppState, actor_id: Uuid, session_id: Uuid, role: R
     });
 
     state.actor_inboxes.insert(actor_id, ActorInbox::Provisioned(addr));
-}
-
-fn create_protocol(state: &AppState, transport_uri: &str, name: Option<String>, timeout_secs: u32, unpair_ack: UnpairAck) -> crate::stores::ActorProtocol {
-    let transport = HttpTransport::new(state.http_client.clone());
-    let own_transport = derec_proto::TransportProtocol {
-        uri: transport_uri.to_owned(),
-        protocol: 0, // HTTPS
-    };
-    let mut info = std::collections::HashMap::new();
-    if let Some(n) = name {
-        info.insert("name".to_owned(), n);
-    }
-    derec_library::protocol::DeRecProtocolBuilder::new()
-        .with_channel_store(InMemoryChannelStore::default())
-        .with_share_store(InMemoryShareStore::default())
-        .with_secret_store(InMemorySecretStore::default())
-        .with_transport(transport)
-        .with_own_transport(own_transport)
-        .with_threshold(2)
-        .with_keep_versions_count(3)
-        .with_timeout_in_secs(timeout_secs as u64)
-        .with_communication_info(info)
-        .with_unpair_ack(unpair_ack.to_library())
-        .build()
 }
 
 async fn enrich_actors(state: &AppState, actors: &[Actor]) -> Vec<ActorWithStatus> {
@@ -396,7 +432,7 @@ async fn enrich_actors(state: &AppState, actors: &[Actor]) -> Vec<ActorWithStatu
                 if let Ok(cid) = cid_str.parse::<u64>() {
                     if let Some(entry) = state.actor_inboxes.get(&a.id) {
                         if let ActorInbox::Provisioned(addr) = entry.value() {
-                            addr.send(LoadSharedKeyMsg(cid)).await
+                            addr.send(LoadSharedKeyMsg { channel_id: cid }).await
                                 .ok()
                                 .flatten()
                                 .map(|k| URL_SAFE_NO_PAD.encode(&k[..]))
@@ -456,5 +492,6 @@ fn provisioned_actor(role: Role, name: &str, session_id: Uuid, base_url: &str) -
             protocol: TransportProtocol::Https,
             uri: format!("{base_url}/derec/sessions/{session_id}/{role_segment}/{actor_id}"),
         },
+        secret_id: rand::random::<u64>().to_string(),
     }
 }

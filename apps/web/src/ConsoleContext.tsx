@@ -8,7 +8,16 @@ import {
 
 
 export type ConsoleRole = 'owner' | 'participant'
-export type ConsoleFlow = 'session' | 'pairing' | 'sharing' | 'verification' | 'recovery' | 'replica'
+export type ConsoleFlow =
+  | 'session'
+  | 'pairing'
+  | 'unpairing'
+  | 'sharing'
+  | 'verification'
+  | 'discovery'
+  | 'recovery'
+  | 'replica'
+  | 'protocol'
 
 export interface ConsoleEntry {
   id: string

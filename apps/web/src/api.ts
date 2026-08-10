@@ -10,9 +10,13 @@ interface BEActor {
   role: 'owner' | 'participant' | 'replica'
   name: string
   transport: BETransport
+  /** This actor's own secret_id (u64 decimal string) — the secret it protects
+   *  as Owner. Peers helping it must bind their helper-role protocol instance
+   *  to this value. */
+  secret_id: string
 }
 
-interface CreateSessionResponse {
+export interface CreateSessionResponse {
   session_id: string
   actors: BEActor[]
 }
@@ -53,6 +57,16 @@ export interface JoinSessionResponse {
   auto_accept_unpair_requests: boolean
 }
 
+/**
+ * Role a party declares when it *initiates* a pairing; the responder takes the
+ * complement.
+ *
+ * A ContactMessage carries no role — only the initiator's declaration reaches
+ * the wire — so this is chosen by whoever scans a contact and starts the
+ * handshake, never by whoever published it.
+ */
+export type PairingRole = 'owner' | 'helper'
+
 export interface CreateSessionParams {
   ownerName: string
   additionalParticipants: number
@@ -64,21 +78,29 @@ export interface CreateSessionParams {
   autoAcceptUnpairRequests: boolean
 }
 
+/** JSON form of a protocol ContactMessage. `u64` fields travel as decimal
+ *  strings and binary fields base64url-encoded. Key material is optional: it
+ *  is inlined only under ContactMode.InlineKeys — HashedKeys carries a binding
+ *  hash instead, NoKeys carries neither. */
 export interface ContactMessageDto {
   channel_id: string
   nonce: string
   transport_protocol: { uri: string; protocol: string }
-  mlkem_encapsulation_key: string
-  ecies_public_key: string
+  /** ContactMode numeric value: 0 = InlineKeys, 1 = HashedKeys, 2 = NoKeys. */
+  contact_mode: number
+  mlkem_encapsulation_key?: string
+  ecies_public_key?: string
+  contact_binding_hash?: string
 }
 
 export async function apiCreateActorContact(
   sessionId: string,
   actorId: string,
 ): Promise<ContactMessageDto> {
-  const res = await fetch(`${API_BASE}/sessions/${sessionId}/actors/${actorId}/contact`, {
-    method: 'POST',
-  })
+  const res = await fetch(
+    `${API_BASE}/sessions/${sessionId}/actors/${actorId}/contact`,
+    { method: 'POST' },
+  )
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     throw new Error((body as { error?: string }).error ?? `create actor contact failed: ${res.status}`)
@@ -266,6 +288,7 @@ export async function apiJoinSession(
   return res.json() as Promise<JoinSessionResponse>
 }
 
+/** Publish this node's contact so peers can pair against it. */
 export async function apiPostBrowserContact(
   sessionId: string,
   participantId: string,
@@ -281,12 +304,19 @@ export async function apiPostBrowserContact(
   }
 }
 
+/** Drive a backend-managed actor into pairing against `contact`.
+ *
+ *  Pairing is bi-directional: `role` is the role the *backend actor* takes,
+ *  and the responder gets the complement. Defaults to `helper`. The returned
+ *  channel_id is the transient pairing id — the handshake rotates to a
+ *  long-term id that surfaces on PairingCompleted. */
 export async function apiStartActorPairing(
   sessionId: string,
   actorId: string,
   contact: ContactMessageDto,
+  role: PairingRole = 'helper',
 ): Promise<{ channel_id: string }> {
-  const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/actors/${encodeURIComponent(actorId)}/start-pairing`, {
+  const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/actors/${encodeURIComponent(actorId)}/start-pairing?role=${role}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(contact),
@@ -298,6 +328,7 @@ export async function apiStartActorPairing(
   return res.json() as Promise<{ channel_id: string }>
 }
 
+/** Fetch a peer's published contact. */
 export async function apiGetBrowserContact(
   sessionId: string,
   participantId: string,
@@ -308,4 +339,60 @@ export async function apiGetBrowserContact(
     throw new Error(`get browser-contact failed: ${res.status}`)
   }
   return res.json() as Promise<ContactMessageDto>
+}
+
+// ── Operator-driven channel linking (provisioned helpers) ────────────────────
+//
+// A helper deciding that a newly-paired channel belongs to an owner it already
+// helps is an authentication step, not something the protocol can infer — no
+// field on the wire carries a trustworthy identity. Browser helpers do this
+// through the pairing prompt or the channel list; provisioned helpers have no
+// UI of their own, so an operator drives it through these endpoints.
+
+/** One channel a provisioned helper holds. */
+export interface ProvisionedChannel {
+  channel_id: string
+  /** Peer's display name. Informational only — never an identity to act on. */
+  peer_name: string
+  /** The provisioned actor's role on this channel. */
+  role: 'owner' | 'helper'
+  /** Channels already linked to this one. */
+  linked_channel_ids: string[]
+}
+
+export async function apiListParticipantChannels(
+  sessionId: string,
+  participantId: string,
+): Promise<ProvisionedChannel[]> {
+  const res = await fetch(
+    `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/participants/${encodeURIComponent(participantId)}/channels`,
+  )
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error((body as { error?: string }).error ?? `list channels failed: ${res.status}`)
+  }
+  const body = (await res.json()) as { channels: ProvisionedChannel[] }
+  return body.channels
+}
+
+/** Link `channelId` to `linkToChannelId` on the provisioned helper, declaring
+ *  that both belong to the same owner. Undirected and idempotent. */
+export async function apiLinkParticipantChannels(
+  sessionId: string,
+  participantId: string,
+  channelId: string,
+  linkToChannelId: string,
+): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/participants/${encodeURIComponent(participantId)}/link`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel_id: channelId, link_to_channel_id: linkToChannelId }),
+    },
+  )
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error((body as { error?: string }).error ?? `link failed: ${res.status}`)
+  }
 }

@@ -2605,3 +2605,91 @@ button.small {
   }
 }
 
+
+/* ── Pairing role selector ─────────────────────────────────────────────────
+   Owner / Helper picker shown on both the share-contact and pair modals.
+   Follows the same visual language as .recovery-link-option. */
+
+.role-selector {
+  border: none;
+  margin: 0 0 1rem;
+  padding: 0;
+}
+
+.role-selector > .sub-heading {
+  padding: 0;
+  margin-bottom: 0.5rem;
+}
+
+.role-selector[disabled] {
+  opacity: 0.6;
+}
+
+.role-selector__options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+@media (max-width: 480px) {
+  .role-selector__options {
+    grid-template-columns: 1fr;
+  }
+}
+
+.role-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0.625rem 0.875rem;
+  border-radius: 6px;
+  border: 1px solid var(--border, #e2e8f0);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.role-selector[disabled] .role-option {
+  cursor: default;
+}
+
+.role-option:hover {
+  border-color: var(--primary, #3b82f6);
+  background: rgba(59, 130, 246, 0.04);
+}
+
+.role-option--selected {
+  border-color: var(--primary, #3b82f6);
+  background: rgba(59, 130, 246, 0.08);
+}
+
+/* The label itself is the hit target; the radio stays for a11y/keyboard. */
+.role-option input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.role-option:focus-within {
+  outline: 2px solid var(--primary, #3b82f6);
+  outline-offset: 2px;
+}
+
+.role-option__label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text, #0f172a);
+}
+
+.role-option__hint {
+  font-size: 12px;
+  color: var(--text-muted, #64748b);
+  line-height: 1.35;
+}
+
+@media (prefers-color-scheme: dark) {
+  .role-option__label {
+    color: var(--text, #f1f5f9);
+  }
+}

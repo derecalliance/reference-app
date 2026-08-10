@@ -126,7 +126,7 @@ pub async fn get_fingerprint(
         }
     };
 
-    match addr.send(GetFingerprintMsg(channel_id)).await {
+    match addr.send(GetFingerprintMsg { channel_id }).await {
         Ok(Ok(fingerprint)) => {
             info!(
                 session_id = %session_id,
@@ -204,7 +204,13 @@ pub async fn confirm_fingerprint(
         }
     };
 
-    match addr.send(VerifyFingerprintMsg { channel_id, fingerprint: req.fingerprint.clone() }).await {
+    match addr
+        .send(VerifyFingerprintMsg {
+            channel_id,
+            fingerprint: req.fingerprint.clone(),
+        })
+        .await
+    {
         Ok(Ok(true)) => {
             state.replica_confirmed.insert(replica_id, ());
             info!(

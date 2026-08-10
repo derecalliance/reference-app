@@ -86,9 +86,9 @@ function StepChoice({
         <button
           className="secondary"
           onClick={() => onSelect('joinRecovery')}
-          title="Join a session and start directly in recovery mode — empty state, ready to pair helpers and reconstruct."
+          title="Testing shortcut: join by adopting an existing owner actor's mailbox instead of creating a new one. Recovery itself does not need this — a recovering owner joins normally and re-pairs."
         >
-          Join in Recovery Mode
+          Join by Claiming an Actor
         </button>
         <button className="secondary" onClick={() => onSelect('continue')}>
           Continue by ID
@@ -775,6 +775,7 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
         sessionId: resp.session_id,
         ownerId: ownerActor.id,
         ownerName: data.ownerName,
+        ownSecretId: ownerActor.secret_id,
         transport: ownerTransport,
         participants: participantActors.map(a => ({
           id: a.id,
@@ -782,6 +783,7 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
           channelId: '',
           transport: { protocol: a.transport.protocol, uri: a.transport.uri },
           connectionStatus: 'available' as const,
+          secretId: ownerActor.secret_id,
           secretShares: [],
         })),
         secretBag: null,
@@ -850,6 +852,7 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
         sessionId: resp.session_id,
         ownerId: ownerActor.id,
         ownerName: ownerActor.name,
+        ownSecretId: ownerActor.secret_id,
         transport: { protocol: ownerActor.transport.protocol, uri: ownerActor.transport.uri },
         participants: participantActors.map(a => ({
           id: a.id,
@@ -857,6 +860,7 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
           channelId: a.channel_id ?? '',
           transport: { protocol: a.transport.protocol, uri: a.transport.uri },
           connectionStatus: a.channel_id ? 'paired' as const : 'available' as const,
+          secretId: ownerActor.secret_id,
           secretShares: [],
         })),
         secretBag: null,
@@ -950,6 +954,7 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
         // In recovery (claim) mode the backend echoes the *existing* actor's
         // name regardless of what we sent — use it so the FE matches.
         ownerName: recovery ? resp.actor.name : name,
+        ownSecretId: resp.actor.secret_id,
         transport: { protocol: resp.actor.transport.protocol, uri: resp.actor.transport.uri },
         participants: peerActors.map(a => ({
           id: a.id,
@@ -957,6 +962,7 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
           channelId: '',
           transport: { protocol: a.transport.protocol, uri: a.transport.uri },
           connectionStatus: 'available' as const,
+          secretId: resp.actor.secret_id,
           secretShares: [],
         })),
         secretBag: null,
@@ -967,7 +973,6 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
         recoveredSecrets: [],
         recoveryProgress: null,
         recoveryFailures: [],
-        recoveryMode: recovery,
         replicas: replicaActors.map(a => ({
           id: a.id,
           name: a.name,

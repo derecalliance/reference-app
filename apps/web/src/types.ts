@@ -37,12 +37,20 @@ export interface PairedParticipant {
   transport: Transport
   secretShares: SecretShareRef[]
   connectionStatus: ParticipantConnectionStatus
-  /** The role this node plays on this channel. */
-  role?: ChannelRole
+  /**
+   * The **peer's** role on this channel, fixed at pairing time.
+   *
+   * Matches `Channel.peer_role` in the library: a channel row describes the
+   * party on the other end, so a helper we protect a secret with is recorded
+   * as `helper`. This node's own role is always the inverse.
+   *
+   * Pairing is bi-directional — either party may initiate in either role — so
+   * this is derived from `PairingCompleted.kind`, which reports the *local*
+   * party's role, and inverted.
+   */
+  peerRole?: ChannelRole
   /** When true, the backend silently drops all messages to/from this participant */
   offline?: boolean
-  /** Whether this participant was paired in recovery mode */
-  recoveryPaired?: boolean
   /** Whether discovery has been requested and completed for this participant */
   discoveryComplete?: boolean
   /** Secret versions this helper reported during discovery (populated after SecretsDiscovered) */
@@ -96,6 +104,13 @@ export interface PendingPairing {
   channelId: bigint
   /** Set when this pairing belongs to a specific provisioned participant */
   participantId?: string
+  /**
+   * Transport URI of the contact this pairing was started against. Set on the
+   * initiating side only, and the exact identity of the peer — browser peers
+   * are `owner`-role actors that never appear in the participant list, so this
+   * is the only reliable way to tell which actor the new channel belongs to.
+   */
+  peerTransportUri?: string
 }
 
 export type ReplicaStatus = 'available' | 'paired' | 'confirmed'
@@ -117,31 +132,53 @@ export interface PairedReplica {
   confirmationStartedAt?: number
 }
 
-/** Structured representation of the recovered secret bag, decoded by the
- *  WASM `decodeRecoveredSecretBag` helper. Mirrors the shape used in the
- *  protect-time "View Payload" modal so the recovered view is visually
- *  identical to what was originally distributed. */
-export interface RecoveredSecretBagHelper {
+/**
+ * Persisted form of the roster snapshot carried by a `SecretRecovered` event.
+ *
+ * The library now decodes the two-stage `DeRecSecret` → `Secret` protobuf
+ * itself and hands over a typed object, so there is no app-side bag decoding.
+ * These types mirror that payload with binary fields base64url-encoded so the
+ * snapshot survives localStorage; `protocol.restore` needs it re-hydrated.
+ */
+export interface RecoveredSecretHelper {
   /** u64 channel id as decimal string. */
   channelId: string
   transportUri: string
   /** App-level identity metadata; opaque to the protocol. */
   communicationInfo: Record<string, string>
-  /** 32-byte shared key (hex-encoded for display, full key persisted). */
-  sharedKeyHex: string
+  /** 32-byte channel key, base64url-encoded. */
+  sharedKey: string
 }
 
-export interface RecoveredSecretBagSecret {
-  /** App-defined identifier (hex-encoded). */
+export interface RecoveredSecretReplica {
+  channelId: string
+  transportUri: string
+  communicationInfo: Record<string, string>
+  /** Hex-encoded u64, matching the wire `derec.replica_id` representation. */
+  replicaId: string
+  senderKind: number
+}
+
+export interface RecoveredSecretEntry {
+  /** App-defined identifier, base64url-encoded. */
   id: string
   name: string
-  /** Raw secret bytes UTF-8 decoded (reference app stores text secrets). */
+  /** Raw secret bytes, base64url-encoded (decoded to text only for display). */
   data: string
 }
 
-export interface RecoveredSecretBag {
-  helpers: RecoveredSecretBagHelper[]
-  secrets: RecoveredSecretBagSecret[]
+/** The roster + contents snapshot captured at distribution time. */
+export interface RecoveredSecretSnapshot {
+  helpers: RecoveredSecretHelper[]
+  secrets: RecoveredSecretEntry[]
+  /** Absent when this secret has no replica setup. */
+  replicas?: {
+    replicas: RecoveredSecretReplica[]
+    /** 32-byte replica-group key, base64url-encoded. */
+    sharedKey: string
+  }
+  /** Hex-encoded u64. */
+  ownerReplicaId: string
 }
 
 /** A successfully recovered secret. */
@@ -149,11 +186,11 @@ export interface RecoveredSecret {
   secretId: string
   version: number
   label: string
-  /** Decoded bag: the same structure the owner originally protected. */
-  bag: RecoveredSecretBag
-  /** Raw recovered bytes (DeRecSecret wire form) hex-encoded for persistence,
-   *  needed to call `restoreFromRecoveredBag` later. */
-  rawBytesHex: string
+  /** The snapshot the owner originally protected, as the library decoded it. */
+  snapshot: RecoveredSecretSnapshot
+  /** Whether `protocol.restore` has committed this snapshot into canonical
+   *  state for its `secret_id`. */
+  restored?: boolean
 }
 
 /** Tracks live progress of a recovery attempt. */
@@ -188,6 +225,15 @@ export interface OwnerSession {
   /** Actor ID of the owner in the backend session — used for mailbox polling */
   ownerId: string
   ownerName: string
+  /**
+   * This node's own `secret_id` (u64 decimal string) — the secret it protects
+   * as Owner, allocated by the backend and published on its actor record.
+   *
+   * The node runs a single protocol instance bound to this value. Helper-role
+   * channels live in that same instance: shares are separated by channel and
+   * each carries its own Owner's `secret_id` on the record.
+   */
+  ownSecretId: string
   /** The owner's own transport endpoint, shared with participants for contact */
   transport: Transport
   participants: PairedParticipant[]
@@ -211,13 +257,6 @@ export interface OwnerSession {
    * that specific version, or globally on entering/exiting recovery mode.
    */
   recoveryFailures: RecoveryFailure[]
-  /**
-   * Whether this session is currently in recovery mode. Set by the
-   * "Join in recovery" wizard flow and by the recovery-mode toggle button;
-   * cleared on "Recover from bag" / explicit exit. Persisted so reload
-   * preserves the mode.
-   */
-  recoveryMode?: boolean
   /** Paired replicas (second Owner devices) */
   replicas: PairedReplica[]
   /** Shares this owner holds on behalf of other owners (helper role) */
