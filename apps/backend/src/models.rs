@@ -78,6 +78,14 @@ pub struct Actor {
     pub role: Role,
     pub name: String,
     pub transport: Transport,
+    /// This actor's own `secret_id` — the secret it protects when acting as
+    /// Owner — as a decimal string (a `u64` exceeds JavaScript's exact
+    /// integer range).
+    ///
+    /// Each actor runs one protocol instance bound to this value. Helper-role
+    /// channels live in that same instance; the shares they hold carry their
+    /// own Owner's `secret_id` on the record.
+    pub secret_id: String,
 }
 
 #[derive(Debug, Clone)]

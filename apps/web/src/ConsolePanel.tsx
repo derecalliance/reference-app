@@ -18,10 +18,13 @@ const ROLE_LABEL: Record<ConsoleRole, string> = {
 const FLOW_LABEL: Record<ConsoleFlow, string> = {
   session: 'Session',
   pairing: 'Pairing',
+  unpairing: 'Unpairing',
   sharing: 'Sharing',
   verification: 'Verification',
+  discovery: 'Discovery',
   recovery: 'Recovery',
   replica: 'Replica',
+  protocol: 'Protocol',
 }
 
 function RoleBadge({ role }: { role: ConsoleRole }) {

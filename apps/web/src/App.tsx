@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useId, type ReactNode } from 'react'
 import './App.css'
 import NewSessionWizard from './NewSessionWizard'
 import OwnerSessionPage, { JoinQrModal, SessionIdBadge } from './OwnerSessionPage'
@@ -7,6 +7,7 @@ import { ConsoleProvider } from './ConsoleContext'
 import { ToastProvider } from './Toast'
 import type { OwnerSession } from './types'
 import { persistSession, deleteSession } from './sessionPersistence'
+import { clearAllLocalData, countLocalDataEntries } from './localData'
 import GitHubIcon from '@mui/icons-material/GitHub';
 import LinkedInIcon from '@mui/icons-material/LinkedIn';
 import XIcon from '@mui/icons-material/X';
@@ -87,6 +88,26 @@ function setSessionIdInUrl(sessionId: string | null) {
 type ActiveSession =
   | { type: 'owner'; session: OwnerSession }
 
+interface AppDialogProps {
+  title: string
+  body: ReactNode
+  /** Action buttons, rendered right-aligned in the dialog footer. */
+  children: ReactNode
+}
+
+function AppDialog({ title, body, children }: AppDialogProps) {
+  const titleId = useId()
+  return (
+    <div className="app-dialog-overlay" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+      <div className="app-dialog">
+        <h2 id={titleId} className="app-dialog-title">{title}</h2>
+        <div className="app-dialog-body">{body}</div>
+        <div className="app-dialog-actions">{children}</div>
+      </div>
+    </div>
+  )
+}
+
 function AppContent() {
   const [activeSession, setActiveSession] = useState<ActiveSession | null>(null)
 
@@ -112,6 +133,17 @@ function AppContent() {
 
   const [inviteOpen, setInviteOpen] = useState(false)
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false)
+  // Entry count is snapshotted when the dialog opens so the confirmation text
+  // reflects what is actually about to be deleted.
+  const [resetEntryCount, setResetEntryCount] = useState<number | null>(null)
+
+  function handleResetLocalData() {
+    clearAllLocalData()
+    // Protocol instances, wizard state and the session id in the URL all live
+    // outside localStorage, so a reload from the base path is what actually
+    // guarantees a clean slate.
+    window.location.replace(`${BASE_PATH}/`)
+  }
 
   function handleLeaveOnly() {
     setLeaveDialogOpen(false)
@@ -148,6 +180,13 @@ function AppContent() {
             Leave
           </button>
         )}
+        <button
+          className="secondary reset-btn"
+          onClick={() => setResetEntryCount(countLocalDataEntries())}
+          title="Erase all DeRec data stored in this browser and start fresh"
+        >
+          Reset browser data
+        </button>
       </header>
 
       {inviteOpen && activeSession?.type === 'owner' && (
@@ -162,25 +201,45 @@ function AppContent() {
       </main>
 
       {leaveDialogOpen && (
-        <div className="leave-dialog-overlay" role="dialog" aria-modal="true" aria-labelledby="leave-dialog-title">
-          <div className="leave-dialog">
-            <h2 id="leave-dialog-title" className="leave-dialog-title">Leave session?</h2>
-            <p className="leave-dialog-body">
-              Do you want to leave this session or also remove it from this browser?
-            </p>
-            <div className="leave-dialog-actions">
-              <button className="secondary" onClick={() => setLeaveDialogOpen(false)}>
-                Cancel
-              </button>
-              <button className="secondary" onClick={handleLeaveOnly}>
-                Leave
-              </button>
-              <button onClick={handleRemoveFromBrowser}>
-                Remove from browser
-              </button>
-            </div>
-          </div>
-        </div>
+        <AppDialog
+          title="Leave session?"
+          body="Do you want to leave this session or also remove it from this browser?"
+        >
+          <button className="secondary" onClick={() => setLeaveDialogOpen(false)}>
+            Cancel
+          </button>
+          <button className="secondary" onClick={handleLeaveOnly}>
+            Leave
+          </button>
+          <button onClick={handleRemoveFromBrowser}>
+            Remove from browser
+          </button>
+        </AppDialog>
+      )}
+
+      {resetEntryCount !== null && (
+        <AppDialog
+          title="Reset browser data?"
+          body={
+            <>
+              <p>
+                This erases every DeRec session, pairing and protocol key stored in this
+                browser ({resetEntryCount} {resetEntryCount === 1 ? 'entry' : 'entries'}),
+                then reloads the app so you start from scratch.
+              </p>
+              <p className="app-dialog-note">
+                Sessions on the server are not affected. This cannot be undone.
+              </p>
+            </>
+          }
+        >
+          <button className="secondary" onClick={() => setResetEntryCount(null)}>
+            Cancel
+          </button>
+          <button className="danger" onClick={handleResetLocalData}>
+            Erase and reload
+          </button>
+        </AppDialog>
       )}
 
       <ConsolePanel />

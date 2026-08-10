@@ -61,7 +61,6 @@ function normalizeSession(raw: Partial<OwnerSession> & Pick<OwnerSession, 'sessi
     recoveredSecrets: raw.recoveredSecrets ?? [],
     recoveryProgress: raw.recoveryProgress ?? null,
     recoveryFailures: raw.recoveryFailures ?? [],
-    recoveryMode: raw.recoveryMode ?? false,
     replicas: raw.replicas ?? [],
     heldShares: raw.heldShares ?? [],
     mainChannels: raw.mainChannels ?? [],
@@ -95,6 +94,12 @@ export function loadSessionById(sessionId: string): OwnerSession | null {
       ? parsed.session
       : parsed
     if (!session || !session.sessionId) return null
+    // Sessions persisted before protocol state was partitioned by secret have
+    // no `ownSecretId`, and their stored channels/shares/secrets sit under the
+    // old unpartitioned keys — unreadable by the current stores. Treat them as
+    // stale so the app offers a fresh join instead of half-loading a session
+    // whose protocol state can never be found.
+    if (!session.ownSecretId) return null
     return normalizeSession(session as OwnerSession)
   } catch {
     return null

@@ -1,28 +1,50 @@
 // TESTING CONVENIENCE ONLY
 //
 // Simulates both sides of the DeRec pairing handshake locally using primitives,
-// bypassing the protocol message exchange. The resulting shared keys and contact
-// messages are written directly into localStorage under the same namespaces that
+// bypassing the protocol message exchange. The resulting shared keys and channel
+// records are written directly into localStorage under the same namespaces that
 // DeRecProtocol uses, so the protocol instances created later in OwnerSessionPage
 // treat the channel as already paired.
 //
 // Real pairing requires the full handshake over the transport.
+//
+// NOTE: this module hand-writes the library's persisted `Channel` record, so it
+// is coupled to that struct's serde shape. If a pairing simulation ever starts
+// failing with a channel-store decode error, check this file against
+// `derec_library::protocol::types::Channel` first.
 
-import { primitives, SenderKind } from '@derec-alliance/web'
+import { primitives, SenderKind, ContactMode } from '@derec-alliance/web'
 import { toBase64Url } from './derecApi'
 
+/** Numeric TransportProtocol discriminant for HTTPS. */
+const TRANSPORT_PROTOCOL_HTTPS = 0
+
+/** Transport endpoint in the shape the primitives expect. */
+interface WireTransport {
+  uri: string
+  protocol: number
+}
+
 // ── Storage key helpers (must match stores.ts) ────────────────────────────────
+//
+// Every store is partitioned by secret id: a protocol instance binds to one
+// secret, and both ends of a relationship bind to the same one — so the helper
+// side writes under the *owner's* secret, not one of its own.
 
-function channelKey(ns: string, channelId: string): string {
-  return `derec:${ns}:contact:${channelId}`
+function partition(ns: string, secretId: string): string {
+  return `derec:${ns}:${secretId}`
 }
 
-function secretKey(ns: string, channelId: string, kind: 0 | 1 | 2): string {
-  return `derec:${ns}:secret:${channelId}:${kind}`
+function channelKey(ns: string, secretId: string, channelId: string): string {
+  return `${partition(ns, secretId)}:contact:${channelId}`
 }
 
-function addToChannelIndex(ns: string, channelId: string): void {
-  const indexKey = `derec:${ns}:contact-index`
+function secretKey(ns: string, secretId: string, channelId: string, kind: 0 | 1 | 2): string {
+  return `${partition(ns, secretId)}:secret:${channelId}:${kind}`
+}
+
+function addToChannelIndex(ns: string, secretId: string, channelId: string): void {
+  const indexKey = `${partition(ns, secretId)}:contact-index`
   const raw = localStorage.getItem(indexKey)
   const ids: string[] = raw ? (JSON.parse(raw) as string[]) : []
   if (!ids.includes(channelId)) {
@@ -31,36 +53,36 @@ function addToChannelIndex(ns: string, channelId: string): void {
   }
 }
 
-// ── Internal result types (primitives are typed as `any` in the public API) ──
-
-interface CreateContactResult {
-  contact_message: unknown
-  secret_key_material: Uint8Array
-}
-
-interface ProduceRequestResult {
-  envelope: unknown
-  initiator_contact_message: unknown
-  secret_key_material: Uint8Array
-}
-
-interface ProduceResponseResult {
-  envelope: unknown
-  pairing_shared_key: Uint8Array
-}
-
-interface ProcessResponseResult {
-  pairing_shared_key: Uint8Array
+/**
+ * Serialize a `Channel` the way the library's channel store expects.
+ *
+ * `status`, `created_at`, `communication_info` and `replica_id` all carry serde
+ * defaults; `id`, `transport` and `peer_role` do not. A channel row describes
+ * the party on the other end: `peer_role` is the *peer's* role (this node's is
+ * always its inverse) and `transport` is the peer's endpoint.
+ */
+function encodeChannel(
+  channelId: bigint,
+  peerTransport: WireTransport,
+  peerRole: 'Owner' | 'Helper',
+): Uint8Array {
+  return new TextEncoder().encode(
+    JSON.stringify({
+      id: Number(channelId),
+      transport: { uri: peerTransport.uri, protocol: peerTransport.protocol },
+      peer_role: peerRole,
+      communication_info: {},
+    }),
+  )
 }
 
 // ── Channel ID generation ─────────────────────────────────────────────────────
 
 function randomChannelId(): bigint {
   const buf = crypto.getRandomValues(new Uint8Array(8))
-  // Build a u64 from 8 random bytes. Shift by 7 bytes max to stay in u64 range.
+  // Build a u64 from 8 random bytes.
   let result = 0n
   for (const byte of buf) result = (result << 8n) | BigInt(byte)
-  // Clamp to u64 max (2^64 - 1)
   return result & 0xFFFFFFFFFFFFFFFFn
 }
 
@@ -73,72 +95,95 @@ function randomChannelId(): bigint {
  *
  * @param ownerNamespace  e.g. `"owner:{ownerId}"`
  * @param participantNamespace e.g. `"participant:{participantId}"`
+ * @param secretId  The owner's secret (u64 decimal string). Both sides store
+ *                  under it — a helper binds to the secret it is helping
+ *                  protect, not to one of its own.
  * @param ownerTransport  Owner's transport advertised to the participant
  * @param participantTransport Participant's transport advertised to the owner
- * @returns The channel ID used for this pairing
+ * @returns The post-rekey channel ID both sides settled on
  */
 export function prePairLocally(
   ownerNamespace: string,
   participantNamespace: string,
-  ownerTransport: { protocol: string; uri: string },
-  participantTransport: { protocol: string; uri: string },
+  secretId: string,
+  ownerTransport: WireTransport,
+  participantTransport: WireTransport,
 ): bigint {
-  const channelId = randomChannelId()
-  const channelStr = channelId.toString()
+  const pairingChannelId = randomChannelId()
 
-  // Step 1 — participant creates contact (generates its KEM/ECIES key pair)
-  const participantCreateResult = primitives.pairing.request.create_contact(
-    channelId,
+  // Step 1 — participant creates a contact (generates its KEM/ECIES key pair).
+  // Inline keys: there is no PrePair round-trip to run in a local simulation.
+  const participantContact = primitives.pairing.request.create_contact(
+    pairingChannelId,
+    ContactMode.InlineKeys,
     participantTransport,
-  ) as CreateContactResult
+  )
 
-  // Step 2 — owner produces pairing request, embedding its own contact
-  const ownerRequestResult = primitives.pairing.request.produce(
+  // Step 2 — owner produces the pairing request against that contact.
+  const ownerRequest = primitives.pairing.request.produce(
     SenderKind.Owner,
     ownerTransport,
-    participantCreateResult.contact_message,
-  ) as ProduceRequestResult
+    participantContact.contact_message,
+    null,
+    null,
+  )
 
-  // Step 3 — participant processes the request, produces a response, derives its shared key
-  const participantResponseResult = primitives.pairing.response.accept(
-    SenderKind.Helper,
-    ownerRequestResult.envelope,
-    participantCreateResult.secret_key_material,
-  ) as ProduceResponseResult
+  // Step 3 — participant extracts the request and answers it, deriving its
+  // shared key. `produce` also returns the post-handshake rekey channel id.
+  const extractedRequest = primitives.pairing.request.extract(
+    ownerRequest.envelope,
+    participantContact.secret_key,
+  )
+  const participantResponse = primitives.pairing.response.produce(
+    pairingChannelId,
+    extractedRequest.request,
+    participantContact.secret_key,
+    null,
+    null,
+  )
 
-  // Step 4 — owner processes the response, derives its shared key
-  const ownerResponseResult = primitives.pairing.response.process(
-    ownerRequestResult.initiator_contact_message,
-    participantResponseResult.envelope,
-    ownerRequestResult.secret_key_material,
-  ) as ProcessResponseResult
+  // Step 4 — owner extracts the response and derives the same shared key. Its
+  // rekey id is validated against its own derivation, so both sides agree.
+  const extractedResponse = primitives.pairing.response.extract(
+    participantResponse.envelope,
+    ownerRequest.secret_key,
+  )
+  const ownerResult = primitives.pairing.response.process(
+    ownerRequest.initiator_contact_message,
+    extractedResponse.response,
+    ownerRequest.secret_key,
+  )
 
-  // Build Channel records (JSON-encoded, what ChannelStore expects).
-  // The channel store only needs channel_id, transport, and name — no crypto keys.
-  const channelIdNum = Number(channelId)
-  const participantChannel = new TextEncoder().encode(JSON.stringify({
-    channel_id: channelIdNum,
-    transport_uri: participantTransport.uri,
-    transport_protocol: 0,
-    name: '',
-  }))
+  // The handshake atomically rotates off the transient pairing id. All
+  // persisted state keys on the long-term id — storing under the pairing id
+  // would leave records the library never looks up.
+  const channelId = ownerResult.channel_id
+  const channelStr = channelId.toString()
 
-  const ownerChannel = new TextEncoder().encode(JSON.stringify({
-    channel_id: channelIdNum,
-    transport_uri: ownerTransport.uri,
-    transport_protocol: 0,
-    name: '',
-  }))
+  // Owner side: the participant is the peer, and its role is Helper.
+  localStorage.setItem(
+    channelKey(ownerNamespace, secretId, channelStr),
+    toBase64Url(encodeChannel(channelId, participantTransport, 'Helper')),
+  )
+  addToChannelIndex(ownerNamespace, secretId, channelStr)
+  localStorage.setItem(
+    secretKey(ownerNamespace, secretId, channelStr, 0),
+    toBase64Url(ownerResult.shared_key),
+  )
 
-  // Write owner-side state: participant's channel + owner's shared key
-  localStorage.setItem(channelKey(ownerNamespace, channelStr), toBase64Url(participantChannel))
-  addToChannelIndex(ownerNamespace, channelStr)
-  localStorage.setItem(secretKey(ownerNamespace, channelStr, 0), toBase64Url(ownerResponseResult.pairing_shared_key))
-
-  // Write participant-side state: owner's channel + participant's shared key
-  localStorage.setItem(channelKey(participantNamespace, channelStr), toBase64Url(ownerChannel))
-  addToChannelIndex(participantNamespace, channelStr)
-  localStorage.setItem(secretKey(participantNamespace, channelStr, 0), toBase64Url(participantResponseResult.pairing_shared_key))
+  // Participant side: the owner is the peer, and its role is Owner.
+  localStorage.setItem(
+    channelKey(participantNamespace, secretId, channelStr),
+    toBase64Url(encodeChannel(channelId, ownerTransport, 'Owner')),
+  )
+  addToChannelIndex(participantNamespace, secretId, channelStr)
+  localStorage.setItem(
+    secretKey(participantNamespace, secretId, channelStr, 0),
+    toBase64Url(participantResponse.shared_key),
+  )
 
   return channelId
 }
+
+// Retained for symmetry with the transport shape used elsewhere in the app.
+export const PRE_PAIR_TRANSPORT_PROTOCOL = TRANSPORT_PROTOCOL_HTTPS

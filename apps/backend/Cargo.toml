@@ -16,10 +16,27 @@ serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 dashmap = "6"
 base64 = "0.22"
-derec-library = { path = "../../../lib-derec/library" }
+# `unsafe-http` lets the protocol accept plaintext `http://` transport URIs.
+# The library otherwise requires `https://` for TransportProtocol::Https, which
+# no local dev setup can satisfy without TLS. Development only — a deployment
+# serving real traffic must drop this feature and use https endpoints.
+derec-library = { path = "../../../lib-derec/library", features = ["unsafe-http"] }
 derec-proto = { path = "../../../lib-derec/protobufs" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 fake = { version = "3", features = ["derive"] }
 rand = "0.8"
 actix = "0.13"
 actix-rt = "2"
+# Envelope decoding: inbound messages are routed to a per-secret protocol
+# instance by the cleartext `channel_id` on the DeRecMessage envelope.
+prost = "0.14.4"
+
+# `derec-library` declares `derec-proto` / `derec-cryptography` as crates.io
+# dependencies. Without this patch Cargo resolves those from the registry while
+# our direct `derec-proto` dep resolves from the path above, putting two
+# distinct copies of the same crate in the graph — every protobuf type then
+# fails to unify across the library boundary. Mirrors the `[patch.crates-io]`
+# block in the lib-derec workspace root.
+[patch.crates-io]
+derec-cryptography = { path = "../../../lib-derec/cryptography" }
+derec-proto = { path = "../../../lib-derec/protobufs" }

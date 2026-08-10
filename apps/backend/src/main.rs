@@ -108,6 +108,14 @@ fn build_router(state: Arc<AppState>) -> Router {
             post(routes::participants::toggle_status),
         )
         .route(
+            "/sessions/{session_id}/participants/{participant_id}/channels",
+            get(routes::participants::list_channels),
+        )
+        .route(
+            "/sessions/{session_id}/participants/{participant_id}/link",
+            post(routes::participants::link_channels),
+        )
+        .route(
             "/sessions/{session_id}/participants/{participant_id}/browser-contact",
             post(routes::sessions::post_browser_contact).get(routes::sessions::get_browser_contact),
         )
