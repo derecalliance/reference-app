@@ -5,18 +5,18 @@ import {
   useReducer,
   type ReactNode,
 } from 'react'
+import { randomId } from './randomId'
 
 
 export type ConsoleRole = 'owner' | 'participant'
 export type ConsoleFlow =
-  | 'session'
+  | 'setup'
   | 'pairing'
   | 'unpairing'
   | 'sharing'
   | 'verification'
   | 'discovery'
   | 'recovery'
-  | 'replica'
   | 'protocol'
 
 export interface ConsoleEntry {
@@ -66,7 +66,7 @@ export function ConsoleProvider({ children }: { children: ReactNode }) {
   const log = useCallback((entry: Omit<ConsoleEntry, 'id' | 'timestamp'>) => {
     dispatch({
       type: 'log',
-      entry: { ...entry, id: crypto.randomUUID(), timestamp: new Date() },
+      entry: { ...entry, id: randomId(), timestamp: new Date() },
     })
   }, [])
 

@@ -1,9 +1,9 @@
 /**
- * Resolving which session actor a freshly paired channel belongs to.
+ * Resolving which registered actor a freshly paired channel belongs to.
  *
  * Browser peers are `owner`-role actors and are never synced into the local
  * participant list, so a pairing with one completes with no actor identity
- * attached. The identity has to be recovered from the session's actor list
+ * attached. The identity has to be recovered from the server's actor list
  * afterwards — and getting it wrong silently relabels a channel with another
  * peer's name, id and transport.
  */
@@ -38,7 +38,7 @@ export interface ResolvePeerActorOptions {
  *     carries the peer's mailbox URI, and URIs are unique per actor.
  *  2. **Sole unknown owner** — inference, for the responding side, which has
  *     no contact to match on. Only applied when exactly one candidate exists.
- *     A session that has accumulated stale owner actors (a device that reset
+ *     A server that has accumulated stale owner actors (a device that reset
  *     its storage and rejoined leaves its old actor behind) has several, and
  *     picking one would be a coin flip — so we return `null` and let the
  *     caller keep whatever the peer declared over the wire.

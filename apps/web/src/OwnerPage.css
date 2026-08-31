@@ -1,6 +1,6 @@
 /* ── Page shell ────────────────────────────────────────────────────────────── */
 
-.session-page {
+.owner-page {
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -11,7 +11,7 @@
 
 /* ── Info bar ──────────────────────────────────────────────────────────────── */
 
-.session-info-bar {
+.owner-info-bar {
   display: flex;
   align-items: center;
   gap: 24px;
@@ -26,17 +26,17 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.6px;
-  color: var(--text);
+  color: var(--muted-2);
   margin-right: 8px;
 }
 
-.session-id-badge {
+.owner-id-badge {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.session-id-value {
+.owner-id-value {
   font-family: var(--mono);
   font-size: 13px;
   padding: 3px 8px;
@@ -98,7 +98,7 @@
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--scrim);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -116,6 +116,12 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* Never taller than the overlay, which is `inset: 0` with its own padding —
+     so this is the viewport minus that gutter. Without it a tall modal (the
+     Share Contact one, with a QR code, or a long confirmation) simply grew
+     past the screen and `overflow: hidden` clipped whatever did not fit,
+     including the buttons. */
+  max-height: 100%;
 }
 
 .modal-header {
@@ -182,13 +188,35 @@
   display: flex;
   flex-direction: column;
   gap: 24px;
+  /* The body is what scrolls when the modal hits its cap, so the header and
+     the actions stay put — a dialog whose confirm button scrolls out of reach
+     is worse than one that scrolls at all. `min-height: 0` is what lets a flex
+     child shrink below its content size; without it `overflow-y` does nothing
+     here. */
+  overflow-y: auto;
+  min-height: 0;
+}
+
+/* Exactly the QR's own footprint, so swapping one for the other while a new
+   contact is minted leaves the modal the same height — the collapse-and-spring
+   that produced was the flicker. */
+.qr-placeholder {
+  width: 200px;
+  height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted, #6b7280);
+  font-size: 0.875rem;
 }
 
 .qr-wrapper {
   display: flex;
   justify-content: center;
   padding: 16px;
-  background: #fff;
+  /* QR modules need a light field to scan against in either colour scheme.
+     Cream rather than white keeps it on-brand without hurting contrast. */
+  background: var(--cream);
   border-radius: 8px;
   border: 1px solid var(--border);
 
@@ -227,7 +255,7 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.4px;
-  color: var(--text);
+  color: var(--muted-2);
 }
 
 .full-input {
@@ -262,7 +290,7 @@
 .field-error {
   margin: 0;
   font-size: 12px;
-  color: #ef4444;
+  color: var(--danger);
 }
 
 /* ── Participant checkbox list ──────────────────────────────────────────────────── */
@@ -355,37 +383,37 @@
   }
 }
 
-/* ── Session banners ──────────────────────────────────────────────────────── */
+/* ── Owner banners ───────────────────────────────────────────────────────── */
 
-.session-banner {
+.owner-banner {
   padding: 10px 24px;
   font-size: 13px;
   line-height: 1.4;
   flex-shrink: 0;
 }
 
-.session-banner--warning {
-  background: color-mix(in srgb, var(--clr-warning, #f59e0b) 12%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, var(--clr-warning, #f59e0b) 30%, transparent);
-  color: var(--clr-warning, #f59e0b);
+.owner-banner--warning {
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
+  color: var(--warning);
 }
 
-.session-banner--error {
-  background: color-mix(in srgb, var(--clr-danger, #ef4444) 12%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, var(--clr-danger, #ef4444) 30%, transparent);
-  color: var(--clr-danger, #ef4444);
+.owner-banner--error {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  color: var(--danger);
 }
 
 /* ── Two-column layout ─────────────────────────────────────────────────────── */
 
-.session-layout {
+.owner-layout {
   display: flex;
   flex: 1;
   min-height: 0;
   overflow: hidden;
 }
 
-.session-content {
+.owner-content {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -550,13 +578,13 @@
 }
 
 .role-tag--owner {
-  background: var(--accent-dim, #e0ecff);
-  color: var(--accent, #3b82f6);
+  background: var(--accent-bg);
+  color: var(--accent);
 }
 
 .role-tag--helper {
-  background: var(--success-dim, #dcfce7);
-  color: var(--success, #16a34a);
+  background: var(--success-bg);
+  color: var(--success);
 }
 
 .channel-id-inline {
@@ -575,8 +603,8 @@
   cursor: pointer;
 
   &:hover:not(:disabled) {
-    border-color: var(--danger, #ef4444);
-    color: var(--danger, #ef4444);
+    border-color: var(--danger);
+    color: var(--danger);
     background: transparent;
   }
 }
@@ -591,8 +619,8 @@
   cursor: pointer;
 
   &:hover:not(:disabled) {
-    border-color: var(--accent, #3b82f6);
-    color: var(--accent, #3b82f6);
+    border-color: var(--accent);
+    color: var(--accent);
     background: transparent;
   }
 }
@@ -628,7 +656,7 @@
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.4px;
-  color: var(--text);
+  color: var(--muted-2);
   white-space: nowrap;
 }
 
@@ -770,7 +798,7 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  color: var(--text-secondary, #888);
+  color: var(--muted);
   white-space: nowrap;
 }
 
@@ -809,7 +837,7 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.4px;
-    color: var(--text);
+    color: var(--muted-2);
     white-space: nowrap;
   }
 
@@ -887,7 +915,7 @@
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  color: var(--text);
+  color: var(--muted-2);
   margin: 0;
 }
 
@@ -899,7 +927,7 @@
 
 .form-hint {
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--muted);
   margin: 2px 0 0;
   line-height: 1.4;
 }
@@ -931,8 +959,8 @@
 }
 
 .share-item--confirmed {
-  border-color: var(--accent-border, #2d7d46);
-  background: var(--accent-bg, #0d1f14);
+  border-color: var(--accent-border);
+  background: var(--accent-bg);
 }
 
 .share-status-tag {
@@ -943,11 +971,11 @@
 }
 
 .share-status-tag.confirmed {
-  color: #4ade80;
+  color: var(--success);
 }
 
 .share-status-tag.pending {
-  color: var(--text-muted, #666);
+  color: var(--muted);
   letter-spacing: 0.1em;
 }
 
@@ -986,7 +1014,7 @@
   padding: 2px 6px;
   border-radius: 4px;
   background: var(--code-bg);
-  color: var(--text-muted);
+  color: var(--muted);
   white-space: nowrap;
   opacity: 0.8;
 }
@@ -1003,13 +1031,13 @@
   white-space: nowrap;
 
   &.paired {
-    color: #16a34a;
-    background: rgba(34, 197, 94, 0.12);
+    color: var(--success);
+    background: var(--success-bg);
   }
 
   &.available {
-    color: #b45309;
-    background: rgba(245, 158, 11, 0.12);
+    color: var(--warning);
+    background: var(--warning-bg);
   }
 
   &.offline {
@@ -1018,28 +1046,10 @@
   }
 
   &.recovery-channel {
-    color: #7c3aed;
-    background: rgba(124, 58, 237, 0.10);
+    color: var(--recovery);
+    background: var(--recovery-bg);
   }
 }
-
-@media (prefers-color-scheme: dark) {
-  .status-tag.recovery-channel {
-    color: #a78bfa;
-    background: rgba(167, 139, 250, 0.12);
-  }
-
-  .status-tag.paired {
-    color: #4ade80;
-    background: rgba(74, 222, 128, 0.12);
-  }
-
-  .status-tag.available {
-    color: #fbbf24;
-    background: rgba(251, 191, 36, 0.12);
-  }
-}
-
 /* ── Participant dot ────────────────────────────────────────────────────────────── */
 
 .participant-dot {
@@ -1048,17 +1058,10 @@
   border-radius: 50%;
   flex-shrink: 0;
 
-  &.paired    { background: #22c55e; }
-  &.available { background: #f59e0b; }
-  &.offline   { background: var(--border); }
+  &.paired    { background: var(--success); }
+  &.available { background: var(--warning); }
+  &.offline   { background: var(--muted); }
 }
-
-@media (prefers-color-scheme: dark) {
-  .participant-dot.paired    { background: #4ade80; }
-  .participant-dot.available { background: #fbbf24; }
-  .participant-dot.offline   { background: #6b7280; }
-}
-
 /* ── Protected secret: id row ──────────────────────────────────────────────── */
 
 .secret-id-row {
@@ -1122,33 +1125,15 @@
 }
 
 .participant-tag--verified {
-  border-color: #16a34a;
-  background: rgba(34, 197, 94, 0.08);
-  color: #15803d;
+  border-color: var(--success);
+  background: var(--success-bg);
+  color: var(--success);
 }
-
-@media (prefers-color-scheme: dark) {
-  .participant-tag--verified {
-    border-color: #4ade80;
-    background: rgba(74, 222, 128, 0.1);
-    color: #4ade80;
-  }
-}
-
 .participant-tag--failed {
-  border-color: #dc2626;
-  background: rgba(239, 68, 68, 0.08);
-  color: #b91c1c;
+  border-color: var(--danger);
+  background: var(--danger-bg);
+  color: var(--danger);
 }
-
-@media (prefers-color-scheme: dark) {
-  .participant-tag--failed {
-    border-color: #f87171;
-    background: rgba(248, 113, 113, 0.1);
-    color: #f87171;
-  }
-}
-
 .participant-failure-reason {
   font-size: 10px;
   opacity: 0.8;
@@ -1160,15 +1145,8 @@
 }
 
 .sub-heading--failed {
-  color: #dc2626;
+  color: var(--danger);
 }
-
-@media (prefers-color-scheme: dark) {
-  .sub-heading--failed {
-    color: #f87171;
-  }
-}
-
 .threshold-failure-banner,
 .threshold-warning-banner {
   padding: 0.75rem 1rem;
@@ -1179,30 +1157,16 @@
 }
 
 .threshold-failure-banner {
-  background: rgba(239, 68, 68, 0.1);
-  border: 1px solid #dc2626;
-  color: #b91c1c;
+  background: var(--danger-bg);
+  border: 1px solid var(--danger);
+  color: var(--danger);
 }
 
 .threshold-warning-banner {
-  background: rgba(234, 179, 8, 0.1);
-  border: 1px solid #ca8a04;
-  color: #a16207;
+  background: var(--warning-bg);
+  border: 1px solid var(--warning);
+  color: var(--warning);
 }
-
-@media (prefers-color-scheme: dark) {
-  .threshold-failure-banner {
-    background: rgba(248, 113, 113, 0.1);
-    border-color: #f87171;
-    color: #fca5a5;
-  }
-  .threshold-warning-banner {
-    background: rgba(250, 204, 21, 0.1);
-    border-color: #facc15;
-    color: #fde047;
-  }
-}
-
 .participant-verification-icon {
   font-size: 11px;
   line-height: 1;
@@ -1267,7 +1231,7 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  color: var(--text);
+  color: var(--muted);
   margin: 0 0 2px;
   padding: 0 16px;
 }
@@ -1367,7 +1331,7 @@ button.small {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  color: var(--text);
+  color: var(--muted-2);
   flex-shrink: 0;
   white-space: nowrap;
   width: 76px;
@@ -1438,7 +1402,7 @@ button.small {
 
 .share-data-empty {
   font-size: 11px;
-  color: var(--text-m);
+  color: var(--muted);
   font-style: italic;
 }
 
@@ -1468,19 +1432,11 @@ button.small {
   transition: border-color 0.15s, color 0.15s;
 
   &:hover {
-    border-color: #ef4444;
-    color: #ef4444;
+    border-color: var(--danger);
+    color: var(--danger);
     opacity: 1;
   }
 }
-
-@media (prefers-color-scheme: dark) {
-  .unpair-card-btn:hover {
-    border-color: #f87171;
-    color: #f87171;
-  }
-}
-
 /* ── Side participant action row ────────────────────────────────────────────────── */
 
 .side-participant-actions {
@@ -1514,8 +1470,8 @@ button.small {
   }
 
   &.pair {
-    background: var(--accent);
-    color: #fff;
+    background: var(--accent-fill);
+    color: var(--accent-contrast);
   }
 
   &.unpair {
@@ -1524,20 +1480,12 @@ button.small {
     color: var(--text);
 
     &:hover {
-      border-color: #ef4444;
-      color: #ef4444;
+      border-color: var(--danger);
+      color: var(--danger);
       opacity: 1;
     }
   }
 }
-
-@media (prefers-color-scheme: dark) {
-  .pair-action-btn.unpair:hover {
-    border-color: #f87171;
-    color: #f87171;
-  }
-}
-
 /* ── Side share list ───────────────────────────────────────────────────────── */
 
 .side-share-list {
@@ -1561,7 +1509,7 @@ button.small {
 /* ── Responsive ────────────────────────────────────────────────────────────── */
 
 @media (max-width: 640px) {
-  .session-layout {
+  .owner-layout {
     flex-direction: column;
     overflow: visible;
   }
@@ -1573,7 +1521,7 @@ button.small {
     padding: 20px 0;
   }
 
-  .session-content {
+  .owner-content {
     overflow: visible;
   }
 }
@@ -1645,8 +1593,8 @@ button.small {
 }
 
 .share-progress-item--failed {
-  border-color: #fca5a5;
-  background: #fef2f2;
+  border-color: var(--danger);
+  background: var(--danger-bg);
 }
 
 .share-progress-item-name {
@@ -1680,7 +1628,7 @@ button.small {
 }
 
 .share-progress-bar-fill--has-failures {
-  background: #ef4444;
+  background: var(--danger);
 }
 
 .share-progress-summary {
@@ -1716,24 +1664,14 @@ button.small {
 .verify-progress-icon--done {
   font-size: 13px;
   font-weight: 700;
-  color: #16a34a;
+  color: var(--success);
 }
 
 .verify-progress-icon--failed {
   font-size: 13px;
   font-weight: 700;
-  color: #dc2626;
+  color: var(--danger);
 }
-
-@media (prefers-color-scheme: dark) {
-  .verify-progress-icon--done {
-    color: #4ade80;
-  }
-  .verify-progress-icon--failed {
-    color: #f87171;
-  }
-}
-
 /* CSS-only spinner */
 @keyframes verify-spin {
   to { transform: rotate(360deg); }
@@ -1752,28 +1690,18 @@ button.small {
 
 /* Verified status text in progress rows */
 .share-progress-item-status.status--verified {
-  color: #16a34a;
+  color: var(--success);
   font-weight: 600;
 }
 
 .share-progress-item-status.status--failed {
-  color: #dc2626;
+  color: var(--danger);
   font-weight: 600;
 }
-
-@media (prefers-color-scheme: dark) {
-  .share-progress-item-status.status--verified {
-    color: #4ade80;
-  }
-  .share-progress-item-status.status--failed {
-    color: #f87171;
-  }
-}
-
 /* "Verified" badge in participant selection list */
 .share-status-tag.verified {
-  color: #16a34a;
-  background: rgba(34, 197, 94, 0.1);
+  color: var(--success);
+  background: var(--success-bg);
   border-radius: 4px;
   padding: 1px 6px;
 }
@@ -1789,7 +1717,7 @@ button.small {
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.4px;
-    color: var(--text);
+    color: var(--muted-2);
     margin-bottom: 8px;
   }
 
@@ -1810,7 +1738,7 @@ button.small {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.3px;
-  color: var(--text-muted);
+  color: var(--muted);
   padding: 4px 8px 6px;
   border-bottom: 1px solid var(--border);
 }
@@ -1841,7 +1769,7 @@ button.small {
 .secrets-table__value code {
   font-family: var(--mono, monospace);
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--muted);
   word-break: break-all;
 }
 
@@ -1878,23 +1806,16 @@ button.small {
 }
 
 .version-history-note {
-  color: var(--text-muted);
+  color: var(--muted);
   font-style: italic;
 }
 
 .version-history-verified {
   font-size: 11px;
   font-weight: 600;
-  color: #16a34a;
+  color: var(--success);
   white-space: nowrap;
 }
-
-@media (prefers-color-scheme: dark) {
-  .version-history-verified {
-    color: #4ade80;
-  }
-}
-
 .version-verify-btn {
   font-size: 11px;
   padding: 2px 8px;
@@ -1908,17 +1829,9 @@ button.small {
 .card-actions {
   gap: 8px;
 }
+/* ── Owner setup gate ────────────────────────────────────────────────────── */
 
-@media (prefers-color-scheme: dark) {
-  .share-status-tag.verified {
-    color: #4ade80;
-    background: rgba(74, 222, 128, 0.1);
-  }
-}
-
-/* ── Session setup gate ───────────────────────────────────────────────────── */
-
-.session-setup-gate {
+.owner-setup-gate {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1936,7 +1849,7 @@ button.small {
 }
 
 .setup-gate-description {
-  color: var(--text-secondary, #666);
+  color: var(--muted);
   margin: 0;
 }
 
@@ -1947,9 +1860,9 @@ button.small {
 /* ── Recovery mode ──────────────────────────────────────────────────────────── */
 
 .recovery-active {
-  background: var(--warning, #f59e0b) !important;
-  color: #fff !important;
-  border-color: var(--warning, #f59e0b) !important;
+  background: var(--warning) !important;
+  color: var(--status-contrast) !important;
+  border-color: var(--warning) !important;
 }
 
 .recovery-panel {
@@ -2060,14 +1973,14 @@ button.small {
   flex-direction: column;
   gap: 10px;
   padding: 10px 12px;
-  background: var(--surface-raised, #fffbeb);
-  border: 1px solid var(--warning, #f59e0b);
+  background: var(--surface);
+  border: 1px solid var(--warning);
   border-radius: 8px;
 }
 
 .recovery-assoc-description {
   font-size: 12px;
-  color: var(--text-secondary, #64748b);
+  color: var(--muted);
   line-height: 1.5;
   margin: 0;
 }
@@ -2081,17 +1994,17 @@ button.small {
 .recovery-assoc-name {
   font-size: 13px;
   font-weight: 600;
-  color: var(--text-primary, #1e293b);
+  color: var(--text-h);
 }
 
 /* Recovery-pending dot color */
 .participant-dot.recovery-pending {
-  background: var(--warning, #f59e0b);
+  background: var(--warning);
 }
 
 .status-tag.recovery-pending {
-  background: var(--warning, #f59e0b);
-  color: #fff;
+  background: var(--warning);
+  color: var(--status-contrast);
 }
 
 /* ── Recovered secret plain text display ─────────────────────────────────── */
@@ -2099,18 +2012,16 @@ button.small {
 .recovered-secret-plaintext {
   margin: 0;
   padding: 14px 16px;
-  background: var(--surface, #f8fafc);
-  border: 1px solid var(--border, #e2e8f0);
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 8px;
   font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
   font-size: 14px;
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-all;
-  color: var(--text, #1e293b);
+  color: var(--text);
 }
-
-/* ── Replica components ──────────────────────────────────────────────────── */
 
 .card-list-header {
   display: flex;
@@ -2118,38 +2029,14 @@ button.small {
   padding: 0 0 8px;
 }
 
-.status-tag.confirming {
-  background: var(--clr-warning, #f59e0b);
-  color: #fff;
-}
-
 .status-tag.confirmed {
-  background: var(--clr-info, #3b82f6);
-  color: #fff;
+  background: var(--info);
+  color: var(--status-contrast);
 }
 
 .status-tag.synced {
-  background: var(--clr-success, #22c55e);
-  color: #fff;
-}
-
-.replica-confirmation-section {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.replica-fingerprint {
-  display: block;
-  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-  font-size: 18px;
-  letter-spacing: 2px;
-  text-align: center;
-  padding: 12px;
-  background: var(--surface, #f8fafc);
-  border: 1px solid var(--border, #e2e8f0);
-  border-radius: 8px;
-  color: var(--text, #1e293b);
+  background: var(--success);
+  color: var(--status-contrast);
 }
 
 .fingerprint-comparison {
@@ -2174,17 +2061,6 @@ button.small {
   font-style: italic;
 }
 
-.side-participant-details .replica-confirmation-section {
-  gap: 4px;
-}
-
-.side-participant-details .replica-fingerprint {
-  font-size: 12px;
-  letter-spacing: 1px;
-  padding: 6px 8px;
-  border-radius: 6px;
-}
-
 .side-participant-details .fingerprint-pending {
   font-size: 11px;
   padding: 6px;
@@ -2202,49 +2078,7 @@ button.small {
   font-style: italic;
 }
 
-.side-detail-progress {
-  font-size: 12px;
-  color: var(--text);
-  opacity: 0.7;
-  padding: 4px 0 8px;
-  margin: 0;
-  font-style: italic;
-}
-
-/* ── Replica provisioning modal icons ────────────────────────────────────── */
-
-.replica-action-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: var(--clr-warning, #f59e0b);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1;
-}
-
-.replica-pending-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  color: var(--text);
-  opacity: 0.3;
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1;
-}
-
-/* ── Replica synced channels list ────────────────────────────────────────── */
-
-.replica-synced-channels {
-  margin-top: 12px;
-}
+/* ── Synced channels list ────────────────────────────────────────────────── */
 
 .synced-channel-list {
   list-style: none;
@@ -2308,64 +2142,6 @@ button.small {
   min-width: 0;
 }
 
-/* ── Replica fingerprint confirmation ────────────────────────────────────── */
-
-.replica-confirm-section {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 8px;
-  margin-top: 12px;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-}
-
-.replica-confirm-hint {
-  font-size: 13px;
-  color: var(--text-secondary, var(--text));
-  margin: 0;
-}
-
-.replica-fingerprint-display {
-  display: block;
-  padding: 8px 12px;
-  font-size: 14px;
-  font-family: var(--font-mono, monospace);
-  letter-spacing: 0.5px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  word-break: break-all;
-  width: 100%;
-}
-
-.replica-confirm-timer {
-  font-size: 12px;
-  color: var(--clr-warning, #f59e0b);
-  margin: 0;
-}
-
-.replica-confirm-expired {
-  font-size: 13px;
-  color: var(--clr-danger, #ef4444);
-  margin: 8px 0 0;
-}
-
-.verify-progress-icon--action {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: var(--clr-warning, #f59e0b);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 700;
-}
-
 /* ── Payload modal ─────────────────────────────────────────────────────────── */
 
 .payload-modal {
@@ -2388,7 +2164,7 @@ button.small {
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
-  color: var(--text-muted);
+  color: var(--muted);
   cursor: pointer;
   transition: color 0.15s, border-color 0.15s;
 }
@@ -2444,16 +2220,16 @@ button.small {
 }
 
 .pairing-error-text {
-  color: var(--error, #dc2626);
+  color: var(--danger);
 }
 
 .recovery-helper-count {
   font-size: 13px;
-  color: var(--text, #0f172a);
+  color: var(--text);
 }
 
 .recovery-helper-names {
-  color: var(--text-secondary, #64748b);
+  color: var(--muted);
 }
 
 .recovery-action-row {
@@ -2463,23 +2239,10 @@ button.small {
 .recovery-insufficient-notice {
   margin: 0.5rem 0 0;
   font-size: 12px;
-  color: #b45309;
+  color: var(--warning);
   line-height: 1.4;
 }
-
-@media (prefers-color-scheme: dark) {
-  .recovery-insufficient-notice {
-    color: #fbbf24;
-  }
-}
-
-@media (prefers-color-scheme: dark) {
-  .recovery-helper-count {
-    color: var(--text, #f1f5f9);
-  }
-}
-
-.recovery-pairing-notice {
+recovery-pairing-notice {
   display: flex;
   gap: 0.625rem;
   align-items: flex-start;
@@ -2488,9 +2251,9 @@ button.small {
   font-size: 13px;
   line-height: 1.5;
   margin-bottom: 0.75rem;
-  background: rgba(234, 179, 8, 0.1);
-  border: 1px solid #ca8a04;
-  color: #a16207;
+  background: var(--warning-bg);
+  border: 1px solid var(--warning);
+  color: var(--warning);
 }
 
 .recovery-pairing-notice__icon {
@@ -2512,7 +2275,7 @@ button.small {
   gap: 2px;
   padding: 0.625rem 0.875rem;
   border-radius: 6px;
-  border: 1px solid var(--border, #e2e8f0);
+  border: 1px solid var(--border);
   background: transparent;
   cursor: pointer;
   text-align: left;
@@ -2520,24 +2283,24 @@ button.small {
 }
 
 .recovery-link-option:hover {
-  border-color: var(--primary, #3b82f6);
-  background: rgba(59, 130, 246, 0.04);
+  border-color: var(--accent);
+  background: var(--info-bg);
 }
 
 .recovery-link-option--selected {
-  border-color: var(--primary, #3b82f6);
-  background: rgba(59, 130, 246, 0.08);
+  border-color: var(--accent);
+  background: var(--info-bg);
 }
 
 .recovery-link-option__name {
   font-size: 14px;
   font-weight: 600;
-  color: var(--text, #0f172a);
+  color: var(--text);
 }
 
 .recovery-link-option__meta {
   font-size: 12px;
-  color: var(--text-secondary, #64748b);
+  color: var(--muted);
 }
 
 .link-channel-list {
@@ -2555,7 +2318,7 @@ button.small {
   gap: 4px;
   padding: 0.625rem 0.875rem;
   border-radius: 6px;
-  border: 1px solid var(--border, #e2e8f0);
+  border: 1px solid var(--border);
   background: transparent;
   cursor: pointer;
   text-align: left;
@@ -2563,13 +2326,13 @@ button.small {
 }
 
 .link-channel-option:hover {
-  border-color: var(--accent, #3b82f6);
-  background: rgba(59, 130, 246, 0.04);
+  border-color: var(--accent);
+  background: var(--info-bg);
 }
 
 .link-channel-option--selected {
-  border-color: var(--accent, #3b82f6);
-  background: rgba(59, 130, 246, 0.08);
+  border-color: var(--accent);
+  background: var(--info-bg);
 }
 
 .link-channel-option__name {
@@ -2578,34 +2341,14 @@ button.small {
   gap: 8px;
   font-size: 14px;
   font-weight: 600;
-  color: var(--text, #0f172a);
+  color: var(--text);
 }
 
 .link-channel-option__meta {
   font-size: 12px;
   font-family: var(--mono, monospace);
-  color: var(--text-secondary, #64748b);
+  color: var(--muted);
 }
-
-@media (prefers-color-scheme: dark) {
-  .link-channel-option__name {
-    color: var(--text, #f1f5f9);
-  }
-}
-
-@media (prefers-color-scheme: dark) {
-  .recovery-pairing-notice {
-    background: rgba(250, 204, 21, 0.1);
-    border-color: #facc15;
-    color: #fde047;
-  }
-
-  .recovery-link-option__name {
-    color: var(--text, #f1f5f9);
-  }
-}
-
-
 /* ── Pairing role selector ─────────────────────────────────────────────────
    Owner / Helper picker shown on both the share-contact and pair modals.
    Follows the same visual language as .recovery-link-option. */
@@ -2643,7 +2386,7 @@ button.small {
   gap: 2px;
   padding: 0.625rem 0.875rem;
   border-radius: 6px;
-  border: 1px solid var(--border, #e2e8f0);
+  border: 1px solid var(--border);
   background: transparent;
   cursor: pointer;
   text-align: left;
@@ -2655,13 +2398,13 @@ button.small {
 }
 
 .role-option:hover {
-  border-color: var(--primary, #3b82f6);
-  background: rgba(59, 130, 246, 0.04);
+  border-color: var(--accent);
+  background: var(--info-bg);
 }
 
 .role-option--selected {
-  border-color: var(--primary, #3b82f6);
-  background: rgba(59, 130, 246, 0.08);
+  border-color: var(--accent);
+  background: var(--info-bg);
 }
 
 /* The label itself is the hit target; the radio stays for a11y/keyboard. */
@@ -2672,24 +2415,148 @@ button.small {
 }
 
 .role-option:focus-within {
-  outline: 2px solid var(--primary, #3b82f6);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
 .role-option__label {
   font-size: 14px;
   font-weight: 600;
-  color: var(--text, #0f172a);
+  color: var(--text);
 }
 
 .role-option__hint {
   font-size: 12px;
-  color: var(--text-muted, #64748b);
+  color: var(--muted);
   line-height: 1.35;
 }
+/* ── Replica channels ──────────────────────────────────────────────────────────── */
+/* Replica rows live in the Replicas tab, built from the same classes as the main
+   channel list so the two read as one system. Only what is genuinely new lives
+   here: the tab's section spacing, the two replica role tags, the expired
+   status, and the standing prompt that makes the fingerprint modal safe to
+   dismiss. Each one carries its own words — none of them relies on colour. */
 
-@media (prefers-color-scheme: dark) {
-  .role-option__label {
-    color: var(--text, #f1f5f9);
-  }
+.replicas-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.replicas-tab-section > .tab-empty-state {
+  margin-top: 0;
+}
+
+
+.role-tag--replica_source {
+  background: var(--recovery-bg);
+  color: var(--recovery);
+}
+
+.role-tag--replica_destination {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.status-tag.expired {
+  color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.replica-row-prompt,
+.replica-row-notice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--warning);
+  border-radius: 6px;
+  background: var(--warning-bg);
+}
+
+.replica-row-prompt--quiet {
+  border-color: var(--border);
+  background: transparent;
+}
+
+.replica-row-prompt__text {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.replica-row-prompt__action {
+  flex-shrink: 0;
+}
+
+.replica-row-notice--success {
+  border-color: var(--success);
+  background: var(--success-bg);
+}
+
+.replica-row-notice--info {
+  border-color: var(--border);
+  background: transparent;
+}
+
+.replica-row-notice--error {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+}
+/* ── Provisioned replicas (side panel) ─────────────────────────────────────────── */
+/* Mirrors the provisioned-participants section directly above it — same header
+   row, same accordion item, same action buttons — because it is the same kind of
+   thing: a backend-hosted actor this owner can add, pair and take offline. */
+
+.side-replica-direction {
+  font-size: 11px;
+  color: var(--text);
+  padding: 4px 0;
+}
+
+/* ── QR scanning ─────────────────────────────────────────────────────────── */
+
+.form-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.form-label-hint {
+  font-size: 0.75rem;
+  color: var(--muted, #6b7280);
+  cursor: help;
+}
+
+.qr-scanner {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: stretch;
+}
+
+/* Fixed aspect box so the modal does not resize when the stream starts and the
+   video learns its intrinsic dimensions — the same collapse-and-spring the
+   Share Contact modal used to do on a mode change. */
+.qr-scanner__viewport {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #000;
+}
+
+.qr-scanner__video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* Fill rather than letterbox: a QR only has to be *within* frame to decode,
+     and cropping keeps the preview matching what the detector sees. */
+  object-fit: cover;
 }

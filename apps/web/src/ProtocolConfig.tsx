@@ -1,7 +1,7 @@
 import { createContext, useContext, type ReactNode } from 'react'
 import { DEFAULT_PROTOCOL_TIMEOUT_SECS } from './config'
 
-// Per-session protocol config exposed to the whole owner subtree, so deeply
+// Protocol config exposed to the whole owner subtree, so deeply
 // nested components (pairing-wait, verification round, …) read the configured
 // timeout without prop-drilling.
 

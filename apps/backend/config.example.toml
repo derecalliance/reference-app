@@ -1,0 +1,55 @@
+# Default configuration for the DeRec reference app.
+#
+# These values prefill the front-end setup wizard. They are defaults only — the
+# user can change any of them before setting up, and the backend does not
+# enforce them: the settings a node actually runs with are whatever the front
+# end sends on each provisioning request.
+#
+# Every key is optional. Omit one and the built-in default (shown below) applies.
+# An unrecognised key is a boot error, so a typo fails loudly instead of being
+# silently ignored.
+#
+# Copy this file to `config.toml` next to the binary, or mount it anywhere and
+# point `DEREC_CONFIG_PATH` at it:
+#
+#   docker run -v ./my-config.toml:/etc/derec/config.toml \
+#              -e DEREC_CONFIG_PATH=/etc/derec/config.toml ...
+
+# Participants to provision when setting up. Must be at least 1.
+participant_count = 7
+
+# How many of those to pair automatically, skipping the QR exchange.
+# A testing shortcut. Must not exceed `participant_count`.
+pre_paired_count = 3
+
+# Paired participants required before secret protection is allowed.
+# Must be at least 1 and must not exceed `participant_count`.
+min_participants = 3
+
+# Paired participants below which the UI shows a warning.
+# Must fall between `min_participants` and `participant_count`.
+recommended_participants = 5
+
+# General protocol timeout, in seconds. The single timeout the app uses: the
+# protocol discards expired messages and stale rounds with it, and the UI uses
+# the same value as its active deadline for pairing waits and auto-rejects.
+# Lower = snappier failures; higher = more tolerant of slow peers.
+protocol_timeout_secs = 300
+
+# How the app decides that two pairing channels belong to the same user. An
+# app-level concern — the DeRec protocol itself is identity-blind.
+#
+#   "user"         the helper links channels manually when accepting a pairing
+#   "application"  reserved for a future identity-driven mode; not yet selectable
+authentication_method = "user"
+
+# Protocol-level acknowledgement policy for the unpair flow.
+#
+#   "required"      the initiator keeps local state until the peer acknowledges
+#                   or the protocol timeout elapses
+#   "not_required"  fire-and-forget: state drops immediately, later replies ignored
+unpair_ack = "required"
+
+# Whether an incoming unpair request is accepted quietly (true) or surfaced as a
+# confirmation dialog the operator must answer (false). UI behaviour only.
+auto_accept_unpair_requests = true

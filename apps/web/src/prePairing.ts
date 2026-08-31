@@ -3,7 +3,7 @@
 // Simulates both sides of the DeRec pairing handshake locally using primitives,
 // bypassing the protocol message exchange. The resulting shared keys and channel
 // records are written directly into localStorage under the same namespaces that
-// DeRecProtocol uses, so the protocol instances created later in OwnerSessionPage
+// DeRecProtocol uses, so the protocol instances created later in OwnerPage
 // treat the channel as already paired.
 //
 // Real pairing requires the full handshake over the transport.
@@ -90,7 +90,7 @@ function randomChannelId(): bigint {
 
 /**
  * Runs both sides of the pairing handshake locally and stores the resulting
- * shared keys in localStorage so that the protocol instances for this session
+ * shared keys in localStorage so that the protocol instances for this owner
  * treat the channel as already established.
  *
  * @param ownerNamespace  e.g. `"owner:{ownerId}"`

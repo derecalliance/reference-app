@@ -6,54 +6,116 @@
 // implementations never see overlapping calls and need no internal
 // synchronization.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use derec_library::protocol::{
-    Channel, ChannelStoreFuture, DeRecChannelStore, DeRecSecretStore, DeRecShareStore,
-    DeRecStateStore, DeRecTransport, DeRecUserSecretStore, MissingPolicy, SecretKind,
-    SecretStoreError, SecretStoreFuture, SecretValue, Share, ShareStoreFuture, StateItem,
-    StateKey, StateKind, StateStoreFuture, TransportFuture, UserSecrets,
+    ChannelQuery, ChannelRecord, ChannelStoreFuture, DeRecChannelStore, DeRecSecretStore,
+    DeRecShareStore, DeRecStateStore, DeRecTransport, DeRecUserSecretStore, HelperChannel,
+    MissingPolicy, ReplicaMember, SecretKind, SecretStoreError, SecretStoreFuture, SecretValue,
+    Share, ShareStoreFuture, StateItem, StateKey, StateKind, StateStoreFuture, TransportFuture,
+    UserSecrets,
 };
 use derec_library::types::ChannelId;
 use derec_proto::TransportProtocol;
 
 // ── Channel store ───────────────────────────────────────────────────────────
 
-/// Stores paired channels plus the channel-link graph (channels belonging to
+/// Stores channel records plus the channel-link graph (channels belonging to
 /// the same Owner identity, e.g. after a recovery re-pairing). The link graph
 /// is a bidirectional adjacency list; `linked_channels` is a BFS over it.
 ///
-/// Both maps are keyed by `(secret_id, channel_id)` so links never leak
-/// across secrets.
+/// Helper channels and replica-group members live in **separate maps**,
+/// because they are keyed differently: a helper channel by `channel_id`, a
+/// group member by `replica_id` alone. Every member of a group shares one
+/// `channel_id`, so the channel cannot identify them — and a member moves
+/// between channels during an admission handover while remaining the same
+/// member, so a key requiring both to match would lose the row exactly when
+/// that move needs to be observed.
+///
+/// Every map is partitioned by `secret_id` so nothing leaks across secrets.
 #[derive(Default)]
 pub struct InMemoryChannelStore {
-    data: HashMap<(u64, u64), Channel>,
+    helpers: HashMap<(u64, u64), HelperChannel>,
+    /// `BTreeMap` rather than `HashMap`: `replicas` is read to choose a
+    /// successor, and `HashMap` iteration order varies between runs.
+    members: BTreeMap<(u64, u64), ReplicaMember>,
     links: HashMap<(u64, u64), HashSet<u64>>,
 }
 
 impl DeRecChannelStore for InMemoryChannelStore {
-    fn load(&self, secret_id: u64, channel_id: ChannelId) -> ChannelStoreFuture<'_, Option<Channel>> {
-        let result = self.data.get(&(secret_id, channel_id.0)).cloned();
+    fn load(
+        &self,
+        secret_id: u64,
+        query: ChannelQuery,
+    ) -> ChannelStoreFuture<'_, Option<ChannelRecord>> {
+        let result = match query {
+            ChannelQuery::Helper { channel_id } => self
+                .helpers
+                .get(&(secret_id, channel_id.0))
+                .cloned()
+                .map(ChannelRecord::Helper),
+            // Keyed by `replica_id` alone — `channel_id` is context, not key.
+            ChannelQuery::Replica { replica_id, .. } => self
+                .members
+                .get(&(secret_id, replica_id.0))
+                .cloned()
+                .map(ChannelRecord::Replica),
+        };
         Box::pin(std::future::ready(Ok(result)))
     }
 
-    fn save(&mut self, secret_id: u64, channel: Channel) -> ChannelStoreFuture<'_, ()> {
-        self.data.insert((secret_id, channel.id.0), channel);
+    fn save(&mut self, secret_id: u64, record: ChannelRecord) -> ChannelStoreFuture<'_, ()> {
+        match record {
+            ChannelRecord::Helper(h) => {
+                self.helpers.insert((secret_id, h.channel_id.0), h);
+            }
+            ChannelRecord::Replica(r) => {
+                self.members.insert((secret_id, r.replica_id.0), r);
+            }
+        }
         Box::pin(std::future::ready(Ok(())))
     }
 
-    fn remove(&mut self, secret_id: u64, channel_id: ChannelId) -> ChannelStoreFuture<'_, bool> {
-        let removed = self.data.remove(&(secret_id, channel_id.0)).is_some();
+    fn remove(&mut self, secret_id: u64, query: ChannelQuery) -> ChannelStoreFuture<'_, bool> {
+        // Removing one member removes that member only — the group channel and
+        // every other member survive.
+        let removed = match query {
+            ChannelQuery::Helper { channel_id } => {
+                self.helpers.remove(&(secret_id, channel_id.0)).is_some()
+            }
+            ChannelQuery::Replica { replica_id, .. } => {
+                self.members.remove(&(secret_id, replica_id.0)).is_some()
+            }
+        };
         Box::pin(std::future::ready(Ok(removed)))
     }
 
-    fn channels(&self, secret_id: u64) -> ChannelStoreFuture<'_, Vec<Channel>> {
-        let entries: Vec<Channel> = self
-            .data
+    fn helpers(&self, secret_id: u64) -> ChannelStoreFuture<'_, Vec<HelperChannel>> {
+        let entries: Vec<HelperChannel> = self
+            .helpers
             .iter()
             .filter(|((s, _), _)| *s == secret_id)
-            .map(|(_, c)| c.clone())
+            .map(|(_, h)| h.clone())
             .collect();
+        Box::pin(std::future::ready(Ok(entries)))
+    }
+
+    /// Every member of the group, including this device's own row — that is
+    /// what makes the roster reconstructible from storage alone.
+    ///
+    /// Ordered by `(created_at, replica_id)`, which is this app's succession
+    /// policy: when the group's `Source` leaves, the protocol promotes the
+    /// first eligible entry here, so the longest-standing member succeeds. An
+    /// arbitrary order would be correct too, but it would hand the choice to
+    /// the map's iteration order rather than making it.
+    fn replicas(&self, secret_id: u64) -> ChannelStoreFuture<'_, Vec<ReplicaMember>> {
+        let mut entries: Vec<ReplicaMember> = self
+            .members
+            .iter()
+            .filter(|((s, _), _)| *s == secret_id)
+            .map(|(_, r)| r.clone())
+            .collect();
+        entries.sort_by_key(|r| (r.created_at, r.replica_id.0));
         Box::pin(std::future::ready(Ok(entries)))
     }
 
@@ -197,18 +259,14 @@ impl InMemorySecretStore {
 
 // ── Share store ──────────────────────────────────────────────────────────────
 
-/// Stores shares keyed by `(secret_id, channel_id, version, replica_id)`.
-///
-/// `replica_id` is part of the key by contract: two distinct replicas may
-/// write the same `(secret_id, channel_id, version)` independently, and a
-/// store that ignored the discriminator would silently drop one of them.
+/// Stores shares keyed by `(secret_id, channel_id, version)`.
 ///
 /// Pure keyed store — channel linking lives in [`InMemoryChannelStore`];
 /// `load_many` is fed the resolved channel set by the recovery handler (and
 /// `load_all` by the discovery handler).
 #[derive(Default)]
 pub struct InMemoryShareStore {
-    data: HashMap<(u64, u64, u32, Option<u64>), Share>,
+    data: HashMap<(u64, u64, u32), Share>,
 }
 
 impl DeRecShareStore for InMemoryShareStore {
@@ -226,7 +284,7 @@ impl DeRecShareStore for InMemoryShareStore {
         let result: Vec<Share> = self
             .data
             .iter()
-            .filter(|((s, c, v, _), _)| {
+            .filter(|((s, c, v), _)| {
                 *s == secret_id
                     && *c == channel_id.0
                     && version_filter.as_ref().is_none_or(|f| f.contains(v))
@@ -251,7 +309,7 @@ impl DeRecShareStore for InMemoryShareStore {
         let result: Vec<Share> = self
             .data
             .iter()
-            .filter(|((s, c, v, _), _)| {
+            .filter(|((s, c, v), _)| {
                 *s == secret_id
                     && cid_set.contains(c)
                     && version_filter.as_ref().is_none_or(|f| f.contains(v))
@@ -270,7 +328,7 @@ impl DeRecShareStore for InMemoryShareStore {
         let result: Vec<Share> = self
             .data
             .iter()
-            .filter(|((s, c, _, _), _)| *s == secret_id && cid_set.contains(c))
+            .filter(|((s, c, _), _)| *s == secret_id && cid_set.contains(c))
             .map(|(_, share)| share.clone())
             .collect();
         Box::pin(std::future::ready(Ok(result)))
@@ -280,8 +338,8 @@ impl DeRecShareStore for InMemoryShareStore {
         let max = self
             .data
             .keys()
-            .filter(|(s, _, _, _)| *s == secret_id)
-            .map(|(_, _, v, _)| *v)
+            .filter(|(s, _, _)| *s == secret_id)
+            .map(|(_, _, v)| *v)
             .max();
         Box::pin(std::future::ready(Ok(max)))
     }
@@ -292,20 +350,20 @@ impl DeRecShareStore for InMemoryShareStore {
         channel_id: ChannelId,
         share: Share,
     ) -> ShareStoreFuture<'_, ()> {
-        let key = (secret_id, channel_id.0, share.version, share.replica_id);
+        let key = (secret_id, channel_id.0, share.version);
         self.data.insert(key, share);
         Box::pin(std::future::ready(Ok(())))
     }
 
-    /// Drop every share stored under `(secret_id, channel_id)` — all versions,
-    /// all replicas. Idempotent; called by the unpair flow on teardown.
+    /// Drop every share stored under `(secret_id, channel_id)` — all versions.
+    /// Idempotent; called by the unpair flow on teardown.
     fn remove_channel(
         &mut self,
         secret_id: u64,
         channel_id: ChannelId,
     ) -> ShareStoreFuture<'_, ()> {
         self.data
-            .retain(|(s, c, _, _), _| !(*s == secret_id && *c == channel_id.0));
+            .retain(|(s, c, _), _| !(*s == secret_id && *c == channel_id.0));
         Box::pin(std::future::ready(Ok(())))
     }
 }

@@ -32,7 +32,7 @@ main {
   overflow: auto;
 }
 
-main.session-mode {
+main.owner-mode {
   align-items: stretch;
   justify-content: flex-start;
   padding: 0;
@@ -60,7 +60,7 @@ button.secondary.reset-btn:hover:not(:disabled) {
 
 button.danger {
   background: var(--danger);
-  color: #fff;
+  color: var(--status-contrast);
 }
 
 button {
@@ -69,8 +69,8 @@ button {
   padding: 7px 16px;
   border-radius: 6px;
   border: 1px solid transparent;
-  background: var(--accent);
-  color: #fff;
+  background: var(--accent-fill);
+  color: var(--accent-contrast);
   cursor: pointer;
   white-space: nowrap;
   transition: opacity 0.15s;
@@ -88,7 +88,7 @@ button {
 .app-dialog-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
+  background: var(--scrim);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -102,7 +102,7 @@ button {
   padding: 24px;
   width: 360px;
   max-width: calc(100vw - 48px);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--shadow);
 }
 
 .app-dialog-title {

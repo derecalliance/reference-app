@@ -1,7 +1,7 @@
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:5000'
+import { API_BASE } from './apiBase'
 
 // ── Polled mailbox message ────────────────────────────────────────────────────
 
@@ -34,13 +34,10 @@ export async function sendMessage(uri: string, message: Uint8Array): Promise<voi
  * `DeRecProtocolWasm.process()`.
  */
 export async function pollMailbox(
-  sessionId: string,
   role: 'owners' | 'participants',
   actorId: string,
 ): Promise<MailboxMessage[]> {
-  const res = await fetch(
-    `${API_BASE}/derec/sessions/${sessionId}/${role}/${actorId}/mailbox`,
-  )
+  const res = await fetch(`${API_BASE}/derec/${role}/${actorId}/mailbox`)
 
   if (!res.ok) {
     throw new Error(`Failed to poll mailbox: ${res.status} ${res.statusText}`)

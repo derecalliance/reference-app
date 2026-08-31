@@ -10,6 +10,12 @@
 
     /* Bundler mode */
     "moduleResolution": "bundler",
+    "baseUrl": ".",
+    /* TEMPORARY — delete alongside the matching alias in `vite.config.ts`, once
+       the local `pkg-web` build declares `module`/`types` for its facade again.
+       `pkg-web/package.json` currently points `types` at `derec_library.d.ts`,
+       which does not describe `SenderKind`, `FlowKind`, `ContactMode` or
+       `DeRecProtocol`; `index.d.ts` is the surface this app is written against. */
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "moduleDetection": "force",

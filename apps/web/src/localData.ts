@@ -1,8 +1,8 @@
 /**
  * Wholesale reset of the app's browser storage.
  *
- * Every piece of persistent app state shares one `derec:` prefix: the session
- * envelopes and active-session pointer from `sessionPersistence.ts`, and the
+ * Every piece of persistent app state shares one `derec:` prefix: the owner
+ * envelopes and active-owner pointer from `ownerPersistence.ts`, and the
  * protocol stores (channels, contacts, secrets, shares, state) written by
  * `stores.ts` and `prePairing.ts`. A prefix sweep is therefore a complete
  * reset, while leaving keys owned by anything else on the origin untouched.
