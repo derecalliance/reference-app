@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+dotenv = "0.15.0"
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"
@@ -14,3 +15,18 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 dashmap = "6"
+base64 = "0.22"
+# Published SDK. Plaintext `http://` is no longer a compile-time feature — it
+# is `DeRecProtocolBuilder::with_unsafe_http`, decided per instance at runtime.
+derec-library = "0.0.2"
+derec-proto = "0.0.2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+rand = "0.8"
+# Operator-supplied defaults for the front end, read from a mounted config file.
+toml = "0.8"
+thiserror = "2"
+actix = "0.13"
+actix-rt = "2"
+# Envelope decoding: inbound messages are routed to a per-secret protocol
+# instance by the cleartext `channel_id` on the DeRecMessage envelope.
+prost = "0.14.4"

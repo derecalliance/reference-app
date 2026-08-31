@@ -1,0 +1,371 @@
+/* ── Panel shell ──────────────────────────────────────────────────────────── */
+
+.console-panel {
+  /* The console is a permanently dark surface — a terminal, not a page section
+   * — so it pins the dark-scheme values rather than following the colour
+   * scheme. Derived from the brand ink/gold family so it reads as part of the
+   * app rather than a devtool pasted in. */
+  --c-bg: #0f1512;
+  --c-header-bg: #141c17;
+  --c-border: #26301f;
+  --c-text: #f4eddd;
+  --c-text-dim: #8a8267;
+  --c-row-hover: #18211b;
+  --c-payload-bg: #0b100d;
+  --c-green: #86c070;
+  --c-mono: ui-monospace, Consolas, monospace;
+
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  background: var(--c-bg);
+  color: var(--c-text);
+  font-size: 13px;
+  font-family: var(--c-mono);
+}
+
+/* ── Header bar ───────────────────────────────────────────────────────────── */
+
+.console-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 36px;
+  padding: 0 12px 0 0;
+  border-bottom: 1px solid transparent;
+}
+
+.console-panel.expanded .console-header {
+  border-bottom-color: var(--c-border);
+}
+
+.console-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 100%;
+  padding: 0 14px;
+  background: none;
+  border: none;
+  color: var(--c-text);
+  font-family: var(--c-mono);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.4px;
+  cursor: pointer;
+  opacity: 1;
+  text-transform: uppercase;
+
+  &:hover {
+    color: var(--c-text);
+    opacity: 1;
+  }
+}
+
+.console-chevron {
+  color: var(--c-text-dim);
+  transition: transform 0.2s;
+}
+
+.console-chevron.expanded {
+  transform: rotate(180deg);
+}
+
+.console-title {
+  color: inherit;
+}
+
+.console-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--c-border);
+  color: var(--c-text-dim);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.console-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.console-clear-btn {
+  background: none;
+  border: 1px solid var(--c-border);
+  color: var(--c-text-dim);
+  font-family: var(--c-mono);
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 1;
+  letter-spacing: 0.2px;
+
+  &:hover:not(:disabled) {
+    color: var(--c-text);
+    border-color: var(--c-text-dim);
+    background: none;
+    opacity: 1;
+  }
+
+  &:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+}
+
+/* ── Body ─────────────────────────────────────────────────────────────────── */
+
+.console-body {
+  height: 240px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--c-border) transparent;
+}
+
+.console-empty {
+  margin: 0;
+  padding: 16px 16px;
+  color: var(--c-text-dim);
+  font-size: 12px;
+  font-family: var(--c-mono);
+}
+
+/* ── Log list ─────────────────────────────────────────────────────────────── */
+
+.console-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.console-entry {
+  border-bottom: 1px solid var(--c-border);
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+
+.console-row {
+  display: grid;
+  grid-template-columns: 60px 90px 180px 1fr 62px 64px;
+  align-items: center;
+  gap: 0;
+  padding: 5px 10px;
+  min-height: 32px;
+
+  &:hover {
+    background: var(--c-row-hover);
+  }
+}
+
+/* ── Badges ───────────────────────────────────────────────────────────────── */
+
+.cbadge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  width: fit-content;
+}
+
+/* Role. Gold marks the owner — the party the whole protocol is centred on. */
+.cbadge.role-owner       { background: rgba(210, 169, 78, 0.18); color: #d2a94e; }
+.cbadge.role-participant { background: rgba(121, 168, 181, 0.18); color: #79a8b5; }
+
+/* Flow. One hue per protocol stage, matching the status vocabulary used in the
+ * owner page so a colour means the same thing in both places. */
+.cbadge.flow-setup        { background: rgba(159, 165, 147, 0.16); color: #9fa593; }
+.cbadge.flow-pairing      { background: rgba(121, 168, 181, 0.18); color: #79a8b5; }
+.cbadge.flow-sharing      { background: rgba(134, 192, 112, 0.18); color: #86c070; }
+.cbadge.flow-verification { background: rgba(227, 135, 63, 0.18);  color: #e3873f; }
+.cbadge.flow-recovery     { background: rgba(176, 140, 168, 0.18); color: #b08ca8; }
+
+/* ── Row cells ────────────────────────────────────────────────────────────── */
+
+.console-step {
+  font-family: var(--c-mono);
+  font-size: 12px;
+  color: var(--c-text);
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.console-desc {
+  font-family: var(--sans, system-ui, sans-serif);
+  font-size: 12px;
+  color: var(--c-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 8px;
+}
+
+.console-time {
+  font-family: var(--c-mono);
+  font-size: 11px;
+  color: var(--c-text-dim);
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* ── Row actions ──────────────────────────────────────────────────────────── */
+
+.console-row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  padding-left: 8px;
+}
+
+.console-icon-btn {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--c-text-dim);
+  font-family: var(--c-mono);
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 1;
+  line-height: 1;
+  white-space: nowrap;
+
+  &:hover {
+    color: var(--c-text);
+    border-color: var(--c-border);
+    background: none;
+    opacity: 1;
+  }
+
+  &.active {
+    color: var(--gold);
+    border-color: color-mix(in srgb, var(--gold) 40%, transparent);
+  }
+}
+
+/* ── Log detail modal ─────────────────────────────────────────────────────── */
+
+.cmodal-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--scrim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 500;
+}
+
+.cmodal {
+  --c-bg: #0f1512;
+  --c-header-bg: #141c17;
+  --c-border: #26301f;
+  --c-text: #f4eddd;
+  --c-text-dim: #8a8267;
+  --c-mono: ui-monospace, Consolas, monospace;
+
+  background: var(--c-bg);
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  width: 580px;
+  max-width: 92vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  font-family: var(--c-mono);
+  color: var(--c-text);
+  box-shadow: 0 24px 48px rgba(4, 7, 5, 0.7);
+}
+
+.cmodal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--c-header-bg);
+  border-bottom: 1px solid var(--c-border);
+  border-radius: 8px 8px 0 0;
+  gap: 12px;
+}
+
+.cmodal-header-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.cmodal-step {
+  font-family: var(--c-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--c-text);
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cmodal-close {
+  flex-shrink: 0;
+  font-size: 13px;
+}
+
+.cmodal-body {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--c-border);
+  border-radius: 0 0 8px 8px;
+}
+
+.cmodal-section {
+  background: var(--c-bg);
+  display: flex;
+  flex-direction: column;
+}
+
+.cmodal-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px 6px;
+  background: color-mix(in srgb, var(--c-text) 4%, transparent);
+}
+
+.cmodal-section-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--c-text-dim);
+}
+
+.cmodal-section-content {
+  margin: 0;
+  padding: 6px 14px 14px;
+  font-family: var(--c-mono);
+  font-size: 11px;
+  line-height: 1.65;
+  color: var(--gold);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 300px;
+  overflow-y: auto;
+}

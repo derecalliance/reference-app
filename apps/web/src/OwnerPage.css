@@ -1,0 +1,2562 @@
+/* ── Page shell ────────────────────────────────────────────────────────────── */
+
+.owner-page {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  text-align: left;
+}
+
+/* ── Info bar ──────────────────────────────────────────────────────────────── */
+
+.owner-info-bar {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.meta-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted-2);
+  margin-right: 8px;
+}
+
+.owner-id-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.owner-id-value {
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 3px 8px;
+  background: var(--code-bg);
+  border-radius: 4px;
+  color: var(--text-h);
+  user-select: all;
+}
+
+.copy-btn {
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
+.owner-badge {
+  display: flex;
+  align-items: center;
+}
+
+.owner-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.header-transport {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.header-uri {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex-shrink: 0;
+
+  button {
+    font-size: 13px;
+    padding: 6px 14px;
+    white-space: nowrap;
+  }
+}
+
+/* ── Modal ─────────────────────────────────────────────────────────────────── */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--scrim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 24px;
+}
+
+.modal {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  width: 100%;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  /* Never taller than the overlay, which is `inset: 0` with its own padding —
+     so this is the viewport minus that gutter. Without it a tall modal (the
+     Share Contact one, with a QR code, or a long confirmation) simply grew
+     past the screen and `overflow: hidden` clipped whatever did not fit,
+     including the buttons. */
+  max-height: 100%;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.modal-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-h);
+  margin: 0;
+}
+
+.modal-back-btn {
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 4px 8px;
+  margin-right: 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.modal-back-btn:hover:not(:disabled),
+.modal-back-btn:focus-visible {
+  background: var(--accent-bg);
+  color: var(--text-h);
+  outline: none;
+}
+
+.modal-back-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.modal-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  padding: 4px;
+  cursor: pointer;
+  color: var(--text);
+  transition: background 0.12s, color 0.12s;
+
+  &:hover {
+    background: var(--code-bg);
+    color: var(--text-h);
+    opacity: 1;
+  }
+}
+
+.modal-body {
+  padding: 24px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  /* The body is what scrolls when the modal hits its cap, so the header and
+     the actions stay put — a dialog whose confirm button scrolls out of reach
+     is worse than one that scrolls at all. `min-height: 0` is what lets a flex
+     child shrink below its content size; without it `overflow-y` does nothing
+     here. */
+  overflow-y: auto;
+  min-height: 0;
+}
+
+/* Exactly the QR's own footprint, so swapping one for the other while a new
+   contact is minted leaves the modal the same height — the collapse-and-spring
+   that produced was the flicker. */
+.qr-placeholder {
+  width: 200px;
+  height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted, #6b7280);
+  font-size: 0.875rem;
+}
+
+.qr-wrapper {
+  display: flex;
+  justify-content: center;
+  padding: 16px;
+  /* QR modules need a light field to scan against in either colour scheme.
+     Cream rather than white keeps it on-brand without hurting contrast. */
+  background: var(--cream);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+
+  svg {
+    display: block;
+  }
+}
+
+.modal-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.copy-row {
+  display: flex;
+  gap: 8px;
+}
+
+.copy-field-btn {
+  flex: 1;
+  font-size: 13px;
+  padding: 6px 12px;
+}
+
+/* ── Modal form fields ─────────────────────────────────────────────────────── */
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form-label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--muted-2);
+}
+
+.full-input {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 14px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text-h);
+  outline: none;
+  font-family: var(--sans);
+  resize: vertical;
+
+  &:focus {
+    border-color: var(--accent);
+  }
+
+  &:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+}
+
+.mono-textarea {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.field-error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--danger);
+}
+
+/* ── Participant checkbox list ──────────────────────────────────────────────────── */
+
+.participant-check-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.participant-check-item {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  overflow: hidden;
+
+  &:has(.participant-checkbox:checked) {
+    border-color: var(--accent-border);
+    background: var(--accent-bg);
+  }
+}
+
+.participant-check-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--text-h);
+  user-select: none;
+}
+
+.participant-checkbox {
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+/* ── Modal actions ─────────────────────────────────────────────────────────── */
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+@keyframes modal-btn-spin {
+  to { transform: rotate(360deg); }
+}
+
+.modal-btn-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 8px;
+  vertical-align: -2px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: modal-btn-spin 0.85s linear infinite;
+}
+
+/* ── Transport block (inside modal) ────────────────────────────────────────── */
+
+.transport-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.transport-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+
+  .meta-label {
+    width: 60px;
+    flex-shrink: 0;
+  }
+
+  .uri-value {
+    font-size: 13px;
+    word-break: break-all;
+  }
+}
+
+/* ── Owner banners ───────────────────────────────────────────────────────── */
+
+.owner-banner {
+  padding: 10px 24px;
+  font-size: 13px;
+  line-height: 1.4;
+  flex-shrink: 0;
+}
+
+.owner-banner--warning {
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
+  color: var(--warning);
+}
+
+.owner-banner--error {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  color: var(--danger);
+}
+
+/* ── Two-column layout ─────────────────────────────────────────────────────── */
+
+.owner-layout {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.owner-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+/* ── Tab bar ───────────────────────────────────────────────────────────────── */
+
+.tab-bar {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  padding: 0 24px;
+  flex-shrink: 0;
+}
+
+.tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 4px;
+  margin-right: 24px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  white-space: nowrap;
+
+  &:hover:not(.active) {
+    color: var(--text-h);
+    opacity: 1;
+  }
+
+  &.active {
+    color: var(--text-h);
+    border-bottom-color: var(--accent);
+    opacity: 1;
+  }
+}
+
+.tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: var(--code-bg);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+
+  .active & {
+    background: var(--accent-bg);
+    color: var(--accent);
+  }
+}
+
+/* ── Tab panel ─────────────────────────────────────────────────────────────── */
+
+.tab-panel {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+}
+
+.tab-empty-state {
+  font-size: 14px;
+  color: var(--text);
+  line-height: 1.6;
+  max-width: 400px;
+  margin: 0;
+}
+
+/* ── Card list ─────────────────────────────────────────────────────────────── */
+
+/* ── Channel table (compact two-row layout) ────────────────────────────────── */
+
+.channel-table {
+  display: flex;
+  flex-direction: column;
+}
+
+.channel-row {
+  display: flex;
+  flex-direction: column;
+  padding: 10px 20px;
+}
+
+.channel-row + .channel-row {
+  border-top: 1px solid var(--border);
+}
+
+/* A channel "block" is one entry in the table: a singleton channel or a
+   linked group of channels under one name. */
+.channel-block {
+  display: flex;
+  flex-direction: column;
+  padding: 10px 20px;
+}
+
+.channel-block + .channel-block {
+  border-top: 1px solid var(--border);
+}
+
+/* Linked-group header: the shared peer name + group-level Link button. */
+.channel-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+/* A single channel within a linked group. */
+.channel-sub {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 0 6px 16px;
+  border-left: 2px solid var(--border);
+  margin-left: 3px;
+}
+
+.channel-sub + .channel-sub {
+  margin-top: 6px;
+}
+
+.channel-sub-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.channel-row-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.channel-row-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-h);
+  flex: 1;
+  min-width: 0;
+}
+
+.role-tag {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 4px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.role-tag--owner {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+.role-tag--helper {
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.channel-id-inline {
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  color: var(--text);
+}
+
+.channel-unpair-btn {
+  font-size: 11px;
+  padding: 2px 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    border-color: var(--danger);
+    color: var(--danger);
+    background: transparent;
+  }
+}
+
+.channel-link-btn {
+  font-size: 11px;
+  padding: 2px 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: transparent;
+  }
+}
+
+.channel-row-bottom {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding-top: 4px;
+}
+
+.channel-prop {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.channel-prop--key {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+
+  .shared-key-display,
+  .share-data-display {
+    flex: 1;
+    min-width: 0;
+  }
+}
+
+.channel-prop-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--muted-2);
+  white-space: nowrap;
+}
+
+.channel-prop-value {
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  color: var(--text-h);
+  white-space: nowrap;
+}
+
+/* ── Card list ─────────────────────────────────────────────────────────────── */
+
+.card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ── Detail card (shared by participant + secret cards) ─────────────────────────── */
+
+.detail-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.detail-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.detail-card-badge {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 2px 8px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-radius: 6px;
+  font-weight: 600;
+}
+
+.detail-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.card-toggle {
+  width: 100%;
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  transition: opacity 0.15s;
+
+  &:hover {
+    opacity: 0.8;
+  }
+
+  /* chevron sits at the far right */
+  .chevron-icon {
+    margin-left: auto;
+    flex-shrink: 0;
+    color: var(--text);
+  }
+}
+
+.detail-card.collapsible {
+  padding: 0;
+  overflow: hidden;
+
+  .card-header.card-toggle {
+    padding: 16px 20px;
+  }
+}
+
+.card-body {
+  padding: 0 20px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+
+.card-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-h);
+  flex: 1;
+  min-width: 0;
+}
+
+.channel-id {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 3px 8px;
+  background: var(--code-bg);
+  border-radius: 4px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+/* ── Click-to-copy ──────────────────────────────────────────────────────────── */
+
+.click-to-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+
+.click-to-copy:hover {
+  background: var(--code-bg);
+}
+
+.click-to-copy-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.click-to-copy-value {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 3px 8px;
+  background: var(--code-bg);
+  border-radius: 4px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+/* ── Field list (dl) ───────────────────────────────────────────────────────── */
+
+.field-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 10px;
+  margin: 0;
+  padding: 0;
+
+  @media (max-width: 480px) {
+    grid-template-columns: 1fr;
+    row-gap: 4px;
+  }
+}
+
+.field-row {
+  display: contents;
+
+  dt {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--muted-2);
+    white-space: nowrap;
+  }
+
+  dd {
+    margin: 0;
+    min-width: 0;
+  }
+}
+
+.protocol-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  letter-spacing: 0.3px;
+}
+
+.uri-value {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text-h);
+  word-break: break-all;
+}
+
+/* ── Shared key field ──────────────────────────────────────────────────────── */
+
+.shared-key-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.key-input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--code-bg);
+  color: var(--text-h);
+  outline: none;
+
+  &:focus {
+    border-color: var(--accent);
+  }
+}
+
+.reveal-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 8px;
+  flex-shrink: 0;
+
+  svg {
+    display: block;
+  }
+}
+
+/* ── Sub-section ───────────────────────────────────────────────────────────── */
+
+.card-sub-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sub-heading {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted-2);
+  margin: 0;
+}
+
+.empty-hint {
+  font-size: 13px;
+  color: var(--text);
+  margin: 0;
+}
+
+.form-hint {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 2px 0 0;
+  line-height: 1.4;
+}
+
+/* ── Share list ────────────────────────────────────────────────────────────── */
+
+.share-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.share-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.share-label {
+  flex: 1;
+  font-size: 13px;
+  color: var(--text-h);
+}
+
+.share-item--confirmed {
+  border-color: var(--accent-border);
+  background: var(--accent-bg);
+}
+
+.share-status-tag {
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.share-status-tag.confirmed {
+  color: var(--success);
+}
+
+.share-status-tag.pending {
+  color: var(--muted);
+  letter-spacing: 0.1em;
+}
+
+/* ── Card actions row ──────────────────────────────────────────────────────── */
+
+.card-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 4px;
+}
+
+/* ── Verify button ─────────────────────────────────────────────────────────── */
+
+.verify-btn {
+  font-size: 12px;
+  padding: 3px 10px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ── Version tag (shared) ──────────────────────────────────────────────────── */
+
+.version-tag {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--code-bg);
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.mono-tag {
+  font-size: 10px;
+  font-family: var(--font-mono, monospace);
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--code-bg);
+  color: var(--muted);
+  white-space: nowrap;
+  opacity: 0.8;
+}
+
+/* ── Status tag (shared) ───────────────────────────────────────────────────── */
+
+.status-tag {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+
+  &.paired {
+    color: var(--success);
+    background: var(--success-bg);
+  }
+
+  &.available {
+    color: var(--warning);
+    background: var(--warning-bg);
+  }
+
+  &.offline {
+    color: var(--text);
+    background: var(--code-bg);
+  }
+
+  &.recovery-channel {
+    color: var(--recovery);
+    background: var(--recovery-bg);
+  }
+}
+/* ── Participant dot ────────────────────────────────────────────────────────────── */
+
+.participant-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+
+  &.paired    { background: var(--success); }
+  &.available { background: var(--warning); }
+  &.offline   { background: var(--muted); }
+}
+/* ── Protected secret: id row ──────────────────────────────────────────────── */
+
+.secret-id-row {
+  display: flex;
+  align-items: center;
+}
+
+.secret-id-value {
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 3px 8px;
+  background: var(--code-bg);
+  border-radius: 4px;
+  color: var(--text-h);
+  user-select: all;
+}
+
+.threshold-value {
+  font-size: 13px;
+  color: var(--text-h);
+}
+
+/* ── Participant tag list (inside secret card) ──────────────────────────────────── */
+
+.sub-heading-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.verified-summary {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 10px;
+  background: var(--code-bg);
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.participant-tag-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.participant-tag {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 3px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-h);
+}
+
+.participant-tag--verified {
+  border-color: var(--success);
+  background: var(--success-bg);
+  color: var(--success);
+}
+.participant-tag--failed {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+.participant-failure-reason {
+  font-size: 10px;
+  opacity: 0.8;
+  font-style: italic;
+}
+
+.failed-helpers-section {
+  margin-top: 0.5rem;
+}
+
+.sub-heading--failed {
+  color: var(--danger);
+}
+.threshold-failure-banner,
+.threshold-warning-banner {
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+  margin-top: 0.75rem;
+}
+
+.threshold-failure-banner {
+  background: var(--danger-bg);
+  border: 1px solid var(--danger);
+  color: var(--danger);
+}
+
+.threshold-warning-banner {
+  background: var(--warning-bg);
+  border: 1px solid var(--warning);
+  color: var(--warning);
+}
+.participant-verification-icon {
+  font-size: 11px;
+  line-height: 1;
+  flex-shrink: 0;
+  color: inherit;
+}
+
+/* ── Side panel ────────────────────────────────────────────────────────────── */
+
+.side-panel {
+  width: 374px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+  padding: 20px 0;
+  overflow-y: auto;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel-header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 0 16px;
+  margin-bottom: 12px;
+}
+
+.panel-header-row .panel-heading,
+.panel-header-row .panel-subtitle {
+  padding: 0;
+  margin: 0;
+}
+
+.panel-header-row .panel-subtitle {
+  margin-top: 2px;
+}
+
+.side-panel-section {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.side-panel-section + .side-panel-section {
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+
+.panel-empty-hint {
+  font-size: 12px;
+  color: var(--text);
+  opacity: 0.6;
+  padding: 8px 16px;
+  margin: 0;
+}
+
+.panel-heading {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  margin: 0 0 2px;
+  padding: 0 16px;
+}
+
+.panel-subtitle {
+  font-size: 12px;
+  color: var(--text);
+  margin: 0 0 12px;
+  padding: 0 16px;
+}
+
+button.small {
+  padding: 4px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* ── Side participant list (accordion) ─────────────────────────────────────────── */
+
+.side-participant-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.side-participant-item {
+  border-top: 1px solid var(--border);
+
+  &:last-child {
+    border-bottom: 1px solid var(--border);
+  }
+}
+
+.side-participant-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 16px;
+  background: none;
+  border: none;
+  border-radius: 0;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-h);
+  transition: background 0.12s;
+
+  &:hover {
+    background: var(--accent-bg);
+    opacity: 1;
+  }
+}
+
+.side-participant-name {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-h);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chevron-icon {
+  flex-shrink: 0;
+  color: var(--text);
+  transition: transform 0.18s;
+
+  &.expanded {
+    transform: rotate(180deg);
+  }
+}
+
+/* ── Side participant expanded details ──────────────────────────────────────────── */
+
+.side-participant-details {
+  padding: 8px 16px 12px;
+  background: var(--code-bg);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.side-detail-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.side-detail-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted-2);
+  flex-shrink: 0;
+  white-space: nowrap;
+  width: 76px;
+}
+
+.side-detail-value {
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  color: var(--text-h);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.side-detail-code {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-h);
+  word-break: break-all;
+}
+
+.shared-key-display {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.shared-key-value {
+  flex: 1;
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  color: var(--text-h);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.shared-key-display .reveal-btn {
+  padding: 2px 4px;
+  flex-shrink: 0;
+}
+
+/* ── Share data display (Shares tab) ─────────────────────────────────────────── */
+
+.share-data-display {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  flex: 1;
+}
+
+.share-data-value {
+  flex: 1;
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  color: var(--text-h);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.share-data-empty {
+  font-size: 11px;
+  color: var(--muted);
+  font-style: italic;
+}
+
+.share-format-btn {
+  padding: 1px 6px;
+  flex-shrink: 0;
+  font-size: 10px;
+  font-family: var(--mono, monospace);
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: none;
+  border-radius: 4px;
+  line-height: 1.4;
+}
+
+/* ── Unpair button on participant card ──────────────────────────────────────────── */
+
+.unpair-card-btn {
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+  font-weight: 600;
+  transition: border-color 0.15s, color 0.15s;
+
+  &:hover {
+    border-color: var(--danger);
+    color: var(--danger);
+    opacity: 1;
+  }
+}
+/* ── Side participant action row ────────────────────────────────────────────────── */
+
+.side-participant-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.side-action-btn {
+  width: 100%;
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-weight: 600;
+}
+
+/* ── Pair / Unpair action button ───────────────────────────────────────────── */
+
+.pair-action-btn {
+  width: 100%;
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  font-weight: 600;
+  transition: opacity 0.15s;
+
+  &:hover:not(:disabled) {
+    opacity: 0.8;
+  }
+
+  &.pair {
+    background: var(--accent-fill);
+    color: var(--accent-contrast);
+  }
+
+  &.unpair {
+    background: none;
+    border-color: var(--border);
+    color: var(--text);
+
+    &:hover {
+      border-color: var(--danger);
+      color: var(--danger);
+      opacity: 1;
+    }
+  }
+}
+/* ── Side share list ───────────────────────────────────────────────────────── */
+
+.side-share-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.side-share-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-h);
+}
+
+/* ── Responsive ────────────────────────────────────────────────────────────── */
+
+@media (max-width: 640px) {
+  .owner-layout {
+    flex-direction: column;
+    overflow: visible;
+  }
+
+  .side-panel {
+    width: 100%;
+    border-left: none;
+    border-top: 1px solid var(--border);
+    padding: 20px 0;
+  }
+
+  .owner-content {
+    overflow: visible;
+  }
+}
+
+/* ── Modal prose / form label hint ────────────────────────────────────────── */
+
+.modal-description {
+  font-size: 13px;
+  color: var(--text);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.form-label-hint {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text);
+}
+
+/* ── Share delivery progress ──────────────────────────────────────────────── */
+
+@keyframes share-spin {
+  to { transform: rotate(360deg); }
+}
+
+.share-status-spinning {
+  animation: share-spin 0.85s linear infinite;
+  display: block;
+}
+
+.share-progress-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-h);
+  margin: 0 0 2px;
+}
+
+.share-progress-subtitle {
+  font-size: 12px;
+  color: var(--text);
+  margin: 0;
+}
+
+.share-progress-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.share-progress-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-size: 14px;
+  color: var(--text-h);
+  transition: border-color 0.25s, background 0.25s;
+}
+
+.share-progress-item--confirmed {
+  border-color: var(--accent-border);
+  background: var(--accent-bg);
+}
+
+.share-progress-item--failed {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.share-progress-item-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.share-progress-item-status {
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.share-progress-bar-track {
+  height: 5px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+
+.share-progress-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+
+.share-progress-bar-fill--has-failures {
+  background: var(--danger);
+}
+
+.share-progress-summary {
+  font-size: 12px;
+  color: var(--text);
+  margin: 0;
+}
+
+/* ── Verify shares wizard ──────────────────────────────────────────────────── */
+
+/* Wider modal for the progress list step */
+.verify-modal--progress {
+  max-width: 420px;
+}
+
+/* Bar + summary wrapper */
+.verify-progress-bar-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Icon cell in each progress row */
+.verify-progress-icon {
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.verify-progress-icon--done {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--success);
+}
+
+.verify-progress-icon--failed {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--danger);
+}
+/* CSS-only spinner */
+@keyframes verify-spin {
+  to { transform: rotate(360deg); }
+}
+
+.verify-spinner {
+  display: block;
+  width: 13px;
+  height: 13px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: verify-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+/* Verified status text in progress rows */
+.share-progress-item-status.status--verified {
+  color: var(--success);
+  font-weight: 600;
+}
+
+.share-progress-item-status.status--failed {
+  color: var(--danger);
+  font-weight: 600;
+}
+/* "Verified" badge in participant selection list */
+.share-status-tag.verified {
+  color: var(--success);
+  background: var(--success-bg);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+/* ── Secrets table ────────────────────────────────────────────────────────── */
+
+.field-row--full {
+  display: block;
+  grid-column: 1 / -1;
+
+  dt {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--muted-2);
+    margin-bottom: 8px;
+  }
+
+  dd {
+    margin: 0;
+  }
+}
+
+.secrets-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.secrets-table__th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: var(--muted);
+  padding: 4px 8px 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.secrets-table__th--action {
+  width: 40px;
+}
+
+.secrets-table__row {
+  border-bottom: 1px solid var(--border);
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+
+.secrets-table__td {
+  padding: 6px 8px;
+  vertical-align: middle;
+}
+
+.secrets-table__name {
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.secrets-table__value code {
+  font-family: var(--mono, monospace);
+  font-size: 12px;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.secrets-table__td--action {
+  text-align: center;
+  padding: 4px;
+}
+
+.secrets-table__td--action .reveal-btn {
+  padding: 3px 5px;
+}
+
+/* ── Previous version history list ──────────────────────────────────────────── */
+
+.version-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.version-history-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.version-history-label {
+  color: var(--text);
+  font-family: var(--mono, monospace);
+}
+
+.version-history-note {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.version-history-verified {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--success);
+  white-space: nowrap;
+}
+.version-verify-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  margin-left: auto;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ── Card actions with multiple buttons ──────────────────────────────────────── */
+
+.card-actions {
+  gap: 8px;
+}
+/* ── Owner setup gate ────────────────────────────────────────────────────── */
+
+.owner-setup-gate {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.25rem;
+  padding: 3rem 2rem;
+  max-width: 420px;
+  margin: 4rem auto 0;
+}
+
+.setup-gate-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.setup-gate-description {
+  color: var(--muted);
+  margin: 0;
+}
+
+.setup-gate-progress {
+  width: 100%;
+}
+
+/* ── Recovery mode ──────────────────────────────────────────────────────────── */
+
+.recovery-active {
+  background: var(--warning) !important;
+  color: var(--status-contrast) !important;
+  border-color: var(--warning) !important;
+}
+
+.recovery-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.recovery-section > .sub-heading {
+  margin-bottom: 12px;
+}
+
+.section-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.section-header-row > .sub-heading {
+  margin-bottom: 0;
+}
+
+/* ── Recovery: compact helpers list ────────────────────────────────────────────
+   A flat list of paired-in-recovery helpers. Rows are denser than the
+   shared `.detail-card` (no frame, no rounded corners, no per-row gap) —
+   they're connected by a single hairline separator. */
+
+.recovery-helpers-list {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+}
+
+.recovery-helper-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* ── Recovery: versions nested inside an Available Secret card ─────────────────
+   Each row is one (secret_id, version) and carries its own status + recover
+   action. Same compact pattern as `.recovery-helpers-list`. */
+
+.available-versions-list {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+}
+
+.available-version-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.available-version-description {
+  color: var(--text-h);
+  font-weight: 500;
+}
+
+.available-version-helpers {
+  color: var(--text);
+}
+
+.available-version-helper-names {
+  color: var(--text);
+  opacity: 0.8;
+}
+
+.available-version-progress {
+  color: var(--text);
+  font-style: italic;
+}
+
+.available-version-insufficient {
+  color: var(--text);
+  font-size: 12px;
+  font-style: italic;
+}
+
+/* Push the action to the right edge of the row. */
+.available-version-recover-btn {
+  margin-left: auto;
+  font-size: 12px;
+  padding: 4px 12px;
+}
+
+/* Pushes the Recovered Secret card's "Recover from bag" action to the right
+   edge of the card header, separate from the title/version/status cluster. */
+.recovered-restore-btn {
+  margin-left: auto;
+  font-size: 12px;
+  padding: 4px 12px;
+}
+
+/* ── Recovery association prompt (participant side panel) ──────────────────────── */
+
+.recovery-association-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--warning);
+  border-radius: 8px;
+}
+
+.recovery-assoc-description {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.recovery-assoc-contact {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.recovery-assoc-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+/* Recovery-pending dot color */
+.participant-dot.recovery-pending {
+  background: var(--warning);
+}
+
+.status-tag.recovery-pending {
+  background: var(--warning);
+  color: var(--status-contrast);
+}
+
+/* ── Recovered secret plain text display ─────────────────────────────────── */
+
+.recovered-secret-plaintext {
+  margin: 0;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text);
+}
+
+.card-list-header {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 0 8px;
+}
+
+.status-tag.confirmed {
+  background: var(--info);
+  color: var(--status-contrast);
+}
+
+.status-tag.synced {
+  background: var(--success);
+  color: var(--status-contrast);
+}
+
+.fingerprint-comparison {
+  display: flex;
+  gap: 16px;
+}
+
+.fingerprint-side {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fingerprint-pending {
+  display: block;
+  text-align: center;
+  padding: 12px;
+  font-size: 13px;
+  color: var(--text);
+  opacity: 0.5;
+  font-style: italic;
+}
+
+.side-participant-details .fingerprint-pending {
+  font-size: 11px;
+  padding: 6px;
+}
+
+.side-participant-details .fingerprint-hint {
+  font-size: 11px;
+}
+
+.fingerprint-hint {
+  font-size: 12px;
+  color: var(--text);
+  opacity: 0.6;
+  margin: 6px 0 0;
+  font-style: italic;
+}
+
+/* ── Synced channels list ────────────────────────────────────────────────── */
+
+.synced-channel-list {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.synced-channel-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto auto;
+  gap: 2px 12px;
+  padding: 8px 10px;
+  background: var(--code-bg);
+  border-radius: 6px;
+  align-items: center;
+}
+
+.synced-channel-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-h);
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.synced-channel-id {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+  opacity: 0.6;
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.synced-key-field {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  grid-column: 2;
+  grid-row: 1 / -1;
+}
+
+.synced-key-value {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.synced-key-toggle {
+  padding: 2px 4px;
+  font-size: 11px;
+  line-height: 1;
+  min-width: 0;
+}
+
+/* ── Payload modal ─────────────────────────────────────────────────────────── */
+
+.payload-modal {
+  max-width: 680px;
+  width: 90vw;
+}
+
+.payload-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 12px;
+}
+
+.payload-tab {
+  flex: 1;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.payload-tab:hover {
+  color: var(--text);
+}
+
+.payload-tab--active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.payload-pre {
+  margin: 0;
+  padding: 12px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: var(--mono, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  overflow: auto;
+  max-height: 420px;
+  white-space: pre;
+  tab-size: 2;
+}
+
+.payload-pre--hex {
+  font-size: 11px;
+  line-height: 1.6;
+  letter-spacing: 0.3px;
+}
+
+/* ── Pairing waiting indicator ─────────────────────────────────────────── */
+
+.pairing-waiting-indicator {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  padding: 1.5rem 0;
+}
+
+.pairing-waiting-indicator .spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: verify-spin 0.8s linear infinite;
+}
+
+.pairing-error-text {
+  color: var(--danger);
+}
+
+.recovery-helper-count {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.recovery-helper-names {
+  color: var(--muted);
+}
+
+.recovery-action-row {
+  margin-top: 0.75rem;
+}
+
+.recovery-insufficient-notice {
+  margin: 0.5rem 0 0;
+  font-size: 12px;
+  color: var(--warning);
+  line-height: 1.4;
+}
+recovery-pairing-notice {
+  display: flex;
+  gap: 0.625rem;
+  align-items: flex-start;
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 0.75rem;
+  background: var(--warning-bg);
+  border: 1px solid var(--warning);
+  color: var(--warning);
+}
+
+.recovery-pairing-notice__icon {
+  font-size: 15px;
+  line-height: 1.4;
+  flex-shrink: 0;
+}
+
+.recovery-link-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0.75rem 0;
+}
+
+.recovery-link-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0.625rem 0.875rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.recovery-link-option:hover {
+  border-color: var(--accent);
+  background: var(--info-bg);
+}
+
+.recovery-link-option--selected {
+  border-color: var(--accent);
+  background: var(--info-bg);
+}
+
+.recovery-link-option__name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.recovery-link-option__meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.link-channel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0.75rem 0;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.link-channel-option {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0.625rem 0.875rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.link-channel-option:hover {
+  border-color: var(--accent);
+  background: var(--info-bg);
+}
+
+.link-channel-option--selected {
+  border-color: var(--accent);
+  background: var(--info-bg);
+}
+
+.link-channel-option__name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.link-channel-option__meta {
+  font-size: 12px;
+  font-family: var(--mono, monospace);
+  color: var(--muted);
+}
+/* ── Pairing role selector ─────────────────────────────────────────────────
+   Owner / Helper picker shown on both the share-contact and pair modals.
+   Follows the same visual language as .recovery-link-option. */
+
+.role-selector {
+  border: none;
+  margin: 0 0 1rem;
+  padding: 0;
+}
+
+.role-selector > .sub-heading {
+  padding: 0;
+  margin-bottom: 0.5rem;
+}
+
+.role-selector[disabled] {
+  opacity: 0.6;
+}
+
+.role-selector__options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+@media (max-width: 480px) {
+  .role-selector__options {
+    grid-template-columns: 1fr;
+  }
+}
+
+.role-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0.625rem 0.875rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.role-selector[disabled] .role-option {
+  cursor: default;
+}
+
+.role-option:hover {
+  border-color: var(--accent);
+  background: var(--info-bg);
+}
+
+.role-option--selected {
+  border-color: var(--accent);
+  background: var(--info-bg);
+}
+
+/* The label itself is the hit target; the radio stays for a11y/keyboard. */
+.role-option input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.role-option:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.role-option__label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.role-option__hint {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.35;
+}
+/* ── Replica channels ──────────────────────────────────────────────────────────── */
+/* Replica rows live in the Replicas tab, built from the same classes as the main
+   channel list so the two read as one system. Only what is genuinely new lives
+   here: the tab's section spacing, the two replica role tags, the expired
+   status, and the standing prompt that makes the fingerprint modal safe to
+   dismiss. Each one carries its own words — none of them relies on colour. */
+
+.replicas-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.replicas-tab-section > .tab-empty-state {
+  margin-top: 0;
+}
+
+
+.role-tag--replica_source {
+  background: var(--recovery-bg);
+  color: var(--recovery);
+}
+
+.role-tag--replica_destination {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.status-tag.expired {
+  color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.replica-row-prompt,
+.replica-row-notice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--warning);
+  border-radius: 6px;
+  background: var(--warning-bg);
+}
+
+.replica-row-prompt--quiet {
+  border-color: var(--border);
+  background: transparent;
+}
+
+.replica-row-prompt__text {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.replica-row-prompt__action {
+  flex-shrink: 0;
+}
+
+.replica-row-notice--success {
+  border-color: var(--success);
+  background: var(--success-bg);
+}
+
+.replica-row-notice--info {
+  border-color: var(--border);
+  background: transparent;
+}
+
+.replica-row-notice--error {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+}
+/* ── Provisioned replicas (side panel) ─────────────────────────────────────────── */
+/* Mirrors the provisioned-participants section directly above it — same header
+   row, same accordion item, same action buttons — because it is the same kind of
+   thing: a backend-hosted actor this owner can add, pair and take offline. */
+
+.side-replica-direction {
+  font-size: 11px;
+  color: var(--text);
+  padding: 4px 0;
+}
+
+/* ── QR scanning ─────────────────────────────────────────────────────────── */
+
+.form-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.form-label-hint {
+  font-size: 0.75rem;
+  color: var(--muted, #6b7280);
+  cursor: help;
+}
+
+.qr-scanner {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: stretch;
+}
+
+/* Fixed aspect box so the modal does not resize when the stream starts and the
+   video learns its intrinsic dimensions — the same collapse-and-spring the
+   Share Contact modal used to do on a mode change. */
+.qr-scanner__viewport {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #000;
+}
+
+.qr-scanner__video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* Fill rather than letterbox: a QR only has to be *within* frame to decode,
+     and cropping keeps the preview matching what the detector sees. */
+  object-fit: cover;
+}

@@ -13,6 +13,13 @@ header {
     color: var(--text-h);
     letter-spacing: -0.1px;
   }
+
+  .header-spacer {
+    flex: 1;
+  }
+
+  .leave-btn {
+  }
 }
 
 main {
@@ -21,12 +28,15 @@ main {
   align-items: center;
   justify-content: center;
   padding: 40px 24px;
+  min-height: 0;
+  overflow: auto;
 }
 
-main.session-mode {
+main.owner-mode {
   align-items: stretch;
   justify-content: flex-start;
   padding: 0;
+  overflow: hidden;
 }
 
 
@@ -42,14 +52,25 @@ button.secondary {
   }
 }
 
+button.secondary.reset-btn:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+button.danger {
+  background: var(--danger);
+  color: var(--status-contrast);
+}
+
 button {
   font-size: 14px;
   font-weight: 500;
   padding: 7px 16px;
   border-radius: 6px;
   border: 1px solid transparent;
-  background: var(--accent);
-  color: #fff;
+  background: var(--accent-fill);
+  color: var(--accent-contrast);
   cursor: pointer;
   white-space: nowrap;
   transition: opacity 0.15s;
@@ -62,6 +83,56 @@ button {
     opacity: 0.4;
     cursor: not-allowed;
   }
+}
+
+.app-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--scrim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.app-dialog {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 24px;
+  width: 360px;
+  max-width: calc(100vw - 48px);
+  box-shadow: var(--shadow);
+}
+
+.app-dialog-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-h);
+  margin: 0 0 8px;
+}
+
+.app-dialog-body {
+  font-size: 14px;
+  color: var(--text);
+  margin: 0 0 20px;
+  line-height: 1.5;
+  text-align: left;
+
+  p + p {
+    margin-top: 8px;
+  }
+}
+
+.app-dialog-note {
+  color: var(--danger);
+}
+
+.app-dialog-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
 }
 
 footer {

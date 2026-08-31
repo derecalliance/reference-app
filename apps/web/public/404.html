@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>DeRec</title>
+    <script>
+      // The app has no client-side routes — every screen lives at the base
+      // path. This exists only so a stale bookmark (an old /session/<id> link,
+      // say) lands on the app instead of a bare 404.
+      var repo = '/reference-app';
+      if (window.location.pathname !== repo + '/') {
+        window.location.replace(repo + '/');
+      }
+    </script>
+  </head>
+  <body></body>
+</html>
