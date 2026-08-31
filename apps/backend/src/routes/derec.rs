@@ -15,6 +15,7 @@ use uuid::Uuid;
 use crate::{
     actor::IncomingMessage,
     models::Role,
+    routes::actor_guard::not_found,
     state::{ActorInbox, AppState},
 };
 
@@ -29,49 +30,28 @@ pub struct PollMessagesResponse {
     pub messages: Vec<MailboxMessage>,
 }
 
-fn parse_role(s: &str) -> Option<Role> {
-    match s {
-        "owners" => Some(Role::Owner),
-        "participants" => Some(Role::Participant),
-        "replicas" => Some(Role::Replica),
-        _ => None,
-    }
+fn unknown_role() -> Response {
+    not_found("unknown role — expected 'owners', 'participants', or 'replicas'")
 }
 
-/// POST /derec/sessions/:session_id/:role/:actor_id
+/// POST /derec/:role/:actor_id
+///
+/// The transport endpoint peers post protocol messages to. The `:role` segment
+/// is part of the URI baked into every contact this actor hands out, so it is
+/// checked against the registry rather than ignored — a message addressed to
+/// the right id under the wrong role is not for this actor.
 pub async fn deliver_message(
     State(state): State<Arc<AppState>>,
-    Path((session_id, role, actor_id)): Path<(Uuid, String, Uuid)>,
+    Path((role, actor_id)): Path<(String, Uuid)>,
     body: Bytes,
 ) -> Response {
-    let actor_role = match parse_role(&role) {
-        Some(r) => r,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "unknown role — expected 'owners', 'participants', or 'replicas'" })),
-            )
-                .into_response();
-        }
+    let Some(actor_role) = Role::from_path_segment(&role) else {
+        return unknown_role();
     };
 
-    let session = match state.sessions.get(&session_id) {
-        Some(s) => s.value().clone(),
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "session not found" })),
-            )
-                .into_response();
-        }
-    };
-
-    if !session.actors.iter().any(|a| a.id == actor_id && a.role == actor_role) {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "actor not found in session" })),
-        )
-            .into_response();
+    match state.actors.get(&actor_id) {
+        Some(actor) if actor.role == actor_role => {}
+        _ => return not_found("actor not found"),
     }
 
     if body.is_empty() {
@@ -86,7 +66,6 @@ pub async fn deliver_message(
         || state.disabled_replicas.contains_key(&actor_id)
     {
         info!(
-            session_id = %session_id,
             actor_id = %actor_id,
             bytes = body.len(),
             "message dropped — actor is offline"
@@ -105,7 +84,6 @@ pub async fn deliver_message(
                 }
             }
             info!(
-                session_id = %session_id,
                 actor_id = %actor_id,
                 role = %role,
                 bytes = body.len(),
@@ -113,35 +91,17 @@ pub async fn deliver_message(
             );
             StatusCode::ACCEPTED.into_response()
         }
-        None => {
-            (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "actor inbox not found" })),
-            )
-                .into_response()
-        }
+        None => not_found("actor inbox not found"),
     }
 }
 
-/// GET /derec/sessions/:session_id/:role/:actor_id/mailbox
+/// GET /derec/:role/:actor_id/mailbox
 pub async fn poll_mailbox(
     State(state): State<Arc<AppState>>,
-    Path((session_id, role, actor_id)): Path<(Uuid, String, Uuid)>,
+    Path((role, actor_id)): Path<(String, Uuid)>,
 ) -> Response {
-    if parse_role(&role).is_none() {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "unknown role — expected 'owners', 'participants', or 'replicas'" })),
-        )
-            .into_response();
-    }
-
-    if !state.sessions.contains_key(&session_id) {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "session not found" })),
-        )
-            .into_response();
+    if Role::from_path_segment(&role).is_none() {
+        return unknown_role();
     }
 
     let raw_messages: Vec<Vec<u8>> = match state.browser_receivers.get(&actor_id) {
@@ -158,7 +118,6 @@ pub async fn poll_mailbox(
 
     if !raw_messages.is_empty() {
         info!(
-            session_id = %session_id,
             actor_id = %actor_id,
             count = raw_messages.len(),
             "mailbox drained"

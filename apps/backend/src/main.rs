@@ -1,19 +1,22 @@
 use std::sync::Arc;
 
 use axum::{
-    routing::{get, post},
     Router,
+    routing::{get, post},
 };
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
-use tracing::info;
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use tracing::{info, warn};
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 mod actor;
+mod config;
 mod models;
+mod provisioning;
 mod routes;
 mod state;
 mod stores;
 
+use config::Defaults;
 use state::AppState;
 
 #[tokio::main]
@@ -25,9 +28,23 @@ async fn main() {
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .init();
 
+    let defaults = load_defaults();
+
     let base_url = std::env::var("BASE_URL").unwrap_or_else(|_| "http://localhost".to_owned());
     let port = std::env::var("PORT").unwrap_or_else(|_| "5000".to_owned());
     let base_url = format!("{base_url}:{port}");
+
+    // `BASE_URL` is not just where this server listens — it is the address
+    // stamped into every transport URI this node hands to a peer, and the
+    // address that peer will post to. A loopback value works right up until a
+    // second device joins, at which point the peer dutifully sends to its *own*
+    // localhost and the pairing dies with nothing pointing at the cause.
+    if base_url.contains("localhost") || base_url.contains("127.0.0.1") {
+        warn!(
+            base_url = %base_url,
+            "BASE_URL is loopback — reachable only from this machine. Set it to              this host's LAN address (e.g. BASE_URL=http://192.168.0.28) before              pairing from another device."
+        );
+    }
 
     let http_client = reqwest::Client::new();
 
@@ -51,7 +68,12 @@ async fn main() {
         rx.recv().expect("failed to receive arbiter handle")
     };
 
-    let state = Arc::new(AppState::new(base_url.as_str(), http_client, arbiter_handle));
+    let state = Arc::new(AppState::new(
+        base_url.as_str(),
+        defaults,
+        http_client,
+        arbiter_handle,
+    ));
 
     let app = build_router(state);
 
@@ -74,66 +96,93 @@ async fn main() {
     shutdown.notify_one();
 }
 
+/// Read the operator-supplied front-end defaults.
+///
+/// No file is the ordinary case for a plain `docker run` with nothing mounted,
+/// so that falls back to the built-in values. A file that *is* there but cannot
+/// be read, parsed, or validated aborts the boot: silently serving stock values
+/// would leave a developer debugging a config they believe is in effect.
+fn load_defaults() -> Defaults {
+    let path = config::configured_path();
+
+    match config::load(&path) {
+        Ok(Some(defaults)) => {
+            info!(path = %path.display(), "loaded configuration defaults");
+            defaults
+        }
+        Ok(None) => {
+            info!(
+                path = %path.display(),
+                "no configuration file found; using built-in defaults"
+            );
+            Defaults::default()
+        }
+        Err(e) => {
+            // `tracing` is already initialised, but a boot abort should also
+            // reach a plain `docker logs` reader who has filtered the level.
+            eprintln!("configuration error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(routes::health::handler))
-        .route("/sessions", post(routes::sessions::create))
-        .route("/sessions/{session_id}", get(routes::sessions::get))
+        .route("/config", get(routes::config::get))
+        .route("/owners", post(routes::owners::register))
+        .route("/actors", get(routes::actors::list))
+        .route("/actors/{actor_id}/contact", post(routes::actors::create_contact))
         .route(
-            "/sessions/{session_id}/participants",
-            post(routes::sessions::add_participant),
-        )
-        .route(
-            "/sessions/{session_id}/join",
-            post(routes::sessions::join),
-        )
-        .route(
-            "/derec/sessions/{session_id}/{role}/{actor_id}",
-            post(routes::derec::deliver_message),
-        )
-        .route(
-            "/derec/sessions/{session_id}/{role}/{actor_id}/mailbox",
-            get(routes::derec::poll_mailbox),
-        )
-        .route(
-            "/sessions/{session_id}/actors/{actor_id}/contact",
-            post(routes::actors::create_contact),
-        )
-        .route(
-            "/sessions/{session_id}/actors/{actor_id}/start-pairing",
+            "/actors/{actor_id}/start-pairing",
             post(routes::actors::start_pairing),
         )
+        // Actor-generic, unlike the replica-scoped pair below: a NoKeys pairing
+        // can land on any provisioned actor, so the channel is explicit.
         .route(
-            "/sessions/{session_id}/participants/{participant_id}/toggle-status",
+            "/actors/{actor_id}/fingerprint",
+            get(routes::actors::get_fingerprint),
+        )
+        .route(
+            "/actors/{actor_id}/confirm-fingerprint",
+            post(routes::actors::confirm_fingerprint),
+        )
+        .route("/participants", post(routes::participants::add))
+        .route("/participants/ensure", post(routes::participants::ensure))
+        .route(
+            "/participants/{participant_id}/toggle-status",
             post(routes::participants::toggle_status),
         )
         .route(
-            "/sessions/{session_id}/participants/{participant_id}/channels",
+            "/participants/{participant_id}/channels",
             get(routes::participants::list_channels),
         )
         .route(
-            "/sessions/{session_id}/participants/{participant_id}/link",
+            "/participants/{participant_id}/link",
             post(routes::participants::link_channels),
         )
         .route(
-            "/sessions/{session_id}/participants/{participant_id}/browser-contact",
-            post(routes::sessions::post_browser_contact).get(routes::sessions::get_browser_contact),
+            "/participants/{participant_id}/browser-contact",
+            post(routes::participants::post_browser_contact)
+                .get(routes::participants::get_browser_contact),
         )
+        .route("/replicas", post(routes::replicas::add))
         .route(
-            "/sessions/{session_id}/replicas",
-            post(routes::sessions::add_replica),
-        )
-        .route(
-            "/sessions/{session_id}/replicas/{replica_id}/toggle-status",
-            post(routes::replicas::toggle_status),
-        )
-        .route(
-            "/sessions/{session_id}/replicas/{replica_id}/fingerprint",
+            "/replicas/{replica_id}/fingerprint",
             get(routes::replicas::get_fingerprint),
         )
         .route(
-            "/sessions/{session_id}/replicas/{replica_id}/confirm-fingerprint",
+            "/replicas/{replica_id}/confirm-fingerprint",
             post(routes::replicas::confirm_fingerprint),
+        )
+        .route(
+            "/replicas/{replica_id}/toggle-status",
+            post(routes::replicas::toggle_status),
+        )
+        .route("/derec/{role}/{actor_id}", post(routes::derec::deliver_message))
+        .route(
+            "/derec/{role}/{actor_id}/mailbox",
+            get(routes::derec::poll_mailbox),
         )
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())

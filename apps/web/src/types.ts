@@ -1,4 +1,5 @@
 import type { AuthenticationMethod, UnpairAck } from './config'
+import type { PairingRole } from './pairingRoles'
 
 export type TransportProtocol = 'https'  // only HTTPS supported in v1
 
@@ -25,8 +26,17 @@ export interface SecretShareRef {
   verified: boolean
 }
 
-/** The role this node plays on a given channel. */
-export type ChannelRole = 'owner' | 'helper'
+/**
+ * The role a party plays on a given channel.
+ *
+ * The same vocabulary the pairing handshake speaks, aliased rather than
+ * re-declared so a role can never exist in one and not the other. It used to be
+ * `'owner' | 'helper'` on the grounds that replica channels were kept out of the
+ * roster entirely; they are not any more — they appear in the channel list
+ * flagged with their role — so the narrow type would have quietly mislabelled
+ * every one of them as a helper, and `isShareTarget` would have agreed.
+ */
+export type ChannelRole = PairingRole
 
 export interface PairedParticipant {
   id: string
@@ -47,6 +57,10 @@ export interface PairedParticipant {
    * Pairing is bi-directional — either party may initiate in either role — so
    * this is derived from `PairingCompleted.kind`, which reports the *local*
    * party's role, and inverted.
+   *
+   * A replica channel carries a replica role here. That is what keeps it out of
+   * the share roster (`isShareTarget`) now that it is no longer kept out of the
+   * roster itself.
    */
   peerRole?: ChannelRole
   /** When true, the backend silently drops all messages to/from this participant */
@@ -96,7 +110,7 @@ export interface SecretBag {
   currentVersion: BagVersion
   /** Older retained versions (most recent first) */
   previousVersions: BagVersion[]
-  /** Shamir threshold (from session config) */
+  /** Shamir threshold (from the owner's config) */
   threshold: number
 }
 
@@ -111,25 +125,6 @@ export interface PendingPairing {
    * is the only reliable way to tell which actor the new channel belongs to.
    */
   peerTransportUri?: string
-}
-
-export type ReplicaStatus = 'available' | 'paired' | 'confirmed'
-
-export interface PairedReplica {
-  id: string
-  name: string
-  /** Replica-side channel ID (from backend replica_channels) */
-  channelId: string
-  /** Owner-side channel ID (from PairingCompleted event on the owner WASM) */
-  ownerChannelId?: string
-  transport: Transport
-  status: ReplicaStatus
-  /** Whether this replica is simulating offline status */
-  offline?: boolean
-  /** Fingerprint string for the replica channel, fetched after pairing */
-  replicaFingerprint?: string
-  /** Timestamp (ms since epoch) when fingerprint confirmation window started */
-  confirmationStartedAt?: number
 }
 
 /**
@@ -150,13 +145,24 @@ export interface RecoveredSecretHelper {
   sharedKey: string
 }
 
+/**
+ * One member of the replica group.
+ *
+ * Carries no `channelId`: every member of a group is addressed on the *same*
+ * channel, which the group composite holds once. The member's identity is its
+ * `replicaId` alone.
+ */
 export interface RecoveredSecretReplica {
-  channelId: string
   transportUri: string
   communicationInfo: Record<string, string>
   /** Hex-encoded u64, matching the wire `derec.replica_id` representation. */
   replicaId: string
-  senderKind: number
+  /**
+   * Exactly one member of a group carries `Source` — the device the secret
+   * originated on. Replaces the old per-member `senderKind` and the separate
+   * top-level owner id: the `Source` member *is* the origin.
+   */
+  role: 'Source' | 'Destination'
 }
 
 export interface RecoveredSecretEntry {
@@ -173,12 +179,13 @@ export interface RecoveredSecretSnapshot {
   secrets: RecoveredSecretEntry[]
   /** Absent when this secret has no replica setup. */
   replicas?: {
-    replicas: RecoveredSecretReplica[]
+    /** The one channel every member of the group is addressed on. */
+    channelId: string
+    /** Every member, including the writer. Exactly one has `role: 'Source'`. */
+    members: RecoveredSecretReplica[]
     /** 32-byte replica-group key, base64url-encoded. */
     sharedKey: string
   }
-  /** Hex-encoded u64. */
-  ownerReplicaId: string
 }
 
 /** A successfully recovered secret. */
@@ -220,9 +227,16 @@ export interface RecoveryFailure {
 }
 
 
-export interface OwnerSession {
-  sessionId: string
-  /** Actor ID of the owner in the backend session — used for mailbox polling */
+/**
+ * Everything one browser context holds as an owner: its backend identity, its
+ * paired peers, its vault, and the protocol settings it runs with.
+ *
+ * This is the root of persisted app state. `ownerId` is the identity — the
+ * backend actor this context registered — and is what the storage key is
+ * derived from.
+ */
+export interface Owner {
+  /** Actor ID of this owner on the backend — used for mailbox polling. */
   ownerId: string
   ownerName: string
   /**
@@ -241,7 +255,7 @@ export interface OwnerSession {
   secretBag: SecretBag | null
   /** Pairing attempts in progress — drives mailbox polling */
   pendingPairings: PendingPairing[]
-  /** Number of participants to auto-pair on session load (testing convenience). */
+  /** Number of participants to auto-pair on load (testing convenience). */
   prePairedCount?: number
   /** Minimum paired participants required before secret protection is allowed. */
   minParticipants: number
@@ -257,8 +271,6 @@ export interface OwnerSession {
    * that specific version, or globally on entering/exiting recovery mode.
    */
   recoveryFailures: RecoveryFailure[]
-  /** Paired replicas (second Owner devices) */
-  replicas: PairedReplica[]
   /** Shares this owner holds on behalf of other owners (helper role) */
   heldShares: HeldShare[]
   /**
@@ -268,12 +280,20 @@ export interface OwnerSession {
    * drives the group header per the UI's main-selection rule.
    */
   mainChannels: string[]
-  /** Per-session protocol configuration chosen in the create-session wizard. */
-  config: SessionConfig
+  /** Protocol configuration chosen in the setup wizard. */
+  config: OwnerConfig
 }
 
-/** User-tunable protocol configuration, fixed at session creation. */
-export interface SessionConfig {
+/**
+ * User-tunable protocol configuration, chosen in the setup wizard and fixed for
+ * the lifetime of this owner.
+ *
+ * Owned by the front end. `protocolTimeoutSecs` and `unpairAck` are sent to the
+ * backend when provisioning actors so backend-run peers agree; the rest never
+ * leave the browser. Two browser contexts on the same server may hold different
+ * settings — they are independent nodes, exactly as two devices would be.
+ */
+export interface OwnerConfig {
   /**
    * General protocol timeout in seconds. Drives both the library's passive
    * `process()` expiry (via the WASM constructor) and the app's active

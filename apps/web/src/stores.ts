@@ -13,12 +13,38 @@ function partition(ns: string, secretId: string): string {
   return `derec:${ns}:${secretId}`
 }
 
-function contactKey(ns: string, secretId: string, channelId: string): string {
-  return `${partition(ns, secretId)}:contact:${channelId}`
+/**
+ * The `replicaId` the protocol reserves as "absent". Seeing it on a channel
+ * store call means the call addresses a helper channel rather than a member of
+ * the replica group.
+ */
+const HELPER_REPLICA_ID = '0'
+
+/** Helper channels are keyed by `channelId`. */
+function helperRecordKey(ns: string, secretId: string, channelId: string): string {
+  return `${partition(ns, secretId)}:channel:helper:${channelId}`
 }
 
-function contactIndexKey(ns: string, secretId: string): string {
-  return `${partition(ns, secretId)}:contact-index`
+/**
+ * Replica-group members are keyed by `replicaId` **alone**.
+ *
+ * Every member of a group shares one `channelId`, so the channel cannot be the
+ * key; and a member moves between channels during an admission handover while
+ * remaining the same member, so keying on the pair would lose the row exactly
+ * when that move needs to be observed.
+ */
+function memberRecordKey(ns: string, secretId: string, replicaId: string): string {
+  return `${partition(ns, secretId)}:channel:replica:${replicaId}`
+}
+
+/** Insertion-ordered index of helper channel ids in this partition. */
+function helperIndexKey(ns: string, secretId: string): string {
+  return `${partition(ns, secretId)}:channel-idx:helper`
+}
+
+/** Insertion-ordered index of replica ids in this partition. */
+function memberIndexKey(ns: string, secretId: string): string {
+  return `${partition(ns, secretId)}:channel-idx:replica`
 }
 
 /** Key for the bidirectional channel-link graph (owned by the channel store). */
@@ -66,31 +92,121 @@ function addToIndex(key: string, value: string): void {
 
 // ── Channel store ────────────────────────────────────────────────────────────
 
+/**
+ * Splice stored records into the JSON array the library expects.
+ *
+ * The bytes are spliced as **text** rather than parsed and re-serialised.
+ * Channel and replica ids are `u64`, and round-tripping them through
+ * `JSON.parse` would silently round every value above 2^53 to the nearest
+ * double. A stored record is always the externally tagged `{"<variant>":{…}}`
+ * that serde emits, so unwrapping it is a prefix/suffix slice — and the library
+ * wants the *inner* records, not the tagged ones.
+ */
+function spliceRecords(rows: Array<string | null>, variant: 'Helper' | 'Replica'): Uint8Array {
+  const tag = `{"${variant}":`
+  const inner: string[] = []
+
+  for (const row of rows) {
+    if (!row) continue
+    const text = new TextDecoder().decode(fromBase64Url(row))
+    if (!text.startsWith(tag)) continue
+    inner.push(text.slice(tag.length, -1))
+  }
+
+  return new TextEncoder().encode(`[${inner.join(',')}]`)
+}
+
 export function makeChannelStore(namespace: string) {
+  /**
+   * Which of the two keyspaces a call addresses. `replicaId === "0"` is the
+   * protocol's "absent" marker and means the helper channel at `channelId`;
+   * anything else is that member of the replica group.
+   */
+  function rowKey(secretId: string, channelId: string, replicaId: string): string {
+    return replicaId === HELPER_REPLICA_ID
+      ? helperRecordKey(namespace, secretId, channelId)
+      : memberRecordKey(namespace, secretId, replicaId)
+  }
+
+  function indexKey(secretId: string, replicaId: string): string {
+    return replicaId === HELPER_REPLICA_ID
+      ? helperIndexKey(namespace, secretId)
+      : memberIndexKey(namespace, secretId)
+  }
+
+  function readIndexed(
+    ids: string[],
+    toKey: (id: string) => string,
+  ): Array<string | null> {
+    return ids.map(id => localStorage.getItem(toKey(id)))
+  }
+
   return {
-    async load(secretId: string, channelId: string): Promise<Uint8Array | null> {
-      const val = localStorage.getItem(contactKey(namespace, secretId, channelId))
+    async load(
+      secretId: string,
+      channelId: string,
+      replicaId: string,
+    ): Promise<Uint8Array | null> {
+      const val = localStorage.getItem(rowKey(secretId, channelId, replicaId))
       return val ? fromBase64Url(val) : null
     },
 
-    async save(secretId: string, channelId: string, bytes: Uint8Array): Promise<void> {
-      localStorage.setItem(contactKey(namespace, secretId, channelId), toBase64Url(bytes))
-      addToIndex(contactIndexKey(namespace, secretId), channelId)
+    async save(
+      secretId: string,
+      channelId: string,
+      replicaId: string,
+      bytes: Uint8Array,
+    ): Promise<void> {
+      localStorage.setItem(rowKey(secretId, channelId, replicaId), toBase64Url(bytes))
+      addToIndex(
+        indexKey(secretId, replicaId),
+        replicaId === HELPER_REPLICA_ID ? channelId : replicaId,
+      )
     },
 
-    async listChannels(secretId: string): Promise<string[]> {
-      return loadStringArray(contactIndexKey(namespace, secretId))
-    },
-
-    async remove(secretId: string, channelId: string): Promise<boolean> {
-      const key = contactKey(namespace, secretId, channelId)
+    async remove(
+      secretId: string,
+      channelId: string,
+      replicaId: string,
+    ): Promise<boolean> {
+      const key = rowKey(secretId, channelId, replicaId)
       const existed = localStorage.getItem(key) !== null
       localStorage.removeItem(key)
-      const idx = loadStringArray(contactIndexKey(namespace, secretId)).filter(
-        (id) => id !== channelId,
+
+      const idxKey = indexKey(secretId, replicaId)
+      const dropped = replicaId === HELPER_REPLICA_ID ? channelId : replicaId
+      localStorage.setItem(
+        idxKey,
+        JSON.stringify(loadStringArray(idxKey).filter(id => id !== dropped)),
       )
-      localStorage.setItem(contactIndexKey(namespace, secretId), JSON.stringify(idx))
       return existed
+    },
+
+    /** JSON array of the helper channels stored under `secretId`. */
+    async listHelpers(secretId: string): Promise<Uint8Array> {
+      const ids = loadStringArray(helperIndexKey(namespace, secretId))
+      return spliceRecords(
+        readIndexed(ids, id => helperRecordKey(namespace, secretId, id)),
+        'Helper',
+      )
+    },
+
+    /**
+     * JSON array of the replica-group members stored under `secretId`,
+     * including this device's own row.
+     *
+     * The order chooses the app's source-succession policy: when the group's
+     * `Source` is removed, the protocol promotes the first entry here that is
+     * neither departing nor leaving. The index is append-only, so this is join
+     * order — the longest-standing member succeeds. That is a deliberate
+     * choice, not the storage engine's default.
+     */
+    async listReplicas(secretId: string): Promise<Uint8Array> {
+      const ids = loadStringArray(memberIndexKey(namespace, secretId))
+      return spliceRecords(
+        readIndexed(ids, id => memberRecordKey(namespace, secretId, id)),
+        'Replica',
+      )
     },
 
     // ── Channel linking (same Owner identity) ────────────────────────────────
@@ -125,6 +241,48 @@ export function makeChannelStore(namespace: string) {
       }
       return Array.from(visited)
     },
+  }
+}
+
+/**
+ * Lifecycle of a stored channel, as the library records it.
+ *
+ * `Pending` is the one that changes app behaviour: such a channel is not a
+ * publish target, not a recovery source, and inbound messages on it are
+ * ignored. Every replica pairing and every `NoKeys` pairing lands there and
+ * stays until a fingerprint is confirmed on both sides.
+ */
+export type ChannelStatus = 'Pending' | 'Paired' | 'Unpairing'
+
+/**
+ * Read the status of a stored helper channel, or `null` if there is no such
+ * record.
+ *
+ * Parsing the record here is safe in a way that parsing it for `listHelpers`
+ * would not be: only the `status` string is read, so the `u64` ids that
+ * `JSON.parse` would round are discarded rather than handed back to the
+ * library.
+ */
+export function readHelperChannelStatus(
+  namespace: string,
+  secretId: string,
+  channelId: string,
+): ChannelStatus | null {
+  const raw = localStorage.getItem(helperRecordKey(namespace, secretId, channelId))
+  if (!raw) return null
+
+  try {
+    const record = JSON.parse(new TextDecoder().decode(fromBase64Url(raw))) as {
+      Helper?: { status?: string }
+    }
+    const status = record.Helper?.status
+    return status === 'Pending' || status === 'Paired' || status === 'Unpairing'
+      ? status
+      : // A record that omits `status` predates the field; the library's serde
+        // default is `Paired`, so match it rather than inventing a third state.
+        'Paired'
+  } catch {
+    return null
   }
 }
 
@@ -459,7 +617,7 @@ export function makeUserSecretStore(namespace: string) {
  * serializing byte-identically, both paths are reduced to the same canonical
  * composite key.
  */
-type StateKindNum = 0 | 1 | 2 | 3
+type StateKindNum = 0 | 1 | 2 | 3 | 4
 
 interface StateKeyFields {
   kind: StateKindNum
@@ -478,16 +636,24 @@ interface StateKeyFields {
 /**
  * Reduce a key or item blob to the row key for its kind.
  *
- * Only the fields that form a kind's *key* may take part. This is not the same
- * as "every field present": a SharingRound item carries a `version`, but the
- * key for kind 3 has no secondary field at all. Including it would key the
- * write as `3:<version>` while every read looked for `3:` — the row would be
- * written and then never found, and the sharing round would never complete.
+ * Only the fields that form a kind's *key* may take part, and which those are
+ * is per kind rather than "every field present". Kind 4 is the one that bites:
+ * its item carries the device's `local_version` while
+ * `StateKey::PendingSyncCheck` carries none, so including it would key the
+ * write as `4:<version>` while every read looked for `4` — the row would be
+ * written and then never found, and the check would never resolve.
+ *
+ * Kind 3 *is* keyed by version, and that is load-bearing: rounds are not
+ * started only by `start(ProtectSecret)` — the pair-completion hook and the
+ * promotion inside `verifyFingerprint` both publish while handling an inbound
+ * message. A single unkeyed row let a second round overwrite the first's
+ * accumulator, and then neither completed.
  *
  *   0 PendingVerification → channel_id
  *   1 PendingRecovery     → secret_id (recovered) + version
  *   2 PendingUnpair       → channel_id
- *   3 SharingRound        → (none; at most one per secret)
+ *   3 SharingRound        → version (one row per publishing round)
+ *   4 PendingSyncCheck    → (none; at most one per secret)
  */
 function canonicalStateKey(fields: StateKeyFields): string {
   switch (fields.kind) {
@@ -497,7 +663,9 @@ function canonicalStateKey(fields: StateKeyFields): string {
     case 1:
       return `${fields.kind}:${fields.secret_id ?? ''}:${fields.version ?? ''}`
     case 3:
-      return '3'
+      return `3:${fields.version ?? ''}`
+    case 4:
+      return '4'
   }
 }
 

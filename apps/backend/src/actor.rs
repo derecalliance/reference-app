@@ -9,8 +9,27 @@ use uuid::Uuid;
 
 use derec_library::protocol::{
     AutoAcceptPolicy, DeRecChannelStore, DeRecEvent, DeRecFlow, DeRecProtocolBuilder,
+    ExpiredChannelCleanup,
 };
+use derec_library::protocol::types::Timeouts;
 use derec_library::types::ChannelId;
+
+/// How often each actor advances its own time-driven state.
+///
+/// `process()` is the only other thing that moves protocol time forward, so a
+/// round whose peers all go quiet has nothing left to close it — no
+/// `SharingComplete`, no unpair timeout, ever. This must stay well below the
+/// configured protocol timeout for those deadlines to land on time.
+const TICK_INTERVAL: Duration = Duration::from_secs(15);
+
+/// How long a `Pending` channel may wait for out-of-band confirmation.
+///
+/// The library's automatic sweep is disabled in favour of this, because its
+/// default (5 minutes) is also the budget a *human* gets to compare a
+/// fingerprint out of band — every `NoKeys` pairing and every replica pairing
+/// waits in `Pending` for exactly that. Five minutes is far too short for an
+/// interop session where the operator is reading codes between two browsers.
+const PENDING_CHANNEL_TTL_SECS: u64 = 3600;
 
 use crate::models::{Role, UnpairAck};
 use crate::state::AppState;
@@ -51,11 +70,38 @@ pub fn build_protocol(config: &ProtocolConfig) -> Result<ActorProtocol, derec_li
         .with_state_store(InMemoryStateStore::default())
         .with_transport(HttpTransport::new(config.http_client.clone()))
         .with_own_transport(config.transport_uri.as_str())
+        // Derived, not hardcoded: serving over https turns the guardrail back
+        // on by itself.
+        //
+        // Loopback alone is not enough. The library exempts plaintext loopback
+        // only for the endpoint a node configures for *itself*; a peer's
+        // endpoint may never be plaintext by default, and every peer these
+        // actors talk to is `http://localhost:5000/derec/...`.
+        .with_unsafe_http(!config.transport_uri.starts_with("https://"))
         .with_threshold(config.threshold)
         .with_keep_versions_count(config.keep_versions_count)
-        .with_timeout(Duration::from_secs(config.timeout_secs as u64))
+        .with_timeouts(Timeouts {
+            // The front end's single configured "protocol timeout" is the
+            // replay window — how stale an inbound envelope may be and still
+            // be accepted. The liveness budgets below answer a different
+            // question (how long to keep hoping a silent peer answers), so
+            // they keep the library's defaults rather than inheriting it.
+            inbound_message: Duration::from_secs(config.timeout_secs as u64),
+            // Cleanup is driven from this actor's own tick instead, at
+            // `PENDING_CHANNEL_TTL_SECS` — see that constant for why the
+            // default is unusable once fingerprint-gated pairing is in play.
+            expired_channels: ExpiredChannelCleanup::Disabled,
+            ..Timeouts::default()
+        })
         .with_communication_info(config.communication_info.clone())
         .with_unpair_ack(config.unpair_ack.to_library())
+        // These actors exist to be interoperated against, and a peer that sends
+        // something this node cannot process — wrong format, undecryptable,
+        // unknown channel — learns nothing from silence. Answering with a
+        // failure response is what makes a fixture debuggable from the other
+        // side of an interop test. An unattended fixture also has no user to
+        // decide otherwise, which is the case the default (`false`) exists for.
+        .with_auto_respond_on_failure(true)
         .with_auto_accept(AutoAcceptPolicy::all());
 
     if let Some(replica_id) = config.replica_id {
@@ -76,7 +122,6 @@ pub struct ProvisionedActor {
     /// `None` only while a call has borrowed it for an async step.
     protocol: Option<ActorProtocol>,
     actor_id: Uuid,
-    session_id: Uuid,
     role: Role,
     state: Arc<AppState>,
 }
@@ -85,14 +130,12 @@ impl ProvisionedActor {
     pub fn new(
         protocol: ActorProtocol,
         actor_id: Uuid,
-        session_id: Uuid,
         role: Role,
         state: Arc<AppState>,
     ) -> Self {
         Self {
             protocol: Some(protocol),
             actor_id,
-            session_id,
             role,
             state,
         }
@@ -131,7 +174,6 @@ impl ProvisionedActor {
                             // a matching display name least of all. An operator
                             // links explicitly via the link endpoint.
                             info!(
-                                session_id = %self.session_id,
                                 actor_id = %self.actor_id,
                                 channel_id = channel_id.0,
                                 pairing_channel_id = pairing_channel_id.0,
@@ -146,7 +188,6 @@ impl ProvisionedActor {
                                 .or_default()
                                 .push(cid);
                             info!(
-                                session_id = %self.session_id,
                                 actor_id = %self.actor_id,
                                 channel_id = channel_id.0,
                                 pairing_channel_id = pairing_channel_id.0,
@@ -162,7 +203,6 @@ impl ProvisionedActor {
                     peer_replica_id,
                 } => {
                     info!(
-                        session_id = %self.session_id,
                         actor_id = %self.actor_id,
                         channel_id = channel_id.0,
                         peer_replica_id = peer_replica_id,
@@ -178,7 +218,6 @@ impl ProvisionedActor {
                     ..
                 } => {
                     info!(
-                        session_id = %self.session_id,
                         actor_id = %self.actor_id,
                         channel_id = channel_id.0,
                         from_replica_id = from_replica_id,
@@ -196,7 +235,6 @@ impl ProvisionedActor {
                     ..
                 } => {
                     info!(
-                        session_id = %self.session_id,
                         actor_id = %self.actor_id,
                         channel_id = channel_id.0,
                         version = version,
@@ -211,7 +249,6 @@ impl ProvisionedActor {
                     action_kind,
                 } => {
                     info!(
-                        session_id = %self.session_id,
                         actor_id = %self.actor_id,
                         channel_id = channel_id.0,
                         action = ?action_kind,
@@ -224,7 +261,6 @@ impl ProvisionedActor {
                 // added that the policy does not yet cover.
                 DeRecEvent::ActionRequired { channel_id, .. } => {
                     warn!(
-                        session_id = %self.session_id,
                         actor_id = %self.actor_id,
                         channel_id = channel_id.0,
                         "ActionRequired surfaced despite auto-accept-all; action dropped"
@@ -233,9 +269,9 @@ impl ProvisionedActor {
 
                 DeRecEvent::Unpaired { channel_id } => {
                     let cid = channel_id.0.to_string();
-                    // Drop the channel from the per-actor index so the
-                    // session-status enrichment stops reporting this actor
-                    // as paired on a channel that no longer exists.
+                    // Drop the channel from the per-actor index so the roster
+                    // enrichment stops reporting this actor as paired on a
+                    // channel that no longer exists.
                     if let Some(mut entry) = self.state.participant_channels.get_mut(&self.actor_id)
                     {
                         entry.retain(|c| c != &cid);
@@ -244,7 +280,6 @@ impl ProvisionedActor {
                         entry.retain(|c| c != &cid);
                     }
                     info!(
-                        session_id = %self.session_id,
                         actor_id = %self.actor_id,
                         channel_id = channel_id.0,
                         "channel torn down via unpair flow"
@@ -260,13 +295,69 @@ impl ProvisionedActor {
 impl Actor for ProvisionedActor {
     type Context = Context<Self>;
 
-    fn started(&mut self, _ctx: &mut Self::Context) {
+    fn started(&mut self, ctx: &mut Self::Context) {
         info!(
-            session_id = %self.session_id,
             actor_id = %self.actor_id,
             role = ?self.role,
             "provisioned actor started"
         );
+        // An actor handles one message at a time, so scheduling the tick as a
+        // message is what serializes it against `process()` — both mutate the
+        // same round state, and interleaving them would lose an update.
+        ctx.run_interval(TICK_INTERVAL, |_actor, ctx| ctx.notify(TickMsg));
+    }
+}
+
+/// Advance time-driven state: sharing-round and unpair timeouts, plus the
+/// `Pending`-channel sweep the library's automatic cleanup was disabled for.
+#[derive(Message)]
+#[rtype(result = "()")]
+struct TickMsg;
+
+impl Handler<TickMsg> for ProvisionedActor {
+    type Result = ResponseActFuture<Self, ()>;
+
+    fn handle(&mut self, _msg: TickMsg, _ctx: &mut Context<Self>) -> Self::Result {
+        let Some(mut protocol) = self.protocol.take() else {
+            // Borrowed by an in-flight call, which will advance time itself.
+            // Skipping is safe: the next interval picks it up.
+            return Box::pin(actix::fut::ready(()));
+        };
+
+        Box::pin(
+            async move {
+                let events = protocol.tick().await;
+                let swept = protocol
+                    .remove_expired_channels(PENDING_CHANNEL_TTL_SECS)
+                    .await;
+                (protocol, events, swept)
+            }
+            .into_actor(self)
+            .map(|(protocol, events, swept), actor, _ctx| {
+                actor.protocol = Some(protocol);
+
+                if !events.is_empty() {
+                    actor.handle_events(&events);
+                }
+                match swept {
+                    Ok(removed) if !removed.is_empty() => {
+                        warn!(
+                            actor_id = %actor.actor_id,
+                            count = removed.len(),
+                            "swept pending channels that were never confirmed"
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        error!(
+                            actor_id = %actor.actor_id,
+                            error = %e,
+                            "expired-channel sweep failed"
+                        );
+                    }
+                }
+            }),
+        )
     }
 }
 
@@ -358,7 +449,6 @@ impl Handler<ProcessDelayed> for ProvisionedActor {
     fn handle(&mut self, msg: ProcessDelayed, _ctx: &mut Context<Self>) -> Self::Result {
         let Some(mut protocol) = self.protocol.take() else {
             error!(
-                session_id = %self.session_id,
                 actor_id = %self.actor_id,
                 "protocol already borrowed; dropping message"
             );
@@ -378,7 +468,6 @@ impl Handler<ProcessDelayed> for ProvisionedActor {
                     Ok(events) => actor.handle_events(&events),
                     Err(e) => {
                         error!(
-                            session_id = %actor.session_id,
                             actor_id = %actor.actor_id,
                             error = %e,
                             "actor process() failed"
@@ -403,21 +492,25 @@ impl Handler<ListChannelsMsg> for ProvisionedActor {
 
         Box::pin(
             async move {
-                let result = match protocol.channel_store.channels(secret_id).await {
+                // Helper channels only. Linking records that two channels
+                // belong to the same Owner identity, which is a helper-side
+                // concern; replica-group members share one channel and are
+                // listed by `replicas()` instead.
+                let result = match protocol.channel_store.helpers(secret_id).await {
                     Ok(channels) => {
                         let mut summaries = Vec::with_capacity(channels.len());
                         for ch in &channels {
                             let linked = protocol
                                 .channel_store
-                                .linked_channels(secret_id, ch.id)
+                                .linked_channels(secret_id, ch.channel_id)
                                 .await
                                 .unwrap_or_default()
                                 .into_iter()
-                                .filter(|c| c.0 != ch.id.0)
+                                .filter(|c| c.0 != ch.channel_id.0)
                                 .map(|c| c.0.to_string())
                                 .collect();
                             summaries.push(ChannelSummary {
-                                channel_id: ch.id.0.to_string(),
+                                channel_id: ch.channel_id.0.to_string(),
                                 peer_name: ch
                                     .communication_info
                                     .get("name")
@@ -458,7 +551,7 @@ impl Handler<LinkChannelsMsg> for ProvisionedActor {
         };
         let secret_id = protocol.secret_id();
         let (a, b) = (msg.channel_id, msg.link_to_channel_id);
-        let (session_id, actor_id) = (self.session_id, self.actor_id);
+        let actor_id = self.actor_id;
 
         Box::pin(
             async move {
@@ -469,7 +562,6 @@ impl Handler<LinkChannelsMsg> for ProvisionedActor {
                     .map_err(derec_library::Error::from);
                 if result.is_ok() {
                     info!(
-                        session_id = %session_id,
                         actor_id = %actor_id,
                         channel_id = a,
                         link_to_channel_id = b,

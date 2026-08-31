@@ -1,3 +1,5 @@
+import { randomId } from './randomId'
+
 // Framework-agnostic toast/error bus.
 //
 // `reportError` can be called from anywhere — React components, async poll
@@ -27,7 +29,7 @@ export function subscribeToasts(listener: Listener): () => void {
 }
 
 function emit(level: ToastLevel, message: string): void {
-  const toast: Toast = { id: crypto.randomUUID(), level, message }
+  const toast: Toast = { id: randomId(), level, message }
   for (const l of listeners) l(toast)
 }
 

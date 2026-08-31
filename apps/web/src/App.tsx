@@ -1,12 +1,18 @@
-import { useState, useEffect, useId, type ReactNode } from 'react'
+import { useState, useEffect, useRef, useId, type ReactNode } from 'react'
 import './App.css'
-import NewSessionWizard from './NewSessionWizard'
-import OwnerSessionPage, { JoinQrModal, SessionIdBadge } from './OwnerSessionPage'
+import SetupWizard from './SetupWizard'
+import OwnerPage from './OwnerPage'
 import ConsolePanel from './ConsolePanel'
 import { ConsoleProvider } from './ConsoleContext'
 import { ToastProvider } from './Toast'
-import type { OwnerSession } from './types'
-import { persistSession, deleteSession } from './sessionPersistence'
+import type { Owner } from './types'
+import {
+  persistOwner,
+  deleteOwner,
+  loadActiveOwner,
+  clearActiveOwner,
+} from './ownerPersistence'
+import { acquireOwnerLock, type OwnerLock } from './ownerLock'
 import { clearAllLocalData, countLocalDataEntries } from './localData'
 import GitHubIcon from '@mui/icons-material/GitHub';
 import LinkedInIcon from '@mui/icons-material/LinkedIn';
@@ -45,49 +51,6 @@ const socialLinks = [
 
 const BASE_PATH = import.meta.env.BASE_URL.replace(/\/$/, '') // e.g. "/reference-app"
 
-interface UrlSessionInfo {
-  sessionId: string
-  intent: 'continue' | 'join'
-}
-
-function getSessionInfoFromUrl(): UrlSessionInfo | null {
-  const path = window.location.pathname
-  const prefix = `${BASE_PATH}/session/`
-
-  // Try direct path first: /reference-app/session/{id} or /reference-app/session/{id}/join
-  if (path.startsWith(prefix)) {
-    const rest = path.slice(prefix.length).replace(/\/$/, '')
-    if (rest.endsWith('/join')) {
-      const id = rest.slice(0, -'/join'.length)
-      return id ? { sessionId: id, intent: 'join' } : null
-    }
-    return rest ? { sessionId: rest, intent: 'continue' } : null
-  }
-
-  // GitHub Pages SPA fallback: 404.html redirects to /?p=/session/{id}[/join]
-  const redirectedPath = new URLSearchParams(window.location.search).get('p')
-  if (redirectedPath?.startsWith('/session/')) {
-    const rest = redirectedPath.slice('/session/'.length).replace(/\/$/, '')
-    if (rest.endsWith('/join')) {
-      const id = rest.slice(0, -'/join'.length)
-      return id ? { sessionId: id, intent: 'join' } : null
-    }
-    return rest ? { sessionId: rest, intent: 'continue' } : null
-  }
-
-  return null
-}
-
-function setSessionIdInUrl(sessionId: string | null) {
-  const target = sessionId ? `${BASE_PATH}/session/${sessionId}` : `${BASE_PATH}/`
-  if (window.location.pathname !== target) {
-    window.history.replaceState(null, '', target)
-  }
-}
-
-type ActiveSession =
-  | { type: 'owner'; session: OwnerSession }
-
 interface AppDialogProps {
   title: string
   body: ReactNode
@@ -108,30 +71,94 @@ function AppDialog({ title, body, children }: AppDialogProps) {
   )
 }
 
+const APP_TITLE = 'DeRec Reference App'
+
 function AppContent() {
-  const [activeSession, setActiveSession] = useState<ActiveSession | null>(null)
+  const [owner, setOwner] = useState<Owner | null>(null)
+  // Held for as long as this tab drives `owner`, so no second tab can pick the
+  // same one. Released on leave; the browser releases it on close or crash.
+  const lockRef = useRef<OwnerLock | null>(null)
+  // The owner this tab was driving before a reload, read once at mount.
+  const [pendingResume] = useState<Owner | null>(loadActiveOwner)
+  // Blocks the first render only while a resume is actually in flight, so a
+  // reload does not flash the picker on its way back to the owner it had — and
+  // a fresh tab, which has nothing to resume, renders the picker immediately.
+  const [resuming, setResuming] = useState(pendingResume !== null)
 
-  // Read session info from URL on mount — passed to the wizard for auto-resume or join flow.
-  const [urlSessionInfo] = useState(getSessionInfoFromUrl)
+  /**
+   * Take ownership of `next` in this tab.
+   *
+   * Returns `false` when another tab already holds it — the caller surfaces
+   * that; this is the single point where the one-tab-per-owner rule is decided,
+   * so every path in (picker, fresh setup, claim, resume) is covered by it.
+   */
+  async function adoptOwner(next: Owner): Promise<boolean> {
+    if (lockRef.current?.ownerId === next.ownerId) {
+      persistOwner(next)
+      setOwner(next)
+      return true
+    }
 
-  const sessionId = activeSession?.session.sessionId ?? null
+    const lock = await acquireOwnerLock(next.ownerId)
+    if (!lock) return false
 
-  // Keep the URL in sync with the active session (always use /session/{id}, not /join).
+    await lockRef.current?.release()
+    lockRef.current = lock
+    persistOwner(next)
+    setOwner(next)
+    return true
+  }
+
+  // Resume whatever this tab was driving before a reload. A *new* tab has no
+  // pointer and falls through to the picker, which is the whole point of
+  // keeping it in sessionStorage.
   useEffect(() => {
-    setSessionIdInUrl(sessionId)
-  }, [sessionId])
+    if (!pendingResume) return
+    let cancelled = false
 
-  function handleOwnerUpdate(updated: OwnerSession) {
-    persistSession(updated)
-    setActiveSession({ type: 'owner', session: updated })
+    void acquireOwnerLock(pendingResume.ownerId).then(lock => {
+      if (cancelled) {
+        void lock?.release()
+        return
+      }
+      if (lock) {
+        lockRef.current = lock
+        setOwner(pendingResume)
+      } else {
+        // A duplicated tab copies sessionStorage, so this pointer can name an
+        // owner the original still holds. Drop it and let the picker explain.
+        clearActiveOwner()
+      }
+      setResuming(false)
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [pendingResume])
+
+  // Release on unload as well as on unmount: the browser frees Web Locks when
+  // the tab dies, but an explicit release makes the owner selectable again in
+  // an already-open picker without waiting on that.
+  useEffect(() => {
+    const release = () => void lockRef.current?.release()
+    window.addEventListener('pagehide', release)
+    return () => {
+      window.removeEventListener('pagehide', release)
+      release()
+    }
+  }, [])
+
+  // Name the tab, so two tabs are tellable apart in the tab bar.
+  useEffect(() => {
+    document.title = owner ? `${owner.ownerName} · DeRec` : APP_TITLE
+  }, [owner])
+
+  function handleOwnerUpdate(updated: Owner) {
+    persistOwner(updated)
+    setOwner(updated)
   }
 
-  function handleCreated(created: OwnerSession) {
-    persistSession(created)
-    setActiveSession({ type: 'owner', session: created })
-  }
-
-  const [inviteOpen, setInviteOpen] = useState(false)
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false)
   // Entry count is snapshotted when the dialog opens so the confirmation text
   // reflects what is actually about to be deleted.
@@ -139,27 +166,40 @@ function AppContent() {
 
   function handleResetLocalData() {
     clearAllLocalData()
-    // Protocol instances, wizard state and the session id in the URL all live
-    // outside localStorage, so a reload from the base path is what actually
-    // guarantees a clean slate.
+    // Protocol instances and wizard state live outside localStorage, so a
+    // reload is what actually guarantees a clean slate.
     window.location.replace(`${BASE_PATH}/`)
+  }
+
+  /**
+   * Give up this tab's owner, freeing it for another tab to pick up.
+   *
+   * Awaits the release so the picker this returns to already sees the owner as
+   * free — otherwise the row the user just left would render as busy.
+   */
+  async function releaseOwner() {
+    const lock = lockRef.current
+    lockRef.current = null
+    clearActiveOwner()
+    await lock?.release()
+    setOwner(null)
   }
 
   function handleLeaveOnly() {
     setLeaveDialogOpen(false)
-    setActiveSession(null)
+    void releaseOwner()
   }
 
   function handleRemoveFromBrowser() {
     setLeaveDialogOpen(false)
-    if (activeSession) {
+    if (owner) {
       try {
-        deleteSession(activeSession.session.sessionId)
+        deleteOwner(owner.ownerId)
       } catch {
         // Storage errors are non-fatal — proceed with leaving.
       }
     }
-    setActiveSession(null)
+    void releaseOwner()
   }
 
   return (
@@ -167,16 +207,12 @@ function AppContent() {
       <header>
         <img src={`${BASE_PATH}/logo-color.svg`} alt="DeRec Alliance" height="32" />
         <div className="header-spacer" />
-        {activeSession?.type === 'owner' && (
-          <SessionIdBadge id={activeSession.session.sessionId} />
-        )}
-        {activeSession?.type === 'owner' && (
-          <button className="secondary" onClick={() => setInviteOpen(true)} title="Show QR code so others can join this session">
-            Invite
-          </button>
-        )}
-        {activeSession && (
-          <button className="secondary leave-btn" onClick={() => setLeaveDialogOpen(true)} title="Return to session list">
+        {owner && (
+          <button
+            className="secondary leave-btn"
+            onClick={() => setLeaveDialogOpen(true)}
+            title="Return to the start screen"
+          >
             Leave
           </button>
         )}
@@ -189,21 +225,19 @@ function AppContent() {
         </button>
       </header>
 
-      {inviteOpen && activeSession?.type === 'owner' && (
-        <JoinQrModal sessionId={activeSession.session.sessionId} onClose={() => setInviteOpen(false)} />
-      )}
-
-      <main className={activeSession ? 'session-mode' : undefined}>
-        {activeSession === null
-          ? <NewSessionWizard onCreated={handleCreated} initialSessionId={urlSessionInfo?.sessionId} initialIntent={urlSessionInfo?.intent} />
-          : <OwnerSessionPage session={activeSession.session} onUpdate={handleOwnerUpdate} />
+      <main className={owner ? 'owner-mode' : undefined}>
+        {resuming
+          ? null
+          : owner === null
+            ? <SetupWizard onReady={adoptOwner} />
+            : <OwnerPage owner={owner} onUpdate={handleOwnerUpdate} />
         }
       </main>
 
       {leaveDialogOpen && (
         <AppDialog
-          title="Leave session?"
-          body="Do you want to leave this session or also remove it from this browser?"
+          title="Leave?"
+          body="Do you want to leave, or also remove this owner from the browser?"
         >
           <button className="secondary" onClick={() => setLeaveDialogOpen(false)}>
             Cancel
@@ -223,12 +257,14 @@ function AppContent() {
           body={
             <>
               <p>
-                This erases every DeRec session, pairing and protocol key stored in this
+                This erases every DeRec owner, pairing and protocol key stored in this
                 browser ({resetEntryCount} {resetEntryCount === 1 ? 'entry' : 'entries'}),
                 then reloads the app so you start from scratch.
               </p>
               <p className="app-dialog-note">
-                Sessions on the server are not affected. This cannot be undone.
+                Other tabs are erased too — this clears storage the whole
+                browser shares. Actors on the server are not affected. This
+                cannot be undone.
               </p>
             </>
           }

@@ -1,30 +1,27 @@
-import { useState, useEffect, useRef } from 'react'
-import './NewSessionWizard.css'
-import type { OwnerSession } from './types'
-import { apiCreateSession, apiGetSession, apiJoinSession } from './api'
-import { useConsole } from './ConsoleContext'
-import { loadLastSession, loadSessionById } from './sessionPersistence'
+import { useState, useEffect } from 'react'
+import './SetupWizard.css'
+import type { Owner, PairedParticipant } from './types'
 import {
-  DEFAULT_AUTHENTICATION_METHOD,
-  DEFAULT_AUTO_ACCEPT_UNPAIR_REQUESTS,
-  DEFAULT_PROTOCOL_TIMEOUT_SECS,
-  DEFAULT_UNPAIR_ACK,
+  apiEnsureParticipants,
+  apiGetActors,
+  apiGetServerDefaults,
+  apiRegisterOwner,
+  type ProvisioningSettings,
+} from './api'
+import { useConsole } from './ConsoleContext'
+import { listOwners, loadOwnerById, type OwnerSummary } from './ownerPersistence'
+import { heldOwnerIds } from './ownerLock'
+import {
+  FALLBACK_SERVER_DEFAULTS,
   type AuthenticationMethod,
+  type ServerDefaults,
   type UnpairAck,
 } from './config'
 import { InfoTooltip } from './InfoTooltip'
 import { faker } from '@faker-js/faker'
 
-type Flow = 'create' | 'continue' | 'join' | 'joinRecovery'
-type StepKey =
-  | 'choice'
-  | 'ownerName'
-  | 'participantCount'
-  | 'protocolSettings'
-  | 'sessionId'
-  | 'participantName'
-  | 'joinPrePair'
-  | 'claimActor'
+type Flow = 'setup' | 'claim'
+type StepKey = 'choice' | 'ownerName' | 'participantCount' | 'protocolSettings' | 'claimActor'
 
 /** Minimal view of an existing actor surfaced by the picker. Mirrors the
  *  fields the wizard renders; not a full BE DTO. */
@@ -43,55 +40,158 @@ interface WizardData {
   authenticationMethod: AuthenticationMethod
   unpairAck: UnpairAck
   autoAcceptUnpairRequests: boolean
-  sessionId: string
-  participantName: string
-  /** UUID of the existing owner actor to claim during recovery-join. */
+  /** UUID of the existing owner actor to adopt in the claim flow. */
   claimActorId: string
+}
+
+function initialData(defaults: ServerDefaults): WizardData {
+  return {
+    ownerName: '',
+    participantCount: defaults.participantCount,
+    prePairedCount: defaults.prePairedCount,
+    minParticipants: defaults.minParticipants,
+    recommendedParticipants: defaults.recommendedParticipants,
+    protocolTimeoutSecs: defaults.protocolTimeoutSecs,
+    authenticationMethod: defaults.authenticationMethod,
+    unpairAck: defaults.unpairAck,
+    autoAcceptUnpairRequests: defaults.autoAcceptUnpairRequests,
+    claimActorId: '',
+  }
+}
+
+/** One row of the saved-owner picker. */
+function OwnerRow({
+  owner,
+  busy,
+  onOpen,
+}: {
+  owner: OwnerSummary
+  busy: boolean
+  onOpen: () => void
+}) {
+  return (
+    <tr className={`owner-table__row${busy ? ' owner-table__row--busy' : ''}`}>
+      <td className="owner-table__name">{owner.ownerName}</td>
+      <td>
+        <code className="owner-table__id">{owner.ownerId.slice(0, 8)}…</code>
+      </td>
+      <td className="owner-table__paired">{owner.pairedCount}</td>
+      <td className="owner-table__action">
+        {busy ? (
+          // Text, not just the dimmed row: state must not be carried by colour
+          // alone. The note under the table explains why it cannot be opened.
+          <span className="owner-table__status">In use</span>
+        ) : (
+          <button className="secondary" onClick={onOpen}>
+            Open
+          </button>
+        )}
+      </td>
+    </tr>
+  )
+}
+
+/**
+ * Shown when the backend could not be reached at mount.
+ *
+ * Nothing here is disabled: the server may come up at any moment, and blocking
+ * the wizard would be a worse answer than warning about it. The point is that
+ * the user learns now rather than after filling in three steps.
+ */
+function ServerUnreachableNotice({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="wizard-offline-notice" role="alert">
+      <p className="wizard-offline-notice__title">Can’t reach the DeRec server</p>
+      <p className="wizard-offline-notice__body">
+        Setting up needs the backend running. Start it with{' '}
+        <code>cargo run</code> in <code>apps/backend</code>, then retry.
+      </p>
+      <button className="secondary" onClick={onRetry}>
+        Retry
+      </button>
+    </div>
+  )
 }
 
 function StepChoice({
   onSelect,
-  onResumeLast,
-  lastSession,
+  onOpenOwner,
+  owners,
+  busyOwnerIds,
+  serverReachable,
+  onRetryServer,
+  error,
 }: {
   onSelect: (flow: Flow) => void
-  onResumeLast: () => void
-  lastSession: OwnerSession | null
+  onOpenOwner: (ownerId: string) => void
+  owners: OwnerSummary[]
+  busyOwnerIds: ReadonlySet<string>
+  serverReachable: boolean | null
+  onRetryServer: () => void
+  error: string | null
 }) {
+  const anyBusy = owners.some(o => busyOwnerIds.has(o.ownerId))
+
   return (
     <div className="wizard-step">
       <h2>Get started</h2>
-      <p>Choose an option to continue.</p>
 
-      {lastSession && (
-        <div className="resume-card">
-          <div className="resume-card-info">
-            <span className="resume-card-label">Last session</span>
-            <span className="resume-card-name">{lastSession.ownerName}</span>
-            <code className="resume-card-id">{lastSession.sessionId.slice(0, 8)}…</code>
+      {serverReachable === false && <ServerUnreachableNotice onRetry={onRetryServer} />}
+      <p>
+        {owners.length === 0
+          ? 'Set up an owner on this device to begin.'
+          : 'Open one of the owners saved in this browser, or set up a new one.'}
+      </p>
+
+      {owners.length > 0 && (
+        <>
+          <div className="owner-table-scroll">
+            <table className="owner-table">
+              <caption className="visually-hidden">Owners saved in this browser</caption>
+              <thead>
+                <tr>
+                  <th className="owner-table__th">Owner</th>
+                  <th className="owner-table__th">ID</th>
+                  <th className="owner-table__th owner-table__th--paired" scope="col">
+                    Paired
+                  </th>
+                  <th className="owner-table__th owner-table__th--action" />
+                </tr>
+              </thead>
+              <tbody>
+                {owners.map(o => (
+                  <OwnerRow
+                    key={o.ownerId}
+                    owner={o}
+                    busy={busyOwnerIds.has(o.ownerId)}
+                    onOpen={() => onOpenOwner(o.ownerId)}
+                  />
+                ))}
+              </tbody>
+            </table>
           </div>
-          <button className="primary" onClick={onResumeLast}>
-            Resume
-          </button>
-        </div>
+          {anyBusy && (
+            <p className="wizard-field-hint">
+              An owner marked <strong>in use</strong> is open in another tab.
+              Two tabs cannot drive one owner — they would share a mailbox and
+              only the newer would keep receiving. Close the other tab to free it.
+            </p>
+          )}
+        </>
       )}
 
+      {error && <p className="wizard-field-error">{error}</p>}
+
       <div className="choice-buttons">
-        <button className="primary" onClick={() => onSelect('create')}>
-          Create Session
-        </button>
-        <button className="secondary" onClick={() => onSelect('join')}>
-          Join Session
+        <button className="primary" onClick={() => onSelect('setup')}>
+          Set up a new owner
         </button>
         <button
           className="secondary"
-          onClick={() => onSelect('joinRecovery')}
-          title="Testing shortcut: join by adopting an existing owner actor's mailbox instead of creating a new one. Recovery itself does not need this — a recovering owner joins normally and re-pairs."
+          onClick={() => onSelect('claim')}
+          title="Testing shortcut: adopt an existing owner actor's mailbox instead of registering a new one. Recovery itself does not need this — a recovering owner sets up normally and re-pairs."
         >
-          Join by Claiming an Actor
-        </button>
-        <button className="secondary" onClick={() => onSelect('continue')}>
-          Continue by ID
+          Claim an existing actor
         </button>
       </div>
     </div>
@@ -108,7 +208,7 @@ function StepOwnerName({
   return (
     <div className="wizard-step">
       <h2>Your name</h2>
-      <p>Enter the name you'd like to use as the owner of this session.</p>
+      <p>Enter the name you'd like to use as the owner on this device.</p>
       <input
         className="full-input"
         type="text"
@@ -121,11 +221,46 @@ function StepOwnerName({
   )
 }
 
+/**
+ * Explains what the requested total will actually do to the shared pool.
+ *
+ * The number is a target, not an order to create — so the honest thing to show
+ * is how it lands against what other owners have already provisioned.
+ */
+function PoolEffect({ existing, wanted }: { existing: number | null; wanted: number }) {
+  if (existing === null) return null
+
+  const shortfall = Math.max(0, wanted - existing)
+  const reused = Math.min(existing, wanted)
+
+  if (existing === 0) {
+    return (
+      <p className="wizard-field-hint">
+        No participants on this server yet — all {wanted} will be created.
+      </p>
+    )
+  }
+  if (shortfall === 0) {
+    return (
+      <p className="wizard-field-hint">
+        {existing} already on this server, so you’ll pair with {reused} of them and
+        none will be created.
+      </p>
+    )
+  }
+  return (
+    <p className="wizard-field-hint">
+      {existing} already on this server — {shortfall} more will be created.
+    </p>
+  )
+}
+
 function StepParticipantCount({
   participantCount,
   prePairedCount,
   minParticipants,
   recommendedParticipants,
+  existingParticipants,
   onChangeParticipantCount,
   onChangePrePairedCount,
   onChangeMinParticipants,
@@ -135,6 +270,8 @@ function StepParticipantCount({
   prePairedCount: number
   minParticipants: number
   recommendedParticipants: number
+  /** Participants already on the server, or `null` while unknown. */
+  existingParticipants: number | null
   onChangeParticipantCount: (n: number) => void
   onChangePrePairedCount: (n: number) => void
   onChangeMinParticipants: (n: number) => void
@@ -145,7 +282,8 @@ function StepParticipantCount({
       <h2>How many participants?</h2>
       <p>
         Participants store encrypted shares of your secret. More participants increases
-        resilience.
+        resilience. They are shared by everyone on this server, so this is how many
+        should exist — not how many to add.
       </p>
 
       <div className="participant-count-section">
@@ -175,6 +313,8 @@ function StepParticipantCount({
           </button>
         </div>
       </div>
+
+      <PoolEffect existing={existingParticipants} wanted={participantCount} />
 
       <div className="participant-count-section">
         <span className="participant-count-section-label">
@@ -254,6 +394,7 @@ function StepParticipantCount({
             className="stepper"
             onClick={() => onChangePrePairedCount(Math.min(participantCount, prePairedCount + 1))}
             disabled={prePairedCount >= participantCount}
+            aria-label="Increase pre-paired participants"
           >
             +
           </button>
@@ -355,8 +496,8 @@ function StepProtocolSettings({
 }) {
   return (
     <div className="wizard-step">
-      <h2>Session settings</h2>
-      <p>Tune how this session behaves. Sensible defaults are pre-filled.</p>
+      <h2>Protocol settings</h2>
+      <p>Tune how this device behaves. Defaults come from the server's configuration.</p>
 
       <div className="participant-count-section">
         <span className="participant-count-section-label">
@@ -449,8 +590,8 @@ function StepProtocolSettings({
           <span className="wizard-row__spacer" />
           <InfoTooltip label="About unpair acknowledgement">
             Protocol-level: how the initiator of an unpair flow handles the
-            peer's response. Echoed to every joiner so the whole session
-            agrees.
+            peer's response. Sent to the backend with each participant and
+            replica this device provisions, so they agree.
             <ul>
               <li>
                 <strong>Required</strong> — wait for the peer's acknowledgement
@@ -479,8 +620,7 @@ function StepProtocolSettings({
           />
           <span className="wizard-row__spacer" />
           <InfoTooltip label="About incoming unpair handling">
-            UI-only (not part of the protocol). Stored per session on this
-            device only.
+            UI-only (not part of the protocol). Stored on this device only.
             <ul>
               <li>
                 <strong>Auto-accept</strong> — quietly accept and let the
@@ -498,109 +638,10 @@ function StepProtocolSettings({
   )
 }
 
-function StepParticipantName({
-  value,
-  onChange,
-  error,
-}: {
-  value: string
-  onChange: (v: string) => void
-  error: string | null
-}) {
-  return (
-    <div className="wizard-step">
-      <h2>Your name</h2>
-      <p>Enter the name other participants will see when you join.</p>
-      <input
-        className="full-input"
-        type="text"
-        placeholder="e.g. Bob"
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        autoFocus
-      />
-      {error && <p className="wizard-field-error">{error}</p>}
-    </div>
-  )
-}
-
-function StepSessionId({
-  value,
-  onChange,
-  error,
-}: {
-  value: string
-  onChange: (v: string) => void
-  error: string | null
-}) {
-  return (
-    <div className="wizard-step">
-      <h2>Enter session ID</h2>
-      <p>Paste the full session ID to resume a previously saved session.</p>
-      <input
-        className="full-input"
-        type="text"
-        placeholder="Session ID"
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        autoFocus
-      />
-      {error && <p className="wizard-field-error">{error}</p>}
-    </div>
-  )
-}
-
-function StepJoinPrePair({
-  prePairedCount,
-  maxParticipants,
-  onChangePrePairedCount,
-}: {
-  prePairedCount: number
-  maxParticipants: number
-  onChangePrePairedCount: (n: number) => void
-}) {
-  return (
-    <div className="wizard-step">
-      <h2>Pre-pair participants</h2>
-      <p>
-        The session has <strong>{maxParticipants}</strong> provisioned participant{maxParticipants !== 1 ? 's' : ''}.
-        Choose how many to automatically pair with (testing shortcut — skips QR exchange).
-      </p>
-
-      <div className="participant-count-section">
-        <span className="participant-count-section-label">
-          Pre-pair locally
-          <span className="participant-count-section-hint">Randomly selected from available participants</span>
-        </span>
-        <div className="participant-count-input">
-          <button
-            className="stepper"
-            onClick={() => onChangePrePairedCount(Math.max(0, prePairedCount - 1))}
-            disabled={prePairedCount <= 0}
-            aria-label="Decrease pre-paired participants"
-          >
-            −
-          </button>
-          <span className="count">{prePairedCount}</span>
-          <button
-            className="stepper"
-            onClick={() => onChangePrePairedCount(Math.min(maxParticipants, prePairedCount + 1))}
-            disabled={prePairedCount >= maxParticipants}
-            aria-label="Increase pre-paired participants"
-          >
-            +
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 /**
- * Step where a recovering joiner picks an existing owner actor whose mailbox
- * the new tab will adopt. Two equivalent inputs are offered:
- *  - select from the loaded list of browser-based (`role === 'owner'`)
- *    actors in the session;
+ * Step where a recovering user picks an existing owner actor whose mailbox this
+ * tab will adopt. Two equivalent inputs are offered:
+ *  - select from the loaded list of `role === 'owner'` actors on the server;
  *  - paste a UUID directly (matches the "in a real app, auth hands you the
  *    id" model and works when the picker doesn't surface the right entry).
  *
@@ -612,33 +653,37 @@ function StepClaimActor({
   actors,
   selectedId,
   onChange,
+  loading,
   error,
 }: {
   actors: ClaimableActor[]
   selectedId: string
   onChange: (id: string) => void
+  loading: boolean
   error: string | null
 }) {
   return (
     <div className="wizard-step">
       <h2>Recover as which owner?</h2>
       <p>
-        Pick an existing owner from the session below, or paste their actor
-        ID. After recovery your tab adopts that actor's mailbox so helpers'
+        Pick an existing owner from the server below, or paste their actor ID.
+        After recovery your tab adopts that actor's mailbox so helpers'
         replies — verification, share retrieval, future protect rounds — keep
         flowing to the same transport URI they already know.
       </p>
 
-      {actors.length === 0 ? (
+      {loading ? (
+        <p className="wizard-field-hint">Loading owners…</p>
+      ) : actors.length === 0 ? (
         <p className="wizard-field-hint">
-          No other owners found in this session. Paste an actor ID below if
-          you have one.
+          No other owners found on this server. Paste an actor ID below if you
+          have one.
         </p>
       ) : (
         <div
           className="link-channel-list"
           role="listbox"
-          aria-label="Existing owners in this session"
+          aria-label="Existing owners on this server"
         >
           {actors.map(a => {
             const isSelected = selectedId.trim() === a.id
@@ -676,65 +721,133 @@ function StepClaimActor({
 }
 
 const FLOW_STEPS: Record<Flow, StepKey[]> = {
-  create: ['ownerName', 'participantCount', 'protocolSettings'],
-  continue: ['sessionId'],
-  join: ['sessionId', 'participantName', 'joinPrePair'],
-  // Recovery joiners pair helpers manually (one at a time, by linking against
-  // their old channels), so the `joinPrePair` step doesn't apply here.
-  // Instead they pick an existing owner actor to *claim* — that's whose
-  // mailbox the new tab will adopt so helpers' replies arrive.
-  joinRecovery: ['sessionId', 'claimActor'],
+  setup: ['ownerName', 'participantCount', 'protocolSettings'],
+  // A recovering owner pairs helpers manually, one at a time, by linking
+  // against their old channels — so there is nothing to configure here beyond
+  // which existing owner actor's mailbox this tab adopts.
+  claim: ['claimActor'],
 }
 
 interface Props {
-  onCreated: (session: OwnerSession) => void
-  initialSessionId?: string | null
-  initialIntent?: 'continue' | 'join'
+  /** Hand an owner to the app. Returns false if another tab took it first. */
+  onReady: (owner: Owner) => Promise<boolean>
 }
 
-export default function NewSessionWizard({ onCreated, initialSessionId, initialIntent }: Props) {
-  const [flow, setFlow] = useState<Flow | null>(() => {
-    if (!initialSessionId) return null
-    if (initialIntent === 'join') return 'join'
-    return 'continue'
-  })
-  const [stepIndex, setStepIndex] = useState(() => {
-    if (initialSessionId && initialIntent === 'join') return 1
-    return 0
-  })
-  const [data, setData] = useState<WizardData>({
-    ownerName: '',
-    participantCount: 7,
-    prePairedCount: 3,
-    minParticipants: 3,
-    recommendedParticipants: 5,
-    protocolTimeoutSecs: DEFAULT_PROTOCOL_TIMEOUT_SECS,
-    authenticationMethod: DEFAULT_AUTHENTICATION_METHOD,
-    unpairAck: DEFAULT_UNPAIR_ACK,
-    autoAcceptUnpairRequests: DEFAULT_AUTO_ACCEPT_UNPAIR_REQUESTS,
-    sessionId: initialSessionId ?? '',
-    participantName: `${faker.person.firstName()} ${faker.person.lastName()}`,
-    claimActorId: '',
-  })
-  const [creating, setCreating] = useState(false)
-  const [continueError, setContinueError] = useState<string | null>(null)
-  const [joinParticipantCount, setJoinParticipantCount] = useState<number>(0)
-  // Owner actors in the session, fetched when entering the recovery-join
-  // flow. Empty if the lookup hasn't run yet or surfaced no owners — the
-  // paste-UUID input is the fallback in either case.
+/** Wire an actor DTO into the participant shape the owner state carries. */
+function toParticipant(
+  actor: { id: string; name: string; transport: { protocol: 'https'; uri: string } },
+  channelId: string,
+): PairedParticipant {
+  return {
+    id: actor.id,
+    name: actor.name,
+    channelId,
+    transport: { protocol: actor.transport.protocol, uri: actor.transport.uri },
+    connectionStatus: channelId ? 'paired' : 'available',
+    secretShares: [],
+  }
+}
+
+export default function SetupWizard({ onReady }: Props) {
+  const [flow, setFlow] = useState<Flow | null>(null)
+  const [stepIndex, setStepIndex] = useState(0)
+  const [data, setData] = useState<WizardData>(() => initialData(FALLBACK_SERVER_DEFAULTS))
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const [claimableActors, setClaimableActors] = useState<ClaimableActor[]>([])
+  const [loadingClaimable, setLoadingClaimable] = useState(false)
   const { log } = useConsole()
 
-  const [lastSession] = useState<OwnerSession | null>(() => loadLastSession())
+  // `null` until the first probe lands, so the banner does not flash "offline"
+  // on a perfectly healthy load.
+  const [serverReachable, setServerReachable] = useState<boolean | null>(null)
+  const [probeNonce, setProbeNonce] = useState(0)
+  // Participants already on the server, so the count step can say what the
+  // requested total will actually do. `null` until the probe lands.
+  const [existingParticipants, setExistingParticipants] = useState<number | null>(null)
 
-  const didAutoSubmit = useRef(false)
+  const [owners, setOwners] = useState<OwnerSummary[]>(() => listOwners())
+  const [busyOwnerIds, setBusyOwnerIds] = useState<ReadonlySet<string>>(() => new Set())
+
+  // Which saved owners another tab currently holds.
+  //
+  // Polled rather than subscribed: a tab closing frees its owner with no event
+  // to listen for, and a row left reading "open in another tab" after that
+  // would be a dead end. Only while the list is actually on screen — once the
+  // user is inside a flow there is nothing to label.
+  const showingOwnerList = flow === null && owners.length > 0
   useEffect(() => {
-    if (!initialSessionId || didAutoSubmit.current) return
-    if (initialIntent !== 'continue') return
-    didAutoSubmit.current = true
-    handleContinue()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    if (!showingOwnerList) return
+    let cancelled = false
+    const refresh = () => {
+      void heldOwnerIds().then(ids => {
+        if (!cancelled) setBusyOwnerIds(ids)
+      })
+    }
+    refresh()
+    const timer = setInterval(refresh, 2000)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [showingOwnerList])
+
+  /** Open a saved owner, unless another tab claimed it in the meantime. */
+  async function handleOpenOwner(ownerId: string) {
+    setError(null)
+    const stored = loadOwnerById(ownerId)
+    if (!stored) {
+      // Storage changed under us — drop the stale row rather than leaving a
+      // button that does nothing.
+      setOwners(listOwners())
+      setError('That owner is no longer saved in this browser.')
+      return
+    }
+
+    if (!(await onReady(stored))) {
+      setBusyOwnerIds(await heldOwnerIds())
+      setError(`"${stored.ownerName}" was just opened in another tab.`)
+    }
+  }
+
+  // First contact with the backend, doing two jobs.
+  //
+  // It prefills the wizard from the operator-supplied defaults, so a developer
+  // running the Docker image with a mounted config doesn't retype the same
+  // values each run — applied only while the user is still on the choice
+  // screen, since overwriting fields they have already touched would be worse
+  // than a stale default.
+  //
+  // It also records whether the server answered at all. This is the earliest
+  // point at which "the backend is down" can be said out loud, and saying it
+  // here is what stops the user filling in three steps before finding out.
+  useEffect(() => {
+    let cancelled = false
+    void probeServer()
+    return () => {
+      cancelled = true
+    }
+
+    async function probeServer() {
+      const { defaults, reachable } = await apiGetServerDefaults()
+      if (cancelled) return
+      setServerReachable(reachable)
+      setData(current => (current.ownerName ? current : initialData(defaults)))
+      if (!reachable) {
+        setExistingParticipants(null)
+        return
+      }
+      try {
+        const actors = await apiGetActors()
+        if (!cancelled) {
+          setExistingParticipants(actors.filter(a => a.role === 'participant').length)
+        }
+      } catch {
+        // Only drives an explanatory line; leave it unknown rather than wrong.
+        if (!cancelled) setExistingParticipants(null)
+      }
+    }
+  }, [probeNonce])
 
   const steps: StepKey[] = flow ? FLOW_STEPS[flow] : []
   const isFinal = flow !== null && stepIndex === steps.length - 1
@@ -743,6 +856,23 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
   function handleSelectFlow(selected: Flow) {
     setFlow(selected)
     setStepIndex(0)
+    setError(null)
+    if (selected === 'claim') void loadClaimableActors()
+  }
+
+  /** Owners already registered on this server, as claim candidates. */
+  async function loadClaimableActors() {
+    setLoadingClaimable(true)
+    try {
+      const actors = await apiGetActors()
+      setClaimableActors(
+        actors.filter(a => a.role === 'owner').map(a => ({ id: a.id, name: a.name })),
+      )
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLoadingClaimable(false)
+    }
   }
 
   function handleBack() {
@@ -751,323 +881,178 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
     } else {
       setFlow(null)
     }
+    setError(null)
   }
 
-  async function handleCreate() {
-    setCreating(true)
+  function configFrom(d: WizardData) {
+    return {
+      protocolTimeoutSecs: d.protocolTimeoutSecs,
+      authenticationMethod: d.authenticationMethod,
+      unpairAck: d.unpairAck,
+      autoAcceptUnpairRequests: d.autoAcceptUnpairRequests,
+    }
+  }
+
+  /**
+   * Register this browser context as an owner and make sure the shared
+   * participant pool is big enough.
+   *
+   * The pool belongs to the server, not to this owner: a second owner asking
+   * for seven when seven already exist pairs with those, and only a shortfall
+   * is created. Names are offered as candidates — the server takes as many as
+   * it ends up needing — so name generation stays with the rest of the app's
+   * fixture data instead of being duplicated in the backend.
+   */
+  async function handleSetup() {
+    setBusy(true)
+    setError(null)
+    const settings: ProvisioningSettings = {
+      protocolTimeoutSecs: data.protocolTimeoutSecs,
+      unpairAck: data.unpairAck,
+    }
+
     try {
-      const resp = await apiCreateSession({
-        ownerName: data.ownerName,
-        additionalParticipants: data.participantCount,
-        minParticipants: data.minParticipants,
-        recommendedParticipants: data.recommendedParticipants,
-        protocolTimeoutSecs: data.protocolTimeoutSecs,
-        authenticationMethod: data.authenticationMethod,
-        unpairAck: data.unpairAck,
-        autoAcceptUnpairRequests: data.autoAcceptUnpairRequests,
-      })
+      const ownerActor = await apiRegisterOwner(data.ownerName)
 
-      const ownerActor = resp.actors.find(a => a.role === 'owner')!
-      const ownerTransport = { protocol: ownerActor.transport.protocol, uri: ownerActor.transport.uri }
-      const participantActors = resp.actors.filter(a => a.role === 'participant')
+      const candidateNames = Array.from(
+        { length: data.participantCount },
+        () => `${faker.person.firstName()} ${faker.person.lastName()}`,
+      )
+      const { participants: provisioned, created } = await apiEnsureParticipants(
+        data.participantCount,
+        candidateNames,
+        settings,
+      )
 
-      const session: OwnerSession = {
-        sessionId: resp.session_id,
+      const owner: Owner = {
         ownerId: ownerActor.id,
         ownerName: data.ownerName,
         ownSecretId: ownerActor.secret_id,
-        transport: ownerTransport,
-        participants: participantActors.map(a => ({
-          id: a.id,
-          name: a.name,
-          channelId: '',
-          transport: { protocol: a.transport.protocol, uri: a.transport.uri },
-          connectionStatus: 'available' as const,
-          secretId: ownerActor.secret_id,
-          secretShares: [],
-        })),
+        transport: {
+          protocol: ownerActor.transport.protocol,
+          uri: ownerActor.transport.uri,
+        },
+        participants: provisioned.map(a => toParticipant(a, '')),
         secretBag: null,
         pendingPairings: [],
         prePairedCount: data.prePairedCount > 0 ? data.prePairedCount : undefined,
         minParticipants: data.minParticipants,
         recommendedParticipants: data.recommendedParticipants,
-
         recoveredSecrets: [],
         recoveryProgress: null,
         recoveryFailures: [],
-        replicas: [],
         heldShares: [],
         mainChannels: [],
-        config: {
-          protocolTimeoutSecs: data.protocolTimeoutSecs,
-          authenticationMethod: data.authenticationMethod,
-          unpairAck: data.unpairAck,
-          autoAcceptUnpairRequests: data.autoAcceptUnpairRequests,
-        },
+        config: configFrom(data),
       }
 
       log({
         role: 'owner',
-        flow: 'session',
-        step: 'session_created',
-        description: `Session created with ${session.participants.length} participant(s), ${data.prePairedCount} to auto-pair`,
+        flow: 'setup',
+        step: 'owner_registered',
+        description:
+          `Set up with ${owner.participants.length} participant(s) ` +
+          `(${created} newly provisioned), ${data.prePairedCount} to auto-pair`,
         payload: {
-          sessionId: session.sessionId,
-          ownerName: session.ownerName,
-          transport: session.transport,
-          participants: session.participants.map(h => ({ id: h.id, name: h.name, transport: h.transport })),
+          ownerId: owner.ownerId,
+          ownerName: owner.ownerName,
+          transport: owner.transport,
+          participants: owner.participants.map(h => ({
+            id: h.id,
+            name: h.name,
+            transport: h.transport,
+          })),
         },
       })
 
-      onCreated(session)
-    } catch {
-      setCreating(false)
+      await onReady(owner)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+      setBusy(false)
     }
   }
 
-  async function handleContinue() {
-    setContinueError(null)
-    const sessionId = data.sessionId.trim()
-
-    // localStorage preserves full FE state (paired participants, secrets, etc.);
-    // falling back to the BE works cross-browser but starts with a fresh FE state.
-    const localSession = loadSessionById(sessionId)
-    if (localSession) {
-      onCreated(localSession)
+  /**
+   * Adopt an existing owner actor's mailbox instead of registering a new one.
+   *
+   * Pre-pairing is meaningless here — the helpers we want are the *old* ones,
+   * and we pair with each manually to link against pre-recovery channels — so
+   * the roster is seeded from whatever the server already has.
+   */
+  async function handleClaim() {
+    const claimActorId = data.claimActorId.trim()
+    if (!claimActorId) {
+      setError('Pick an actor to recover into, or paste an actor ID.')
       return
     }
 
-    setCreating(true)
+    setBusy(true)
+    setError(null)
     try {
-      const resp = await apiGetSession(sessionId)
-      const ownerActor = resp.actors.find(a => a.role === 'owner')
-      if (!ownerActor) {
-        setContinueError('Session has no owner actor.')
-        return
-      }
+      // The claimed actor's display name is authoritative: the user is
+      // *resuming* that identity, not creating one. `name` is sent anyway
+      // because the request requires it, and is ignored on the claim path.
+      const claimedName = claimableActors.find(a => a.id === claimActorId)?.name
+      const ownerActor = await apiRegisterOwner(claimedName ?? 'recovering owner', claimActorId)
 
-      const participantActors = resp.actors.filter(a => a.role === 'participant')
-      const replicaActors = resp.actors.filter(a => a.role === 'replica')
-      const session: OwnerSession = {
-        sessionId: resp.session_id,
+      const actors = await apiGetActors()
+      const peers = actors.filter(a => a.role === 'participant')
+
+      const owner: Owner = {
         ownerId: ownerActor.id,
         ownerName: ownerActor.name,
         ownSecretId: ownerActor.secret_id,
-        transport: { protocol: ownerActor.transport.protocol, uri: ownerActor.transport.uri },
-        participants: participantActors.map(a => ({
-          id: a.id,
-          name: a.name,
-          channelId: a.channel_id ?? '',
-          transport: { protocol: a.transport.protocol, uri: a.transport.uri },
-          connectionStatus: a.channel_id ? 'paired' as const : 'available' as const,
-          secretId: ownerActor.secret_id,
-          secretShares: [],
-        })),
+        transport: {
+          protocol: ownerActor.transport.protocol,
+          uri: ownerActor.transport.uri,
+        },
+        participants: peers.map(a => toParticipant(a, '')),
         secretBag: null,
         pendingPairings: [],
-        minParticipants: resp.min_participants,
-        recommendedParticipants: resp.recommended_participants,
-
+        minParticipants: data.minParticipants,
+        recommendedParticipants: data.recommendedParticipants,
         recoveredSecrets: [],
         recoveryProgress: null,
         recoveryFailures: [],
-        replicas: replicaActors.map(a => ({
-          id: a.id,
-          name: a.name,
-          channelId: a.channel_id ?? '',
-          transport: { protocol: a.transport.protocol, uri: a.transport.uri },
-          status: a.replica_confirmed ? 'confirmed' as const
-            : a.channel_id ? 'paired' as const
-            : 'available' as const,
-          offline: a.disabled || undefined,
-        })),
         heldShares: [],
         mainChannels: [],
-        config: {
-          protocolTimeoutSecs: resp.protocol_timeout_secs,
-          authenticationMethod: resp.authentication_method,
-          unpairAck: resp.unpair_ack,
-          autoAcceptUnpairRequests: resp.auto_accept_unpair_requests,
-        },
+        config: configFrom(data),
       }
 
       log({
         role: 'owner',
-        flow: 'session',
-        step: 'session_resumed',
-        description: `Session resumed from server: ${sessionId}`,
-        payload: { sessionId, participantCount: participantActors.length },
-      })
-
-      onCreated(session)
-    } catch (err) {
-      setContinueError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setCreating(false)
-    }
-  }
-
-  async function handleJoin(recovery: boolean = false) {
-    setContinueError(null)
-    const sessionId = data.sessionId.trim()
-    const claimActorId = data.claimActorId.trim()
-    // The claimed actor's display name is authoritative in recovery (the
-    // user is *resuming* that identity, not creating a new one). For normal
-    // join the wizard-entered name applies; `name` is sent to the backend
-    // either way — it's ignored on the claim path.
-    const name = recovery
-      ? (claimableActors.find(a => a.id === claimActorId)?.name ?? 'recovering owner')
-      : data.participantName.trim()
-
-    if (!sessionId) return
-    if (recovery) {
-      if (!claimActorId) {
-        setContinueError('Pick an actor to recover into, or paste an actor ID.')
-        return
-      }
-    } else if (!name) {
-      return
-    }
-
-    // Pre-pairing is meaningless in recovery — the helpers we want to pair
-    // with are the *old* ones, and we'll pair manually with each to link
-    // against pre-recovery channels.
-    const prePairedCount = recovery
-      ? undefined
-      : (data.prePairedCount > 0 ? data.prePairedCount : undefined)
-
-    setCreating(true)
-    try {
-      const resp = await apiJoinSession(
-        sessionId,
-        name,
-        prePairedCount,
-        recovery ? claimActorId : undefined,
-      )
-
-      const peerActors = resp.actors.filter(a => a.role === 'participant')
-      const replicaActors = resp.actors.filter(a => a.role === 'replica')
-
-      const session: OwnerSession = {
-        sessionId: resp.session_id,
-        ownerId: resp.actor.id,
-        // In recovery (claim) mode the backend echoes the *existing* actor's
-        // name regardless of what we sent — use it so the FE matches.
-        ownerName: recovery ? resp.actor.name : name,
-        ownSecretId: resp.actor.secret_id,
-        transport: { protocol: resp.actor.transport.protocol, uri: resp.actor.transport.uri },
-        participants: peerActors.map(a => ({
-          id: a.id,
-          name: a.name,
-          channelId: '',
-          transport: { protocol: a.transport.protocol, uri: a.transport.uri },
-          connectionStatus: 'available' as const,
-          secretId: resp.actor.secret_id,
-          secretShares: [],
-        })),
-        secretBag: null,
-        pendingPairings: [],
-        prePairedCount,
-        minParticipants: resp.min_participants,
-        recommendedParticipants: resp.recommended_participants,
-        recoveredSecrets: [],
-        recoveryProgress: null,
-        recoveryFailures: [],
-        replicas: replicaActors.map(a => ({
-          id: a.id,
-          name: a.name,
-          channelId: a.channel_id ?? '',
-          transport: { protocol: a.transport.protocol, uri: a.transport.uri },
-          status: a.replica_confirmed ? 'confirmed' as const
-            : a.channel_id ? 'paired' as const
-            : 'available' as const,
-          offline: a.disabled || undefined,
-        })),
-        heldShares: [],
-        mainChannels: [],
-        config: {
-          protocolTimeoutSecs: resp.protocol_timeout_secs,
-          authenticationMethod: resp.authentication_method,
-          unpairAck: resp.unpair_ack,
-          autoAcceptUnpairRequests: resp.auto_accept_unpair_requests,
-        },
-      }
-
-      log({
-        role: 'owner',
-        flow: 'session',
-        step: recovery ? 'session_joined_recovery' : 'session_joined',
-        description: recovery
-          ? `Joined session ${sessionId} as "${name}" (recovery mode)`
-          : `Joined session ${sessionId} as "${name}" (owner mode)`,
+        flow: 'setup',
+        step: 'owner_claimed',
+        description: `Claimed owner actor "${owner.ownerName}" (recovery mode)`,
         payload: {
-          sessionId,
-          ownerId: resp.actor.id,
-          participantCount: peerActors.length,
-          recovery,
+          ownerId: owner.ownerId,
+          participantCount: peers.length,
         },
       })
 
-      onCreated(session)
-    } catch (err) {
-      setContinueError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setCreating(false)
-    }
-  }
-
-  async function handleNext() {
-    // The session-id lookahead matters for two flows:
-    //  - regular `join`: needs the participant count to bound prePair.
-    //  - `joinRecovery`: needs the existing owner actors for the claim picker.
-    // Both call `apiGetSession`; we tease apart the data each one consumes.
-    if (step === 'sessionId' && (flow === 'join' || flow === 'joinRecovery')) {
-      const sessionId = data.sessionId.trim()
-      if (!sessionId) return
-      setContinueError(null)
-      setCreating(true)
-      try {
-        const resp = await apiGetSession(sessionId)
-        if (flow === 'join') {
-          const count = resp.actors.filter(a => a.role === 'participant').length
-          setJoinParticipantCount(count)
-          if (data.prePairedCount > count) {
-            setData(d => ({ ...d, prePairedCount: Math.min(d.prePairedCount, count) }))
-          }
-        } else {
-          // joinRecovery: collect browser-based owners as claim candidates.
-          const owners: ClaimableActor[] = resp.actors
-            .filter(a => a.role === 'owner')
-            .map(a => ({ id: a.id, name: a.name }))
-          setClaimableActors(owners)
-        }
-        setStepIndex(i => i + 1)
-      } catch (err) {
-        setContinueError(err instanceof Error ? err.message : String(err))
-      } finally {
-        setCreating(false)
+      if (!(await onReady(owner))) {
+        // The claimed actor is already driven by another tab in this browser.
+        setError(`"${owner.ownerName}" is already open in another tab.`)
+        setBusy(false)
       }
-      return
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+      setBusy(false)
     }
-    setStepIndex(i => i + 1)
   }
 
   const canProceed =
-    step === 'sessionId'
-      ? data.sessionId.trim().length > 0
-      : step === 'ownerName'
-        ? data.ownerName.trim().length > 0
-        : step === 'participantName'
-          ? data.participantName.trim().length > 0
-          : step === 'claimActor'
-            ? data.claimActorId.trim().length > 0
-            : true
+    step === 'ownerName'
+      ? data.ownerName.trim().length > 0
+      : step === 'claimActor'
+        ? data.claimActorId.trim().length > 0
+        : true
 
   return (
     <div className="wizard">
       {flow !== null && (
         <div className="wizard-header">
-          <button className="back-link" onClick={handleBack} disabled={creating}>
+          <button className="back-link" onClick={handleBack} disabled={busy}>
             ← Back
           </button>
           <div className="wizard-progress">
@@ -1088,8 +1073,12 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
         {step === 'choice' && (
           <StepChoice
             onSelect={handleSelectFlow}
-            onResumeLast={() => lastSession && onCreated(lastSession)}
-            lastSession={lastSession}
+            onOpenOwner={handleOpenOwner}
+            owners={owners}
+            busyOwnerIds={busyOwnerIds}
+            serverReachable={serverReachable}
+            onRetryServer={() => setProbeNonce(n => n + 1)}
+            error={error}
           />
         )}
         {step === 'ownerName' && (
@@ -1108,6 +1097,7 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
             onChangePrePairedCount={n => setData(d => ({ ...d, prePairedCount: n }))}
             onChangeMinParticipants={n => setData(d => ({ ...d, minParticipants: n }))}
             onChangeRecommendedParticipants={n => setData(d => ({ ...d, recommendedParticipants: n }))}
+            existingParticipants={existingParticipants}
           />
         )}
         {step === 'protocolSettings' && (
@@ -1122,33 +1112,13 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
             onChangeAutoAcceptUnpairRequests={v => setData(d => ({ ...d, autoAcceptUnpairRequests: v }))}
           />
         )}
-        {step === 'sessionId' && (
-          <StepSessionId
-            value={data.sessionId}
-            onChange={v => { setData(d => ({ ...d, sessionId: v })); setContinueError(null) }}
-            error={continueError}
-          />
-        )}
-        {step === 'participantName' && (
-          <StepParticipantName
-            value={data.participantName}
-            onChange={v => { setData(d => ({ ...d, participantName: v })); setContinueError(null) }}
-            error={continueError}
-          />
-        )}
-        {step === 'joinPrePair' && (
-          <StepJoinPrePair
-            prePairedCount={data.prePairedCount}
-            maxParticipants={joinParticipantCount}
-            onChangePrePairedCount={n => setData(d => ({ ...d, prePairedCount: n }))}
-          />
-        )}
         {step === 'claimActor' && (
           <StepClaimActor
             actors={claimableActors}
             selectedId={data.claimActorId}
-            onChange={v => { setData(d => ({ ...d, claimActorId: v })); setContinueError(null) }}
-            error={continueError}
+            onChange={v => { setData(d => ({ ...d, claimActorId: v })); setError(null) }}
+            loading={loadingClaimable}
+            error={error}
           />
         )}
       </div>
@@ -1156,34 +1126,28 @@ export default function NewSessionWizard({ onCreated, initialSessionId, initialI
       {flow !== null && (
         <div className="wizard-actions">
           {isFinal ? (
-            flow === 'create' ? (
-              <button className="primary" onClick={handleCreate} disabled={creating}>
-                {creating ? 'Creating…' : 'Create'}
-              </button>
-            ) : flow === 'join' ? (
-              <button className="primary" onClick={() => handleJoin(false)} disabled={!canProceed || creating}>
-                {creating ? 'Joining…' : 'Join'}
-              </button>
-            ) : flow === 'joinRecovery' ? (
-              <button className="primary" onClick={() => handleJoin(true)} disabled={!canProceed || creating}>
-                {creating ? 'Joining…' : 'Join (Recovery)'}
+            flow === 'setup' ? (
+              <button className="primary" onClick={handleSetup} disabled={!canProceed || busy}>
+                {busy ? 'Setting up…' : 'Set up'}
               </button>
             ) : (
-              <button className="primary" onClick={handleContinue} disabled={!canProceed || creating}>
-                {creating ? 'Loading…' : 'Continue'}
+              <button className="primary" onClick={handleClaim} disabled={!canProceed || busy}>
+                {busy ? 'Claiming…' : 'Claim'}
               </button>
             )
           ) : (
             <button
               className="primary"
-              onClick={handleNext}
-              disabled={!canProceed || creating}
+              onClick={() => setStepIndex(i => i + 1)}
+              disabled={!canProceed || busy}
             >
-              {creating ? 'Validating…' : 'Next →'}
+              Next →
             </button>
           )}
         </div>
       )}
+
+      {error && step !== 'claimActor' && <p className="wizard-field-error">{error}</p>}
     </div>
   )
 }

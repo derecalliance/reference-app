@@ -362,8 +362,8 @@
 }
 
 .wizard-toggle-option[aria-checked='true'] {
-  background: var(--accent);
-  color: #fff;
+  background: var(--accent-fill);
+  color: var(--accent-contrast);
   cursor: default;
 }
 
@@ -373,7 +373,7 @@
 }
 
 .wizard-toggle-option:focus-visible {
-  outline: 2px solid var(--accent-border);
+  outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
 
@@ -393,8 +393,8 @@
 }
 
 .wizard-toggle-option[aria-checked='true'] .wizard-toggle-option__badge {
-  background: rgba(255, 255, 255, 0.25);
-  color: #fff;
+  background: color-mix(in srgb, var(--accent-contrast) 22%, transparent);
+  color: var(--accent-contrast);
 }
 
 .wizard-toggle-hint {
@@ -446,50 +446,148 @@
 
 /* ── Resume card ────────────────────────────────────────────────────────────── */
 
-.resume-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 14px 16px;
-  border: 1px solid var(--accent-border);
+/* ── Saved-owner picker ────────────────────────────────────────────────────
+   A table, not a stack of cards: this is a roster the user scans and picks
+   from, and one row per owner keeps the start screen short as owners
+   accumulate. Scrolls past a handful rather than pushing the actions offscreen. */
+
+.owner-table-scroll {
+  max-height: 176px;
+  overflow-y: auto;
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--accent-bg);
-  margin-bottom: 8px;
 }
 
-.resume-card-info {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
+.owner-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  text-align: left;
 }
 
-.resume-card-label {
-  font-size: 10px;
-  font-weight: 700;
+.owner-table__th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--accent);
+  letter-spacing: 0.3px;
+  color: var(--muted-2);
+  background: var(--bg);
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
 }
 
-.resume-card-name {
-  font-size: 15px;
+.owner-table__th--paired {
+  width: 60px;
+  text-align: right;
+}
+
+.owner-table__th--action {
+  width: 76px;
+}
+
+.owner-table__row td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.owner-table__row:last-child td {
+  border-bottom: none;
+}
+
+/* An owner another tab holds recedes but stays listed, so the user can see it
+   exists. Never colour alone — the action cell reads "In use". */
+.owner-table__row--busy {
+  opacity: 0.55;
+}
+
+.owner-table__name {
   font-weight: 600;
   color: var(--text-h);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
 }
 
-.resume-card-id {
+.owner-table__id {
+  font-family: var(--mono);
   font-size: 11px;
-  color: var(--text);
-  font-family: var(--mono, monospace);
+  color: var(--muted);
+  background: none;
+  padding: 0;
+}
+
+.owner-table__paired {
+  text-align: right;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.owner-table__action {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.owner-table__action button {
+  font-size: 12px;
+  padding: 3px 10px;
+}
+
+.owner-table__status {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* The id is the least load-bearing column — the name identifies the owner —
+   so it is the one to drop when there is no room for it. */
+@media (max-width: 480px) {
+  .owner-table__th:nth-child(2),
+  .owner-table__row td:nth-child(2) {
+    display: none;
+  }
 }
 
 /* ── Wizard field error ──────────────────────────────────────────────────────── */
 
 .wizard-field-error {
   font-size: 12px;
-  color: #ef4444;
+  color: var(--danger);
   margin: 4px 0 0;
   line-height: 1.4;
+}
+
+/* ── Server-unreachable notice ─────────────────────────────────────────────── */
+
+.wizard-offline-notice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  background: var(--danger-bg);
+  text-align: left;
+}
+
+.wizard-offline-notice__title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--danger);
+}
+
+.wizard-offline-notice__body {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
 }

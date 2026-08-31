@@ -21,45 +21,56 @@ pub enum Role {
     Replica,
 }
 
+impl Role {
+    /// The path segment this role occupies in a transport URI.
+    pub fn path_segment(self) -> &'static str {
+        match self {
+            Role::Owner => "owners",
+            Role::Participant => "participants",
+            Role::Replica => "replicas",
+        }
+    }
+
+    /// Inverse of [`Role::path_segment`], for routing inbound messages.
+    pub fn from_path_segment(segment: &str) -> Option<Self> {
+        match segment {
+            "owners" => Some(Role::Owner),
+            "participants" => Some(Role::Participant),
+            "replicas" => Some(Role::Replica),
+            _ => None,
+        }
+    }
+}
+
 /// How the app decides that two pairing channels belong to the same user.
 ///
-/// This is an **app-level** concern (the DeRec protocol is identity-blind).
-/// The backend stores the choice and echoes it back to every joiner so the FE
-/// renders a consistent pairing-confirmation UX across the session.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+/// This is an **app-level** concern (the DeRec protocol is identity-blind). The
+/// backend never acts on it — it only carries it as an operator-supplied
+/// default for the front end (see [`crate::config`]).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthenticationMethod {
     /// Helper manually links channels (the in-modal "accept + link" flow).
+    #[default]
     User,
     /// Reserved for a future automatic-linking mode; not yet implemented.
     Application,
 }
 
-impl Default for AuthenticationMethod {
-    fn default() -> Self {
-        AuthenticationMethod::User
-    }
-}
-
 /// Protocol-level acknowledgement policy for the unpair flow. Mirrors
-/// `derec_library::protocol::UnpairAck`; chosen at session creation and
-/// echoed back to every joiner so all participants agree on the semantics.
+/// `derec_library::protocol::UnpairAck`; supplied per provisioning request by
+/// the node that provisions the actor.
 ///
 /// - `Required` (default): the initiator keeps local state until the peer
 ///   ACKs or the timeout elapses.
 /// - `NotRequired`: fire-and-forget — state drops immediately on
 ///   `start(Unpair)`.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum UnpairAck {
+    #[default]
     Required,
     NotRequired,
-}
-
-impl Default for UnpairAck {
-    fn default() -> Self {
-        UnpairAck::Required
-    }
 }
 
 impl UnpairAck {
@@ -69,6 +80,29 @@ impl UnpairAck {
             UnpairAck::Required => derec_library::protocol::UnpairAck::Required,
             UnpairAck::NotRequired => derec_library::protocol::UnpairAck::NotRequired,
         }
+    }
+}
+
+/// Protocol settings a provisioning request carries for the actor it mints.
+///
+/// The front end owns configuration, so these travel with each request rather
+/// than being read from server state. Both are optional: a caller that omits
+/// them gets the operator-supplied defaults the server already serves at
+/// `GET /config`.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+pub struct ProtocolSettingsRequest {
+    pub protocol_timeout_secs: Option<u32>,
+    pub unpair_ack: Option<UnpairAck>,
+}
+
+impl ProtocolSettingsRequest {
+    /// Fill the unset fields from the operator-supplied defaults.
+    pub fn resolve(self, defaults: &crate::config::Defaults) -> (u32, UnpairAck) {
+        (
+            self.protocol_timeout_secs
+                .unwrap_or(defaults.protocol_timeout_secs),
+            self.unpair_ack.unwrap_or(defaults.unpair_ack),
+        )
     }
 }
 
@@ -88,58 +122,7 @@ pub struct Actor {
     pub secret_id: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct Session {
-    pub _id: Uuid,
-    pub actors: Vec<Actor>,
-    /// Minimum number of participants required to protect a secret.
-    pub min_participants: u8,
-    /// Recommended number of participants for optimal protection.
-    pub recommended_participants: u8,
-    /// General protocol timeout in seconds (passive message/round expiry in
-    /// `process()`, and the active wall-clock deadline at the app layer).
-    pub protocol_timeout_secs: u32,
-    /// App-level authentication method (no protocol semantics). Stored here so
-    /// every joiner sees the same choice.
-    pub authentication_method: AuthenticationMethod,
-    /// Protocol-level unpair acknowledgement policy applied to every actor in
-    /// this session.
-    pub unpair_ack: UnpairAck,
-    /// FE-only UI preference echoed back to every joiner so the whole
-    /// session presents a consistent UX for incoming unpair requests.
-    /// When `false`, the Owner's UI shows a confirmation modal; when
-    /// `true`, the FE auto-accepts. Not consulted by the protocol layer.
-    pub auto_accept_unpair_requests: bool,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CreateSessionRequest {
-    /// Display name of the owner.
-    pub name: String,
-    /// Number of additional participants to provision in the session.
-    pub additional_participants: u8,
-    /// Minimum participants required to protect a secret.
-    pub min_participants: Option<u8>,
-    /// Recommended participants for optimal protection.
-    pub recommended_participants: Option<u8>,
-    /// General protocol timeout in seconds. Defaults to 300 when omitted.
-    pub protocol_timeout_secs: Option<u32>,
-    /// App-level authentication method. Defaults to `user` when omitted.
-    pub authentication_method: Option<AuthenticationMethod>,
-    /// Unpair acknowledgement policy. Defaults to `required` when omitted.
-    pub unpair_ack: Option<UnpairAck>,
-    /// FE-only UX preference. Defaults to `true` (auto-accept) when omitted.
-    pub auto_accept_unpair_requests: Option<bool>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct CreateSessionResponse {
-    pub session_id: Uuid,
-    /// All actors in the session, including the caller and any provisioned actors.
-    pub actors: Vec<Actor>,
-}
-
-/// Actor enriched with live pairing state — used in GET /sessions/{id}.
+/// Actor enriched with live pairing state — used in `GET /actors`.
 #[derive(Debug, Clone, Serialize)]
 pub struct ActorWithStatus {
     #[serde(flatten)]
@@ -153,56 +136,37 @@ pub struct ActorWithStatus {
     /// Whether this actor is currently simulating offline status.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disabled: Option<bool>,
-    /// True when this participant is browser-managed (no backend protocol instance).
-    /// The owner must fetch the participant's contact from the signaling endpoint.
+    /// True when this actor's protocol instance runs in a browser rather than
+    /// on the backend, so it has no backend instance to drive. Peers must fetch
+    /// its contact from the signaling endpoint instead of `/actors/:id/contact`.
+    ///
+    /// Set for every browser actor regardless of role — including one acting as
+    /// another device's replica, which registers as an ordinary `Role::Owner`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub browser_managed: Option<bool>,
-    /// Whether this replica has been confirmed via fingerprint verification.
+    /// Whether this replica has confirmed the peer's fingerprint.
+    ///
+    /// Only ever set for `Role::Replica` actors, which are backend-provisioned
+    /// by definition: confirmation happens inside the backend's own protocol
+    /// instance (`/replicas/:id/confirm-fingerprint`), and there is nothing
+    /// else to observe it. A second browser device mirroring an owner is a
+    /// `Role::Owner` actor and confirms in its own context, which the backend
+    /// never sees.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub replica_confirmed: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
-pub struct GetSessionResponse {
-    pub session_id: Uuid,
+pub struct ListActorsResponse {
     pub actors: Vec<ActorWithStatus>,
-    pub min_participants: u8,
-    pub recommended_participants: u8,
-    pub protocol_timeout_secs: u32,
-    pub authentication_method: AuthenticationMethod,
-    pub unpair_ack: UnpairAck,
-    pub auto_accept_unpair_requests: bool,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct AddParticipantRequest {
-    /// Display name for the new participant (e.g. "Participant-4").
-    pub name: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct AddParticipantResponse {
-    #[serde(flatten)]
-    pub actor: Actor,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct AddReplicaRequest {
-    /// Display name for the new replica (e.g. "Replica-1").
-    pub name: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct AddReplicaResponse {
-    #[serde(flatten)]
-    pub actor: Actor,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct JoinSessionRequest {
+pub struct RegisterOwnerRequest {
+    /// Display name of the owner.
     pub name: String,
     /// When set, the caller **claims an existing owner actor's identity**
-    /// rather than creating a new actor. Used by the recovery-join flow so a
+    /// rather than creating a new actor. Used by the recovery flow so a
     /// recovering user can resume polling the mailbox of an old owner whose
     /// helpers still hold the old transport URI on their channel records.
     ///
@@ -216,17 +180,69 @@ pub struct JoinSessionRequest {
 }
 
 #[derive(Debug, Serialize)]
-pub struct JoinSessionResponse {
-    pub session_id: Uuid,
-    /// The newly created actor for the joining participant.
+pub struct RegisterOwnerResponse {
+    #[serde(flatten)]
     pub actor: Actor,
-    /// All actors in the session (enriched with pairing status), so the
-    /// joining participant can discover the owner and other participants.
-    pub actors: Vec<ActorWithStatus>,
-    pub min_participants: u8,
-    pub recommended_participants: u8,
-    pub protocol_timeout_secs: u32,
-    pub authentication_method: AuthenticationMethod,
-    pub unpair_ack: UnpairAck,
-    pub auto_accept_unpair_requests: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AddParticipantRequest {
+    /// Display name for the new participant.
+    pub name: String,
+    #[serde(flatten)]
+    pub settings: ProtocolSettingsRequest,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AddParticipantResponse {
+    #[serde(flatten)]
+    pub actor: Actor,
+}
+
+/// Bring the shared participant pool up to a size.
+///
+/// Provisioned participants belong to the server rather than to whoever asked
+/// for them, so this states a target, not a quantity to add. Asking for fewer
+/// than exist is a no-op: another owner may be paired with a participant this
+/// caller does not want.
+#[derive(Debug, Deserialize)]
+pub struct EnsureParticipantsRequest {
+    /// How many participants should exist once this call returns.
+    pub total: u8,
+    /// Display names offered for any participants that need creating, taken in
+    /// order from the first one created. The caller cannot know in advance how
+    /// many that will be — that depends on what other owners have already
+    /// provisioned — so it sends candidates and the server uses what it needs.
+    /// Anything not covered falls back to a numbered label.
+    #[serde(default)]
+    pub names: Vec<String>,
+    #[serde(flatten)]
+    pub settings: ProtocolSettingsRequest,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EnsureParticipantsResponse {
+    /// The whole pool, including participants other owners provisioned.
+    pub participants: Vec<Actor>,
+    /// How many of them this call had to create. Lets the caller report
+    /// "reused 7, created 2" rather than guessing.
+    pub created: usize,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AddReplicaRequest {
+    /// Display name for the new replica (e.g. "Alice's Laptop").
+    pub name: String,
+    /// The owner actor whose vault this replica mirrors. Several independent
+    /// `Role::Owner` actors may be registered at once — one per browser context
+    /// — so "the owner" is not well defined and the caller must name which one.
+    pub owner_actor_id: Uuid,
+    #[serde(flatten)]
+    pub settings: ProtocolSettingsRequest,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AddReplicaResponse {
+    #[serde(flatten)]
+    pub actor: Actor,
 }

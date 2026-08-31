@@ -19,8 +19,7 @@
   border-radius: 8px;
   font-size: 13px;
   line-height: 1.4;
-  color: #fff;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--shadow);
   animation: toast-in 0.15s ease-out;
 }
 
@@ -30,11 +29,13 @@
 }
 
 .toast--error {
-  background: var(--danger, #ef4444);
+  background: var(--danger);
+  color: var(--status-contrast);
 }
 
 .toast--info {
-  background: var(--accent, #3b82f6);
+  background: var(--accent-fill);
+  color: var(--accent-contrast);
 }
 
 .toast-message {

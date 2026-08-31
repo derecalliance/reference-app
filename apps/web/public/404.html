@@ -4,15 +4,12 @@
     <meta charset="utf-8" />
     <title>DeRec</title>
     <script>
-      // GitHub Pages SPA redirect: rewrites the path into a query string so
-      // index.html can restore it on load. Only applies to /reference-app/session/* paths.
+      // The app has no client-side routes — every screen lives at the base
+      // path. This exists only so a stale bookmark (an old /session/<id> link,
+      // say) lands on the app instead of a bare 404.
       var repo = '/reference-app';
-      var path = window.location.pathname;
-      if (path.indexOf(repo + '/session/') === 0) {
-        var sessionPath = path.slice(repo.length);
-        window.location.replace(
-          repo + '/?p=' + encodeURIComponent(sessionPath)
-        );
+      if (window.location.pathname !== repo + '/') {
+        window.location.replace(repo + '/');
       }
     </script>
   </head>
