@@ -617,9 +617,9 @@ dependencies = [
 
 [[package]]
 name = "derec-cryptography"
-version = "0.0.1-alpha.10"
+version = "0.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1c18f061da95bc9e9f81c48e7d7f5b0f35fec6b51b9bf0fe331a248c353980d"
+checksum = "a8068f4f57e4582694ec33ae61d4590a7f308b705faa217d28f7d9287ce492b7"
 dependencies = [
  "aead",
  "aes",
@@ -643,9 +643,9 @@ dependencies = [
 
 [[package]]
 name = "derec-library"
-version = "0.0.1-alpha.10"
+version = "0.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1302981a4c5996acd7dc29bb0b09bb3adaf1997e4bf77b469fd958ec71f2ccd4"
+checksum = "7115e092ca1c8d358451d0464c89d383dee5a88e1bf9ae5eea37b252222a7ca1"
 dependencies = [
  "ark-serialize",
  "base64",
@@ -676,9 +676,9 @@ dependencies = [
 
 [[package]]
 name = "derec-proto"
-version = "0.0.1-alpha.10"
+version = "0.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09036a89ff469ee782f28091b990c52f197c39ca4181b718526dcd819571aaea"
+checksum = "000261ae6bf62fa2fea7b3e271aea5bf1fb9628326c80d0624d5d505bd1aae79"
 dependencies = [
  "prost",
  "prost-build",

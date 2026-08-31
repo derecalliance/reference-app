@@ -18,8 +18,8 @@ dashmap = "6"
 base64 = "0.22"
 # Published SDK. Plaintext `http://` is no longer a compile-time feature — it
 # is `DeRecProtocolBuilder::with_unsafe_http`, decided per instance at runtime.
-derec-library = "0.0.1-alpha.10"
-derec-proto = "0.0.1-alpha.10"
+derec-library = "0.0.2"
+derec-proto = "0.0.2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 rand = "0.8"
 # Operator-supplied defaults for the front end, read from a mounted config file.

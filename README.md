@@ -155,8 +155,7 @@ those it is. Paste has always worked and remains the fallback.
 
 ### Known gaps
 
-`docs/lib-derec-findings.md` is the running record of what integrating the SDK
-turned up. One gap remains, and it is in the library:
+One gap remains, and it is in the library:
 
 - **Source succession is not implemented.** Evicting or unpairing the group's
   `ReplicaSource` leaves the group without one. Removing a `Destination` works.
