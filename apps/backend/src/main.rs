@@ -10,6 +10,7 @@ use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 mod actor;
 mod config;
+mod envelope;
 mod models;
 mod provisioning;
 mod routes;
