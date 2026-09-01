@@ -524,15 +524,44 @@ impl Handler<ProcessDelayed> for ProvisionedActor {
     type Result = ResponseActFuture<Self, ()>;
 
     fn handle(&mut self, msg: ProcessDelayed, _ctx: &mut Context<Self>) -> Self::Result {
-        let Some(mut protocol) = self.take_own() else {
+        let bytes = msg.0;
+
+        let meta = match crate::envelope::decode(&bytes) {
+            Ok(meta) => meta,
+            Err(e) => {
+                error!(
+                    actor_id = %self.actor_id,
+                    error = %e,
+                    bytes = bytes.len(),
+                    "undecodable envelope; dropping message"
+                );
+                return Box::pin(actix::fut::ready(()));
+            }
+        };
+
+        // Channel 0 is the proto3 default, so an empty or truncated body decodes
+        // to it. Routing on that would hand the message to whichever instance
+        // happened to hold channel 0.
+        if meta.channel_id == 0 {
             error!(
                 actor_id = %self.actor_id,
-                "protocol already borrowed; dropping message"
+                bytes = bytes.len(),
+                "envelope carries no channel id; dropping message"
+            );
+            return Box::pin(actix::fut::ready(()));
+        }
+
+        let Some((secret_id, mut protocol)) = self.instances.take_for_channel(meta.channel_id)
+        else {
+            error!(
+                actor_id = %self.actor_id,
+                channel_id = meta.channel_id,
+                sequence = meta.sequence,
+                trace_id = meta.trace_id,
+                "no instance owns this channel, or it is borrowed; dropping message"
             );
             return Box::pin(actix::fut::ready(()));
         };
-        let secret_id = protocol.secret_id();
-        let bytes = msg.0;
 
         Box::pin(
             async move {
@@ -542,7 +571,7 @@ impl Handler<ProcessDelayed> for ProvisionedActor {
             }
             .into_actor(self)
             .map(move |(protocol, result, channel_ids), actor, _ctx| {
-                actor.restore_own(protocol);
+                actor.instances.restore(secret_id, protocol);
                 if let Some(channel_ids) = channel_ids {
                     actor.instances.reconcile(secret_id, &channel_ids);
                 }
