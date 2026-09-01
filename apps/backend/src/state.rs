@@ -176,6 +176,31 @@ impl AppState {
     }
 }
 
+/// Fixtures for integration tests under `tests/`.
+///
+/// Not `#[cfg(test)]`: that attribute only covers unit tests compiled into this
+/// crate, and integration tests link against the ordinary library build.
+pub mod test_support {
+    use std::sync::Arc;
+
+    use super::AppState;
+    use crate::config::Defaults;
+
+    /// An `AppState` wired to the arbiter of the currently running actix
+    /// system.
+    ///
+    /// Must be called from inside an actix runtime — `#[actix_rt::test]` or an
+    /// equivalent — because there is no arbiter to hand out otherwise.
+    pub fn app_state() -> Arc<AppState> {
+        Arc::new(AppState::new(
+            "http://localhost:5000",
+            Defaults::default(),
+            reqwest::Client::new(),
+            actix_rt::Arbiter::current(),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

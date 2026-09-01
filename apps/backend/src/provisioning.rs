@@ -71,8 +71,10 @@ pub fn spawn_provisioned(state: &AppState, actor: &Actor, timeout_secs: u32, unp
 
     let app_state = Arc::new(state.clone());
 
+    // The actor keeps the config so it can rebuild an instance in place when
+    // settings change — see `ReconfigureMsg`.
     let addr = ProvisionedActor::start_in_arbiter(&state.arbiter, move |_ctx| {
-        ProvisionedActor::new(protocol, actor_id, role, app_state)
+        ProvisionedActor::new(protocol, config, actor_id, role, app_state)
     });
 
     state.actor_inboxes.insert(actor_id, ActorInbox::Provisioned(addr));

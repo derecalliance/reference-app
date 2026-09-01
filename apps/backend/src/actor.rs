@@ -56,20 +56,20 @@ pub struct ProtocolConfig {
     pub http_client: reqwest::Client,
 }
 
-/// Build a provisioned actor's protocol instance.
+/// The settings half of the builder chain, shared by fresh construction and
+/// in-place rebuild.
 ///
-/// Provisioned actors are interoperability-test fixtures with no user to
-/// prompt, so every inbound action is auto-accepted by the library rather than
-/// by a hand-rolled accept loop.
-pub fn build_protocol(config: &ProtocolConfig) -> Result<ActorProtocol, derec_library::Error> {
-    let mut builder = DeRecProtocolBuilder::new(config.secret_id)
-        .with_channel_store(InMemoryChannelStore::default())
-        .with_share_store(InMemoryShareStore::default())
-        .with_secret_store(InMemorySecretStore::default())
-        .with_user_secret_store(InMemoryUserSecretStore::default())
-        .with_state_store(InMemoryStateStore::default())
-        .with_transport(HttpTransport::new(config.http_client.clone()))
-        .with_own_transport(config.transport_uri.as_str())
+/// Stores are *not* set here, and neither is the own-transport URI: those
+/// setters are the ones that move the builder's typestate, so a helper generic
+/// over the slots cannot call them. A fresh instance gets empty stores, a
+/// rebuild moves the live ones across — everything else is identical, and
+/// keeping it in one place is what stops a settings change from being applied
+/// to one path and forgotten in the other.
+fn configure_builder<Cs, Sh, Se, Us, St, T, O>(
+    builder: DeRecProtocolBuilder<Cs, Sh, Se, Us, St, T, O>,
+    config: &ProtocolConfig,
+) -> DeRecProtocolBuilder<Cs, Sh, Se, Us, St, T, O> {
+    let builder = builder
         // Derived, not hardcoded: serving over https turns the guardrail back
         // on by itself.
         //
@@ -104,11 +104,53 @@ pub fn build_protocol(config: &ProtocolConfig) -> Result<ActorProtocol, derec_li
         .with_auto_respond_on_failure(true)
         .with_auto_accept(AutoAcceptPolicy::all());
 
-    if let Some(replica_id) = config.replica_id {
-        builder = builder.with_replica_id(replica_id);
+    match config.replica_id {
+        Some(replica_id) => builder.with_replica_id(replica_id),
+        None => builder,
     }
+}
 
-    builder.build()
+/// Build a provisioned actor's protocol instance.
+///
+/// Provisioned actors are interoperability-test fixtures with no user to
+/// prompt, so every inbound action is auto-accepted by the library rather than
+/// by a hand-rolled accept loop.
+pub fn build_protocol(config: &ProtocolConfig) -> Result<ActorProtocol, derec_library::Error> {
+    let builder = DeRecProtocolBuilder::new(config.secret_id)
+        .with_channel_store(InMemoryChannelStore::default())
+        .with_share_store(InMemoryShareStore::default())
+        .with_secret_store(InMemorySecretStore::default())
+        .with_user_secret_store(InMemoryUserSecretStore::default())
+        .with_state_store(InMemoryStateStore::default())
+        .with_transport(HttpTransport::new(config.http_client.clone()))
+        .with_own_transport(config.transport_uri.as_str());
+
+    configure_builder(builder, config).build()
+}
+
+/// Build a fresh instance from `config`, moving `old`'s stores into it.
+///
+/// The SDK exposes `timeouts` and `unpair_ack` on the builder only — there is
+/// no runtime setter for either — so changing them on a live instance means
+/// rebuilding it. That preserves state for exactly one reason: `channel_store`,
+/// `share_store`, `secret_store`, `user_secret_store`, `state_store` and
+/// `transport` are `pub` on `DeRecProtocol` and the type has no `Drop` impl, so
+/// they can be moved out of the old value. Channels, shares and in-flight
+/// orchestrator state all survive.
+fn rebuild_with_stores(
+    config: &ProtocolConfig,
+    old: ActorProtocol,
+) -> Result<ActorProtocol, derec_library::Error> {
+    let builder = DeRecProtocolBuilder::new(config.secret_id)
+        .with_channel_store(old.channel_store)
+        .with_share_store(old.share_store)
+        .with_secret_store(old.secret_store)
+        .with_user_secret_store(old.user_secret_store)
+        .with_state_store(old.state_store)
+        .with_transport(old.transport)
+        .with_own_transport(config.transport_uri.as_str());
+
+    configure_builder(builder, config).build()
 }
 
 /// Every channel id an instance currently holds, or `None` if the enumeration
@@ -166,6 +208,9 @@ pub struct ProvisionedActor {
     /// Protocol instances by the `secret_id` each is bound to. See
     /// [`crate::instances`] for why an actor needs more than one.
     instances: crate::instances::InstanceMap<ActorProtocol>,
+    /// The config every instance was built from, so an instance can be rebuilt
+    /// with changed settings without losing its stores.
+    config: ProtocolConfig,
     actor_id: Uuid,
     role: Role,
     state: Arc<AppState>,
@@ -174,6 +219,7 @@ pub struct ProvisionedActor {
 impl ProvisionedActor {
     pub fn new(
         protocol: ActorProtocol,
+        config: ProtocolConfig,
         actor_id: Uuid,
         role: Role,
         state: Arc<AppState>,
@@ -181,6 +227,7 @@ impl ProvisionedActor {
         let own_secret_id = protocol.secret_id();
         Self {
             instances: crate::instances::InstanceMap::new(own_secret_id, protocol),
+            config,
             actor_id,
             role,
             state,
@@ -511,6 +558,20 @@ pub struct VerifyFingerprintMsg {
     pub fingerprint: String,
 }
 
+/// Change protocol settings on every instance this actor holds, in place.
+#[derive(Message)]
+#[rtype(result = "Result<(), derec_library::Error>")]
+pub struct ReconfigureMsg {
+    pub timeout_secs: u32,
+    pub unpair_ack: UnpairAck,
+}
+
+/// The `secret_id` of every instance this actor holds, ascending. Test and
+/// admin observability; carries no key material.
+#[derive(Message)]
+#[rtype(result = "Vec<u64>")]
+pub struct ListInstanceSecretsMsg;
+
 impl Handler<IncomingMessage> for ProvisionedActor {
     type Result = ();
 
@@ -828,5 +889,54 @@ impl Handler<VerifyFingerprintMsg> for ProvisionedActor {
                 result
             }),
         )
+    }
+}
+
+impl Handler<ReconfigureMsg> for ProvisionedActor {
+    type Result = Result<(), derec_library::Error>;
+
+    fn handle(&mut self, msg: ReconfigureMsg, _ctx: &mut Context<Self>) -> Self::Result {
+        self.config.timeout_secs = msg.timeout_secs;
+        self.config.unpair_ack = msg.unpair_ack;
+
+        for secret_id in self.instances.secret_ids() {
+            let Some(old) = self.instances.take(secret_id) else {
+                // Borrowed by an in-flight call. Leaving that instance on the
+                // old settings would be a silent partial apply, so report it.
+                return Err(derec_library::Error::Invariant(
+                    "instance borrowed during reconfigure",
+                ));
+            };
+
+            // Every instance shares this actor's settings but keeps its own
+            // binding: a replica instance is bound to the mirrored owner's
+            // secret, not to this actor's.
+            let mut config = self.config.clone();
+            config.secret_id = secret_id;
+
+            // A rebuild failure leaves this instance absent from the map, and
+            // that is deliberate: it could not be reconstructed, and a
+            // half-configured instance serving traffic would be worse than an
+            // absent one whose channels log as unroutable.
+            let rebuilt = rebuild_with_stores(&config, old)?;
+            self.instances.restore(secret_id, rebuilt);
+        }
+
+        info!(
+            actor_id = %self.actor_id,
+            timeout_secs = msg.timeout_secs,
+            "actor reconfigured in place"
+        );
+        Ok(())
+    }
+}
+
+impl Handler<ListInstanceSecretsMsg> for ProvisionedActor {
+    type Result = Vec<u64>;
+
+    fn handle(&mut self, _msg: ListInstanceSecretsMsg, _ctx: &mut Context<Self>) -> Self::Result {
+        let mut ids = self.instances.secret_ids();
+        ids.sort_unstable();
+        ids
     }
 }

@@ -8,18 +8,9 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{info, warn};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
-mod actor;
-mod config;
-mod envelope;
-mod instances;
-mod models;
-mod provisioning;
-mod routes;
-mod state;
-mod stores;
-
-use config::Defaults;
-use state::AppState;
+use derec_backend::config::{self, Defaults};
+use derec_backend::routes;
+use derec_backend::state::AppState;
 
 #[tokio::main]
 async fn main() {

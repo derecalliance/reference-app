@@ -3,6 +3,16 @@ name = "derec-backend"
 version = "0.1.0"
 edition = "2021"
 
+# Split into a library plus a thin binary so integration tests under `tests/`
+# can drive the actors directly instead of going through HTTP.
+[lib]
+name = "derec_backend"
+path = "src/lib.rs"
+
+[[bin]]
+name = "derec-backend"
+path = "src/main.rs"
+
 [dependencies]
 dotenv = "0.15.0"
 axum = "0.8"
