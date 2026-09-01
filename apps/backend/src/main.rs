@@ -11,6 +11,7 @@ use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 mod actor;
 mod config;
 mod envelope;
+mod instances;
 mod models;
 mod provisioning;
 mod routes;
