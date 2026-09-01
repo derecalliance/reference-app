@@ -10,10 +10,29 @@
 //! replica needs an instance bound to *that owner's* secret. Hence a map rather
 //! than a single slot.
 //!
-//! Channel ownership is recorded when a channel is **created** — a contact is
-//! minted, or a pairing is initiated — never inferred from inbound traffic. An
-//! unrecognised channel is an error, not a routing fallback: guessing would
-//! hand a peer's message to an instance that does not own it.
+//! Channel ownership is answered from **two** maps, and knowing which is which
+//! is the first thing to read here.
+//!
+//! Store-derived bindings are the authoritative tier. [`InstanceMap::reconcile`]
+//! re-reads an instance's channel store after every operation that borrowed the
+//! instance and replaces *that instance's* bindings wholesale, so channel
+//! creation, the pairing handshake's id rotation and teardown are all picked up
+//! by one mechanism, none of which the caller can observe directly. Starting a
+//! flow needs nothing else: the SDK writes a channel record before sending, so
+//! the following reconcile sees it.
+//!
+//! Pins are a supplement for the one case a store read cannot cover: a channel
+//! that exists only in memory. Today that is exactly a freshly minted contact —
+//! `create_contact` writes to the secret store and never to the channel store,
+//! so its channel is invisible to reconcile from minting until the peer's first
+//! reply makes the library write a channel row. Pins are therefore exempt from
+//! reconcile's sweep, and are dropped only when the store catches up
+//! ([`InstanceMap::reconcile`]) or when a caller retires an id the store will
+//! never report again ([`InstanceMap::unpin_channel`]).
+//!
+//! Neither tier ever guesses. An unrecognised channel is an error, not a routing
+//! fallback: guessing would hand a peer's message to an instance that does not
+//! own it.
 
 use std::collections::HashMap;
 
@@ -77,7 +96,7 @@ impl<P> InstanceMap<P> {
     /// `current` is dropped too: the store has caught up, so the store-backed
     /// binding above is authoritative and the pin would otherwise sit around
     /// forever, since a rotated-away channel id never reappears in `current`
-    /// for the sweep on the line above to catch.
+    /// for the retain sweep to catch.
     pub fn reconcile(&mut self, secret_id: u64, current: &[u64]) {
         self.channel_owner.retain(|_, owner| *owner != secret_id);
         for channel_id in current {
@@ -105,8 +124,8 @@ impl<P> InstanceMap<P> {
     /// Needed for the transient pairing channel id: the handshake rotates it
     /// to a long-term id and the library refuses traffic on the old one from
     /// then on, so the old id never appears in a channel store read again —
-    /// `reconcile`'s store-catch-up cleanup in the loop above can never fire
-    /// for it, and the pin would linger forever.
+    /// `reconcile`'s store-catch-up removal can never fire for it, and the pin
+    /// would linger forever.
     pub fn unpin_channel(&mut self, channel_id: u64) {
         self.pinned_channel_owner.remove(&channel_id);
     }
@@ -328,6 +347,11 @@ mod tests {
 
         m.pin_channel(100, OWN);
         m.pin_channel(200, ALICE);
+
+        // Reconciling one instance must leave *every* pin standing, its own
+        // included: the pin map is exempt from the retain sweep, and a sweep
+        // that ignored the secret id would erase both pins here.
+        m.reconcile(ALICE, &[201]);
 
         assert_eq!(m.secret_for_channel(100), Some(OWN));
         assert_eq!(m.take(OWN), Some("own"));

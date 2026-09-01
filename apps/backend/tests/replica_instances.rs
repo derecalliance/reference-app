@@ -8,8 +8,8 @@ use std::collections::HashMap;
 
 use actix::prelude::*;
 use derec_backend::actor::{
-    build_protocol, CreateContactMsg, EnsureReplicaInstanceMsg, ListInstanceSecretsMsg,
-    ProtocolConfig, ProvisionedActor,
+    build_protocol, CreateContactMsg, EnsureReplicaInstanceMsg, InstanceForChannelMsg,
+    ListInstanceSecretsMsg, ProtocolConfig, ProvisionedActor,
 };
 use derec_backend::models::{Role, UnpairAck};
 
@@ -128,6 +128,65 @@ async fn a_contact_is_minted_from_the_selected_replica_instance() {
     assert!(
         after.is_ok(),
         "the replica instance now exists and can mint a contact"
+    );
+}
+
+#[actix_rt::test]
+async fn a_minted_contacts_channel_routes_back_to_the_instance_that_minted_it() {
+    // Inbound routing resolves an envelope's cleartext channel id against the
+    // actor's routing index, and a freshly minted contact is precisely the
+    // channel a channel-store read cannot see: `create_contact` writes to the
+    // secret store only. If minting leaves no binding, the peer's opening reply
+    // is dropped as unroutable and first-contact pairing never starts — which
+    // is exactly how this shipped once.
+    //
+    // Minting from both instances also pins down *which* instance answers: a
+    // routing index that lumped every channel under the own instance would
+    // still resolve the replica's channel, just to the wrong protocol.
+    let addr = spawn();
+
+    addr.send(EnsureReplicaInstanceMsg { owner_secret_id: ALICE_SECRET })
+        .await
+        .expect("actor alive")
+        .expect("instance creation succeeds");
+
+    let mint = |replica_for_owner_secret| CreateContactMsg {
+        contact_mode: derec_proto::ContactMode::InlineKeys,
+        nonce: None,
+        replica_for_owner_secret,
+    };
+
+    let own_contact = addr
+        .send(mint(None))
+        .await
+        .expect("actor alive")
+        .expect("own instance mints a contact");
+    let replica_contact = addr
+        .send(mint(Some(ALICE_SECRET)))
+        .await
+        .expect("actor alive")
+        .expect("replica instance mints a contact");
+
+    assert_ne!(
+        own_contact.channel_id, replica_contact.channel_id,
+        "the two instances must mint distinct channels for the assertions below \
+         to distinguish them"
+    );
+
+    let owner_of = |channel_id| addr.send(InstanceForChannelMsg { channel_id });
+
+    assert_eq!(
+        owner_of(own_contact.channel_id).await.expect("actor alive"),
+        Some(OWN_SECRET),
+        "the own instance's contact must route to the own instance"
+    );
+    assert_eq!(
+        owner_of(replica_contact.channel_id)
+            .await
+            .expect("actor alive"),
+        Some(ALICE_SECRET),
+        "the replica instance's contact must route to that replica instance, \
+         not to the own instance"
     );
 }
 

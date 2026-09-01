@@ -43,6 +43,9 @@ use crate::stores::{
 pub struct ProtocolConfig {
     /// The secret this actor protects as Owner. Helper-role channels share
     /// the same instance and carry their own Owner's id on each share record.
+    /// On a config clone that builds or rebuilds a *replica* instance this is
+    /// instead the mirrored owner's secret, because a replica instance is bound
+    /// to the vault it mirrors rather than to this actor's own.
     pub secret_id: u64,
     pub transport_uri: String,
     pub communication_info: HashMap<String, String>,
@@ -137,20 +140,35 @@ pub fn build_protocol(config: &ProtocolConfig) -> Result<ActorProtocol, derec_li
 /// `transport` are `pub` on `DeRecProtocol` and the type has no `Drop` impl, so
 /// they can be moved out of the old value. Channels, shares and in-flight
 /// orchestrator state all survive.
+///
+/// On failure `old` comes back untouched, so a rejected rebuild costs the
+/// caller its settings change and nothing else. That is why the new instance is
+/// built over throwaway empty stores *first* and `old`'s stores are moved in
+/// afterwards, rather than handed to the builder: `build()` consumes the
+/// builder, so a failure with `old`'s stores already inside it would destroy
+/// them with no way to hand them back. Splitting it this way costs one
+/// short-lived set of empty stores and makes the only fallible step happen
+/// while `old` is still whole — everything the builder validates (`threshold`,
+/// the own-transport URI and its plaintext policy) comes from `config` alone,
+/// never from the stores, so validating over empty ones decides the same
+/// outcome.
 fn rebuild_with_stores(
     config: &ProtocolConfig,
     old: ActorProtocol,
-) -> Result<ActorProtocol, derec_library::Error> {
-    let builder = DeRecProtocolBuilder::new(config.secret_id)
-        .with_channel_store(old.channel_store)
-        .with_share_store(old.share_store)
-        .with_secret_store(old.secret_store)
-        .with_user_secret_store(old.user_secret_store)
-        .with_state_store(old.state_store)
-        .with_transport(old.transport)
-        .with_own_transport(config.transport_uri.as_str());
+) -> Result<ActorProtocol, (ActorProtocol, derec_library::Error)> {
+    let mut rebuilt = match build_protocol(config) {
+        Ok(rebuilt) => rebuilt,
+        Err(e) => return Err((old, e)),
+    };
 
-    configure_builder(builder, config).build()
+    rebuilt.channel_store = old.channel_store;
+    rebuilt.share_store = old.share_store;
+    rebuilt.secret_store = old.secret_store;
+    rebuilt.user_secret_store = old.user_secret_store;
+    rebuilt.state_store = old.state_store;
+    rebuilt.transport = old.transport;
+
+    Ok(rebuilt)
 }
 
 /// Every channel id an instance currently holds, or `None` if the enumeration
@@ -588,6 +606,18 @@ pub struct ReconfigureMsg {
 #[rtype(result = "Vec<u64>")]
 pub struct ListInstanceSecretsMsg;
 
+/// The `secret_id` of the instance that owns `channel_id`, or `None` if no
+/// instance claims it.
+///
+/// This is the same routing-index lookup an inbound envelope goes through in
+/// the `ProcessDelayed` handler, exposed so a test can assert on it without
+/// standing up a peer. Test and admin observability; carries no key material.
+#[derive(Message)]
+#[rtype(result = "Option<u64>")]
+pub struct InstanceForChannelMsg {
+    pub channel_id: u64,
+}
+
 /// Ensure this actor holds an instance bound to `owner_secret_id`.
 ///
 /// A replica mirrors one named owner's vault, and the share store keys on
@@ -962,12 +992,21 @@ impl Handler<ReconfigureMsg> for ProvisionedActor {
             let mut config = self.config.clone();
             config.secret_id = secret_id;
 
-            // A rebuild failure leaves this instance absent from the map, and
-            // that is deliberate: it could not be reconstructed, and a
-            // half-configured instance serving traffic would be worse than an
-            // absent one whose channels log as unroutable.
-            let rebuilt = rebuild_with_stores(&config, old)?;
-            self.instances.restore(secret_id, rebuilt);
+            // A rebuild failure puts the original instance back before
+            // reporting, so the worst case is "these settings did not apply to
+            // this instance" rather than "this instance is gone". Dropping it
+            // would not even leave a clean absence: `take` empties the slot but
+            // keeps the key, so the actor would answer `contains` with `true`
+            // for an instance that no longer exists, skip it on every tick, and
+            // fail every later reconfigure on the same empty slot until the
+            // process restarts.
+            match rebuild_with_stores(&config, old) {
+                Ok(rebuilt) => self.instances.restore(secret_id, rebuilt),
+                Err((old, e)) => {
+                    self.instances.restore(secret_id, old);
+                    return Err(e);
+                }
+            }
         }
 
         info!(
@@ -986,6 +1025,14 @@ impl Handler<ListInstanceSecretsMsg> for ProvisionedActor {
         let mut ids = self.instances.secret_ids();
         ids.sort_unstable();
         ids
+    }
+}
+
+impl Handler<InstanceForChannelMsg> for ProvisionedActor {
+    type Result = Option<u64>;
+
+    fn handle(&mut self, msg: InstanceForChannelMsg, _ctx: &mut Context<Self>) -> Self::Result {
+        self.instances.secret_for_channel(msg.channel_id)
     }
 }
 
@@ -1009,5 +1056,72 @@ impl Handler<EnsureReplicaInstanceMsg> for ProvisionedActor {
             "replica instance created"
         );
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use derec_library::protocol::{DeRecSecretStore, SecretValue};
+
+    const SECRET_ID: u64 = 0xA1;
+    const CHANNEL_ID: u64 = 0xC0FFEE;
+    const SHARED_KEY: [u8; 32] = [7u8; 32];
+
+    fn config() -> ProtocolConfig {
+        ProtocolConfig {
+            secret_id: SECRET_ID,
+            transport_uri: "http://localhost:5000/derec/participants/test".to_owned(),
+            communication_info: HashMap::from([("name".to_owned(), "Alex".to_owned())]),
+            timeout_secs: 300,
+            unpair_ack: UnpairAck::Required,
+            threshold: 2,
+            keep_versions_count: 3,
+            replica_id: Some(0xAB),
+            http_client: reqwest::Client::new(),
+        }
+    }
+
+    /// A rejected rebuild must not cost the caller its instance.
+    ///
+    /// `ReconfigureMsg` has already taken the instance out of the map by the
+    /// time it calls this, and `InstanceMap::take` empties the slot but keeps
+    /// the key — so an instance consumed here is not merely absent, it wedges
+    /// the actor: `contains` still answers `true`, every tick skips the empty
+    /// slot, and every later reconfigure fails on it until the process restarts.
+    ///
+    /// No live configuration change can reach this today (`ReconfigureMsg`
+    /// touches neither `threshold` nor `transport_uri`), which is exactly why
+    /// the guarantee needs a test rather than a caller to demonstrate it.
+    #[actix_rt::test]
+    async fn a_rejected_rebuild_hands_the_original_instance_back_with_its_stores() {
+        let mut config = config();
+        let mut protocol = build_protocol(&config).expect("the baseline config builds");
+        protocol
+            .secret_store
+            .save(
+                SECRET_ID,
+                ChannelId(CHANNEL_ID),
+                SecretValue::SharedKey(SHARED_KEY),
+            )
+            .await
+            .expect("the in-memory secret store accepts a shared key");
+
+        // Rejected by the builder: a threshold below 2 lets a single helper
+        // reconstruct the secret.
+        config.threshold = 1;
+
+        let Err((old, _)) = rebuild_with_stores(&config, protocol) else {
+            panic!("a threshold below 2 must be rejected");
+        };
+
+        assert_eq!(old.secret_id(), SECRET_ID);
+        assert_eq!(
+            old.secret_store.load_shared_key(SECRET_ID, CHANNEL_ID),
+            Some(SHARED_KEY),
+            "the instance handed back must be the original, stores and all — a \
+             freshly built stand-in would answer with an empty store"
+        );
     }
 }

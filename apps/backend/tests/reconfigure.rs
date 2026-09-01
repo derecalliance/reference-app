@@ -75,16 +75,26 @@ fn reconfigure() -> ReconfigureMsg {
 async fn reconfigure_keeps_every_instance() {
     let addr = spawn(protocol());
 
-    let before = addr.send(ListInstanceSecretsMsg).await.expect("actor alive");
+    let before = addr
+        .send(ListInstanceSecretsMsg)
+        .await
+        .expect("actor alive");
 
     addr.send(reconfigure())
         .await
         .expect("actor alive")
         .expect("reconfigure succeeds");
 
-    let after = addr.send(ListInstanceSecretsMsg).await.expect("actor alive");
+    let after = addr
+        .send(ListInstanceSecretsMsg)
+        .await
+        .expect("actor alive");
 
-    assert_eq!(before, vec![SECRET_ID], "the own instance is present to begin with");
+    assert_eq!(
+        before,
+        vec![SECRET_ID],
+        "the own instance is present to begin with"
+    );
     assert_eq!(before, after, "no instance may be lost to a rebuild");
 }
 
@@ -107,7 +117,11 @@ async fn reconfigure_keeps_the_channels_an_instance_already_holds() {
         .expect("actor alive")
         .expect("channels are listable");
     let before: Vec<String> = before.into_iter().map(|c| c.channel_id).collect();
-    assert_eq!(before, vec![CHANNEL_ID.to_string()], "the seeded channel is there");
+    assert_eq!(
+        before,
+        vec![CHANNEL_ID.to_string()],
+        "the seeded channel is there"
+    );
 
     addr.send(reconfigure())
         .await
@@ -121,5 +135,8 @@ async fn reconfigure_keeps_the_channels_an_instance_already_holds() {
         .expect("channels are listable");
     let after: Vec<String> = after.into_iter().map(|c| c.channel_id).collect();
 
-    assert_eq!(before, after, "the channel store must move into the rebuilt instance");
+    assert_eq!(
+        before, after,
+        "the channel store must move into the rebuilt instance"
+    );
 }
