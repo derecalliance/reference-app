@@ -111,6 +111,34 @@ pub fn build_protocol(config: &ProtocolConfig) -> Result<ActorProtocol, derec_li
     builder.build()
 }
 
+/// Every channel id an instance currently holds.
+///
+/// Both halves matter: `helpers()` lists channels where this instance is one
+/// side of an Owner↔Helper relationship, and `replicas()` lists replica-group
+/// members. A message may arrive on either, so routing needs both.
+///
+/// A store read that fails yields no ids for that half rather than aborting the
+/// reconcile: dropping the whole index on a transient read error would unroute
+/// live channels, which is worse than a stale index that the next reconcile
+/// repairs.
+async fn channel_ids_of(protocol: &ActorProtocol, secret_id: u64) -> Vec<u64> {
+    let mut ids = Vec::new();
+
+    match protocol.channel_store.helpers(secret_id).await {
+        Ok(channels) => ids.extend(channels.iter().map(|c| c.channel_id.0)),
+        Err(e) => warn!(secret_id = secret_id, error = %e, "helper channel read failed during reconcile"),
+    }
+
+    match protocol.channel_store.replicas(secret_id).await {
+        Ok(members) => ids.extend(members.iter().map(|m| m.channel_id.0)),
+        Err(e) => warn!(secret_id = secret_id, error = %e, "replica member read failed during reconcile"),
+    }
+
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
 /// A backend-managed protocol participant.
 ///
 /// A `DeRecProtocol` instance is bound to one `secret_id` because that is the
@@ -353,14 +381,16 @@ impl Handler<TickMsg> for ProvisionedActor {
                     let swept = protocol
                         .remove_expired_channels(PENDING_CHANNEL_TTL_SECS)
                         .await;
-                    done.push((secret_id, protocol, events, swept));
+                    let channel_ids = channel_ids_of(&protocol, secret_id).await;
+                    done.push((secret_id, protocol, events, swept, channel_ids));
                 }
                 done
             }
             .into_actor(self)
             .map(|done, actor, _ctx| {
-                for (secret_id, protocol, events, swept) in done {
+                for (secret_id, protocol, events, swept, channel_ids) in done {
                     actor.instances.restore(secret_id, protocol);
+                    actor.instances.reconcile(secret_id, &channel_ids);
 
                     if !events.is_empty() {
                         actor.handle_events(&events);
@@ -483,16 +513,19 @@ impl Handler<ProcessDelayed> for ProvisionedActor {
             );
             return Box::pin(actix::fut::ready(()));
         };
+        let secret_id = protocol.secret_id();
         let bytes = msg.0;
 
         Box::pin(
             async move {
                 let result = protocol.process(&bytes).await;
-                (protocol, result)
+                let channel_ids = channel_ids_of(&protocol, secret_id).await;
+                (protocol, result, channel_ids)
             }
             .into_actor(self)
-            .map(move |(protocol, result), actor, _ctx| {
+            .map(move |(protocol, result, channel_ids), actor, _ctx| {
                 actor.restore_own(protocol);
+                actor.instances.reconcile(secret_id, &channel_ids);
                 match result {
                     Ok(events) => actor.handle_events(&events),
                     Err(e) => {
@@ -617,17 +650,20 @@ impl Handler<CreateContactMsg> for ProvisionedActor {
                 "protocol already borrowed",
             ))));
         };
+        let secret_id = protocol.secret_id();
         let contact_mode = msg.contact_mode;
         let nonce = msg.nonce;
 
         Box::pin(
             async move {
                 let result = protocol.create_contact(None, contact_mode, nonce).await;
-                (protocol, result)
+                let channel_ids = channel_ids_of(&protocol, secret_id).await;
+                (protocol, result, channel_ids)
             }
             .into_actor(self)
-            .map(move |(protocol, result), actor, _ctx| {
+            .map(move |(protocol, result, channel_ids), actor, _ctx| {
                 actor.restore_own(protocol);
+                actor.instances.reconcile(secret_id, &channel_ids);
                 result
             }),
         )
@@ -643,16 +679,19 @@ impl Handler<StartFlowMsg> for ProvisionedActor {
                 "protocol already borrowed",
             ))));
         };
+        let secret_id = protocol.secret_id();
         let flow = msg.flow;
 
         Box::pin(
             async move {
                 let result = protocol.start(flow).await;
-                (protocol, result)
+                let channel_ids = channel_ids_of(&protocol, secret_id).await;
+                (protocol, result, channel_ids)
             }
             .into_actor(self)
-            .map(move |(protocol, result), actor, _ctx| {
+            .map(move |(protocol, result, channel_ids), actor, _ctx| {
                 actor.restore_own(protocol);
+                actor.instances.reconcile(secret_id, &channel_ids);
                 if let Ok(events) = &result {
                     actor.handle_events(events);
                 }
