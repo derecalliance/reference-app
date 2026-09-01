@@ -275,11 +275,13 @@ mod tests {
     fn a_pinned_channel_routes() {
         // A freshly minted contact has no channel-store row yet, so it can
         // only be found through the pin.
+        let m = map();
+        // No pin_channel call yet: the pin is what must supply the answer.
+        assert_eq!(m.secret_for_channel(100), None, "unpinned, unbound");
+
         let mut m = map();
         m.pin_channel(100, OWN);
-
-        assert_eq!(m.secret_for_channel(100), Some(OWN));
-        assert_eq!(m.take(OWN), Some("own"));
+        assert_eq!(m.secret_for_channel(100), Some(OWN), "pin supplies the owner");
     }
 
     #[test]

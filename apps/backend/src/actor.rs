@@ -596,34 +596,14 @@ pub struct ListInstanceSecretsMsg;
 /// needs an instance bound to that owner's secret, which this creates on demand.
 ///
 /// Idempotent: a second pairing with the same owner reuses the instance rather
-/// than resetting its stores.
+/// than resetting its stores. The `bool` result reports which happened —
+/// `true` for created, `false` for reused — so a caller (and its tests) can
+/// tell a fresh instance from a no-op rebuild that would silently discard the
+/// shares an existing replica instance already holds.
 #[derive(Message)]
-#[rtype(result = "Result<(), derec_library::Error>")]
+#[rtype(result = "Result<bool, derec_library::Error>")]
 pub struct EnsureReplicaInstanceMsg {
     pub owner_secret_id: u64,
-}
-
-impl Handler<EnsureReplicaInstanceMsg> for ProvisionedActor {
-    type Result = Result<(), derec_library::Error>;
-
-    fn handle(&mut self, msg: EnsureReplicaInstanceMsg, _ctx: &mut Context<Self>) -> Self::Result {
-        if self.instances.contains(msg.owner_secret_id) {
-            return Ok(());
-        }
-
-        let mut config = self.config.clone();
-        config.secret_id = msg.owner_secret_id;
-
-        let protocol = build_protocol(&config)?;
-        self.instances.insert(msg.owner_secret_id, protocol);
-
-        info!(
-            actor_id = %self.actor_id,
-            owner_secret_id = msg.owner_secret_id,
-            "replica instance created"
-        );
-        Ok(())
-    }
 }
 
 impl Handler<IncomingMessage> for ProvisionedActor {
@@ -1006,5 +986,28 @@ impl Handler<ListInstanceSecretsMsg> for ProvisionedActor {
         let mut ids = self.instances.secret_ids();
         ids.sort_unstable();
         ids
+    }
+}
+
+impl Handler<EnsureReplicaInstanceMsg> for ProvisionedActor {
+    type Result = Result<bool, derec_library::Error>;
+
+    fn handle(&mut self, msg: EnsureReplicaInstanceMsg, _ctx: &mut Context<Self>) -> Self::Result {
+        if self.instances.contains(msg.owner_secret_id) {
+            return Ok(false);
+        }
+
+        let mut config = self.config.clone();
+        config.secret_id = msg.owner_secret_id;
+
+        let protocol = build_protocol(&config)?;
+        self.instances.insert(msg.owner_secret_id, protocol);
+
+        info!(
+            actor_id = %self.actor_id,
+            owner_secret_id = msg.owner_secret_id,
+            "replica instance created"
+        );
+        Ok(true)
     }
 }
