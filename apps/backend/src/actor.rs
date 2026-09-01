@@ -119,8 +119,9 @@ pub fn build_protocol(config: &ProtocolConfig) -> Result<ActorProtocol, derec_li
 /// Owner's `secret_id` on the record, so one actor serves many owners without
 /// needing an instance per relationship.
 pub struct ProvisionedActor {
-    /// `None` only while a call has borrowed it for an async step.
-    protocol: Option<ActorProtocol>,
+    /// Protocol instances by the `secret_id` each is bound to. See
+    /// [`crate::instances`] for why an actor needs more than one.
+    instances: crate::instances::InstanceMap<ActorProtocol>,
     actor_id: Uuid,
     role: Role,
     state: Arc<AppState>,
@@ -133,12 +134,24 @@ impl ProvisionedActor {
         role: Role,
         state: Arc<AppState>,
     ) -> Self {
+        let own_secret_id = protocol.secret_id();
         Self {
-            protocol: Some(protocol),
+            instances: crate::instances::InstanceMap::new(own_secret_id, protocol),
             actor_id,
             role,
             state,
         }
+    }
+
+    /// The instance bound to this actor's own secret — the one that serves every
+    /// helper-role channel.
+    fn take_own(&mut self) -> Option<ActorProtocol> {
+        self.instances.take(self.instances.own_secret_id())
+    }
+
+    fn restore_own(&mut self, protocol: ActorProtocol) {
+        let own = self.instances.own_secret_id();
+        self.instances.restore(own, protocol);
     }
 
     fn handle_events(&mut self, events: &[DeRecEvent]) {
@@ -318,42 +331,58 @@ impl Handler<TickMsg> for ProvisionedActor {
     type Result = ResponseActFuture<Self, ()>;
 
     fn handle(&mut self, _msg: TickMsg, _ctx: &mut Context<Self>) -> Self::Result {
-        let Some(mut protocol) = self.protocol.take() else {
-            // Borrowed by an in-flight call, which will advance time itself.
-            // Skipping is safe: the next interval picks it up.
+        // Collect the instances that are free right now. One borrowed by an
+        // in-flight call advances time itself; skipping it is safe because the
+        // next interval picks it up.
+        let mut borrowed: Vec<(u64, ActorProtocol)> = Vec::new();
+        for secret_id in self.instances.secret_ids() {
+            if let Some(protocol) = self.instances.take(secret_id) {
+                borrowed.push((secret_id, protocol));
+            }
+        }
+
+        if borrowed.is_empty() {
             return Box::pin(actix::fut::ready(()));
-        };
+        }
 
         Box::pin(
             async move {
-                let events = protocol.tick().await;
-                let swept = protocol
-                    .remove_expired_channels(PENDING_CHANNEL_TTL_SECS)
-                    .await;
-                (protocol, events, swept)
+                let mut done = Vec::with_capacity(borrowed.len());
+                for (secret_id, mut protocol) in borrowed {
+                    let events = protocol.tick().await;
+                    let swept = protocol
+                        .remove_expired_channels(PENDING_CHANNEL_TTL_SECS)
+                        .await;
+                    done.push((secret_id, protocol, events, swept));
+                }
+                done
             }
             .into_actor(self)
-            .map(|(protocol, events, swept), actor, _ctx| {
-                actor.protocol = Some(protocol);
+            .map(|done, actor, _ctx| {
+                for (secret_id, protocol, events, swept) in done {
+                    actor.instances.restore(secret_id, protocol);
 
-                if !events.is_empty() {
-                    actor.handle_events(&events);
-                }
-                match swept {
-                    Ok(removed) if !removed.is_empty() => {
-                        warn!(
-                            actor_id = %actor.actor_id,
-                            count = removed.len(),
-                            "swept pending channels that were never confirmed"
-                        );
+                    if !events.is_empty() {
+                        actor.handle_events(&events);
                     }
-                    Ok(_) => {}
-                    Err(e) => {
-                        error!(
-                            actor_id = %actor.actor_id,
-                            error = %e,
-                            "expired-channel sweep failed"
-                        );
+                    match swept {
+                        Ok(removed) if !removed.is_empty() => {
+                            warn!(
+                                actor_id = %actor.actor_id,
+                                secret_id = secret_id,
+                                count = removed.len(),
+                                "swept pending channels that were never confirmed"
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!(
+                                actor_id = %actor.actor_id,
+                                secret_id = secret_id,
+                                error = %e,
+                                "expired-channel sweep failed"
+                            );
+                        }
                     }
                 }
             }),
@@ -447,7 +476,7 @@ impl Handler<ProcessDelayed> for ProvisionedActor {
     type Result = ResponseActFuture<Self, ()>;
 
     fn handle(&mut self, msg: ProcessDelayed, _ctx: &mut Context<Self>) -> Self::Result {
-        let Some(mut protocol) = self.protocol.take() else {
+        let Some(mut protocol) = self.take_own() else {
             error!(
                 actor_id = %self.actor_id,
                 "protocol already borrowed; dropping message"
@@ -463,7 +492,7 @@ impl Handler<ProcessDelayed> for ProvisionedActor {
             }
             .into_actor(self)
             .map(move |(protocol, result), actor, _ctx| {
-                actor.protocol = Some(protocol);
+                actor.restore_own(protocol);
                 match result {
                     Ok(events) => actor.handle_events(&events),
                     Err(e) => {
@@ -483,7 +512,7 @@ impl Handler<ListChannelsMsg> for ProvisionedActor {
     type Result = ResponseActFuture<Self, Result<Vec<ChannelSummary>, derec_library::Error>>;
 
     fn handle(&mut self, _msg: ListChannelsMsg, _ctx: &mut Context<Self>) -> Self::Result {
-        let Some(protocol) = self.protocol.take() else {
+        let Some(protocol) = self.take_own() else {
             return Box::pin(actix::fut::ready(Err(derec_library::Error::Invariant(
                 "protocol already borrowed",
             ))));
@@ -533,7 +562,7 @@ impl Handler<ListChannelsMsg> for ProvisionedActor {
             }
             .into_actor(self)
             .map(|(protocol, result), actor, _ctx| {
-                actor.protocol = Some(protocol);
+                actor.restore_own(protocol);
                 result
             }),
         )
@@ -544,7 +573,7 @@ impl Handler<LinkChannelsMsg> for ProvisionedActor {
     type Result = ResponseActFuture<Self, Result<(), derec_library::Error>>;
 
     fn handle(&mut self, msg: LinkChannelsMsg, _ctx: &mut Context<Self>) -> Self::Result {
-        let Some(mut protocol) = self.protocol.take() else {
+        let Some(mut protocol) = self.take_own() else {
             return Box::pin(actix::fut::ready(Err(derec_library::Error::Invariant(
                 "protocol already borrowed",
             ))));
@@ -572,7 +601,7 @@ impl Handler<LinkChannelsMsg> for ProvisionedActor {
             }
             .into_actor(self)
             .map(|(protocol, result), actor, _ctx| {
-                actor.protocol = Some(protocol);
+                actor.restore_own(protocol);
                 result
             }),
         )
@@ -583,7 +612,7 @@ impl Handler<CreateContactMsg> for ProvisionedActor {
     type Result = ResponseActFuture<Self, Result<derec_proto::ContactMessage, derec_library::Error>>;
 
     fn handle(&mut self, msg: CreateContactMsg, _ctx: &mut Context<Self>) -> Self::Result {
-        let Some(mut protocol) = self.protocol.take() else {
+        let Some(mut protocol) = self.take_own() else {
             return Box::pin(actix::fut::ready(Err(derec_library::Error::Invariant(
                 "protocol already borrowed",
             ))));
@@ -598,7 +627,7 @@ impl Handler<CreateContactMsg> for ProvisionedActor {
             }
             .into_actor(self)
             .map(move |(protocol, result), actor, _ctx| {
-                actor.protocol = Some(protocol);
+                actor.restore_own(protocol);
                 result
             }),
         )
@@ -609,7 +638,7 @@ impl Handler<StartFlowMsg> for ProvisionedActor {
     type Result = ResponseActFuture<Self, Result<Vec<DeRecEvent>, derec_library::Error>>;
 
     fn handle(&mut self, msg: StartFlowMsg, _ctx: &mut Context<Self>) -> Self::Result {
-        let Some(mut protocol) = self.protocol.take() else {
+        let Some(mut protocol) = self.take_own() else {
             return Box::pin(actix::fut::ready(Err(derec_library::Error::Invariant(
                 "protocol already borrowed",
             ))));
@@ -623,7 +652,7 @@ impl Handler<StartFlowMsg> for ProvisionedActor {
             }
             .into_actor(self)
             .map(move |(protocol, result), actor, _ctx| {
-                actor.protocol = Some(protocol);
+                actor.restore_own(protocol);
                 if let Ok(events) = &result {
                     actor.handle_events(events);
                 }
@@ -637,9 +666,12 @@ impl Handler<LoadSharedKeyMsg> for ProvisionedActor {
     type Result = Option<[u8; 32]>;
 
     fn handle(&mut self, msg: LoadSharedKeyMsg, _ctx: &mut Context<Self>) -> Self::Result {
-        self.protocol
-            .as_ref()
-            .and_then(|p| p.secret_store.load_shared_key(p.secret_id(), msg.channel_id))
+        let protocol = self.take_own()?;
+        let key = protocol
+            .secret_store
+            .load_shared_key(protocol.secret_id(), msg.channel_id);
+        self.restore_own(protocol);
+        key
     }
 }
 
@@ -647,7 +679,7 @@ impl Handler<GetFingerprintMsg> for ProvisionedActor {
     type Result = ResponseActFuture<Self, Result<String, derec_library::Error>>;
 
     fn handle(&mut self, msg: GetFingerprintMsg, _ctx: &mut Context<Self>) -> Self::Result {
-        let Some(protocol) = self.protocol.take() else {
+        let Some(protocol) = self.take_own() else {
             return Box::pin(actix::fut::ready(Err(derec_library::Error::Invariant(
                 "protocol already borrowed",
             ))));
@@ -661,7 +693,7 @@ impl Handler<GetFingerprintMsg> for ProvisionedActor {
             }
             .into_actor(self)
             .map(move |(protocol, result), actor, _ctx| {
-                actor.protocol = Some(protocol);
+                actor.restore_own(protocol);
                 result
             }),
         )
@@ -672,7 +704,7 @@ impl Handler<VerifyFingerprintMsg> for ProvisionedActor {
     type Result = ResponseActFuture<Self, Result<bool, derec_library::Error>>;
 
     fn handle(&mut self, msg: VerifyFingerprintMsg, _ctx: &mut Context<Self>) -> Self::Result {
-        let Some(mut protocol) = self.protocol.take() else {
+        let Some(mut protocol) = self.take_own() else {
             return Box::pin(actix::fut::ready(Err(derec_library::Error::Invariant(
                 "protocol already borrowed",
             ))));
@@ -689,7 +721,7 @@ impl Handler<VerifyFingerprintMsg> for ProvisionedActor {
             }
             .into_actor(self)
             .map(move |(protocol, result), actor, _ctx| {
-                actor.protocol = Some(protocol);
+                actor.restore_own(protocol);
                 result
             }),
         )
