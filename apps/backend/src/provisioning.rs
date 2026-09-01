@@ -28,10 +28,9 @@ pub fn register_browser_actor(state: &AppState, actor_id: Uuid) {
 
 /// Spawn a backend-managed actor.
 ///
-/// No protocol instance is created here: an instance is bound to one
-/// `secret_id`, and which secret this actor will serve is only known once a
-/// pairing is driven against it. The actor builds instances on demand from
-/// this config — see [`ProvisionedActor`].
+/// The own instance, bound to `secret_id`, is built eagerly here. Any further
+/// instance — a replica bound to a different owner's secret — is added later,
+/// on demand, via `EnsureReplicaInstanceMsg`; see [`ProvisionedActor`].
 pub fn spawn_provisioned(state: &AppState, actor: &Actor, timeout_secs: u32, unpair_ack: UnpairAck) {
     let actor_id = actor.id;
     let role = actor.role;

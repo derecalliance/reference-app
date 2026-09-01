@@ -127,13 +127,6 @@ impl<P> InstanceMap<P> {
     pub fn restore(&mut self, secret_id: u64, instance: P) {
         self.instances.insert(secret_id, Some(instance));
     }
-
-    /// Borrow the instance that owns a channel, with its `secret_id`.
-    pub fn take_for_channel(&mut self, channel_id: u64) -> Option<(u64, P)> {
-        let secret_id = self.secret_for_channel(channel_id)?;
-        let instance = self.take(secret_id)?;
-        Some((secret_id, instance))
-    }
 }
 
 #[cfg(test)]
@@ -174,16 +167,19 @@ mod tests {
         m.reconcile(OWN, &[100]);
         m.reconcile(ALICE, &[200]);
 
-        assert_eq!(m.take_for_channel(100), Some((OWN, "own")));
-        assert_eq!(m.take_for_channel(200), Some((ALICE, "alice-replica")));
+        assert_eq!(m.secret_for_channel(100), Some(OWN));
+        assert_eq!(m.take(OWN), Some("own"));
+        assert_eq!(m.secret_for_channel(200), Some(ALICE));
+        assert_eq!(m.take(ALICE), Some("alice-replica"));
     }
 
     #[test]
     fn an_unknown_channel_does_not_fall_back_to_the_own_instance() {
         // The whole point of the index: guessing would hand a peer's message to
-        // an instance that does not own the channel.
-        let mut m = map();
-        assert_eq!(m.take_for_channel(999), None);
+        // an instance that does not own the channel. There is no owner to
+        // `take()`, so the own instance is never reached as a fallback.
+        let m = map();
+        assert_eq!(m.secret_for_channel(999), None);
     }
 
     #[test]
@@ -193,7 +189,11 @@ mod tests {
 
         assert_eq!(m.take(OWN), Some("own"));
         assert_eq!(m.take(OWN), None, "still borrowed");
-        assert_eq!(m.take_for_channel(100), None, "still borrowed");
+
+        // The index still knows the channel's owner; only the instance itself
+        // is unavailable.
+        let secret_id = m.secret_for_channel(100).expect("channel is known");
+        assert_eq!(m.take(secret_id), None, "still borrowed");
     }
 
     #[test]
@@ -264,9 +264,11 @@ mod tests {
         m.reconcile(ALICE, &[200]);
         m.reconcile(CAROL, &[300]);
 
-        assert_eq!(m.take_for_channel(300), Some((CAROL, "carol-replica")));
+        assert_eq!(m.secret_for_channel(300), Some(CAROL));
+        assert_eq!(m.take(CAROL), Some("carol-replica"));
         // Borrowing Carol's must not affect Alice's.
-        assert_eq!(m.take_for_channel(200), Some((ALICE, "alice-replica")));
+        assert_eq!(m.secret_for_channel(200), Some(ALICE));
+        assert_eq!(m.take(ALICE), Some("alice-replica"));
     }
 
     #[test]
@@ -277,7 +279,7 @@ mod tests {
         m.pin_channel(100, OWN);
 
         assert_eq!(m.secret_for_channel(100), Some(OWN));
-        assert_eq!(m.take_for_channel(100), Some((OWN, "own")));
+        assert_eq!(m.take(OWN), Some("own"));
     }
 
     #[test]
@@ -325,9 +327,11 @@ mod tests {
         m.pin_channel(100, OWN);
         m.pin_channel(200, ALICE);
 
-        assert_eq!(m.take_for_channel(100), Some((OWN, "own")));
+        assert_eq!(m.secret_for_channel(100), Some(OWN));
+        assert_eq!(m.take(OWN), Some("own"));
         // Borrowing OWN's pinned channel must not affect Alice's.
-        assert_eq!(m.take_for_channel(200), Some((ALICE, "alice-replica")));
+        assert_eq!(m.secret_for_channel(200), Some(ALICE));
+        assert_eq!(m.take(ALICE), Some("alice-replica"));
     }
 
     #[test]

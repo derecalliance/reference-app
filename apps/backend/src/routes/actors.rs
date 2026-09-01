@@ -213,6 +213,7 @@ pub async fn create_contact(
     let msg = CreateContactMsg {
         contact_mode,
         nonce: query.nonce,
+        replica_for_owner_secret: None,
     };
 
     match addr.send(msg).await {

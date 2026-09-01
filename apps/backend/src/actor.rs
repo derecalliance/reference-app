@@ -200,10 +200,14 @@ async fn channel_ids_of(protocol: &ActorProtocol, secret_id: u64) -> Option<Vec<
 /// A backend-managed protocol participant.
 ///
 /// A `DeRecProtocol` instance is bound to one `secret_id` because that is the
-/// secret it protects as Owner. Helper-role channels live in the same
-/// instance: shares are separated by `channel_id` and each carries its own
-/// Owner's `secret_id` on the record, so one actor serves many owners without
-/// needing an instance per relationship.
+/// secret it protects as Owner. Helper-role channels for this actor's own
+/// secret all live in the own instance: shares are separated by `channel_id`
+/// and each carries its own Owner's `secret_id` on the record. Replica mode is
+/// the exception — a replica mirrors one named owner's vault, and the share
+/// store keys on `(secret_id, channel_id, version, replica_id)`, so mirroring
+/// several owners takes one instance per owner. `instances` below holds
+/// exactly that: the own instance plus any replica instances added on demand
+/// via `EnsureReplicaInstanceMsg`.
 pub struct ProvisionedActor {
     /// Protocol instances by the `secret_id` each is bound to. See
     /// [`crate::instances`] for why an actor needs more than one.
@@ -503,13 +507,19 @@ pub struct IncomingMessage(pub Vec<u8>);
 #[rtype(result = "()")]
 struct ProcessDelayed(Vec<u8>);
 
-/// Create an out-of-band contact for `secret_id`, instantiating the protocol
-/// for that secret if this actor has not seen it before.
+/// Create an out-of-band contact, selecting the instance bound to
+/// `replica_for_owner_secret` when set, or the own instance otherwise. This
+/// does not instantiate a protocol for a secret this actor has not seen
+/// before; send [`EnsureReplicaInstanceMsg`] first to guarantee the replica
+/// instance exists.
 #[derive(Message)]
 #[rtype(result = "Result<derec_proto::ContactMessage, derec_library::Error>")]
 pub struct CreateContactMsg {
     pub contact_mode: derec_proto::ContactMode,
     pub nonce: Option<u64>,
+    /// When set, mint from the instance bound to this owner's secret rather than
+    /// from the own instance — a replica-mode pairing.
+    pub replica_for_owner_secret: Option<u64>,
 }
 
 #[derive(Message)]
@@ -577,6 +587,44 @@ pub struct ReconfigureMsg {
 #[derive(Message)]
 #[rtype(result = "Vec<u64>")]
 pub struct ListInstanceSecretsMsg;
+
+/// Ensure this actor holds an instance bound to `owner_secret_id`.
+///
+/// A replica mirrors one named owner's vault, and the share store keys on
+/// `(secret_id, channel_id, version, replica_id)` — an instance under a
+/// different secret would miss every lookup. Replica-mode pairing therefore
+/// needs an instance bound to that owner's secret, which this creates on demand.
+///
+/// Idempotent: a second pairing with the same owner reuses the instance rather
+/// than resetting its stores.
+#[derive(Message)]
+#[rtype(result = "Result<(), derec_library::Error>")]
+pub struct EnsureReplicaInstanceMsg {
+    pub owner_secret_id: u64,
+}
+
+impl Handler<EnsureReplicaInstanceMsg> for ProvisionedActor {
+    type Result = Result<(), derec_library::Error>;
+
+    fn handle(&mut self, msg: EnsureReplicaInstanceMsg, _ctx: &mut Context<Self>) -> Self::Result {
+        if self.instances.contains(msg.owner_secret_id) {
+            return Ok(());
+        }
+
+        let mut config = self.config.clone();
+        config.secret_id = msg.owner_secret_id;
+
+        let protocol = build_protocol(&config)?;
+        self.instances.insert(msg.owner_secret_id, protocol);
+
+        info!(
+            actor_id = %self.actor_id,
+            owner_secret_id = msg.owner_secret_id,
+            "replica instance created"
+        );
+        Ok(())
+    }
+}
 
 impl Handler<IncomingMessage> for ProvisionedActor {
     type Result = ();
@@ -772,12 +820,15 @@ impl Handler<CreateContactMsg> for ProvisionedActor {
     type Result = ResponseActFuture<Self, Result<derec_proto::ContactMessage, derec_library::Error>>;
 
     fn handle(&mut self, msg: CreateContactMsg, _ctx: &mut Context<Self>) -> Self::Result {
-        let Some(mut protocol) = self.take_own() else {
+        let secret_id = msg
+            .replica_for_owner_secret
+            .unwrap_or_else(|| self.instances.own_secret_id());
+
+        let Some(mut protocol) = self.instances.take(secret_id) else {
             return Box::pin(actix::fut::ready(Err(derec_library::Error::Invariant(
-                "protocol already borrowed",
+                "no instance for the requested secret, or it is borrowed",
             ))));
         };
-        let secret_id = protocol.secret_id();
         let contact_mode = msg.contact_mode;
         let nonce = msg.nonce;
 
@@ -789,7 +840,7 @@ impl Handler<CreateContactMsg> for ProvisionedActor {
             }
             .into_actor(self)
             .map(move |(protocol, result, channel_ids), actor, _ctx| {
-                actor.restore_own(protocol);
+                actor.instances.restore(secret_id, protocol);
                 if let Some(channel_ids) = channel_ids {
                     actor.instances.reconcile(secret_id, &channel_ids);
                 }
