@@ -111,32 +111,48 @@ pub fn build_protocol(config: &ProtocolConfig) -> Result<ActorProtocol, derec_li
     builder.build()
 }
 
-/// Every channel id an instance currently holds.
+/// Every channel id an instance currently holds, or `None` if the enumeration
+/// was incomplete.
 ///
 /// Both halves matter: `helpers()` lists channels where this instance is one
 /// side of an Owner↔Helper relationship, and `replicas()` lists replica-group
 /// members. A message may arrive on either, so routing needs both.
 ///
-/// A store read that fails yields no ids for that half rather than aborting the
-/// reconcile: dropping the whole index on a transient read error would unroute
-/// live channels, which is worse than a stale index that the next reconcile
-/// repairs.
-async fn channel_ids_of(protocol: &ActorProtocol, secret_id: u64) -> Vec<u64> {
+/// A partial result is not returned: if either read fails, this returns
+/// `None` rather than the ids the other half found. `InstanceMap::reconcile`
+/// replaces *all* of an instance's bindings with whatever list it is given,
+/// so a partial list would make it prune the valid bindings for the half that
+/// failed, not merely leave them stale. Callers must skip `reconcile`
+/// entirely on `None`, leaving the previous index in place for the next
+/// reconcile to repair — a stale index is recoverable, a pruned one drops
+/// live routes until something re-creates the channel.
+async fn channel_ids_of(protocol: &ActorProtocol, secret_id: u64) -> Option<Vec<u64>> {
+    let mut ok = true;
     let mut ids = Vec::new();
 
     match protocol.channel_store.helpers(secret_id).await {
         Ok(channels) => ids.extend(channels.iter().map(|c| c.channel_id.0)),
-        Err(e) => warn!(secret_id = secret_id, error = %e, "helper channel read failed during reconcile"),
+        Err(e) => {
+            ok = false;
+            warn!(secret_id = secret_id, error = %e, "helper channel read failed during reconcile");
+        }
     }
 
     match protocol.channel_store.replicas(secret_id).await {
         Ok(members) => ids.extend(members.iter().map(|m| m.channel_id.0)),
-        Err(e) => warn!(secret_id = secret_id, error = %e, "replica member read failed during reconcile"),
+        Err(e) => {
+            ok = false;
+            warn!(secret_id = secret_id, error = %e, "replica member read failed during reconcile");
+        }
+    }
+
+    if !ok {
+        return None;
     }
 
     ids.sort_unstable();
     ids.dedup();
-    ids
+    Some(ids)
 }
 
 /// A backend-managed protocol participant.
@@ -390,7 +406,9 @@ impl Handler<TickMsg> for ProvisionedActor {
             .map(|done, actor, _ctx| {
                 for (secret_id, protocol, events, swept, channel_ids) in done {
                     actor.instances.restore(secret_id, protocol);
-                    actor.instances.reconcile(secret_id, &channel_ids);
+                    if let Some(channel_ids) = channel_ids {
+                        actor.instances.reconcile(secret_id, &channel_ids);
+                    }
 
                     if !events.is_empty() {
                         actor.handle_events(&events);
@@ -525,7 +543,9 @@ impl Handler<ProcessDelayed> for ProvisionedActor {
             .into_actor(self)
             .map(move |(protocol, result, channel_ids), actor, _ctx| {
                 actor.restore_own(protocol);
-                actor.instances.reconcile(secret_id, &channel_ids);
+                if let Some(channel_ids) = channel_ids {
+                    actor.instances.reconcile(secret_id, &channel_ids);
+                }
                 match result {
                     Ok(events) => actor.handle_events(&events),
                     Err(e) => {
@@ -663,7 +683,9 @@ impl Handler<CreateContactMsg> for ProvisionedActor {
             .into_actor(self)
             .map(move |(protocol, result, channel_ids), actor, _ctx| {
                 actor.restore_own(protocol);
-                actor.instances.reconcile(secret_id, &channel_ids);
+                if let Some(channel_ids) = channel_ids {
+                    actor.instances.reconcile(secret_id, &channel_ids);
+                }
                 result
             }),
         )
@@ -691,7 +713,9 @@ impl Handler<StartFlowMsg> for ProvisionedActor {
             .into_actor(self)
             .map(move |(protocol, result, channel_ids), actor, _ctx| {
                 actor.restore_own(protocol);
-                actor.instances.reconcile(secret_id, &channel_ids);
+                if let Some(channel_ids) = channel_ids {
+                    actor.instances.reconcile(secret_id, &channel_ids);
+                }
                 if let Ok(events) = &result {
                     actor.handle_events(events);
                 }
