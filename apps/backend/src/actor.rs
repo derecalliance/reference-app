@@ -532,7 +532,7 @@ impl Handler<ProcessDelayed> for ProvisionedActor {
                 error!(
                     actor_id = %self.actor_id,
                     error = %e,
-                    bytes = bytes.len(),
+                    bytes_len = bytes.len(),
                     "undecodable envelope; dropping message"
                 );
                 return Box::pin(actix::fut::ready(()));
@@ -545,23 +545,34 @@ impl Handler<ProcessDelayed> for ProvisionedActor {
         if meta.channel_id == 0 {
             error!(
                 actor_id = %self.actor_id,
-                bytes = bytes.len(),
+                bytes_len = bytes.len(),
                 "envelope carries no channel id; dropping message"
             );
             return Box::pin(actix::fut::ready(()));
         }
 
-        let Some((secret_id, mut protocol)) = self.instances.take_for_channel(meta.channel_id)
-        else {
+        let Some(owner) = self.instances.secret_for_channel(meta.channel_id) else {
             error!(
                 actor_id = %self.actor_id,
                 channel_id = meta.channel_id,
                 sequence = meta.sequence,
                 trace_id = meta.trace_id,
-                "no instance owns this channel, or it is borrowed; dropping message"
+                "no instance owns this channel; dropping message"
             );
             return Box::pin(actix::fut::ready(()));
         };
+        let Some(mut protocol) = self.instances.take(owner) else {
+            error!(
+                actor_id = %self.actor_id,
+                channel_id = meta.channel_id,
+                sequence = meta.sequence,
+                trace_id = meta.trace_id,
+                secret_id = owner,
+                "instance busy; dropping message"
+            );
+            return Box::pin(actix::fut::ready(()));
+        };
+        let secret_id = owner;
 
         Box::pin(
             async move {
