@@ -20,8 +20,17 @@ use std::collections::HashMap;
 pub struct InstanceMap<P> {
     /// `None` while an instance is borrowed by an in-flight async call.
     instances: HashMap<u64, Option<P>>,
-    /// `channel_id` → the `secret_id` of the instance that owns it.
+    /// `channel_id` → the `secret_id` of the instance that owns it, as last
+    /// reported by that instance's channel store.
     channel_owner: HashMap<u64, u64>,
+    /// `channel_id` → `secret_id` for channels that exist only in-memory —
+    /// most notably a freshly minted contact, which `create_contact` persists
+    /// to the secret store but never to the channel store. `reconcile` never
+    /// sweeps this map wholesale (a stale bulk sweep would erase every pin the
+    /// instant any *other* reconcile ran); it only drops an entry once the
+    /// channel store itself reports the channel, at which point the store is
+    /// authoritative and the pin is redundant. See `pin_channel`.
+    pinned_channel_owner: HashMap<u64, u64>,
     own_secret_id: u64,
 }
 
@@ -32,6 +41,7 @@ impl<P> InstanceMap<P> {
         Self {
             instances,
             channel_owner: HashMap::new(),
+            pinned_channel_owner: HashMap::new(),
             own_secret_id,
         }
     }
@@ -62,15 +72,50 @@ impl<P> InstanceMap<P> {
     /// the instance's own channel store covers all three with one mechanism.
     ///
     /// Only this instance's bindings are touched; other instances keep theirs.
+    ///
+    /// A pin (see [`Self::pin_channel`]) for a channel that now appears in
+    /// `current` is dropped too: the store has caught up, so the store-backed
+    /// binding above is authoritative and the pin would otherwise sit around
+    /// forever, since a rotated-away channel id never reappears in `current`
+    /// for the sweep on the line above to catch.
     pub fn reconcile(&mut self, secret_id: u64, current: &[u64]) {
         self.channel_owner.retain(|_, owner| *owner != secret_id);
         for channel_id in current {
             self.channel_owner.insert(*channel_id, secret_id);
+            self.pinned_channel_owner.remove(channel_id);
         }
     }
 
+    /// Bind a channel that exists only in memory — not yet in the channel
+    /// store, so [`Self::reconcile`] cannot see it and would otherwise erase
+    /// this binding on the next call for *any* instance.
+    ///
+    /// `create_contact` is the motivating case: it persists to the secret
+    /// store only, so a freshly minted contact's channel is invisible to
+    /// `channel_ids_of` until the peer's response makes the library write a
+    /// channel-store row. Without a pin, the routing index has no entry for
+    /// that channel between minting and first reply, and the peer's opening
+    /// message gets dropped as unrouted.
+    pub fn pin_channel(&mut self, channel_id: u64, secret_id: u64) {
+        self.pinned_channel_owner.insert(channel_id, secret_id);
+    }
+
+    /// Remove a pin without waiting for `reconcile` to see it in the store.
+    ///
+    /// Needed for the transient pairing channel id: the handshake rotates it
+    /// to a long-term id and the library refuses traffic on the old one from
+    /// then on, so the old id never appears in a channel store read again —
+    /// `reconcile`'s store-catch-up cleanup in the loop above can never fire
+    /// for it, and the pin would linger forever.
+    pub fn unpin_channel(&mut self, channel_id: u64) {
+        self.pinned_channel_owner.remove(&channel_id);
+    }
+
     pub fn secret_for_channel(&self, channel_id: u64) -> Option<u64> {
-        self.channel_owner.get(&channel_id).copied()
+        self.channel_owner
+            .get(&channel_id)
+            .or_else(|| self.pinned_channel_owner.get(&channel_id))
+            .copied()
     }
 
     /// Borrow an instance. Returns `None` if it does not exist or is already
@@ -222,5 +267,80 @@ mod tests {
         assert_eq!(m.take_for_channel(300), Some((CAROL, "carol-replica")));
         // Borrowing Carol's must not affect Alice's.
         assert_eq!(m.take_for_channel(200), Some((ALICE, "alice-replica")));
+    }
+
+    #[test]
+    fn a_pinned_channel_routes() {
+        // A freshly minted contact has no channel-store row yet, so it can
+        // only be found through the pin.
+        let mut m = map();
+        m.pin_channel(100, OWN);
+
+        assert_eq!(m.secret_for_channel(100), Some(OWN));
+        assert_eq!(m.take_for_channel(100), Some((OWN, "own")));
+    }
+
+    #[test]
+    fn a_pinned_channel_survives_a_reconcile_that_does_not_mention_it() {
+        // This is the regression test for the actual bug: TickMsg reconciles
+        // every ~15s from whatever the channel store currently reports, which
+        // does not yet include a contact minted moments ago. A reconcile that
+        // is silent about the pinned channel must not erase the pin — the
+        // peer's opening reply has to land after that reconcile runs, not
+        // just before it.
+        let mut m = map();
+        m.pin_channel(100, OWN);
+
+        // Store-backed reconcile reports no channels at all for this
+        // instance — as it would immediately after minting.
+        m.reconcile(OWN, &[]);
+
+        assert_eq!(m.secret_for_channel(100), Some(OWN), "pin must survive");
+    }
+
+    #[test]
+    fn a_pinned_entry_is_dropped_once_the_channel_appears_in_current() {
+        // Once the library has written the channel-store row (e.g. the peer's
+        // PairRequest landed and the handshake progressed), the store becomes
+        // authoritative and the pin is redundant.
+        let mut m = map();
+        m.pin_channel(100, OWN);
+
+        m.reconcile(OWN, &[100]);
+
+        assert_eq!(m.secret_for_channel(100), Some(OWN), "still routes");
+
+        // The pin itself is gone, not just shadowed: retiring the channel
+        // from the store now retires the binding entirely, the same as any
+        // other store-backed channel.
+        m.reconcile(OWN, &[]);
+        assert_eq!(m.secret_for_channel(100), None, "pin did not survive underneath");
+    }
+
+    #[test]
+    fn pinning_one_instances_channel_does_not_disturb_another() {
+        let mut m = map();
+        m.insert(ALICE, "alice-replica");
+
+        m.pin_channel(100, OWN);
+        m.pin_channel(200, ALICE);
+
+        assert_eq!(m.take_for_channel(100), Some((OWN, "own")));
+        // Borrowing OWN's pinned channel must not affect Alice's.
+        assert_eq!(m.take_for_channel(200), Some((ALICE, "alice-replica")));
+    }
+
+    #[test]
+    fn unpinning_removes_a_pin_that_the_store_will_never_report() {
+        // The transient pairing channel id is exactly this case: once rotated
+        // away, the library refuses traffic on it and the store never lists
+        // it again, so reconcile's store-catch-up cleanup can never fire for
+        // it. Explicit unpinning is the only way it is ever removed.
+        let mut m = map();
+        m.pin_channel(100, OWN);
+
+        m.unpin_channel(100);
+
+        assert_eq!(m.secret_for_channel(100), None);
     }
 }

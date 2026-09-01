@@ -257,6 +257,12 @@ impl ProvisionedActor {
                     // The handshake atomically rotates to a new long-term id;
                     // the library refuses traffic on the transient one from
                     // here on, so all state keys on the new value.
+                    //
+                    // Drop any pin on the old id explicitly: the store never
+                    // lists a rotated-away channel again, so `reconcile`'s
+                    // store-catch-up cleanup can never see it and remove it —
+                    // this is the only path that ever will.
+                    self.instances.unpin_channel(pairing_channel_id.0);
                     let cid = channel_id.0.to_string();
                     let peer_name = peer_communication_info
                         .get("name")
@@ -786,6 +792,17 @@ impl Handler<CreateContactMsg> for ProvisionedActor {
                 actor.restore_own(protocol);
                 if let Some(channel_ids) = channel_ids {
                     actor.instances.reconcile(secret_id, &channel_ids);
+                }
+                // `create_contact` persists to the secret store only — never
+                // to the channel store — so `channel_ids_of` above cannot see
+                // this channel yet, and reconcile has nothing to bind it to.
+                // Pin it directly. Pinning after reconcile means ordering
+                // cannot matter: even if the store somehow already reported
+                // this channel, `reconcile` already dropped any pin for it,
+                // and this call would just re-establish a binding that
+                // `secret_for_channel` already resolved via `channel_owner`.
+                if let Ok(contact) = &result {
+                    actor.instances.pin_channel(contact.channel_id, secret_id);
                 }
                 result
             }),
