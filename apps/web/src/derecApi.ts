@@ -33,11 +33,8 @@ export async function sendMessage(uri: string, message: Uint8Array): Promise<voi
  * queue.  Each message's `bytes` field is ready to pass to
  * `DeRecProtocolWasm.process()`.
  */
-export async function pollMailbox(
-  role: 'owners' | 'participants',
-  actorId: string,
-): Promise<MailboxMessage[]> {
-  const res = await fetch(`${API_BASE}/derec/${role}/${actorId}/mailbox`)
+export async function pollMailbox(actorId: string): Promise<MailboxMessage[]> {
+  const res = await fetch(`${API_BASE}/derec/${actorId}/mailbox`)
 
   if (!res.ok) {
     throw new Error(`Failed to poll mailbox: ${res.status} ${res.statusText}`)

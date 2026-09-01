@@ -172,11 +172,8 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/replicas/{replica_id}/toggle-status",
             post(routes::replicas::toggle_status),
         )
-        .route("/derec/{role}/{actor_id}", post(routes::derec::deliver_message))
-        .route(
-            "/derec/{role}/{actor_id}/mailbox",
-            get(routes::derec::poll_mailbox),
-        )
+        .route("/derec/{actor_id}", post(routes::derec::deliver_message))
+        .route("/derec/{actor_id}/mailbox", get(routes::derec::poll_mailbox))
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
         .with_state(state)

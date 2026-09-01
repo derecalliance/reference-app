@@ -14,7 +14,6 @@ use uuid::Uuid;
 
 use crate::{
     actor::IncomingMessage,
-    models::Role,
     routes::actor_guard::not_found,
     state::{ActorInbox, AppState},
 };
@@ -30,28 +29,18 @@ pub struct PollMessagesResponse {
     pub messages: Vec<MailboxMessage>,
 }
 
-fn unknown_role() -> Response {
-    not_found("unknown role — expected 'owners', 'participants', or 'replicas'")
-}
-
-/// POST /derec/:role/:actor_id
+/// POST /derec/:actor_id
 ///
-/// The transport endpoint peers post protocol messages to. The `:role` segment
-/// is part of the URI baked into every contact this actor hands out, so it is
-/// checked against the registry rather than ignored — a message addressed to
-/// the right id under the wrong role is not for this actor.
+/// The transport endpoint peers post protocol messages to. The actor id is a
+/// UUID and identifies the actor by itself — there is no role segment to
+/// check.
 pub async fn deliver_message(
     State(state): State<Arc<AppState>>,
-    Path((role, actor_id)): Path<(String, Uuid)>,
+    Path(actor_id): Path<Uuid>,
     body: Bytes,
 ) -> Response {
-    let Some(actor_role) = Role::from_path_segment(&role) else {
-        return unknown_role();
-    };
-
-    match state.actors.get(&actor_id) {
-        Some(actor) if actor.role == actor_role => {}
-        _ => return not_found("actor not found"),
+    if state.actors.get(&actor_id).is_none() {
+        return not_found("actor not found");
     }
 
     if body.is_empty() {
@@ -85,7 +74,6 @@ pub async fn deliver_message(
             }
             info!(
                 actor_id = %actor_id,
-                role = %role,
                 bytes = body.len(),
                 "message delivered to inbox"
             );
@@ -95,15 +83,11 @@ pub async fn deliver_message(
     }
 }
 
-/// GET /derec/:role/:actor_id/mailbox
+/// GET /derec/:actor_id/mailbox
 pub async fn poll_mailbox(
     State(state): State<Arc<AppState>>,
-    Path((role, actor_id)): Path<(String, Uuid)>,
+    Path(actor_id): Path<Uuid>,
 ) -> Response {
-    if Role::from_path_segment(&role).is_none() {
-        return unknown_role();
-    }
-
     let raw_messages: Vec<Vec<u8>> = match state.browser_receivers.get(&actor_id) {
         Some(receiver_lock) => {
             let mut receiver = receiver_lock.lock().await;

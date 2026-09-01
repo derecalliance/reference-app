@@ -21,27 +21,6 @@ pub enum Role {
     Replica,
 }
 
-impl Role {
-    /// The path segment this role occupies in a transport URI.
-    pub fn path_segment(self) -> &'static str {
-        match self {
-            Role::Owner => "owners",
-            Role::Participant => "participants",
-            Role::Replica => "replicas",
-        }
-    }
-
-    /// Inverse of [`Role::path_segment`], for routing inbound messages.
-    pub fn from_path_segment(segment: &str) -> Option<Self> {
-        match segment {
-            "owners" => Some(Role::Owner),
-            "participants" => Some(Role::Participant),
-            "replicas" => Some(Role::Replica),
-            _ => None,
-        }
-    }
-}
-
 /// How the app decides that two pairing channels belong to the same user.
 ///
 /// This is an **app-level** concern (the DeRec protocol is identity-blind). The

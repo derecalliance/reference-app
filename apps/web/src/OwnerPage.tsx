@@ -4809,7 +4809,7 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
 
         let messages
         try {
-          messages = await pollMailbox('owners', ownerId)
+          messages = await pollMailbox(ownerId)
         } catch (err) {
           reportError('Mailbox poll failed', err, { ownerId })
           return

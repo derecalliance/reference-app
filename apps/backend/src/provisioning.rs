@@ -114,7 +114,7 @@ pub fn provisioned_actor(
         name: name.to_owned(),
         transport: Transport {
             protocol: TransportProtocol::Https,
-            uri: format!("{base_url}/derec/{}/{actor_id}", role.path_segment()),
+            uri: format!("{base_url}/derec/{actor_id}"),
         },
         secret_id: actor_secret_id(role, owner_secret_id).to_string(),
     }
@@ -159,21 +159,15 @@ mod tests {
     }
 
     #[test]
-    fn a_transport_uri_carries_the_role_segment_and_actor_id() {
-        // The URI is what peers post to, and `deliver_message` parses the role
-        // back out of it, so the two must agree on the segment vocabulary.
-        for (role, segment) in [
-            (Role::Owner, "owners"),
-            (Role::Participant, "participants"),
-            (Role::Replica, "replicas"),
-        ] {
-            let actor = provisioned_actor(role, "test", "http://localhost:5000", Some(42));
+    fn a_transport_uri_is_the_base_url_plus_the_actor_id() {
+        // The URI is what peers post to, and `deliver_message` parses the id
+        // back out of it, so the two must agree on the shape. There is no role
+        // segment: an actor id is a UUID and identifies the actor by itself.
+        let actor = provisioned_actor(Role::Participant, "test", "http://localhost:5000", None);
 
-            assert_eq!(
-                actor.transport.uri,
-                format!("http://localhost:5000/derec/{segment}/{}", actor.id)
-            );
-            assert_eq!(Role::from_path_segment(segment), Some(role));
-        }
+        assert_eq!(
+            actor.transport.uri,
+            format!("http://localhost:5000/derec/{}", actor.id)
+        );
     }
 }
