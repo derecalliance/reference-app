@@ -8,8 +8,8 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use derec_library::protocol::{
-    AutoAcceptPolicy, DeRecChannelStore, DeRecEvent, DeRecFlow, DeRecProtocolBuilder,
-    ExpiredChannelCleanup,
+    AutoAcceptPolicy, ChannelQuery, ChannelRecord, ChannelStatus, DeRecChannelStore, DeRecEvent,
+    DeRecFlow, DeRecProtocolBuilder, ExpiredChannelCleanup,
 };
 use derec_library::protocol::types::Timeouts;
 use derec_library::types::ChannelId;
@@ -30,6 +30,18 @@ const TICK_INTERVAL: Duration = Duration::from_secs(15);
 /// waits in `Pending` for exactly that. Five minutes is far too short for an
 /// interop session where the operator is reading codes between two browsers.
 const PENDING_CHANNEL_TTL_SECS: u64 = 3600;
+
+/// How long to wait before retrying an auto-confirmation whose instance was
+/// borrowed by an in-flight call, and how many times.
+///
+/// Handlers on this actor answer with futures that keep running while the next
+/// message is dispatched, so the instance a freshly paired channel belongs to
+/// can legitimately be borrowed at the moment the confirmation runs. Skipping
+/// silently there would leave the channel `Pending` forever — the exact failure
+/// this whole mechanism exists to remove — so the attempt is rescheduled
+/// instead, and only gives up loudly.
+const AUTO_CONFIRM_RETRY: Duration = Duration::from_millis(250);
+const AUTO_CONFIRM_ATTEMPTS: u8 = 8;
 
 use crate::models::{Role, UnpairAck};
 use crate::state::AppState;
@@ -267,7 +279,15 @@ impl ProvisionedActor {
         self.instances.restore(own, protocol);
     }
 
-    fn handle_events(&mut self, events: &[DeRecEvent]) {
+    /// React to the events one instance just produced.
+    ///
+    /// `secret_id` is the instance those events came out of. It is passed in
+    /// rather than looked up per channel because it is the same answer the
+    /// routing index would give — every channel an instance reports on is a
+    /// channel that instance owns — without depending on `reconcile` having
+    /// already caught up with a channel created moments ago inside the call
+    /// that produced these events.
+    fn handle_events(&mut self, secret_id: u64, events: &[DeRecEvent], ctx: &mut Context<Self>) {
         for event in events {
             match event {
                 DeRecEvent::PairingCompleted {
@@ -312,6 +332,18 @@ impl ProvisionedActor {
                                 peer_name = %peer_name,
                                 "participant pairing complete — channel recorded"
                             );
+
+                            // Helpers are unattended bots: there is no operator
+                            // to compare a fingerprint on this side, so one
+                            // confirming here would model nothing real. The
+                            // owner-side confirmation is retained and is what
+                            // the protocol's out-of-band check actually
+                            // protects. See `AutoConfirmFingerprintMsg`.
+                            ctx.notify(AutoConfirmFingerprintMsg {
+                                secret_id,
+                                channel_id: channel_id.0,
+                                attempts_left: AUTO_CONFIRM_ATTEMPTS,
+                            });
                         }
                         Role::Replica => {
                             self.state
@@ -478,7 +510,7 @@ impl Handler<TickMsg> for ProvisionedActor {
                 done
             }
             .into_actor(self)
-            .map(|done, actor, _ctx| {
+            .map(|done, actor, ctx| {
                 for (secret_id, protocol, events, swept, channel_ids) in done {
                     actor.instances.restore(secret_id, protocol);
                     if let Some(channel_ids) = channel_ids {
@@ -486,7 +518,7 @@ impl Handler<TickMsg> for ProvisionedActor {
                     }
 
                     if !events.is_empty() {
-                        actor.handle_events(&events);
+                        actor.handle_events(secret_id, &events, ctx);
                     }
                     match swept {
                         Ok(removed) if !removed.is_empty() => {
@@ -592,6 +624,119 @@ pub struct VerifyFingerprintMsg {
     pub fingerprint: String,
 }
 
+/// Confirm this actor's own side of a channel the library left `Pending`.
+///
+/// Every replica pairing and every `NoKeys` pairing completes in
+/// `ChannelStatus::Pending` on **both** sides, and only `verify_fingerprint`
+/// promotes a side to `Paired`. Fingerprint comparison is an owner-side
+/// affordance: a developer controls their own app, and the actors on this
+/// server are unattended interop fixtures with no operator to read a code back
+/// to. A helper waiting for one would wait forever, so it confirms itself.
+///
+/// This does not skip the protocol step. `verify_fingerprint` derives the
+/// channel's fingerprint from its own shared key and compares; handing it the
+/// locally derived value runs that comparison for real. What the helper gives
+/// up is the *out-of-band* half of the check, which on this side would compare
+/// a value against itself in any case. The owner-side dialog is untouched.
+///
+/// Self-addressed only: the actor posts this to itself when one of its own
+/// pairings completes. Nothing external can ask an actor to confirm a channel.
+#[derive(Message)]
+#[rtype(result = "()")]
+struct AutoConfirmFingerprintMsg {
+    /// The instance that produced the `PairingCompleted` event, and therefore
+    /// the one that owns `channel_id`. A helper holds one instance per
+    /// replicated owner on top of its own, and only this one has the channel's
+    /// shared key — deriving the fingerprint from the own instance is the bug
+    /// this field exists to prevent.
+    secret_id: u64,
+    channel_id: u64,
+    /// Retries left for the case where the instance is borrowed; see
+    /// [`AUTO_CONFIRM_RETRY`].
+    attempts_left: u8,
+}
+
+/// What one auto-confirmation attempt did, so the handler can say so.
+enum AutoConfirmOutcome {
+    /// The channel was not waiting on a fingerprint — an `InlineKeys` or
+    /// `HashedKeys` helper pairing, which the library pairs outright.
+    NotPending,
+    /// The channel was promoted out of `Pending`.
+    Confirmed,
+    /// `verify_fingerprint` rejected the fingerprint this instance itself
+    /// derived. Not reachable through any input a peer controls, so it means
+    /// the two derivations disagree — a library-level invariant breach.
+    Rejected,
+    Failed(derec_library::Error),
+}
+
+/// The status `protocol` records for `channel_id`, or `None` if it holds no
+/// record of that channel under `secret_id`.
+///
+/// Both record kinds are consulted, because a pairing may write either or
+/// both: a helper-mode pairing leaves only a helper-channel row, while a
+/// replica-mode pairing leaves that row *and* a group-member row per
+/// participant. A `Pending` on either record wins — the channel is held back
+/// until every record it has is promoted, so that is the honest summary.
+async fn read_channel_status(
+    protocol: &ActorProtocol,
+    secret_id: u64,
+    channel_id: u64,
+) -> Result<Option<ChannelStatus>, derec_library::Error> {
+    let channel_id = ChannelId(channel_id);
+    let mut statuses: Vec<ChannelStatus> = Vec::new();
+
+    let helper = protocol
+        .channel_store
+        .load(secret_id, ChannelQuery::Helper { channel_id })
+        .await
+        .map_err(derec_library::Error::from)?;
+    if let Some(ChannelRecord::Helper(helper)) = helper {
+        statuses.push(helper.status);
+    }
+
+    let members = protocol
+        .channel_store
+        .replicas(secret_id)
+        .await
+        .map_err(derec_library::Error::from)?;
+    statuses.extend(
+        members
+            .iter()
+            .filter(|m| m.channel_id == channel_id)
+            .map(|m| m.status),
+    );
+
+    if statuses.contains(&ChannelStatus::Pending) {
+        return Ok(Some(ChannelStatus::Pending));
+    }
+    Ok(statuses.first().copied())
+}
+
+/// Run the confirmation step against the instance that owns the channel.
+async fn auto_confirm_fingerprint(
+    protocol: &mut ActorProtocol,
+    secret_id: u64,
+    channel_id: u64,
+) -> AutoConfirmOutcome {
+    match read_channel_status(protocol, secret_id, channel_id).await {
+        Ok(Some(ChannelStatus::Pending)) => {}
+        Ok(_) => return AutoConfirmOutcome::NotPending,
+        Err(e) => return AutoConfirmOutcome::Failed(e),
+    }
+
+    let local = match protocol.get_fingerprint(channel_id.into()).await {
+        Ok(fingerprint) => fingerprint,
+        Err(e) => return AutoConfirmOutcome::Failed(e),
+    };
+
+    match protocol.verify_fingerprint(channel_id.into(), &local).await {
+        Ok(true) => AutoConfirmOutcome::Confirmed,
+        Ok(false) => AutoConfirmOutcome::Rejected,
+        Err(e) => AutoConfirmOutcome::Failed(e),
+    }
+}
+
 /// Change protocol settings on every instance this actor holds, in place.
 #[derive(Message)]
 #[rtype(result = "Result<(), derec_library::Error>")]
@@ -615,6 +760,23 @@ pub struct ListInstanceSecretsMsg;
 #[derive(Message)]
 #[rtype(result = "Option<u64>")]
 pub struct InstanceForChannelMsg {
+    pub channel_id: u64,
+}
+
+/// The status the owning instance records for `channel_id`.
+///
+/// The owning instance is resolved through the same routing index an inbound
+/// envelope goes through, so this reports on the instance that actually holds
+/// the channel rather than on the actor's own. Test and admin observability;
+/// carries no key material.
+///
+/// `None` covers three cases a caller cannot tell apart: no instance claims the
+/// channel, the owning instance is borrowed by an in-flight call, or its store
+/// holds no record. All three are transient or uninteresting for the intended
+/// use, so callers should poll rather than treat `None` as an answer.
+#[derive(Message)]
+#[rtype(result = "Option<ChannelStatus>")]
+pub struct ChannelStatusMsg {
     pub channel_id: u64,
 }
 
@@ -706,13 +868,13 @@ impl Handler<ProcessDelayed> for ProvisionedActor {
                 (protocol, result, channel_ids)
             }
             .into_actor(self)
-            .map(move |(protocol, result, channel_ids), actor, _ctx| {
+            .map(move |(protocol, result, channel_ids), actor, ctx| {
                 actor.instances.restore(secret_id, protocol);
                 if let Some(channel_ids) = channel_ids {
                     actor.instances.reconcile(secret_id, &channel_ids);
                 }
                 match result {
-                    Ok(events) => actor.handle_events(&events),
+                    Ok(events) => actor.handle_events(secret_id, &events, ctx),
                     Err(e) => {
                         error!(
                             actor_id = %actor.actor_id,
@@ -890,13 +1052,13 @@ impl Handler<StartFlowMsg> for ProvisionedActor {
                 (protocol, result, channel_ids)
             }
             .into_actor(self)
-            .map(move |(protocol, result, channel_ids), actor, _ctx| {
+            .map(move |(protocol, result, channel_ids), actor, ctx| {
                 actor.restore_own(protocol);
                 if let Some(channel_ids) = channel_ids {
                     actor.instances.reconcile(secret_id, &channel_ids);
                 }
                 if let Ok(events) = &result {
-                    actor.handle_events(events);
+                    actor.handle_events(secret_id, events, ctx);
                 }
                 result
             }),
@@ -970,6 +1132,83 @@ impl Handler<VerifyFingerprintMsg> for ProvisionedActor {
     }
 }
 
+impl Handler<AutoConfirmFingerprintMsg> for ProvisionedActor {
+    type Result = ResponseActFuture<Self, ()>;
+
+    fn handle(&mut self, msg: AutoConfirmFingerprintMsg, ctx: &mut Context<Self>) -> Self::Result {
+        let AutoConfirmFingerprintMsg { secret_id, channel_id, attempts_left } = msg;
+        let actor_id = self.actor_id;
+
+        let Some(mut protocol) = self.instances.take(secret_id) else {
+            if attempts_left > 0 {
+                ctx.notify_later(
+                    AutoConfirmFingerprintMsg {
+                        secret_id,
+                        channel_id,
+                        attempts_left: attempts_left - 1,
+                    },
+                    AUTO_CONFIRM_RETRY,
+                );
+            } else {
+                error!(
+                    actor_id = %actor_id,
+                    secret_id = secret_id,
+                    channel_id = channel_id,
+                    "instance stayed borrowed; channel left awaiting fingerprint confirmation"
+                );
+            }
+            return Box::pin(actix::fut::ready(()));
+        };
+
+        Box::pin(
+            async move {
+                let outcome = auto_confirm_fingerprint(&mut protocol, secret_id, channel_id).await;
+                (protocol, outcome)
+            }
+            .into_actor(self)
+            .map(move |(protocol, outcome), actor, _ctx| {
+                // Restored before the outcome is even inspected: a failed
+                // confirmation must not cost the actor the instance.
+                actor.instances.restore(secret_id, protocol);
+
+                match outcome {
+                    AutoConfirmOutcome::NotPending => {}
+                    AutoConfirmOutcome::Confirmed => {
+                        info!(
+                            actor_id = %actor_id,
+                            secret_id = secret_id,
+                            channel_id = channel_id,
+                            "helper auto-confirmed its own fingerprint; channel paired"
+                        );
+                    }
+                    AutoConfirmOutcome::Rejected => {
+                        error!(
+                            actor_id = %actor_id,
+                            secret_id = secret_id,
+                            channel_id = channel_id,
+                            "auto-confirmation rejected a locally derived fingerprint; \
+                             channel left pending"
+                        );
+                    }
+                    AutoConfirmOutcome::Failed(e) => {
+                        error!(
+                            actor_id = %actor_id,
+                            secret_id = secret_id,
+                            channel_id = channel_id,
+                            error = %e,
+                            // Deliberately not "channel left pending":
+                            // `verify_fingerprint` writes the promotion before
+                            // it publishes to the newly usable peer, so a
+                            // failure here may mean either.
+                            "auto-confirmation failed"
+                        );
+                    }
+                }
+            }),
+        )
+    }
+}
+
 impl Handler<ReconfigureMsg> for ProvisionedActor {
     type Result = Result<(), derec_library::Error>;
 
@@ -1033,6 +1272,34 @@ impl Handler<InstanceForChannelMsg> for ProvisionedActor {
 
     fn handle(&mut self, msg: InstanceForChannelMsg, _ctx: &mut Context<Self>) -> Self::Result {
         self.instances.secret_for_channel(msg.channel_id)
+    }
+}
+
+impl Handler<ChannelStatusMsg> for ProvisionedActor {
+    type Result = ResponseActFuture<Self, Option<ChannelStatus>>;
+
+    fn handle(&mut self, msg: ChannelStatusMsg, _ctx: &mut Context<Self>) -> Self::Result {
+        let channel_id = msg.channel_id;
+        let Some(secret_id) = self.instances.secret_for_channel(channel_id) else {
+            return Box::pin(actix::fut::ready(None));
+        };
+        let Some(protocol) = self.instances.take(secret_id) else {
+            return Box::pin(actix::fut::ready(None));
+        };
+
+        Box::pin(
+            async move {
+                let status = read_channel_status(&protocol, secret_id, channel_id)
+                    .await
+                    .unwrap_or(None);
+                (protocol, status)
+            }
+            .into_actor(self)
+            .map(move |(protocol, status), actor, _ctx| {
+                actor.instances.restore(secret_id, protocol);
+                status
+            }),
+        )
     }
 }
 
