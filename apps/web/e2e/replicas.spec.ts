@@ -4,8 +4,10 @@ import {
   addReplica,
   openTab,
   pairParticipant,
+  pairReplica,
   protectSecret,
   replicaChannelCount,
+  replicaChannelRow,
   setUpOwner,
   uniqueReplicaName,
 } from './app'
@@ -14,13 +16,15 @@ import {
  * Replica groups: this device as `Source` plus provisioned `Destination`
  * fixtures.
  *
- * Using fixtures rather than extra browser contexts is what makes a group of
- * three tractable — the protocol path is identical, and the fixture has no
- * screen so this device drives both ends of the fingerprint comparison.
+ * The `Destination`s are ordinary provisioned helpers paired in replica mode —
+ * a replica is a pairing mode, not a kind of actor. Using them rather than
+ * extra browser contexts is what makes a group of three tractable: the protocol
+ * path is identical, and an unattended fixture auto-confirms its own
+ * fingerprint, so this device only ever compares its own.
  *
- * Names come from `uniqueReplicaName` because the replica pool is server-wide
- * and the dev backend is reused between runs: a fixed name would match rows an
- * earlier run left behind.
+ * Names come from `uniqueReplicaName` because actors are server-wide and the
+ * dev backend is reused between runs: a fixed name would match rows an earlier
+ * run left behind.
  *
  * Source succession is deliberately not covered. The library's promotion is not
  * yet implemented end to end, so a group whose source leaves is left without
@@ -32,13 +36,24 @@ test.describe('replica groups', () => {
     await setUpOwner(page, { name: 'Alice', participants: 3, prePaired: 0, minParticipants: 2 })
 
     const name = uniqueReplicaName()
+    // Returns with the handshake complete and the comparison raised, but not
+    // answered.
     await addReplica(page, name)
 
-    // Provisioned, but no handshake has run yet. Every replica pairing is gated
-    // regardless of contact mode, so nothing moves until both sides confirm.
-    const row = page.locator('.side-participant-item')
-      .filter({ has: page.locator('.side-participant-name', { hasText: new RegExp(`^${name}$`) }) })
-    await expect(row.locator('.status-tag')).toHaveText('Not paired')
+    // The handshake alone must never be enough. Every replica pairing is gated
+    // regardless of contact mode, so a channel whose codes nobody has compared
+    // stays `Pending` and carries no secret — asserted on the owner's own row,
+    // which is the side the gate is for. The helper's side is not observable
+    // from here and is not what this test is about.
+    await openTab(page, 'Replicas')
+    const row = replicaChannelRow(page, name)
+    await expect(row.locator('.status-tag')).toHaveText('Pending confirmation')
+
+    // And confirming is what lifts it — otherwise the assertion above would
+    // pass just as well against a replica flow that had stopped working
+    // entirely.
+    await pairReplica(page, name)
+    await expect(row.locator('.status-tag')).toHaveText('Verified', { timeout: 60_000 })
 
     expect(pageErrors).toEqual([])
   })

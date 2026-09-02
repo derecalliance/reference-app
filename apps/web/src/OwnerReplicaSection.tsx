@@ -3,18 +3,24 @@ import { pairingRoleLabel } from './pairingRoleOptions'
 import type { ReplicaView } from './replicaFlows'
 
 /**
- * Provisioned replicas, in the owner page's side panel.
+ * Provisioned replica actors, in the owner page's side panel.
  *
- * Sits directly below the provisioned participants and is deliberately built
- * from the same classes and the same affordances — add, expand, status, take
- * offline — because it is the same kind of thing: a backend-hosted actor this
- * this owner has. The only difference that matters is what the actor *is*, and
- * that is what the direction line and the confirm action say.
+ * Sits directly below the provisioned helpers and is deliberately built from
+ * the same classes and the same affordances — add, expand, status, take offline
+ * — because it was the same kind of thing: a backend-hosted actor this owner
+ * has.
  *
- * A browser replica has no entry here on purpose. It is another one of the
- * user's own devices joining as an ordinary owner actor; there is nothing for
- * this owner to provision, and its channel is listed in the Replicas tab
- * alongside every other replica.
+ * **The list is now legacy and the action is not.** A replica is a pairing
+ * mode, not a kind of actor: "+ Add" pairs a helper in replica mode, and the
+ * result is a channel, so it surfaces on the Replicas tab like every other
+ * replica channel. Only replica *actors* from the superseded `/replicas`
+ * provisioning path appear in the list below, which is why a fresh owner sees
+ * an empty one. When that path goes, so do the list, the row and its actions —
+ * the header and its button are what outlive them.
+ *
+ * A browser replica has no entry here either, and for the same reason: it is
+ * another of the user's own devices joining as an ordinary owner actor, and its
+ * channel is listed on the Replicas tab.
  */
 
 export interface OwnerReplicaSectionProps {
@@ -52,7 +58,7 @@ export function OwnerReplicaSection({
         <button
           className="secondary small"
           onClick={() => setAddOpen(true)}
-          title="Add a backend-hosted replica of this vault"
+          title="Pair a helper as a replica of this vault"
         >
           + Add
         </button>
@@ -60,8 +66,8 @@ export function OwnerReplicaSection({
 
       {loaded && replicas.length === 0 ? (
         <p className="panel-subtitle">
-          None yet. A replica mirrors this vault to another device once both confirm a
-          shared code.
+          None here. “+ Add” pairs a helper as a replica of this vault — it appears on
+          the Replicas tab, not in this list.
         </p>
       ) : (
         <ul className="side-participant-list" role="list">

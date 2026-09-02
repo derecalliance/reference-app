@@ -22,6 +22,7 @@ import { pairingRoleLabel } from './pairingRoleOptions'
 import {
   apiConfirmReplicaFingerprint,
   apiCreateActorContact,
+  apiCreateReplicaContact,
   apiGetReplicaFingerprint,
   type BEActorWithStatus,
 } from './api'
@@ -299,7 +300,9 @@ export interface PairReplicaOptions {
   protocol: ReplicaProtocol
   /** This device's own owner actor id — the key its replica bookkeeping lives under. */
   ownerId: string
-  /** Backend actor id of the replica to pair with. */
+  /** Backend actor id of the peer to pair with — a helper, or a legacy
+   *  provisioned replica actor. Which of the two it is decides where the
+   *  contact is minted from; see `ownerSecretId`. */
   replicaId: string
   /** Display name, forwarded to the peer as communication info. */
   replicaName: string
@@ -308,6 +311,18 @@ export interface PairReplicaOptions {
    * is the `replica_source`; the peer derives the complement.
    */
   role?: ReplicaPairingRole
+  /**
+   * This owner's own `secret_id`, set when the peer is an ordinary helper.
+   *
+   * A helper's *own* instance is bound to the helper's own secret, so a contact
+   * minted from it yields a helper relationship no matter what `sender_kind`
+   * the handshake declares. Passing this mints from an instance bound to the
+   * mirrored vault instead, which is what makes the peer a replica of it.
+   *
+   * Omitted for a legacy provisioned `replica` actor, whose single instance is
+   * already bound to the owner's secret at provisioning time.
+   */
+  ownerSecretId?: string
 }
 
 /**
@@ -317,14 +332,23 @@ export interface PairReplicaOptions {
  * `sender_kind`, and it must resolve through `senderKindFor` so a replica
  * pairing is not silently downgraded to a helper one.
  *
+ * `ownerSecretId` is load-bearing in the same way but on the *peer's* side: the
+ * wire kind alone does not decide which of the peer's protocol instances holds
+ * the channel, and a contact minted from the wrong one leaves the peer holding
+ * a replica channel against a vault it is not mirroring.
+ *
  * The returned id is the transient one carried on the contact — the handshake
  * rotates to a long-term id that arrives later on `PairingCompleted`. It is
- * also recorded here, against the replica it belongs to, so that completion can
+ * also recorded here, against the peer it belongs to, so that completion can
  * be attributed: the long-term id never appears on the initiating side until
  * the event arrives.
  */
 export async function pairReplica(opts: PairReplicaOptions): Promise<bigint> {
-  const contact = dtoToContactMessage(await apiCreateActorContact(opts.replicaId))
+  const contactDto =
+    opts.ownerSecretId === undefined
+      ? await apiCreateActorContact(opts.replicaId)
+      : await apiCreateReplicaContact(opts.replicaId, opts.ownerSecretId)
+  const contact = dtoToContactMessage(contactDto)
 
   const events = await opts.protocol.start(FlowKind.Pairing, {
     kind: senderKindFor(opts.role ?? 'replica_source'),

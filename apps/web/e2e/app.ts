@@ -319,26 +319,47 @@ export async function unpairParticipant(page: Page, index = 0): Promise<string> 
 // ── Replicas ────────────────────────────────────────────────────────────────
 //
 // A replica is another device holding a mirror of the whole vault, not a share
-// of it. Provisioned replicas are backend fixtures, which is what makes a group
-// of three testable from one browser context: this device is the `Source` and
-// each fixture is a `Destination`.
+// of it — and it is a pairing *mode*, not a kind of actor: the counterparty is
+// an ordinary provisioned helper that gains a protocol instance bound to this
+// owner's secret when its contact is minted.
+//
+// Those helpers are backend fixtures, which is what makes a group of three
+// testable from one browser context: this device is the `Source` and each
+// fixture is a `Destination`. Being unattended, they auto-confirm their own
+// fingerprint, so only this device compares.
 
-/** The "Provisioned replicas" side-panel section. */
+/** The replicas side-panel section, which is where "+ Add" lives. */
 function replicaSection(page: Page): Locator {
   return page.locator('.side-panel-section').filter({ hasText: 'Provisioned replicas' })
 }
 
 /**
- * A replica's row in the side panel, by the name it was added under.
+ * A replica's channel row on the Replicas tab, by the name it was added under.
  *
- * Matched on the whole name, not a substring: provisioned replicas belong to
- * the *server*, so every replica any test has added is listed for every owner,
- * and a loose match would resolve to several rows.
+ * The Replicas tab, not the side panel: a replica is a pairing mode rather than
+ * a kind of actor, so what it produces is a channel. The side panel lists only
+ * replica *actors* from the superseded provisioning path, and there are none.
+ *
+ * Matched on the whole name because the backend is reused between runs and a
+ * loose match would resolve to rows an earlier run left behind.
  */
-function replicaRow(page: Page, name: string): Locator {
-  return replicaSection(page)
-    .locator('.side-participant-item')
-    .filter({ has: page.locator('.side-participant-name', { hasText: new RegExp(`^${name}$`) }) })
+export function replicaChannelRow(page: Page, name: string): Locator {
+  return page
+    .locator('.replicas-tab-section')
+    .filter({ hasText: 'Replica channels' })
+    .locator('.channel-block')
+    .filter({ has: page.locator('.channel-row-name', { hasText: new RegExp(`^${name}$`) }) })
+}
+
+/**
+ * The fingerprint comparison this device raised for `name`.
+ *
+ * Distinct from {@link confirmFingerprint}'s dialog, which is the helper-pairing
+ * one: this is scoped by name because a replica group raises one of these per
+ * member.
+ */
+function replicaFingerprintDialog(page: Page, name: string): Locator {
+  return page.getByRole('dialog').filter({ hasText: name })
 }
 
 /**
@@ -354,7 +375,19 @@ export function uniqueReplicaName(prefix = 'Device'): string {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}`
 }
 
-/** Provision a backend-hosted replica of this vault. */
+/**
+ * Pair a helper as a replica of this vault, stopping short of confirming.
+ *
+ * Adding and pairing are one action: there is no replica actor to provision
+ * first, so "+ Add" mints a replica-mode contact from a helper and runs the
+ * handshake. This returns once that handshake has completed and the comparison
+ * dialog it raises is on screen — still unconfirmed, which is the state
+ * {@link pairReplica} resolves.
+ *
+ * Waiting on the dialog rather than on a row is deliberate: the dialog is
+ * raised by `PairingCompleted`, so it is a signal that the protocol finished
+ * rather than that the request was accepted.
+ */
 export async function addReplica(page: Page, name: string): Promise<void> {
   await replicaSection(page).getByRole('button', { name: '+ Add' }).click()
 
@@ -362,23 +395,27 @@ export async function addReplica(page: Page, name: string): Promise<void> {
   await modal.locator('input[type="text"]').fill(name)
   await modal.getByRole('button', { name: 'Add Replica' }).click()
 
-  await expect(replicaRow(page, name)).toBeVisible({ timeout: 30_000 })
+  await expect(replicaFingerprintDialog(page, name)).toBeVisible({ timeout: 60_000 })
 }
 
 /**
- * Pair a provisioned replica and confirm the fingerprint on both sides.
+ * Confirm the comparison {@link addReplica} raised.
  *
- * Every replica pairing is gated regardless of contact mode, so the channel
- * sits `Pending` until the comparison is resolved — this device confirms its
- * own side and stands in for the fixture, which has no screen.
+ * Only this device compares. The helper on the other end auto-confirms — it is
+ * an unattended fixture with no screen to read a code off — so the dialog
+ * settles into a "confirmed here" state with a Done button instead of closing
+ * itself, and dismissing it is part of confirming.
  */
 export async function pairReplica(page: Page, name: string): Promise<void> {
-  const row = replicaRow(page, name)
-  await row.locator('.side-participant-header').click()
-  await row.getByRole('button', { name: 'Pair', exact: true }).click()
+  const dialog = replicaFingerprintDialog(page, name)
+  await expect(dialog).toBeVisible({ timeout: 60_000 })
+  // The code must be on screen before anyone can claim to have compared it.
+  await expect(dialog.getByText(/^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/).first())
+    .toBeVisible()
 
-  await confirmFingerprint(page)
-  await expect(row.locator('.status-tag')).toHaveText('Paired', { timeout: 60_000 })
+  await dialog.getByRole('button', { name: 'Codes match' }).click()
+  await dialog.getByRole('button', { name: 'Done' }).click()
+  await expect(dialog).toBeHidden({ timeout: 30_000 })
 }
 
 /**

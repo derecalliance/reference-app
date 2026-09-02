@@ -33,7 +33,7 @@ import {
   type ContactModeKey,
 } from './contactModes'
 import { selectAutoPairTargets } from './autoPairSelection'
-import { type BEActorWithStatus, type ProvisionedChannel, type ProvisioningSettings, apiAddReplica, apiListParticipantChannels, apiLinkHelperChannels, apiAddHelper, apiCreateActorContact, apiGetActors, apiGetBrowserContact, apiPostBrowserContact, apiStartActorPairing, apiToggleParticipantStatus, apiToggleReplicaStatus, type ContactMessageDto } from './api'
+import { type BEActorWithStatus, type ProvisionedChannel, type ProvisioningSettings, apiListParticipantChannels, apiLinkHelperChannels, apiAddHelper, apiCreateActorContact, apiGetActors, apiGetBrowserContact, apiPostBrowserContact, apiStartActorPairing, apiToggleParticipantStatus, apiToggleReplicaStatus, type ContactMessageDto } from './api'
 import { complementRole, senderKindFor, type PairingRole } from './pairingRoles'
 import { canDrivePeerViaBackend } from './ownerPairing'
 import {
@@ -6532,21 +6532,51 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
 
   // ── Replica actions ────────────────────────────────────────────────────────
 
-  /** Provision a backend-hosted replica of this owner's vault. */
+  /**
+   * Pair a helper as a replica of this owner's vault.
+   *
+   * There is no such thing as a provisioned *replica* any more: a replica is a
+   * pairing mode, and the counterparty is an ordinary helper that gains a
+   * protocol instance bound to this owner's secret when the contact is minted.
+   * `ownerSecretId` is what selects that instance, and it is the whole of what
+   * separates this from pairing the same actor as an ordinary helper.
+   *
+   * Adding and pairing are one action because they always were one intent — the
+   * separate Pair step existed only because a replica *actor* had to be
+   * provisioned before anything could be paired with it.
+   *
+   * A helper is provisioned rather than drawn from the free ones already in the
+   * pool, for two reasons. The name is the first: a provisioned actor advertises
+   * its own name as `communication_info["name"]`, and that is what the peer
+   * records and every replica row is labelled from — so reusing "Alex" for a
+   * replica the user named "Laptop" would file it under "Alex" with no way back
+   * to the name they chose. The second is that the pool is shared server-wide
+   * and sized deliberately in the setup wizard; quietly consuming one of its
+   * members would take a helper the user meant to pair as a helper. This is
+   * also what the superseded `/replicas` path did — one actor per replica — so
+   * it adds no actors that the old flow did not.
+   *
+   * This device is always the `replica_source`: a helper has no UI to consent
+   * with, so the only direction that makes sense is mirroring *out*. The role
+   * goes through `pairReplica`, which resolves it via `senderKindFor`.
+   */
   async function handleAddReplica(name: string): Promise<void> {
-    await apiAddReplica(name, owner.ownerId, provisioningSettings)
+    const helper = await apiAddHelper(name, provisioningSettings)
+
+    await pairReplica({
+      protocol: replicaProtocol,
+      ownerId: owner.ownerId,
+      replicaId: helper.id,
+      replicaName: name,
+      role: 'replica_source',
+      // What makes this a replica of *this* vault rather than a helper of it.
+      ownerSecretId: owner.ownSecretId,
+    })
+    // The handshake completes over the mailbox poll; `PairingCompleted` is what
+    // raises the fingerprint modal.
     await refreshRosterSnapshot()
   }
 
-  /**
-   * Start a replica handshake against a provisioned replica.
-   *
-   * This device is always the `replica_source` here: a provisioned replica has
-   * no UI to consent with, so the only direction that makes sense is mirroring
-   * *out*. The role goes through `pairReplica`, which resolves it via
-   * `senderKindFor` — the wire kind is the whole of what distinguishes a replica
-   * pairing from a helper one.
-   */
   /**
    * Ask the replica group which version its members hold.
    *

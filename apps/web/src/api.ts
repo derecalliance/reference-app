@@ -210,6 +210,42 @@ export async function apiCreateActorContact(
   return res.json() as Promise<ContactMessageDto>
 }
 
+/**
+ * Mint a contact from a helper's instance for *this owner's* vault, so pairing
+ * against it produces a replica rather than a helper relationship.
+ *
+ * A replica is a pairing mode, not a kind of actor. The counterparty is an
+ * ordinary helper; what makes the handshake a replica handshake is which of its
+ * protocol instances the contact came from. The backend creates that instance
+ * on demand and the call is idempotent, so a helper already mirroring this
+ * owner keeps the shares it holds rather than starting over.
+ *
+ * `ownerSecretId` is the owner's own `secret_id` as published on its actor
+ * record, carried as a decimal string because a `u64` exceeds JavaScript's
+ * exact integer range.
+ */
+export async function apiCreateReplicaContact(
+  helperId: string,
+  ownerSecretId: string,
+  contactMode: ContactModeKey = DEFAULT_CONTACT_MODE,
+  nonce?: bigint,
+): Promise<ContactMessageDto> {
+  const params = new URLSearchParams({
+    contact_mode: contactMode,
+    replica_for_owner_secret: ownerSecretId,
+  })
+  if (nonce !== undefined) params.set('nonce', nonce.toString())
+
+  const res = await request(
+    `/actors/${encodeURIComponent(helperId)}/contact?${params.toString()}`,
+    { method: 'POST' },
+  )
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, `create replica contact failed: ${res.status}`))
+  }
+  return res.json() as Promise<ContactMessageDto>
+}
+
 /** Drive a backend-managed actor into pairing against `contact`.
  *
  *  Pairing is bi-directional: `role` is the role the *backend actor* takes,
