@@ -116,16 +116,16 @@ pub async fn add(
         .into_response()
 }
 
-/// Pick a display name for a participant being created.
+/// Pick a display name for a helper being created.
 ///
 /// `names` are consumed in creation order, not by pool position: the caller
 /// cannot know how many it will need — that depends on what other owners have
-/// already provisioned — so a caller offering two names for a two-participant
+/// already provisioned — so a caller offering two names for a two-helper
 /// shortfall gets both used, whatever the resulting pool positions are.
 ///
 /// The fallback numbers by pool position instead, so the label stays unique
 /// across calls rather than restarting at 1 each time.
-fn participant_name(names: &[String], taken: usize, pool_index: usize) -> String {
+fn helper_name(names: &[String], taken: usize, pool_index: usize) -> String {
     names
         .get(taken)
         .filter(|n| !n.trim().is_empty())
@@ -153,7 +153,7 @@ pub async fn ensure(
 
     let EnsuredParticipants { created, participants: helpers } =
         state.actors.ensure_participants(req.total as usize, |pool_index| {
-            let name = participant_name(&names, taken, pool_index);
+            let name = helper_name(&names, taken, pool_index);
             taken += 1;
             // `None`: a helper protects its own secret and never inherits
             // an owner's — see `provisioning::actor_secret_id`.
@@ -371,7 +371,7 @@ pub async fn link_channels(
 
 #[cfg(test)]
 mod tests {
-    use super::participant_name;
+    use super::helper_name;
 
     fn names(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| (*s).to_owned()).collect()
@@ -383,8 +383,8 @@ mod tests {
 
         // Pool positions 7 and 8, but the caller's first two names still apply:
         // it offered names for what it needs created, not for slots.
-        assert_eq!(participant_name(&offered, 0, 7), "Ann");
-        assert_eq!(participant_name(&offered, 1, 8), "Bo");
+        assert_eq!(helper_name(&offered, 0, 7), "Ann");
+        assert_eq!(helper_name(&offered, 1, 8), "Bo");
     }
 
     #[test]
@@ -393,20 +393,20 @@ mod tests {
         // stays unique across calls instead of restarting at 1 each time.
         let offered = names(&["Ann"]);
 
-        assert_eq!(participant_name(&offered, 1, 7), "Participant 8");
-        assert_eq!(participant_name(&offered, 2, 8), "Participant 9");
+        assert_eq!(helper_name(&offered, 1, 7), "Participant 8");
+        assert_eq!(helper_name(&offered, 2, 8), "Participant 9");
     }
 
     #[test]
     fn no_names_at_all_is_fine() {
-        assert_eq!(participant_name(&[], 0, 0), "Participant 1");
+        assert_eq!(helper_name(&[], 0, 0), "Participant 1");
     }
 
     #[test]
     fn a_blank_name_falls_back_rather_than_rendering_an_empty_row() {
         let offered = names(&["", "   "]);
 
-        assert_eq!(participant_name(&offered, 0, 0), "Participant 1");
-        assert_eq!(participant_name(&offered, 1, 1), "Participant 2");
+        assert_eq!(helper_name(&offered, 0, 0), "Participant 1");
+        assert_eq!(helper_name(&offered, 1, 1), "Participant 2");
     }
 }

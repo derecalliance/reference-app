@@ -242,7 +242,7 @@ export async function apiStartActorPairing(
 
 // ── Participants ─────────────────────────────────────────────────────────────
 
-export interface AddParticipantResponse {
+export interface AddHelperResponse {
   id: string
   role: 'participant'
   name: string
@@ -250,9 +250,9 @@ export interface AddParticipantResponse {
   secret_id: string
 }
 
-export interface EnsureParticipantsResult {
+export interface EnsureHelpersResult {
   /** The whole pool, including helpers other owners provisioned. */
-  helpers: AddParticipantResponse[]
+  helpers: AddHelperResponse[]
   /** How many of them this call had to create. */
   created: number
 }
@@ -273,7 +273,7 @@ export async function apiEnsureHelpers(
   total: number,
   names: string[],
   settings: ProvisioningSettings,
-): Promise<EnsureParticipantsResult> {
+): Promise<EnsureHelpersResult> {
   const res = await request(`/helpers/ensure`, {
     method: 'POST',
     headers: JSON_HEADERS,
@@ -282,13 +282,13 @@ export async function apiEnsureHelpers(
   if (!res.ok) {
     throw new Error(await errorMessage(res, `ensure helpers failed: ${res.status}`))
   }
-  return res.json() as Promise<EnsureParticipantsResult>
+  return res.json() as Promise<EnsureHelpersResult>
 }
 
 export async function apiAddHelper(
   name: string,
   settings: ProvisioningSettings,
-): Promise<AddParticipantResponse> {
+): Promise<AddHelperResponse> {
   const res = await request(`/helpers`, {
     method: 'POST',
     headers: JSON_HEADERS,
@@ -297,7 +297,7 @@ export async function apiAddHelper(
   if (!res.ok) {
     throw new Error(await errorMessage(res, `add-helper failed: ${res.status}`))
   }
-  return res.json() as Promise<AddParticipantResponse>
+  return res.json() as Promise<AddHelperResponse>
 }
 
 export async function apiToggleParticipantStatus(
