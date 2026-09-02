@@ -12,7 +12,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::{
-    actor::{CreateContactMsg, LoadSharedKeyMsg, StartFlowMsg},
+    actor::{CreateContactMsg, EnsureReplicaInstanceMsg, LoadSharedKeyMsg, StartFlowMsg},
     models::{Actor, ActorWithStatus, ListActorsResponse, Role},
     routes::actor_guard::ensure_actor_exists,
     routes::helpers::{ContactMessageDto, contact_to_dto},
@@ -47,6 +47,12 @@ pub struct ContactModeQuery {
     /// human-readable nonce rather than letting the library mint a random u64.
     #[serde(default)]
     pub nonce: Option<u64>,
+    /// When set, mint the contact from the instance bound to this owner's
+    /// secret rather than from the helper's own instance — a replica-mode
+    /// pairing. Decimal string: a `u64` exceeds JavaScript's exact integer
+    /// range, so it never travels as a JSON number.
+    #[serde(default)]
+    replica_for_owner_secret: Option<String>,
 }
 
 impl ContactModeQuery {
@@ -64,6 +70,22 @@ impl ContactModeQuery {
                 })),
             )
                 .into_response()),
+        }
+    }
+
+    /// Parse the mirrored owner's secret id, if one was supplied.
+    fn replica_for_owner_secret(&self) -> Result<Option<u64>, Response> {
+        match self.replica_for_owner_secret.as_deref() {
+            None | Some("") => Ok(None),
+            Some(raw) => raw.parse::<u64>().map(Some).map_err(|_| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "replica_for_owner_secret must be a u64 as a decimal string"
+                    })),
+                )
+                    .into_response()
+            }),
         }
     }
 }
@@ -206,6 +228,41 @@ pub async fn create_contact(
         Err(response) => return response,
     };
 
+    let replica_for_owner_secret = match query.replica_for_owner_secret() {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+
+    // The instance must exist before a contact can be minted from it. This is
+    // idempotent, so a second replica pairing with the same owner reuses the
+    // instance and its shares rather than resetting them.
+    if let Some(owner_secret) = replica_for_owner_secret {
+        match addr
+            .send(EnsureReplicaInstanceMsg {
+                owner_secret_id: owner_secret,
+            })
+            .await
+        {
+            Ok(Ok(_created)) => {}
+            Ok(Err(e)) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "error": format!("replica instance creation failed: {e}")
+                    })),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("actor unavailable: {e}") })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
     // The PrePair round-trip that HashedKeys and NoKeys need is auto-accepted
     // by these actors, and the fingerprint confirmation NoKeys then requires is
     // driven by the operator through the fingerprint endpoints — so an
@@ -213,7 +270,7 @@ pub async fn create_contact(
     let msg = CreateContactMsg {
         contact_mode,
         nonce: query.nonce,
-        replica_for_owner_secret: None,
+        replica_for_owner_secret,
     };
 
     match addr.send(msg).await {
