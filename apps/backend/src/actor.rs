@@ -227,6 +227,45 @@ async fn channel_ids_of(protocol: &ActorProtocol, secret_id: u64) -> Option<Vec<
     Some(ids)
 }
 
+/// Channel ids on `secret_id` still awaiting fingerprint confirmation.
+///
+/// Unlike [`channel_ids_of`], a partial read is returned rather than
+/// suppressed. Nothing is pruned from this answer — it only ever *adds* a
+/// confirmation attempt, and the attempt is idempotent — so the worst a missing
+/// half can do is defer a channel to the next tick, where a `None` would defer
+/// it forever.
+async fn pending_channel_ids(protocol: &ActorProtocol, secret_id: u64) -> Vec<u64> {
+    let mut ids = Vec::new();
+
+    match protocol.channel_store.helpers(secret_id).await {
+        Ok(channels) => ids.extend(
+            channels
+                .iter()
+                .filter(|c| c.status == ChannelStatus::Pending)
+                .map(|c| c.channel_id.0),
+        ),
+        Err(e) => {
+            warn!(secret_id = secret_id, error = %e, "helper channel read failed during pending sweep");
+        }
+    }
+
+    match protocol.channel_store.replicas(secret_id).await {
+        Ok(members) => ids.extend(
+            members
+                .iter()
+                .filter(|m| m.status == ChannelStatus::Pending)
+                .map(|m| m.channel_id.0),
+        ),
+        Err(e) => {
+            warn!(secret_id = secret_id, error = %e, "replica member read failed during pending sweep");
+        }
+    }
+
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
 /// A backend-managed protocol participant.
 ///
 /// A `DeRecProtocol` instance is bound to one `secret_id` because that is the
@@ -496,6 +535,10 @@ impl Handler<TickMsg> for ProvisionedActor {
             return Box::pin(actix::fut::ready(()));
         }
 
+        // Only helpers confirm their own fingerprints, so only they need the
+        // backstop below. Captured here because the async block has no `self`.
+        let auto_confirms = self.role == Role::Participant;
+
         Box::pin(
             async move {
                 let mut done = Vec::with_capacity(borrowed.len());
@@ -505,16 +548,37 @@ impl Handler<TickMsg> for ProvisionedActor {
                         .remove_expired_channels(PENDING_CHANNEL_TTL_SECS)
                         .await;
                     let channel_ids = channel_ids_of(&protocol, secret_id).await;
-                    done.push((secret_id, protocol, events, swept, channel_ids));
+                    let pending = if auto_confirms {
+                        pending_channel_ids(&protocol, secret_id).await
+                    } else {
+                        Vec::new()
+                    };
+                    done.push((secret_id, protocol, events, swept, channel_ids, pending));
                 }
                 done
             }
             .into_actor(self)
             .map(|done, actor, ctx| {
-                for (secret_id, protocol, events, swept, channel_ids) in done {
+                for (secret_id, protocol, events, swept, channel_ids, pending) in done {
                     actor.instances.restore(secret_id, protocol);
                     if let Some(channel_ids) = channel_ids {
                         actor.instances.reconcile(secret_id, &channel_ids);
+                    }
+
+                    // The backstop. `PairingCompleted` is the fast path, but a
+                    // single self-notify is not a guarantee: the instance can
+                    // stay borrowed past the retry window, the confirmation can
+                    // fail on a transient error, and neither leaves anything to
+                    // try again. Without this, both outcomes are a channel that
+                    // sits `Pending` until the hour-long expiry sweep drops it.
+                    // Re-notifying is free on the happy path — the handler reads
+                    // the recorded status and short-circuits on `NotPending`.
+                    for channel_id in pending {
+                        ctx.notify(AutoConfirmFingerprintMsg {
+                            secret_id,
+                            channel_id,
+                            attempts_left: AUTO_CONFIRM_ATTEMPTS,
+                        });
                     }
 
                     if !events.is_empty() {
@@ -661,6 +725,14 @@ enum AutoConfirmOutcome {
     /// The channel was not waiting on a fingerprint — an `InlineKeys` or
     /// `HashedKeys` helper pairing, which the library pairs outright.
     NotPending,
+    /// The owning instance holds no record of the channel at all.
+    ///
+    /// Unreachable today: every pairing persists its channel record before the
+    /// events announcing it are returned, and the tick backstop reads the ids
+    /// it sweeps out of that same store. Kept distinct from `NotPending` so
+    /// that a future channel kind which persists differently shows up as a
+    /// warning rather than as a silent "nothing to do".
+    NoRecord,
     /// The channel was promoted out of `Pending`.
     Confirmed,
     /// `verify_fingerprint` rejected the fingerprint this instance itself
@@ -721,7 +793,8 @@ async fn auto_confirm_fingerprint(
 ) -> AutoConfirmOutcome {
     match read_channel_status(protocol, secret_id, channel_id).await {
         Ok(Some(ChannelStatus::Pending)) => {}
-        Ok(_) => return AutoConfirmOutcome::NotPending,
+        Ok(Some(_)) => return AutoConfirmOutcome::NotPending,
+        Ok(None) => return AutoConfirmOutcome::NoRecord,
         Err(e) => return AutoConfirmOutcome::Failed(e),
     }
 
@@ -779,6 +852,17 @@ pub struct InstanceForChannelMsg {
 pub struct ChannelStatusMsg {
     pub channel_id: u64,
 }
+
+/// Every channel this actor holds that is still awaiting fingerprint
+/// confirmation, across all its instances, ascending.
+///
+/// The same list the tick backstop acts on, exposed so a test can assert both
+/// halves of that mechanism — that a channel was left `Pending`, and that the
+/// tick then cleared it — without knowing an id the library minted internally.
+/// Test and admin observability; carries no key material.
+#[derive(Message)]
+#[rtype(result = "Vec<u64>")]
+pub struct PendingChannelIdsMsg;
 
 /// Ensure this actor holds an instance bound to `owner_secret_id`.
 ///
@@ -1173,6 +1257,14 @@ impl Handler<AutoConfirmFingerprintMsg> for ProvisionedActor {
 
                 match outcome {
                     AutoConfirmOutcome::NotPending => {}
+                    AutoConfirmOutcome::NoRecord => {
+                        warn!(
+                            actor_id = %actor_id,
+                            secret_id = secret_id,
+                            channel_id = channel_id,
+                            "asked to confirm a channel the owning instance has no record of"
+                        );
+                    }
                     AutoConfirmOutcome::Confirmed => {
                         info!(
                             actor_id = %actor_id,
@@ -1298,6 +1390,43 @@ impl Handler<ChannelStatusMsg> for ProvisionedActor {
             .map(move |(protocol, status), actor, _ctx| {
                 actor.instances.restore(secret_id, protocol);
                 status
+            }),
+        )
+    }
+}
+
+impl Handler<PendingChannelIdsMsg> for ProvisionedActor {
+    type Result = ResponseActFuture<Self, Vec<u64>>;
+
+    fn handle(&mut self, _msg: PendingChannelIdsMsg, _ctx: &mut Context<Self>) -> Self::Result {
+        // Borrowed instances are skipped rather than waited for, exactly as the
+        // tick does — see `TickMsg`.
+        let mut borrowed: Vec<(u64, ActorProtocol)> = Vec::new();
+        for secret_id in self.instances.secret_ids() {
+            if let Some(protocol) = self.instances.take(secret_id) {
+                borrowed.push((secret_id, protocol));
+            }
+        }
+
+        Box::pin(
+            async move {
+                let mut done = Vec::with_capacity(borrowed.len());
+                for (secret_id, protocol) in borrowed {
+                    let pending = pending_channel_ids(&protocol, secret_id).await;
+                    done.push((secret_id, protocol, pending));
+                }
+                done
+            }
+            .into_actor(self)
+            .map(|done, actor, _ctx| {
+                let mut ids = Vec::new();
+                for (secret_id, protocol, pending) in done {
+                    actor.instances.restore(secret_id, protocol);
+                    ids.extend(pending);
+                }
+                ids.sort_unstable();
+                ids.dedup();
+                ids
             }),
         )
     }
