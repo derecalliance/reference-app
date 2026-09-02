@@ -10,13 +10,12 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use derec_library::protocol::{
     ChannelQuery, ChannelRecord, ChannelStoreFuture, DeRecChannelStore, DeRecSecretStore,
-    DeRecShareStore, DeRecStateStore, DeRecTransport, DeRecUserSecretStore, HelperChannel,
-    MissingPolicy, ReplicaMember, SecretKind, SecretStoreError, SecretStoreFuture, SecretValue,
-    Share, ShareStoreFuture, StateItem, StateKey, StateKind, StateStoreFuture, TransportFuture,
-    UserSecrets,
+    DeRecShareStore, DeRecStateStore, DeRecUserSecretStore, HelperChannel, MissingPolicy,
+    ReplicaMember, SecretKind, SecretStoreError, SecretStoreFuture, SecretValue, Share,
+    ShareStoreFuture, StateItem, StateKey, StateKind, StateStoreFuture, UserSecrets,
 };
+use derec_library::protocol::types::{HelperFilter, ReplicaFilter};
 use derec_library::types::ChannelId;
-use derec_proto::TransportProtocol;
 
 // ── Channel store ───────────────────────────────────────────────────────────
 
@@ -90,12 +89,22 @@ impl DeRecChannelStore for InMemoryChannelStore {
         Box::pin(std::future::ready(Ok(removed)))
     }
 
-    fn helpers(&self, secret_id: u64) -> ChannelStoreFuture<'_, Vec<HelperChannel>> {
+    /// The filter is applied while walking the map, so a narrowed listing
+    /// never materializes the rows it would discard. An in-memory `HashMap`
+    /// has no query language to push it down into, so `ChannelFilter::matches`
+    /// is the honest implementation here.
+    fn helpers(
+        &self,
+        secret_id: u64,
+        filter: HelperFilter,
+    ) -> ChannelStoreFuture<'_, Vec<HelperChannel>> {
         let entries: Vec<HelperChannel> = self
             .helpers
             .iter()
             .filter(|((s, _), _)| *s == secret_id)
-            .map(|(_, h)| h.clone())
+            .map(|(_, h)| h)
+            .filter(|h| filter.matches(&h.channel_id, h.status, &h.peer_role))
+            .cloned()
             .collect();
         Box::pin(std::future::ready(Ok(entries)))
     }
@@ -108,12 +117,18 @@ impl DeRecChannelStore for InMemoryChannelStore {
     /// first eligible entry here, so the longest-standing member succeeds. An
     /// arbitrary order would be correct too, but it would hand the choice to
     /// the map's iteration order rather than making it.
-    fn replicas(&self, secret_id: u64) -> ChannelStoreFuture<'_, Vec<ReplicaMember>> {
+    fn replicas(
+        &self,
+        secret_id: u64,
+        filter: ReplicaFilter,
+    ) -> ChannelStoreFuture<'_, Vec<ReplicaMember>> {
         let mut entries: Vec<ReplicaMember> = self
             .members
             .iter()
             .filter(|((s, _), _)| *s == secret_id)
-            .map(|(_, r)| r.clone())
+            .map(|(_, r)| r)
+            .filter(|r| filter.matches(&r.replica_id, r.status, &r.role))
+            .cloned()
             .collect();
         entries.sort_by_key(|r| (r.created_at, r.replica_id.0));
         Box::pin(std::future::ready(Ok(entries)))
@@ -437,46 +452,6 @@ impl DeRecStateStore for InMemoryStateStore {
     }
 }
 
-// ── HTTP transport ───────────────────────────────────────────────────────────
-
-#[derive(Clone)]
-pub struct HttpTransport {
-    client: reqwest::Client,
-}
-
-impl HttpTransport {
-    pub fn new(client: reqwest::Client) -> Self {
-        Self { client }
-    }
-}
-
-impl DeRecTransport for HttpTransport {
-    fn send(&self, endpoint: &TransportProtocol, message: Vec<u8>) -> TransportFuture<'_> {
-        let uri = endpoint.uri.clone();
-        let client = self.client.clone();
-        Box::pin(async move {
-            let resp = client
-                .post(&uri)
-                .header("Content-Type", "application/octet-stream")
-                .body(message)
-                .send()
-                .await;
-
-            match resp {
-                Ok(r) if r.status().is_success() => Ok(()),
-                Ok(r) => {
-                    tracing::error!(uri = %uri, status = %r.status(), "transport: non-success status");
-                    Err(derec_library::Error::Invariant("transport: non-success HTTP status"))
-                }
-                Err(e) => {
-                    tracing::error!(uri = %uri, error = %e, "transport: send failed");
-                    Err(derec_library::Error::Invariant("transport: HTTP send failed"))
-                }
-            }
-        })
-    }
-}
-
 // ── Actor protocol type alias ────────────────────────────────────────────────
 
 pub type ActorProtocol = derec_library::protocol::DeRecProtocol<
@@ -485,5 +460,191 @@ pub type ActorProtocol = derec_library::protocol::DeRecProtocol<
     InMemorySecretStore,
     InMemoryUserSecretStore,
     InMemoryStateStore,
-    HttpTransport,
+    crate::transport::CompositeTransport,
 >;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use derec_library::protocol::types::{ChannelStatus, ReplicaRole};
+    use derec_library::types::ReplicaId;
+    use derec_proto::TransportProtocol;
+
+    fn endpoint(uri: &str) -> Vec<TransportProtocol> {
+        vec![TransportProtocol {
+            uri: uri.to_owned(),
+            protocol: derec_proto::Protocol::Https as i32,
+        }]
+    }
+
+    fn helper(channel_id: u64, status: ChannelStatus, peer_role: derec_proto::SenderKind) -> HelperChannel {
+        HelperChannel {
+            channel_id: ChannelId(channel_id),
+            transports: endpoint("http://localhost:5000/derec/a"),
+            communication_info: Default::default(),
+            peer_role,
+            status,
+            created_at: 0,
+        }
+    }
+
+    fn member(replica_id: u64, status: ChannelStatus, role: ReplicaRole) -> ReplicaMember {
+        ReplicaMember {
+            channel_id: ChannelId(900),
+            replica_id: ReplicaId(replica_id),
+            transports: endpoint("http://localhost:5000/derec/b"),
+            communication_info: Default::default(),
+            role,
+            status,
+            created_at: replica_id,
+        }
+    }
+
+    async fn seeded() -> InMemoryChannelStore {
+        let mut store = InMemoryChannelStore::default();
+        store
+            .save(1, ChannelRecord::Replica(member(11, ChannelStatus::Paired, ReplicaRole::Source)))
+            .await
+            .expect("in-memory save cannot fail");
+        store
+            .save(
+                1,
+                ChannelRecord::Replica(member(22, ChannelStatus::Paired, ReplicaRole::Destination)),
+            )
+            .await
+            .expect("in-memory save cannot fail");
+        store
+            .save(
+                1,
+                ChannelRecord::Replica(member(33, ChannelStatus::Pending, ReplicaRole::Destination)),
+            )
+            .await
+            .expect("in-memory save cannot fail");
+        store
+    }
+
+    fn ids(members: &[ReplicaMember]) -> Vec<u64> {
+        members.iter().map(|m| m.replica_id.0).collect()
+    }
+
+    // The library narrows a listing with a filter and does *not* re-apply it to
+    // the result, so a store that ignored it would hand the protocol rows it
+    // asked to be spared.
+
+    #[tokio::test]
+    async fn a_default_filter_selects_every_member() {
+        let store = seeded().await;
+
+        let members = store.replicas(1, ReplicaFilter::default()).await.expect("readable");
+        assert_eq!(ids(&members), vec![11, 22, 33]);
+    }
+
+    #[tokio::test]
+    async fn ids_restrict_and_exclude_overrides_them() {
+        let store = seeded().await;
+
+        let members = store
+            .replicas(
+                1,
+                ReplicaFilter {
+                    ids: vec![ReplicaId(11), ReplicaId(22)],
+                    exclude: vec![ReplicaId(11)],
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("readable");
+        assert_eq!(ids(&members), vec![22]);
+    }
+
+    #[tokio::test]
+    async fn status_and_role_combine_with_and() {
+        let store = seeded().await;
+
+        // The publish-target shape: paired destinations only.
+        let members = store
+            .replicas(
+                1,
+                ReplicaFilter {
+                    status: vec![ChannelStatus::Paired],
+                    role: Some(ReplicaRole::Destination),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("readable");
+        assert_eq!(ids(&members), vec![22]);
+    }
+
+    #[tokio::test]
+    async fn filtering_preserves_the_succession_order() {
+        let store = seeded().await;
+
+        // Ordered by `(created_at, replica_id)` — this app's succession policy.
+        // Dropping entries must not reorder what is left.
+        let members = store
+            .replicas(1, ReplicaFilter { exclude: vec![ReplicaId(22)], ..Default::default() })
+            .await
+            .expect("readable");
+        assert_eq!(ids(&members), vec![11, 33]);
+    }
+
+    #[tokio::test]
+    async fn a_helper_filter_addresses_channel_ids_and_the_peer_role() {
+        let mut store = InMemoryChannelStore::default();
+        store
+            .save(
+                1,
+                ChannelRecord::Helper(helper(100, ChannelStatus::Paired, derec_proto::SenderKind::Owner)),
+            )
+            .await
+            .expect("in-memory save cannot fail");
+        store
+            .save(
+                1,
+                ChannelRecord::Helper(helper(
+                    101,
+                    ChannelStatus::Pending,
+                    derec_proto::SenderKind::Helper,
+                )),
+            )
+            .await
+            .expect("in-memory save cannot fail");
+
+        let pending = store
+            .helpers(
+                1,
+                HelperFilter { status: vec![ChannelStatus::Pending], ..Default::default() },
+            )
+            .await
+            .expect("readable");
+        assert_eq!(
+            pending.iter().map(|h| h.channel_id.0).collect::<Vec<_>>(),
+            vec![101]
+        );
+
+        let owners = store
+            .helpers(
+                1,
+                HelperFilter { role: Some(derec_proto::SenderKind::Owner), ..Default::default() },
+            )
+            .await
+            .expect("readable");
+        assert_eq!(
+            owners.iter().map(|h| h.channel_id.0).collect::<Vec<_>>(),
+            vec![100]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_filter_does_not_reach_across_secrets() {
+        let mut store = seeded().await;
+        store
+            .save(2, ChannelRecord::Replica(member(44, ChannelStatus::Paired, ReplicaRole::Source)))
+            .await
+            .expect("in-memory save cannot fail");
+
+        let members = store.replicas(2, ReplicaFilter::default()).await.expect("readable");
+        assert_eq!(ids(&members), vec![44]);
+    }
+}

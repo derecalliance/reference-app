@@ -1,7 +1,8 @@
 // PendingPairing.channelId is a bigint and can't be JSON-serialized directly.
 // We encode it as { __bigint: "<decimal string>" } and decode on the way back.
 
-import type { Owner } from './types'
+import type { Owner, RecoveredSecret, RecoveredSecretTransport } from './types'
+import { TRANSPORT_PROTOCOL_GRPC, TRANSPORT_PROTOCOL_HTTPS } from './contactDto'
 import {
   DEFAULT_AUTHENTICATION_METHOD,
   DEFAULT_AUTO_ACCEPT_UNPAIR_REQUESTS,
@@ -84,6 +85,52 @@ export function clearActiveOwner(): void {
 }
 
 /**
+ * Lift a roster entry persisted before SDK 0.0.3 onto the endpoint *list*.
+ *
+ * Recoverable-payload v3 gives every roster entry `transports` — each endpoint
+ * with its protocol discriminant — where v2 carried one bare `transport_uri`.
+ * The library still decodes a v2 payload off the wire; this is the same
+ * lift for a snapshot this app had already written to localStorage, and
+ * without it a restore would hand `protocol.restore` entries with no endpoint.
+ *
+ * v2 stored no discriminant, so the protocol is derived from the scheme —
+ * which is exactly the reconstruction v3 exists to retire, and is why nothing
+ * new is ever written in this shape.
+ */
+function normalizeRosterTransports<T extends { transports?: RecoveredSecretTransport[] }>(
+  entry: T & { transportUri?: string },
+): T {
+  if (entry.transports) return entry
+
+  const { transportUri, ...rest } = entry
+  const protocol = transportUri?.startsWith('grpc')
+    ? TRANSPORT_PROTOCOL_GRPC
+    : TRANSPORT_PROTOCOL_HTTPS
+  return {
+    ...rest,
+    transports: transportUri ? [{ uri: transportUri, protocol }] : [],
+  } as T
+}
+
+function normalizeRecoveredSecret(secret: RecoveredSecret): RecoveredSecret {
+  const snapshot = secret.snapshot
+  if (!snapshot) return secret
+  return {
+    ...secret,
+    snapshot: {
+      ...snapshot,
+      helpers: (snapshot.helpers ?? []).map(h => normalizeRosterTransports(h)),
+      replicas: snapshot.replicas
+        ? {
+            ...snapshot.replicas,
+            members: (snapshot.replicas.members ?? []).map(m => normalizeRosterTransports(m)),
+          }
+        : undefined,
+    },
+  }
+}
+
+/**
  * Backfill fields that were added after an owner was already persisted.
  * Without this, loading an older record would leave required fields as
  * `undefined`, which breaks runtime code that accesses them directly.
@@ -95,7 +142,7 @@ function normalizeOwner(raw: Partial<Owner> & Pick<Owner, 'ownerId'>): Owner {
     pendingPairings: raw.pendingPairings ?? [],
     minParticipants: raw.minParticipants ?? 2,
     recommendedParticipants: raw.recommendedParticipants ?? 5,
-    recoveredSecrets: raw.recoveredSecrets ?? [],
+    recoveredSecrets: (raw.recoveredSecrets ?? []).map(normalizeRecoveredSecret),
     recoveryProgress: raw.recoveryProgress ?? null,
     recoveryFailures: raw.recoveryFailures ?? [],
     heldShares: raw.heldShares ?? [],

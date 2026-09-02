@@ -42,6 +42,10 @@ struct RawDefaults {
     authentication_method: Option<AuthenticationMethod>,
     unpair_ack: Option<UnpairAck>,
     auto_accept_unpair_requests: Option<bool>,
+    grpc_enabled: Option<bool>,
+    grpc_port: Option<u16>,
+    helper_transports: Option<crate::models::TransportBreakdown>,
+    grpc_relay_enabled: Option<bool>,
 }
 
 /// Starting values for the front-end setup wizard.
@@ -64,6 +68,14 @@ pub struct Defaults {
     pub unpair_ack: UnpairAck,
     /// Whether incoming unpair requests are accepted without a prompt.
     pub auto_accept_unpair_requests: bool,
+    /// Whether to run the gRPC ingress listener at all.
+    pub grpc_enabled: bool,
+    /// Port for the gRPC listener.
+    pub grpc_port: u16,
+    /// Prefills the wizard's transport breakdown. Sums to `participant_count`.
+    pub helper_transports: crate::models::TransportBreakdown,
+    /// Whether the backend dials gRPC on a browser owner's behalf.
+    pub grpc_relay_enabled: bool,
 }
 
 impl Default for Defaults {
@@ -77,6 +89,14 @@ impl Default for Defaults {
             authentication_method: AuthenticationMethod::default(),
             unpair_ack: UnpairAck::default(),
             auto_accept_unpair_requests: true,
+            grpc_enabled: true,
+            grpc_port: 50051,
+            helper_transports: crate::models::TransportBreakdown {
+                http: 7,
+                grpc: 0,
+                both: 0,
+            },
+            grpc_relay_enabled: true,
         }
     }
 }
@@ -139,6 +159,18 @@ impl Defaults {
             auto_accept_unpair_requests: raw
                 .auto_accept_unpair_requests
                 .unwrap_or(base.auto_accept_unpair_requests),
+            grpc_enabled: raw.grpc_enabled.unwrap_or(base.grpc_enabled),
+            grpc_port: raw.grpc_port.unwrap_or(base.grpc_port),
+            helper_transports: raw.helper_transports.unwrap_or(
+                crate::models::TransportBreakdown {
+                    http: participant_count,
+                    grpc: 0,
+                    both: 0,
+                },
+            ),
+            grpc_relay_enabled: raw
+                .grpc_relay_enabled
+                .unwrap_or(base.grpc_relay_enabled),
         }
     }
 
@@ -177,6 +209,23 @@ impl Defaults {
                 "pre_paired_count ({}) exceeds participant_count ({})",
                 self.pre_paired_count, self.participant_count
             ));
+        }
+        if self.helper_transports.total() != self.participant_count as usize {
+            return Err(format!(
+                "helper_transports sums to {} but participant_count is {}",
+                self.helper_transports.total(),
+                self.participant_count
+            ));
+        }
+        if !self.grpc_enabled
+            && (self.helper_transports.grpc > 0 || self.helper_transports.both > 0)
+        {
+            return Err(
+                "helper_transports asks for gRPC helpers but grpc_enabled is false".to_owned(),
+            );
+        }
+        if self.grpc_port == 0 {
+            return Err("grpc_port must be greater than 0".to_owned());
         }
         Ok(())
     }
@@ -264,6 +313,10 @@ mod tests {
             authentication_method = "user"
             unpair_ack = "not_required"
             auto_accept_unpair_requests = false
+            grpc_enabled = true
+            grpc_port = 60051
+            helper_transports = { http = 5, grpc = 4, both = 0 }
+            grpc_relay_enabled = false
             "#,
         )
         .unwrap();
@@ -279,6 +332,14 @@ mod tests {
                 authentication_method: AuthenticationMethod::User,
                 unpair_ack: UnpairAck::NotRequired,
                 auto_accept_unpair_requests: false,
+                grpc_enabled: true,
+                grpc_port: 60051,
+                helper_transports: crate::models::TransportBreakdown {
+                    http: 5,
+                    grpc: 4,
+                    both: 0,
+                },
+                grpc_relay_enabled: false,
             }
         );
     }
@@ -327,6 +388,10 @@ mod tests {
         assert_eq!(parsed.min_participants, 2);
         assert_eq!(parsed.recommended_participants, 2);
         assert_eq!(parsed.pre_paired_count, 2);
+        assert_eq!(
+            parsed.helper_transports,
+            crate::models::TransportBreakdown { http: 2, grpc: 0, both: 0 }
+        );
         assert_eq!(parsed.validate(), Ok(()));
     }
 
@@ -369,6 +434,29 @@ mod tests {
                 "expected rejection for: {contents}"
             );
         }
+    }
+
+    #[test]
+    fn a_helper_transports_breakdown_that_does_not_sum_to_the_participant_count_is_rejected() {
+        let contents =
+            "participant_count = 9\nhelper_transports = { http = 5, grpc = 0, both = 0 }";
+
+        assert!(matches!(parse(contents).unwrap_err(), ConfigError::Invalid { .. }));
+    }
+
+    #[test]
+    fn requesting_grpc_helpers_while_grpc_is_disabled_is_rejected() {
+        // Not a silent downgrade to HTTP: a helper advertising an endpoint
+        // nothing is listening on pairs successfully and then black-holes
+        // every reply.
+        let contents = "participant_count = 9\ngrpc_enabled = false\nhelper_transports = { http = 5, grpc = 4, both = 0 }";
+
+        assert!(matches!(parse(contents).unwrap_err(), ConfigError::Invalid { .. }));
+    }
+
+    #[test]
+    fn a_zero_grpc_port_is_rejected() {
+        assert!(matches!(parse("grpc_port = 0").unwrap_err(), ConfigError::Invalid { .. }));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import './SetupWizard.css'
-import type { Owner, PairedParticipant } from './types'
+import type { Owner, PairedParticipant, TransportProtocol } from './types'
 import {
   apiEnsureHelpers,
   apiGetActors,
@@ -19,6 +19,7 @@ import {
 } from './config'
 import { InfoTooltip } from './InfoTooltip'
 import { faker } from '@faker-js/faker'
+import { rebalance, type TransportMix, type TransportModeKey } from './transportMix'
 
 type Flow = 'setup' | 'claim'
 type StepKey = 'choice' | 'ownerName' | 'participantCount' | 'protocolSettings' | 'claimActor'
@@ -40,6 +41,11 @@ interface WizardData {
   authenticationMethod: AuthenticationMethod
   unpairAck: UnpairAck
   autoAcceptUnpairRequests: boolean
+  /** Target composition of the shared helper pool by transport. */
+  transports: TransportMix
+  /** Whether the backend runs the gRPC ingress listener — gates the gRPC and
+   *  Both counters rather than being sent anywhere itself. */
+  grpcEnabled: boolean
   /** UUID of the existing owner actor to adopt in the claim flow. */
   claimActorId: string
 }
@@ -55,6 +61,10 @@ function initialData(defaults: ServerDefaults): WizardData {
     authenticationMethod: defaults.authenticationMethod,
     unpairAck: defaults.unpairAck,
     autoAcceptUnpairRequests: defaults.autoAcceptUnpairRequests,
+    transports: defaults.grpcEnabled
+      ? defaults.helperTransports
+      : { http: defaults.participantCount, grpc: 0, both: 0 },
+    grpcEnabled: defaults.grpcEnabled,
     claimActorId: '',
   }
 }
@@ -260,22 +270,32 @@ function StepParticipantCount({
   prePairedCount,
   minParticipants,
   recommendedParticipants,
+  transports,
+  grpcEnabled,
   existingParticipants,
   onChangeParticipantCount,
   onChangePrePairedCount,
   onChangeMinParticipants,
   onChangeRecommendedParticipants,
+  onChangeTransports,
 }: {
   participantCount: number
   prePairedCount: number
   minParticipants: number
   recommendedParticipants: number
+  /** Target composition of the shared helper pool by transport. */
+  transports: TransportMix
+  /** Whether the backend runs the gRPC ingress listener. When `false` the
+   *  gRPC and Both counters are pinned at zero — the backend rejects a
+   *  request for either outright. */
+  grpcEnabled: boolean
   /** Participants already on the server, or `null` while unknown. */
   existingParticipants: number | null
   onChangeParticipantCount: (n: number) => void
   onChangePrePairedCount: (n: number) => void
   onChangeMinParticipants: (n: number) => void
   onChangeRecommendedParticipants: (n: number) => void
+  onChangeTransports: (mix: TransportMix) => void
 }) {
   return (
     <div className="wizard-step">
@@ -297,6 +317,11 @@ function StepParticipantCount({
               if (prePairedCount > next) onChangePrePairedCount(next)
               if (minParticipants > next) onChangeMinParticipants(next)
               if (recommendedParticipants > next) onChangeRecommendedParticipants(next)
+              // The transport mix must keep summing to the total: fold the
+              // change into http, the mode that absorbs a shrinking pool.
+              onChangeTransports(
+                rebalance(transports, 'http', transports.http + (next - participantCount), next),
+              )
             }}
             disabled={participantCount <= 1}
             aria-label="Decrease total participants"
@@ -306,7 +331,13 @@ function StepParticipantCount({
           <span className="count">{participantCount}</span>
           <button
             className="stepper"
-            onClick={() => onChangeParticipantCount(participantCount + 1)}
+            onClick={() => {
+              const next = participantCount + 1
+              onChangeParticipantCount(next)
+              onChangeTransports(
+                rebalance(transports, 'http', transports.http + (next - participantCount), next),
+              )
+            }}
             aria-label="Increase total participants"
           >
             +
@@ -400,8 +431,77 @@ function StepParticipantCount({
           </button>
         </div>
       </div>
+
+      {/* A breakdown *of* the total above, not another sibling counter, so it
+          nests as one compact block rather than three more full-height rows.
+          Each mode's hint moves to `title` plus a visually-hidden span
+          instead of its own line, following the same trade-off
+          `ContactModeSelector` makes for the same reason — and, as there,
+          the hidden span is wired to its control via `aria-describedby` so a
+          user tabbing straight to a stepper still hears the hint. */}
+      <div className="transport-mix">
+        <span className="transport-mix-heading">
+          Helper transport mix
+          <span className="participant-count-section-hint">
+            How the pool above should be split by transport
+          </span>
+        </span>
+        <div className="transport-mix-rows">
+          {(['grpc', 'both', 'http'] as TransportModeKey[]).map(mode => {
+            const hintId = `transport-mix-${mode}-hint`
+            return (
+              <div className="participant-count-section transport-mix-row" key={mode}>
+                <span className="participant-count-section-label" title={TRANSPORT_HINTS[mode]}>
+                  {TRANSPORT_LABELS[mode]}
+                  <span id={hintId} className="visually-hidden">
+                    {' '}
+                    — {TRANSPORT_HINTS[mode]}
+                  </span>
+                </span>
+                <div className="participant-count-input">
+                  <button
+                    className="stepper"
+                    onClick={() =>
+                      onChangeTransports(rebalance(transports, mode, transports[mode] - 1, participantCount))
+                    }
+                    disabled={transports[mode] <= 0 || (mode !== 'http' && !grpcEnabled)}
+                    aria-label={`Decrease ${TRANSPORT_LABELS[mode]} participants`}
+                    aria-describedby={hintId}
+                  >
+                    −
+                  </button>
+                  <span className="count">{transports[mode]}</span>
+                  <button
+                    className="stepper"
+                    onClick={() =>
+                      onChangeTransports(rebalance(transports, mode, transports[mode] + 1, participantCount))
+                    }
+                    disabled={transports[mode] >= participantCount || (mode !== 'http' && !grpcEnabled)}
+                    aria-label={`Increase ${TRANSPORT_LABELS[mode]} participants`}
+                    aria-describedby={hintId}
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
     </div>
   )
+}
+
+const TRANSPORT_LABELS: Record<TransportModeKey, string> = {
+  http: 'HTTP only',
+  grpc: 'gRPC only',
+  both: 'Both transports',
+}
+
+const TRANSPORT_HINTS: Record<TransportModeKey, string> = {
+  http: 'Reachable directly from this browser',
+  grpc: 'Reached through the backend relay',
+  both: 'Advertises gRPC first, HTTP as failover',
 }
 
 interface ToggleOption<T extends string> {
@@ -735,7 +835,7 @@ interface Props {
 
 /** Wire an actor DTO into the participant shape the owner state carries. */
 function toParticipant(
-  actor: { id: string; name: string; transport: { protocol: 'https'; uri: string } },
+  actor: { id: string; name: string; transport: { protocol: TransportProtocol; uri: string } },
   channelId: string,
 ): PairedParticipant {
   return {
@@ -921,6 +1021,7 @@ export default function SetupWizard({ onReady }: Props) {
       const { helpers: provisioned, created } = await apiEnsureHelpers(
         data.participantCount,
         candidateNames,
+        data.transports,
         settings,
       )
 
@@ -1093,10 +1194,13 @@ export default function SetupWizard({ onReady }: Props) {
             prePairedCount={data.prePairedCount}
             minParticipants={data.minParticipants}
             recommendedParticipants={data.recommendedParticipants}
+            transports={data.transports}
+            grpcEnabled={data.grpcEnabled}
             onChangeParticipantCount={n => setData(d => ({ ...d, participantCount: n }))}
             onChangePrePairedCount={n => setData(d => ({ ...d, prePairedCount: n }))}
             onChangeMinParticipants={n => setData(d => ({ ...d, minParticipants: n }))}
             onChangeRecommendedParticipants={n => setData(d => ({ ...d, recommendedParticipants: n }))}
+            onChangeTransports={mix => setData(d => ({ ...d, transports: mix }))}
             existingParticipants={existingParticipants}
           />
         )}

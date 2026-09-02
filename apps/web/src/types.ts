@@ -1,7 +1,7 @@
 import type { AuthenticationMethod, UnpairAck } from './config'
 import type { PairingRole } from './pairingRoles'
 
-export type TransportProtocol = 'https'  // only HTTPS supported in v1
+export type TransportProtocol = 'https' | 'grpc'
 
 export interface Transport {
   protocol: TransportProtocol
@@ -135,10 +135,24 @@ export interface PendingPairing {
  * These types mirror that payload with binary fields base64url-encoded so the
  * snapshot survives localStorage; `protocol.restore` needs it re-hydrated.
  */
+/**
+ * One endpoint from a roster entry.
+ *
+ * `protocol` is the numeric `Protocol` discriminant the payload carries
+ * (`0` = HTTPS, `1` = gRPC) rather than a name, because that is the form
+ * `protocol.restore` reads it back in. Recoverable-payload v3 stores the
+ * discriminant outright; v2 stored a bare URI and made recovery guess.
+ */
+export interface RecoveredSecretTransport {
+  uri: string
+  protocol: number
+}
+
 export interface RecoveredSecretHelper {
   /** u64 channel id as decimal string. */
   channelId: string
-  transportUri: string
+  /** Every endpoint this peer advertised, in the order it offered them. */
+  transports: RecoveredSecretTransport[]
   /** App-level identity metadata; opaque to the protocol. */
   communicationInfo: Record<string, string>
   /** 32-byte channel key, base64url-encoded. */
@@ -153,7 +167,8 @@ export interface RecoveredSecretHelper {
  * `replicaId` alone.
  */
 export interface RecoveredSecretReplica {
-  transportUri: string
+  /** Every endpoint this member advertised, in the order it offered them. */
+  transports: RecoveredSecretTransport[]
   communicationInfo: Record<string, string>
   /** Hex-encoded u64, matching the wire `derec.replica_id` representation. */
   replicaId: string

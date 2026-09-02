@@ -12,7 +12,7 @@ export interface PeerActorCandidate {
   id: string
   role: 'owner' | 'helper'
   name: string
-  transport: { protocol: 'https'; uri: string }
+  transport: { protocol: 'https' | 'grpc'; uri: string }
   browser_managed?: boolean
 }
 
@@ -57,4 +57,24 @@ export function resolvePeerActor(
     a => a.role === 'owner' && a.id !== selfActorId && !knownActorIds.has(a.id),
   )
   return candidates.length === 1 ? candidates[0] : null
+}
+
+/**
+ * Resolve a recovered-roster entry against the actor list by transport URI.
+ *
+ * Since SDK 0.0.3 a roster entry carries *every* endpoint the peer advertised
+ * rather than one. They all address the same actor, so the first one the
+ * roster recognises identifies it; when none does — the peer has moved, or was
+ * never a registered actor — the entry's own first choice is still the best
+ * endpoint to record for it.
+ */
+export function resolveRosterActor<T>(
+  transports: readonly { uri: string }[],
+  actorByUri: ReadonlyMap<string, T>,
+): { actor: T | undefined; transportUri: string } {
+  const matched = transports.find(t => actorByUri.has(t.uri))
+  return {
+    actor: matched ? actorByUri.get(matched.uri) : undefined,
+    transportUri: matched?.uri ?? transports[0]?.uri ?? '',
+  }
 }

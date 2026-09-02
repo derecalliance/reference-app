@@ -11,7 +11,7 @@ use derec_library::protocol::{
     AutoAcceptPolicy, ChannelQuery, ChannelRecord, ChannelStatus, DeRecChannelStore, DeRecEvent,
     DeRecFlow, DeRecProtocolBuilder, ExpiredChannelCleanup,
 };
-use derec_library::protocol::types::Timeouts;
+use derec_library::protocol::types::{HelperFilter, ReplicaFilter, Timeouts};
 use derec_library::types::ChannelId;
 
 /// How often each actor advances its own time-driven state.
@@ -46,9 +46,10 @@ const AUTO_CONFIRM_ATTEMPTS: u8 = 8;
 use crate::models::{Role, UnpairAck};
 use crate::state::AppState;
 use crate::stores::{
-    ActorProtocol, HttpTransport, InMemoryChannelStore, InMemorySecretStore, InMemoryShareStore,
+    ActorProtocol, InMemoryChannelStore, InMemorySecretStore, InMemoryShareStore,
     InMemoryStateStore, InMemoryUserSecretStore,
 };
+use crate::transport::{CompositeTransport, GrpcTransport, HttpTransport};
 
 /// Everything needed to build this actor's protocol instance.
 #[derive(Clone)]
@@ -59,7 +60,8 @@ pub struct ProtocolConfig {
     /// instead the mirrored owner's secret, because a replica instance is bound
     /// to the vault it mirrors rather than to this actor's own.
     pub secret_id: u64,
-    pub transport_uri: String,
+    /// Every endpoint this actor advertises, in preference order.
+    pub own_transports: Vec<crate::models::Transport>,
     pub communication_info: HashMap<String, String>,
     pub timeout_secs: u32,
     pub unpair_ack: UnpairAck,
@@ -85,14 +87,16 @@ fn configure_builder<Cs, Sh, Se, Us, St, T, O>(
     config: &ProtocolConfig,
 ) -> DeRecProtocolBuilder<Cs, Sh, Se, Us, St, T, O> {
     let builder = builder
-        // Derived, not hardcoded: serving over https turns the guardrail back
-        // on by itself.
+        // Derived, not hardcoded: serving every advertised endpoint over a
+        // secure scheme turns the guardrail back on by itself.
         //
         // Loopback alone is not enough. The library exempts plaintext loopback
-        // only for the endpoint a node configures for *itself*; a peer's
+        // only for the endpoints a node configures for *itself*; a peer's
         // endpoint may never be plaintext by default, and every peer these
         // actors talk to is `http://localhost:5000/derec/...`.
-        .with_unsafe_http(!config.transport_uri.starts_with("https://"))
+        .with_unsafe_connection(config.own_transports.iter().any(|t| {
+            t.uri.starts_with("http://") || t.uri.starts_with("grpc://")
+        }))
         .with_threshold(config.threshold)
         .with_keep_versions_count(config.keep_versions_count)
         .with_timeouts(Timeouts {
@@ -137,8 +141,19 @@ pub fn build_protocol(config: &ProtocolConfig) -> Result<ActorProtocol, derec_li
         .with_secret_store(InMemorySecretStore::default())
         .with_user_secret_store(InMemoryUserSecretStore::default())
         .with_state_store(InMemoryStateStore::default())
-        .with_transport(HttpTransport::new(config.http_client.clone()))
-        .with_own_transport(config.transport_uri.as_str());
+        .with_transport(CompositeTransport::new(
+            HttpTransport::new(config.http_client.clone()),
+            GrpcTransport::new(),
+        ))
+        // The singular setter is deprecated; the whole list is what gets
+        // advertised in `supportedTransports` at pairing.
+        .with_own_transports(
+            config
+                .own_transports
+                .iter()
+                .map(|t| t.uri.as_str())
+                .collect::<Vec<_>>(),
+        );
 
     configure_builder(builder, config).build()
 }
@@ -202,7 +217,11 @@ async fn channel_ids_of(protocol: &ActorProtocol, secret_id: u64) -> Option<Vec<
     let mut ok = true;
     let mut ids = Vec::new();
 
-    match protocol.channel_store.helpers(secret_id).await {
+    match protocol
+        .channel_store
+        .helpers(secret_id, HelperFilter::default())
+        .await
+    {
         Ok(channels) => ids.extend(channels.iter().map(|c| c.channel_id.0)),
         Err(e) => {
             ok = false;
@@ -210,7 +229,11 @@ async fn channel_ids_of(protocol: &ActorProtocol, secret_id: u64) -> Option<Vec<
         }
     }
 
-    match protocol.channel_store.replicas(secret_id).await {
+    match protocol
+        .channel_store
+        .replicas(secret_id, ReplicaFilter::default())
+        .await
+    {
         Ok(members) => ids.extend(members.iter().map(|m| m.channel_id.0)),
         Err(e) => {
             ok = false;
@@ -237,25 +260,32 @@ async fn channel_ids_of(protocol: &ActorProtocol, secret_id: u64) -> Option<Vec<
 async fn pending_channel_ids(protocol: &ActorProtocol, secret_id: u64) -> Vec<u64> {
     let mut ids = Vec::new();
 
-    match protocol.channel_store.helpers(secret_id).await {
-        Ok(channels) => ids.extend(
-            channels
-                .iter()
-                .filter(|c| c.status == ChannelStatus::Pending)
-                .map(|c| c.channel_id.0),
-        ),
+    let pending_helpers = HelperFilter {
+        status: vec![ChannelStatus::Pending],
+        ..Default::default()
+    };
+    let pending_replicas = ReplicaFilter {
+        status: vec![ChannelStatus::Pending],
+        ..Default::default()
+    };
+
+    match protocol
+        .channel_store
+        .helpers(secret_id, pending_helpers)
+        .await
+    {
+        Ok(channels) => ids.extend(channels.iter().map(|c| c.channel_id.0)),
         Err(e) => {
             warn!(secret_id = secret_id, error = %e, "helper channel read failed during pending sweep");
         }
     }
 
-    match protocol.channel_store.replicas(secret_id).await {
-        Ok(members) => ids.extend(
-            members
-                .iter()
-                .filter(|m| m.status == ChannelStatus::Pending)
-                .map(|m| m.channel_id.0),
-        ),
+    match protocol
+        .channel_store
+        .replicas(secret_id, pending_replicas)
+        .await
+    {
+        Ok(members) => ids.extend(members.iter().map(|m| m.channel_id.0)),
         Err(e) => {
             warn!(secret_id = secret_id, error = %e, "replica member read failed during pending sweep");
         }
@@ -318,6 +348,24 @@ impl ProvisionedActor {
         self.instances.restore(own, protocol);
     }
 
+    /// The secret whose instance holds `channel_id`.
+    ///
+    /// A replica-mode channel lives on the instance bound to the *mirrored
+    /// owner's* secret, not on this actor's own — so anything that reaches for
+    /// [`Self::take_own`] cannot see it. Resolving through the same routing
+    /// index an inbound envelope goes through is what lets one handler serve
+    /// both pairing modes.
+    ///
+    /// Falls back to the own secret when the index has no entry: an unrouted
+    /// channel id is either unknown (the call fails either way) or a
+    /// freshly-created own-instance channel the index has not caught up with,
+    /// and the own instance is the right answer for the latter.
+    fn owning_secret_for(&self, channel_id: u64) -> u64 {
+        self.instances
+            .secret_for_channel(channel_id)
+            .unwrap_or_else(|| self.instances.own_secret_id())
+    }
+
     /// React to the events one instance just produced.
     ///
     /// `secret_id` is the instance those events came out of. It is passed in
@@ -344,6 +392,13 @@ impl ProvisionedActor {
                     // store-catch-up cleanup can never see it and remove it —
                     // this is the only path that ever will.
                     self.instances.unpin_channel(pairing_channel_id.0);
+                    // The per-instance index above routes *within* this actor;
+                    // this one routes *to* it, and only gRPC ingress reads it.
+                    self.state.channel_router.rotate(
+                        pairing_channel_id.0,
+                        channel_id.0,
+                        self.actor_id,
+                    );
                     let cid = channel_id.0.to_string();
                     let peer_name = peer_communication_info
                         .get("name")
@@ -472,6 +527,7 @@ impl ProvisionedActor {
                     {
                         entry.retain(|c| c != &cid);
                     }
+                    self.state.channel_router.remove(channel_id.0);
                     info!(
                         actor_id = %self.actor_id,
                         channel_id = channel_id.0,
@@ -757,9 +813,12 @@ async fn read_channel_status(
         statuses.push(helper.status);
     }
 
+    // `ReplicaFilter` addresses members by `replica_id`, and what is wanted here
+    // is every member sitting on one *channel* — which the filter cannot
+    // express — so the narrowing stays local.
     let members = protocol
         .channel_store
-        .replicas(secret_id)
+        .replicas(secret_id, ReplicaFilter::default())
         .await
         .map_err(derec_library::Error::from)?;
     statuses.extend(
@@ -979,7 +1038,11 @@ impl Handler<ListChannelsMsg> for ProvisionedActor {
                 // belong to the same Owner identity, which is a helper-side
                 // concern; replica-group members share one channel and are
                 // listed by `replicas()` instead.
-                let result = match protocol.channel_store.helpers(secret_id).await {
+                let result = match protocol
+                    .channel_store
+                    .helpers(secret_id, HelperFilter::default())
+                    .await
+                {
                     Ok(channels) => {
                         let mut summaries = Vec::with_capacity(channels.len());
                         for ch in &channels {
@@ -1157,12 +1220,13 @@ impl Handler<GetFingerprintMsg> for ProvisionedActor {
     type Result = ResponseActFuture<Self, Result<String, derec_library::Error>>;
 
     fn handle(&mut self, msg: GetFingerprintMsg, _ctx: &mut Context<Self>) -> Self::Result {
-        let Some(protocol) = self.take_own() else {
+        let channel_id = msg.channel_id;
+        let secret_id = self.owning_secret_for(channel_id);
+        let Some(protocol) = self.instances.take(secret_id) else {
             return Box::pin(actix::fut::ready(Err(derec_library::Error::Invariant(
                 "protocol already borrowed",
             ))));
         };
-        let channel_id = msg.channel_id;
 
         Box::pin(
             async move {
@@ -1171,7 +1235,7 @@ impl Handler<GetFingerprintMsg> for ProvisionedActor {
             }
             .into_actor(self)
             .map(move |(protocol, result), actor, _ctx| {
-                actor.restore_own(protocol);
+                actor.instances.restore(secret_id, protocol);
                 result
             }),
         )
@@ -1182,12 +1246,13 @@ impl Handler<VerifyFingerprintMsg> for ProvisionedActor {
     type Result = ResponseActFuture<Self, Result<bool, derec_library::Error>>;
 
     fn handle(&mut self, msg: VerifyFingerprintMsg, _ctx: &mut Context<Self>) -> Self::Result {
-        let Some(mut protocol) = self.take_own() else {
+        let channel_id = msg.channel_id;
+        let secret_id = self.owning_secret_for(channel_id);
+        let Some(mut protocol) = self.instances.take(secret_id) else {
             return Box::pin(actix::fut::ready(Err(derec_library::Error::Invariant(
                 "protocol already borrowed",
             ))));
         };
-        let channel_id = msg.channel_id;
         let fingerprint = msg.fingerprint;
 
         Box::pin(
@@ -1199,7 +1264,7 @@ impl Handler<VerifyFingerprintMsg> for ProvisionedActor {
             }
             .into_actor(self)
             .map(move |(protocol, result), actor, _ctx| {
-                actor.restore_own(protocol);
+                actor.instances.restore(secret_id, protocol);
                 result
             }),
         )
@@ -1449,6 +1514,7 @@ impl Handler<EnsureReplicaInstanceMsg> for ProvisionedActor {
 mod tests {
     use super::*;
 
+    use crate::models::{Transport, TransportProtocol};
     use derec_library::protocol::{DeRecSecretStore, SecretValue};
 
     const SECRET_ID: u64 = 0xA1;
@@ -1458,7 +1524,11 @@ mod tests {
     fn config() -> ProtocolConfig {
         ProtocolConfig {
             secret_id: SECRET_ID,
-            transport_uri: "http://localhost:5000/derec/helpers/test".to_owned(),
+            own_transports: vec![Transport {
+                protocol: TransportProtocol::Https,
+                uri: "http://localhost:5000/derec/00000000-0000-0000-0000-000000000001"
+                    .to_owned(),
+            }],
             communication_info: HashMap::from([("name".to_owned(), "Alex".to_owned())]),
             timeout_secs: 300,
             unpair_ack: UnpairAck::Required,
@@ -1478,7 +1548,7 @@ mod tests {
     /// slot, and every later reconfigure fails on it until the process restarts.
     ///
     /// No live configuration change can reach this today (`ReconfigureMsg`
-    /// touches neither `threshold` nor `transport_uri`), which is exactly why
+    /// touches neither `threshold` nor `own_transports`), which is exactly why
     /// the guarantee needs a test rather than a caller to demonstrate it.
     #[actix_rt::test]
     async fn a_rejected_rebuild_hands_the_original_instance_back_with_its_stores() {

@@ -14,21 +14,46 @@ registers itself as an owner actor against it — a second tab, an incognito
 window or another machine on the network is simply another owner. There is no
 grouping above that: everything the server knows lives in one actor registry.
 
+### Building the SDK from source (temporary)
+
+Both halves track SDK **0.0.3**, which is not published yet, so both consume it
+from a sibling checkout of [`lib-derec`](https://github.com/derecalliance/lib-derec)
+rather than from a registry. Clone it next to this repo:
+
+```
+<parent>/
+├── lib-derec/
+└── reference-app/
+```
+
+The backend takes it as a Cargo path dependency and needs nothing built by
+hand. The front end takes a `file:` dependency on the WASM package, which
+**does** have to be built first — and rebuilt whenever `lib-derec` changes:
+
+```
+cd ../lib-derec
+node scripts/prepare-web-package.mjs     # needs wasm-pack and protoc
+cd ../reference-app/apps/web
+npm install
+```
+
+The output lands under `lib-derec/library/target/pkg-web`, so `cargo clean` in
+that repo removes it and the build has to be re-run.
+
+Once 0.0.3 is on the registries this reverts to two version pins:
+`derec-library` / `derec-proto` in `apps/backend/Cargo.toml` and
+`@derec-alliance/web` in `apps/web/package.json`.
+
 ### Plaintext endpoints in local development
 
-Both halves consume the SDK from the registries — `@derec-alliance/web` from
-npm, `derec-library` from crates.io — so there is nothing to build from source.
-The npm version is **pinned**, because the package publishes under the `alpha`
-dist-tag while `latest` still points at an older release.
-
-The protocol refuses plaintext `http://` endpoints by default. Loopback is
-exempt for the endpoint a node configures for *itself*, but **not** for one a
-peer supplies — and every peer here is `http://localhost:5000/derec/...`, so
-pairing fails without opting in. Both apps do, and both derive it rather than
-hardcoding it:
+The protocol refuses plaintext endpoints by default — `http://` and, since
+0.0.3, `grpc://`. Loopback is exempt for the endpoint a node configures for
+*itself*, but **not** for one a peer supplies — and every peer here is
+`http://localhost:5000/derec/...`, so pairing fails without opting in. Both
+apps do, and both derive it rather than hardcoding it:
 
 ```ts
-.withUnsafeHttp(!ownTransportUri.startsWith('https://'))
+.withUnsafeConnection(!ownTransportUri.startsWith('https://'))
 ```
 
 Served over https, the guardrail comes back on by itself. It is a guardrail
@@ -65,7 +90,10 @@ Two constraints shape how these tests are written:
 The specs cover the setup wizard, all three contact modes (including the
 `NoKeys` fingerprint gate and its refusal path), replica groups (pairing,
 mirroring, sync check, eviction), the secret lifecycle (protect, verify,
-discover), recovery (reconstruction and `restore`), and unpairing.
+discover), recovery (reconstruction and `restore`), unpairing, and — in
+`grpc.spec.ts` — the transport matrix described below: an http-only helper, a
+grpc-only helper reached through the relay, a helper offering both, and the
+relay-off failure.
 
 They run in **Google Chrome**, not Playwright's bundled Chromium — the config
 pins `channel: 'chrome'`, and `browser-check.spec.ts` fails the run if anything
@@ -187,17 +215,63 @@ cannot be read, parsed or validated aborts the boot rather than silently falling
 back, so a broken config surfaces immediately. No file at all is fine and uses
 the built-in values.
 
+## Transports
+
+The backend speaks HTTP and gRPC. A browser owner only ever speaks HTTP itself
+— it has no HTTP/2 trailer access — so gRPC exists here to prove the protocol
+is transport-agnostic and to let the reference app interoperate with a peer
+that only offers gRPC, not to give the browser a second way to talk.
+
+### The gRPC listener
+
+`grpc_enabled` (default `true`) and `grpc_port` (default `50051`) control the
+backend's own gRPC server. It is separate from the HTTP listener `BASE_URL`
+points at, and provisioned helpers can only advertise a `grpc://` endpoint
+while it is running — turn `grpc_enabled` off to run HTTP-only.
+
+### Three helper modes, not three transports
+
+A provisioned helper advertises `http`, `grpc`, or `both`; the setup wizard's
+transport counters (**gRPC only** / **Both transports**, with **HTTP** left to
+absorb the rest) set the shared pool's target composition the same way its
+participant count does — a target, not an order to create, since the pool is
+shared across every owner. What differs across the three is which endpoint(s)
+a peer offers, not which protocol carries the messages an owner actually
+sends: every provisioned actor answers over whichever protocol a peer's
+contact reaches it on regardless of its own advertised mode.
+
+### The relay
+
+A browser cannot dial gRPC directly, so `POST /derec/relay` asks the backend
+to dial an endpoint on the owner's behalf — the backend already terminates
+transport for every actor here, so this is a small extension of that rather
+than a new role. `grpc_relay_enabled` (default `true`) gates it. This is also
+the point where a message can cross from one transport to the other: pairing
+with a grpc-only helper sends the request out over gRPC through the relay, and
+the helper's reply comes back over HTTP to the owner's mailbox, same as any
+other message.
+
+Turn `grpc_relay_enabled` off and a browser owner has no way left to reach a
+grpc-only helper — not a bug, the deliberately-observable consequence of a
+browser's own transport limits. `apps/web/e2e/grpc.spec.ts` exercises exactly
+this: an http-only helper, a grpc-only helper reached through the relay (with
+a network-level check that the relay was actually the path a message took),
+a helper offering both, and — with `/derec/relay` stubbed to fail — the
+grpc-only helper's pairing request surfacing an error rather than hanging.
+
 ## Replicas
 
 A replica is a second device belonging to the same owner, kept in sync so it can take over if the primary device is lost. Pairing is unidirectional: the existing device is the `ReplicaSource` (it holds the secret), the new device is the `ReplicaDestination` (it receives a mirrored copy). Each side needs a stable per-device replica id, set when the protocol instance is built; the destination's id survives adoption deliberately — it identifies the device, not the vault it holds.
 
 ### Setting one up
 
-The app currently supports one user per browser context, so a replica needs a **second** browser context — an incognito/private window, a different browser profile, or a different browser entirely. This is a limitation of the frontend, not of the protocol. Open the app in that second context and run **Set up** to register it as its own owner actor on the same backend, then pair it from the primary device's `ReplicaSource` side.
+A replica is a pairing mode, not a kind of actor, so any helper can back one. **+ Add** in the Replicas section provisions a helper under the name you type and pairs it in replica mode from this device's `ReplicaSource` side — no second browser context involved. That is the primary path, and the one the e2e suite exercises.
+
+A replica backed by a *real second device* still works, and is what the feature ultimately models. Because the app supports one user per browser context, that route needs a **second** browser context — an incognito/private window, a different browser profile, or a different browser entirely. This is a limitation of the frontend, not of the protocol. Open the app in that second context and run **Set up** to register it as its own owner actor on the same backend, then pair it from the primary device's `ReplicaSource` side.
 
 ### Fingerprint confirmation (required before syncing)
 
-After the pairing handshake, the replica channel sits in `Pending` — it cannot receive anything yet. Each side independently derives the same `XXXX-XXXX-XXXX-XXXX` code from the shared key. Compare the two codes out of band (read them to each other, screenshot, etc.), then confirm on each side separately.
+After the pairing handshake, the replica channel sits in `Pending` — it cannot receive anything yet. Each side independently derives the same `XXXX-XXXX-XXXX-XXXX` code from the shared key. A helper-backed replica confirms its own side automatically — it is an unattended fixture with no operator to read a code back to — so all that is left is confirming this device's side in the dialog that appears. With a second browser context there is no such shortcut: compare the two codes out of band (read them to each other, screenshot, etc.), then confirm on each side separately.
 
 Only once **both** sides have confirmed does the channel move to `Paired`. This gate is enforced by the protocol library itself — it selects share targets from its own `Paired` channel table — not by app code, so there is no client-side bypass.
 
@@ -216,9 +290,8 @@ acknowledgement, sync check, and eviction.
 That coverage pairs the group's `Destination`s with **provisioned helpers** —
 backend fixtures — rather than a second browser context: a replica is a
 pairing mode, not a kind of actor, so a helper paired in replica mode follows
-the same protocol path an owner's second device would, and an unattended
-fixture auto-confirms its own fingerprint, leaving this device to compare only
-its own. The protocol path is identical, but the browser-to-browser variant is
-still only manually verified, and adoption (the destructive step above) has no
-automated coverage at all: it is gated on a human confirming a dialog that
-erases the device's vault.
+the identical protocol path an owner's second device would, and an unattended
+fixture auto-confirms its own fingerprint, leaving this device to confirm only
+its own. The browser-to-browser variant is still only manually verified, and
+adoption (the destructive step above) has no automated coverage at all: it is
+gated on a human confirming a dialog that erases the device's vault.

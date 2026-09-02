@@ -364,6 +364,7 @@ describe('mergeReplicaSecretReceipt', () => {
 
 describe('adoptionSourceLabel', () => {
   const transport = { protocol: 'https' as const, uri: 'https://example.test/mailbox' }
+  const transports = [transport]
 
   function adoption(secretId: string): PendingReplicaAdoption {
     return {
@@ -379,7 +380,7 @@ describe('adoptionSourceLabel', () => {
   it('names the owner whose secret the offer carries', () => {
     expect(
       adoptionSourceLabel(adoption('42'), [
-        { id: 'owner-1', role: 'owner', name: 'Alice', transport, secret_id: '42' },
+        { id: 'owner-1', role: 'owner', name: 'Alice', transport, transports, secret_id: '42' },
       ]),
     ).toBe('Alice')
   })
@@ -389,7 +390,7 @@ describe('adoptionSourceLabel', () => {
     // and fails here — naming the wrong person on a destructive prompt.
     expect(
       adoptionSourceLabel(adoption('42'), [
-        { id: 'owner-1', role: 'owner', name: 'Alice', transport, secret_id: '7' },
+        { id: 'owner-1', role: 'owner', name: 'Alice', transport, transports, secret_id: '7' },
       ]),
     ).toBe('replica source ff01')
   })
@@ -399,7 +400,7 @@ describe('adoptionSourceLabel', () => {
     // the roster carrying the very same secret id.
     expect(
       adoptionSourceLabel(adoption('42'), [
-        { id: 'helper-1', role: 'helper', name: 'Bob', transport, secret_id: '42' },
+        { id: 'helper-1', role: 'helper', name: 'Bob', transport, transports, secret_id: '42' },
       ]),
     ).toBe('replica source ff01')
   })
@@ -411,7 +412,7 @@ describe('adoptionSourceLabel', () => {
   it('falls back rather than showing a blank name', () => {
     expect(
       adoptionSourceLabel(adoption('42'), [
-        { id: 'owner-1', role: 'owner', name: '   ', transport, secret_id: '42' },
+        { id: 'owner-1', role: 'owner', name: '   ', transport, transports, secret_id: '42' },
       ]),
     ).toBe('replica source ff01')
   })
@@ -768,7 +769,7 @@ describe('adoptedVaultState', () => {
       helpers: [
         {
           channel_id: '901',
-          transport_uri: helperUri,
+          transports: [{ uri: helperUri, protocol: 0 }],
           shared_key: bytes('key'),
           communication_info: { name: 'Snapshot name' },
         },
@@ -784,6 +785,7 @@ describe('adoptedVaultState', () => {
       role: 'helper',
       name: 'Richard',
       transport: { protocol: 'https', uri: helperUri },
+      transports: [{ protocol: 'https', uri: helperUri }],
       secret_id: '42',
     },
   ]
@@ -932,6 +934,7 @@ describe('replicaViews', () => {
   }
 
   const transport = { protocol: 'https' as const, uri: 'https://example.test/mailbox' }
+  const transports = [transport]
 
   // ── Rows come from channels, never from the roster ─────────────────────────
   //
@@ -943,8 +946,8 @@ describe('replicaViews', () => {
 
   /** A roster with no replica-shaped thing on it, because there is no such thing. */
   const browserRoster: BEActorWithStatus[] = [
-    { id: 'owner-1', role: 'owner', name: 'Alice', transport, secret_id: '42' },
-    { id: 'owner-2', role: 'owner', name: 'Bob', transport, secret_id: '7' },
+    { id: 'owner-1', role: 'owner', name: 'Alice', transport, transports, secret_id: '42' },
+    { id: 'owner-2', role: 'owner', name: 'Bob', transport, transports, secret_id: '7' },
   ]
 
   function withChannels(
@@ -957,8 +960,8 @@ describe('replicaViews', () => {
   it('emits no row from the roster alone, however many actors it holds', () => {
     const views = replicaViews(
       [
-        { id: 'owner-1', role: 'owner', name: 'Alice', transport, secret_id: '42' },
-        { id: 'helper-1', role: 'helper', name: 'Bob', transport, secret_id: '7' },
+        { id: 'owner-1', role: 'owner', name: 'Alice', transport, transports, secret_id: '42' },
+        { id: 'helper-1', role: 'helper', name: 'Bob', transport, transports, secret_id: '7' },
       ],
       emptyState,
     )
@@ -998,8 +1001,8 @@ describe('replicaViews', () => {
   it('resolves the peer helper for a channel this device paired', () => {
     const views = replicaViews(
       [
-        { id: 'owner-1', role: 'owner', name: 'Alice', transport, secret_id: '42' },
-        { id: 'helper-9', role: 'helper', name: 'Laptop', transport, secret_id: '7' },
+        { id: 'owner-1', role: 'owner', name: 'Alice', transport, transports, secret_id: '42' },
+        { id: 'helper-9', role: 'helper', name: 'Laptop', transport, transports, secret_id: '7' },
       ],
       withChannels(
         { '900': { channelId: '900', role: 'replica_source', peerName: 'Laptop' } },
@@ -1018,7 +1021,7 @@ describe('replicaViews', () => {
     // the roster reports it — without this the row could never show a
     // suspended peer as suspended.
     const views = replicaViews(
-      [{ id: 'helper-9', role: 'helper', name: 'Laptop', transport, secret_id: '7', disabled: true }],
+      [{ id: 'helper-9', role: 'helper', name: 'Laptop', transport, transports, secret_id: '7', disabled: true }],
       withChannels(
         { '900': { channelId: '900', role: 'replica_source', peerName: 'Laptop' } },
         { replicas: { 'helper-9': { local: false, peer: 'none', channelId: '900' } } },
@@ -1046,7 +1049,7 @@ describe('replicaViews', () => {
     // the owner actor another browser device registers as must not be handed
     // out here — it would be an id that 400s.
     const views = replicaViews(
-      [{ id: 'owner-7', role: 'owner', name: 'Bob', transport, secret_id: '7' }],
+      [{ id: 'owner-7', role: 'owner', name: 'Bob', transport, transports, secret_id: '7' }],
       withChannels(
         { '900': { channelId: '900', role: 'replica_source', peerName: 'Bob' } },
         { replicas: { 'owner-7': { local: false, peer: 'none', channelId: '900' } } },
@@ -1205,7 +1208,7 @@ describe('replicaViews', () => {
     // one returning: a second source keyed on anything but the channel id
     // showed the same replica twice.
     const views = replicaViews(
-      [{ id: 'helper-9', role: 'helper', name: 'Laptop', transport, secret_id: '7' }],
+      [{ id: 'helper-9', role: 'helper', name: 'Laptop', transport, transports, secret_id: '7' }],
       withChannels(
         { '900': { channelId: '900', role: 'replica_source' } },
         { replicas: { 'helper-9': { local: false, peer: 'none', channelId: '900' } } },

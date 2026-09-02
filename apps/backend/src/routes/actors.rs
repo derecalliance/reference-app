@@ -266,6 +266,7 @@ pub async fn create_contact(
 
     match addr.send(msg).await {
         Ok(Ok(contact)) => {
+            state.channel_router.pin(contact.channel_id, actor_id);
             let dto = contact_to_dto(&contact);
             info!(
                 actor_id = %actor_id,
@@ -362,13 +363,16 @@ pub async fn start_pairing(
         }
     };
 
+    // The initiator advertises every endpoint it serves. The deprecated
+    // singular field carries the first of them, which is what a peer predating
+    // `supportedTransports` reads; `endpoints()` is never empty.
+    let supported_transports = req.endpoints();
+    #[allow(deprecated)]
     let contact = derec_proto::ContactMessage {
         channel_id,
         nonce,
-        transport_protocol: Some(derec_proto::TransportProtocol {
-            uri: req.transport_protocol.uri.clone(),
-            protocol: 0, // HTTPS
-        }),
+        transport_protocol: supported_transports.first().cloned(),
+        supported_transports,
         contact_mode: req.contact_mode,
         mlkem_encapsulation_key,
         ecies_public_key,
@@ -384,6 +388,10 @@ pub async fn start_pairing(
         // with the pair-request and is what the responder side stores.
         peer_communication_info: std::collections::HashMap::new(),
     };
+
+    // The response arrives on the id the *peer* minted, so this actor must be
+    // routable on it before the request goes out.
+    state.channel_router.pin(channel_id, actor_id);
 
     match addr.send(StartFlowMsg { flow }).await {
         Ok(Ok(events)) => {
@@ -438,6 +446,11 @@ pub async fn start_pairing(
 // `NoKeys` pairing — and every replica-mode pairing — can happen on any
 // provisioned actor and on any of its channels, and one actor may hold several
 // at once, so there is nothing an actor id alone could resolve to.
+//
+// Which of the actor's protocol instances answers is resolved from the channel
+// id, not assumed to be the actor's own: a replica-mode channel lives on the
+// instance bound to the mirrored owner's secret, and only that instance holds
+// the channel's shared key. See `ProvisionedActor::owning_secret_for`.
 
 #[derive(Debug, Deserialize)]
 pub struct ChannelQueryParam {

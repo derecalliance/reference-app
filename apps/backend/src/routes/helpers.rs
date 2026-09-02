@@ -14,6 +14,7 @@ use uuid::Uuid;
 use crate::{
     models::{
         AddHelperRequest, AddHelperResponse, EnsureHelpersRequest, EnsureHelpersResponse, Role,
+        TransportBreakdown, TransportMode,
     },
     provisioning::{provisioned_actor, spawn_provisioned},
     routes::actor_guard::{ensure_actor_role, not_found},
@@ -32,7 +33,15 @@ use crate::{
 pub struct ContactMessageDto {
     pub channel_id: String,
     pub nonce: String,
+    /// Deprecated on the wire since SDK 0.0.3 and removed at 0.0.5, but still
+    /// what a peer predating `supported_transports` reads, so a sender must
+    /// keep it filled with the first entry of the list.
     pub transport_protocol: TransportProtocolDto,
+    /// Every endpoint the sender serves, in the sender's own preference order.
+    /// Defaulted so a contact produced by an older peer still deserializes;
+    /// [`ContactMessageDto::endpoints`] falls back to the singular field.
+    #[serde(default)]
+    pub supported_transports: Vec<TransportProtocolDto>,
     /// `ContactMode` numeric value: 0 = INLINE_KEYS, 1 = HASHED_KEYS, 2 = NO_KEYS.
     #[serde(default)]
     pub contact_mode: i32,
@@ -45,21 +54,80 @@ pub struct ContactMessageDto {
     pub contact_binding_hash: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransportProtocolDto {
     pub uri: String,
+    /// Lowercase name of the `Protocol` discriminant: `"https"` or `"grpc"`.
+    /// An unrecognised value is read as HTTPS, matching protobuf's treatment
+    /// of an unknown enum value on the wire.
     pub protocol: String,
 }
 
+impl TransportProtocolDto {
+    pub fn from_proto(t: &derec_proto::TransportProtocol) -> Self {
+        let protocol = match derec_proto::Protocol::try_from(t.protocol) {
+            Ok(derec_proto::Protocol::Grpc) => "grpc",
+            _ => "https",
+        };
+        Self {
+            uri: t.uri.clone(),
+            protocol: protocol.to_owned(),
+        }
+    }
+
+    pub fn to_proto(&self) -> derec_proto::TransportProtocol {
+        let protocol = match self.protocol.as_str() {
+            "grpc" => derec_proto::Protocol::Grpc,
+            _ => derec_proto::Protocol::Https,
+        };
+        derec_proto::TransportProtocol {
+            uri: self.uri.clone(),
+            protocol: protocol as i32,
+        }
+    }
+}
+
+impl ContactMessageDto {
+    /// The endpoints this contact advertises, preferring the list and falling
+    /// back to the deprecated singular field for a peer that predates it.
+    pub fn endpoints(&self) -> Vec<derec_proto::TransportProtocol> {
+        if self.supported_transports.is_empty() {
+            vec![self.transport_protocol.to_proto()]
+        } else {
+            self.supported_transports
+                .iter()
+                .map(TransportProtocolDto::to_proto)
+                .collect()
+        }
+    }
+}
+
 pub fn contact_to_dto(c: &derec_proto::ContactMessage) -> ContactMessageDto {
-    let tp = c.transport_protocol.as_ref();
+    let supported_transports: Vec<TransportProtocolDto> = c
+        .supported_transports
+        .iter()
+        .map(TransportProtocolDto::from_proto)
+        .collect();
+
+    // The singular field mirrors the first entry of the list; the library
+    // fills it that way on the wire, and a DTO that disagreed with it would
+    // hand a pre-0.0.3 reader a different endpoint than a current one.
+    #[allow(deprecated)]
+    let singular = c
+        .transport_protocol
+        .as_ref()
+        .map(TransportProtocolDto::from_proto);
+
     ContactMessageDto {
         channel_id: c.channel_id.to_string(),
         nonce: c.nonce.to_string(),
-        transport_protocol: TransportProtocolDto {
-            uri: tp.map(|t| t.uri.clone()).unwrap_or_default(),
-            protocol: String::from("https"),
-        },
+        transport_protocol: singular
+            .or_else(|| supported_transports.first().cloned())
+            .unwrap_or_else(|| TransportProtocolDto {
+                uri: String::new(),
+                protocol: String::from("https"),
+            }),
+        supported_transports,
         contact_mode: c.contact_mode,
         mlkem_encapsulation_key: c
             .mlkem_encapsulation_key
@@ -93,12 +161,30 @@ pub async fn add(
     State(state): State<Arc<AppState>>,
     Json(req): Json<AddHelperRequest>,
 ) -> Response {
+    if !state.defaults.grpc_enabled && req.transport_mode != TransportMode::Http {
+        // Not a silent downgrade: a helper advertising an endpoint nothing is
+        // listening on pairs successfully and then black-holes every reply.
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "gRPC helper requested but grpc_enabled is false"
+            })),
+        )
+            .into_response();
+    }
+
     let (timeout_secs, unpair_ack) = req.settings.resolve(&state.defaults);
 
     // Every actor protects its own secret. Mirroring an owner's vault is an
     // extra protocol *instance* bound to that owner's secret, added on demand
     // when a replica-mode contact is minted — see `provisioning::actor_secret_id`.
-    let helper = provisioned_actor(Role::Helper, &req.name, &state.base_url);
+    let helper = provisioned_actor(
+        Role::Helper,
+        &req.name,
+        &state.base_url,
+        &state.grpc_authority(),
+        req.transport_mode,
+    );
 
     spawn_provisioned(&state, &helper, timeout_secs, unpair_ack);
     state.actors.register(helper.clone());
@@ -147,18 +233,51 @@ pub async fn ensure(
     State(state): State<Arc<AppState>>,
     Json(req): Json<EnsureHelpersRequest>,
 ) -> Response {
+    let want = match req.transports {
+        Some(breakdown) => {
+            if breakdown.total() != req.total as usize {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "transports must sum to total"
+                    })),
+                )
+                    .into_response();
+            }
+            if !state.defaults.grpc_enabled && (breakdown.grpc > 0 || breakdown.both > 0) {
+                // Not a silent downgrade: a helper advertising an endpoint
+                // nothing is listening on pairs successfully and then
+                // black-holes every reply.
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "gRPC helpers requested but grpc_enabled is false"
+                    })),
+                )
+                    .into_response();
+            }
+            breakdown
+        }
+        None => TransportBreakdown { http: req.total, grpc: 0, both: 0 },
+    };
+
     let (timeout_secs, unpair_ack) = req.settings.resolve(&state.defaults);
     let names = req.names;
-    let mut taken = 0usize;
 
     let EnsuredParticipants { created, participants: helpers } =
-        state.actors.ensure_participants(req.total as usize, |pool_index| {
-            let name = helper_name(&names, taken, pool_index);
-            taken += 1;
-            // Every actor protects its own secret — see
-            // `provisioning::actor_secret_id`.
-            provisioned_actor(Role::Helper, &name, &state.base_url)
-        });
+        state
+            .actors
+            .ensure_participants_by_mode(want, |taken, pool_index, mode| {
+                // Every actor protects its own secret — see
+                // `provisioning::actor_secret_id`.
+                provisioned_actor(
+                    Role::Helper,
+                    &helper_name(&names, taken, pool_index),
+                    &state.base_url,
+                    &state.grpc_authority(),
+                    mode,
+                )
+            });
 
     // Spawning touches the arbiter and several maps, so it happens out here
     // rather than inside the registry lock.
@@ -408,5 +527,138 @@ mod tests {
 
         assert_eq!(helper_name(&offered, 0, 0), "Participant 1");
         assert_eq!(helper_name(&offered, 1, 1), "Participant 2");
+    }
+
+    #[test]
+    fn a_mixed_mode_shortfall_names_every_new_helper_distinctly() {
+        // Reproduces the wizard's "1 http, 1 grpc, 1 both" request against an
+        // empty pool: `ensure_participants_by_mode` runs a separate `existing
+        // .. target` loop per mode, so a caller wiring `helper_name` off that
+        // loop's own index (as `ensure` used to) calls it with the same index
+        // three times and mints three helpers named identically.
+        use crate::models::{Role, TransportBreakdown};
+        use crate::provisioning::provisioned_actor;
+        use crate::state::ActorRegistry;
+
+        let registry = ActorRegistry::default();
+        let offered: Vec<String> = Vec::new();
+
+        let want = TransportBreakdown { http: 1, grpc: 1, both: 1 };
+        let result = registry.ensure_participants_by_mode(want, |taken, pool_index, mode| {
+            provisioned_actor(
+                Role::Helper,
+                &helper_name(&offered, taken, pool_index),
+                "http://localhost:5000",
+                "localhost:50051",
+                mode,
+            )
+        });
+
+        let mut created_names: Vec<String> =
+            result.created.iter().map(|a| a.name.clone()).collect();
+        assert_eq!(created_names.len(), 3);
+
+        created_names.sort();
+        created_names.dedup();
+        assert_eq!(
+            created_names.len(),
+            3,
+            "every helper in a mixed-mode shortfall must get a distinct fallback name"
+        );
+    }
+
+    // ── Contact endpoints ──────────────────────────────────────────────────
+    //
+    // `transportProtocol` is deprecated in favour of `supportedTransports` and
+    // goes away at SDK 0.0.5, so this seam has to read both: the list from a
+    // current peer, the singular field from one that predates it.
+
+    mod contact_endpoints {
+        use super::super::{ContactMessageDto, TransportProtocolDto, contact_to_dto};
+
+        fn dto(
+            singular: TransportProtocolDto,
+            list: Vec<TransportProtocolDto>,
+        ) -> ContactMessageDto {
+            ContactMessageDto {
+                channel_id: "18446744073709551615".to_owned(),
+                nonce: "7".to_owned(),
+                transport_protocol: singular,
+                supported_transports: list,
+                contact_mode: 0,
+                mlkem_encapsulation_key: None,
+                ecies_public_key: None,
+                contact_binding_hash: None,
+            }
+        }
+
+        fn tp(uri: &str, protocol: &str) -> TransportProtocolDto {
+            TransportProtocolDto {
+                uri: uri.to_owned(),
+                protocol: protocol.to_owned(),
+            }
+        }
+
+        #[test]
+        fn the_list_wins_when_present() {
+            let endpoints = dto(
+                tp("https://a.example", "https"),
+                vec![tp("https://a.example", "https"), tp("grpcs://a.example:443", "grpc")],
+            )
+            .endpoints();
+
+            assert_eq!(endpoints.len(), 2);
+            assert_eq!(endpoints[0].uri, "https://a.example");
+            assert_eq!(endpoints[1].protocol, derec_proto::Protocol::Grpc as i32);
+        }
+
+        #[test]
+        fn an_empty_list_falls_back_to_the_deprecated_singular_field() {
+            let endpoints = dto(tp("https://a.example", "https"), Vec::new()).endpoints();
+
+            assert_eq!(endpoints.len(), 1);
+            assert_eq!(endpoints[0].uri, "https://a.example");
+            assert_eq!(endpoints[0].protocol, derec_proto::Protocol::Https as i32);
+        }
+
+        #[test]
+        fn an_unknown_protocol_name_reads_as_https_like_an_unknown_enum_on_the_wire() {
+            let endpoints = dto(tp("ws://a.example", "websocket"), Vec::new()).endpoints();
+
+            assert_eq!(endpoints[0].protocol, derec_proto::Protocol::Https as i32);
+        }
+
+        #[test]
+        fn the_dto_mirrors_the_first_endpoint_into_the_singular_field() {
+            // A DTO whose singular field disagreed with the list would hand a
+            // pre-0.0.3 reader a different endpoint than a current one.
+            #[allow(deprecated)]
+            let contact = derec_proto::ContactMessage {
+                channel_id: 1,
+                nonce: 7,
+                transport_protocol: None,
+                supported_transports: vec![
+                    derec_proto::TransportProtocol {
+                        uri: "grpcs://a.example:443".to_owned(),
+                        protocol: derec_proto::Protocol::Grpc as i32,
+                    },
+                    derec_proto::TransportProtocol {
+                        uri: "https://a.example".to_owned(),
+                        protocol: derec_proto::Protocol::Https as i32,
+                    },
+                ],
+                contact_mode: 0,
+                mlkem_encapsulation_key: None,
+                ecies_public_key: None,
+                contact_binding_hash: None,
+                timestamp: None,
+            };
+
+            let dto = contact_to_dto(&contact);
+
+            assert_eq!(dto.supported_transports.len(), 2);
+            assert_eq!(dto.transport_protocol.uri, "grpcs://a.example:443");
+            assert_eq!(dto.transport_protocol.protocol, "grpc");
+        }
     }
 }

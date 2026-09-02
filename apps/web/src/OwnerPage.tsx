@@ -16,7 +16,7 @@ import { useConsole } from './ConsoleContext'
 import { reportError, reportInfo } from './toastBus'
 import { protocolTimeoutMs, DEFAULT_PROTOCOL_TIMEOUT_SECS, DEFAULT_UNPAIR_ACK } from './config'
 import { ProtocolConfigProvider, useProtocolTimeoutMs } from './ProtocolConfig'
-import { sendMessage, pollMailbox, fromBase64Url, toBase64Url, type MailboxMessage } from './derecApi'
+import { sendMessage, relayMessage, pollMailbox, fromBase64Url, toBase64Url, type MailboxMessage } from './derecApi'
 import { makeChannelStore, makeSecretStore, makeShareStore, makeStateStore, makeUserSecretStore, makeTransport, clearNamespace, loadRawShare, readHelperChannelStatus } from './stores'
 import { getOrCreateReplicaId } from './replicaIdentity'
 import { QrScanner } from './QrScanner'
@@ -80,7 +80,7 @@ import {
   removeReplicaMember,
   replicaSyncTargets,
   replicaViews,
-  startSyncCheck,
+  startReplicaDiscovery,
   type PendingReplicaAdoption,
   type ReplicaAdoptionOutcome,
   type ReplicaFirstSyncTrigger,
@@ -94,7 +94,8 @@ import {
   type UnresolvedAutomaticSync,
 } from './replicaFlows'
 import { loadReplicaAdoptionBlock, saveReplicaAdoptionBlock } from './replicaAdoptionBlock'
-import { TRANSPORT_PROTOCOL_HTTPS, contactMessageToDto, dtoToContactMessage } from './contactDto'
+import { TRANSPORT_PROTOCOL_HTTPS, contactMessageToDto, dtoToContactMessage, protocolName } from './contactDto'
+import { resolveRosterActor } from './peerIdentity'
 import { AppMuiTheme } from './AppMuiTheme'
 import { ReplicaAdoptionDialog } from './ReplicaAdoptionDialog'
 import { ReplicaFingerprintDialog } from './ReplicaFingerprintDialog'
@@ -189,8 +190,11 @@ function buildProtocolInstance(opts: BuildProtocolOptions): ProtocolInstance {
     .withSecretStore(makeSecretStore(opts.namespace))
     .withUserSecretStore(makeUserSecretStore(opts.namespace))
     .withStateStore(makeStateStore(opts.namespace))
-    .withTransport(makeTransport(sendMessage))
-    .withOwnTransport({ uri: opts.ownTransportUri, protocol: 'https' })
+    .withTransport(makeTransport(sendMessage, relayMessage))
+    // A list, even though this app serves exactly one endpoint: the singular
+    // setter is deprecated, and the whole list is what gets advertised in
+    // `supportedTransports` at pairing.
+    .withOwnTransports([{ uri: opts.ownTransportUri, protocol: 'https' }])
     // Derived, not hardcoded: the guardrail comes back on its own the moment
     // this app is served over https.
     //
@@ -199,7 +203,7 @@ function buildProtocolInstance(opts: BuildProtocolOptions): ProtocolInstance {
     // peer's endpoint may never be plaintext by default, and every peer here
     // is `http://localhost:5000/derec/...`. Pairing fails without this with a
     // message naming the flag.
-    .withUnsafeHttp(!opts.ownTransportUri.startsWith('https://'))
+    .withUnsafeConnection(!opts.ownTransportUri.startsWith('https://'))
     .withThreshold(opts.threshold)
     .withKeepVersionsCount(opts.keepVersionsCount)
     .withTimeouts({
@@ -332,7 +336,7 @@ function snapshotFromEvent(secret: RecoveredSecretPayload): RecoveredSecretSnaps
   return {
     helpers: secret.helpers.map(h => ({
       channelId: h.channel_id,
-      transportUri: h.transport_uri,
+      transports: h.transports.map(t => ({ uri: t.uri, protocol: t.protocol })),
       communicationInfo: h.communication_info,
       sharedKey: toBase64Url(asBytes(h.shared_key)),
     })),
@@ -345,7 +349,7 @@ function snapshotFromEvent(secret: RecoveredSecretPayload): RecoveredSecretSnaps
       ? {
           channelId: secret.replicas.channel_id,
           members: secret.replicas.members.map(m => ({
-            transportUri: m.transport_uri,
+            transports: m.transports.map(t => ({ uri: t.uri, protocol: t.protocol })),
             communicationInfo: m.communication_info,
             replicaId: m.replica_id,
             role: m.role,
@@ -361,7 +365,7 @@ function snapshotToPayload(snapshot: RecoveredSecretSnapshot): RecoveredSecretPa
   return {
     helpers: snapshot.helpers.map(h => ({
       channel_id: h.channelId,
-      transport_uri: h.transportUri,
+      transports: h.transports.map(t => ({ uri: t.uri, protocol: t.protocol })),
       communication_info: h.communicationInfo,
       shared_key: fromBase64Url(h.sharedKey),
     })),
@@ -375,7 +379,7 @@ function snapshotToPayload(snapshot: RecoveredSecretSnapshot): RecoveredSecretPa
           channel_id: snapshot.replicas.channelId,
           members: snapshot.replicas.members.map(m => ({
             replica_id: m.replicaId,
-            transport_uri: m.transportUri,
+            transports: m.transports.map(t => ({ uri: t.uri, protocol: t.protocol })),
             role: m.role,
             communication_info: m.communicationInfo,
           })),
@@ -3606,7 +3610,7 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
 
   // A group-wide sync check is in flight. Group-wide rather than per-row: the
   // flow takes no parameters and asks every member at once.
-  const [syncCheckRunning, setSyncCheckRunning] = useState(false)
+  const [replicaDiscoveryRunning, setReplicaDiscoveryRunning] = useState(false)
   // Replica ids whose eviction is in flight, keyed by the protocol-level
   // replica id the flow names — not the backend actor id.
   const [removingReplicaIds, setRemovingReplicaIds] = useState<Set<string>>(() => new Set())
@@ -3668,10 +3672,10 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
         withProtocolLock(() => currentProtocol().getFingerprint(channelId)),
       verifyFingerprint: (channelId, fingerprint) =>
         withProtocolLock(() => currentProtocol().verifyFingerprint(channelId, fingerprint)),
-      startSyncCheck: () =>
-        withProtocolLock(() => currentProtocol().start(FlowKind.SyncCheck)),
-      startRemoveReplica: params =>
-        withProtocolLock(() => currentProtocol().start(FlowKind.RemoveReplica, params)),
+      startReplicaDiscovery: () =>
+        withProtocolLock(() => currentProtocol().start(FlowKind.ReplicaDiscovery)),
+      startUnpairReplica: params =>
+        withProtocolLock(() => currentProtocol().start(FlowKind.UnpairReplica, params)),
     }
     // `withProtocolLock` and `instanceRef` are stable for the life of the page;
     // rebuilding this object would defeat the point of it being stable.
@@ -4711,12 +4715,12 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
       return current
     }
 
-    if (event.type === 'SyncCheckComplete') {
+    if (event.type === 'ReplicaDiscoveryComplete') {
       const caughtUp = event.fetched_from !== undefined
       log({
         role: 'owner',
         flow: 'sharing',
-        step: 'SyncCheckComplete',
+        step: 'ReplicaDiscoveryComplete',
         description: caughtUp
           ? `Caught up from v${event.local_version} to v${event.group_version} via replica ${event.fetched_from}`
           : `Already current at v${event.local_version}`,
@@ -6420,12 +6424,17 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
       }
 
       const participants: PairedParticipant[] = secret.snapshot.helpers.map(h => {
-        const actor = actorByUri.get(h.transportUri)
+        const { actor, transportUri } = resolveRosterActor(h.transports, actorByUri)
+        // The matched entry's own discriminant, not an assumption: a `grpc`
+        // or `both` helper's first-recognised endpoint may be a `grpc://` one.
+        const transportProtocol = protocolName(
+          h.transports.find(t => t.uri === transportUri)?.protocol ?? TRANSPORT_PROTOCOL_HTTPS,
+        )
         return {
           id: actor?.id ?? `peer-${h.channelId}`,
           name: actor?.name || h.communicationInfo['name'] || 'Unknown',
           channelId: h.channelId,
-          transport: { protocol: 'https' as const, uri: h.transportUri },
+          transport: { protocol: transportProtocol, uri: transportUri },
           connectionStatus: 'paired' as const,
           // Every peer in a recovered snapshot held a share for us.
           peerRole: 'helper' as const,
@@ -6473,15 +6482,22 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
           // about itself. Skipping these leaves the local endpoint and comm
           // info stale, and the next pairing then advertises the pre-recovery
           // values to a peer that was never told about them.
-          await restoreInstance.protocol.setOwnTransport(current.transport.uri, 'https')
+          // The two setters take the protocol differently — a name on the
+          // instance, the numeric discriminant in flow params — because one
+          // configures this node and the other builds a wire message.
+          restoreInstance.protocol.setOwnTransports([
+            { uri: current.transport.uri, protocol: 'https' },
+          ])
           restoreInstance.protocol.setCommunicationInfo({ name: current.ownerName })
           await restoreInstance.protocol.start(FlowKind.UpdateChannelInfo, {
             target: participants.map(p => BigInt(p.channelId)),
             communication_info: { name: current.ownerName },
-            transport_protocol: {
-              uri: current.transport.uri,
-              protocol: TRANSPORT_PROTOCOL_HTTPS,
-            },
+            // The list, not the deprecated singular field: announcing a move
+            // should name every endpoint moved to. Its first entry fills the
+            // singular field for peers predating the list.
+            own_transports: [
+              { uri: current.transport.uri, protocol: TRANSPORT_PROTOCOL_HTTPS },
+            ],
           })
           log({
             role: 'owner',
@@ -6558,7 +6574,8 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
    * replica the user named "Laptop" would file it under "Alex" with no way back
    * to the name they chose. The second is that the pool is shared server-wide
    * and sized deliberately in the setup wizard; quietly consuming one of its
-   * members would take a helper the user meant to pair as a helper. This is
+   * members would take a helper the user meant to pair as a helper.
+   *
    * The one it adds is a `helper`, though, where the old path added a
    * `replica` — so unlike the old one it joins the shared pool the setup
    * wizard counts. That is correct under this model (a replica-backing helper
@@ -6597,22 +6614,31 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
     })
 
     pendingReplicaHelperRef.current = null
+
     // The handshake completes over the mailbox poll; `PairingCompleted` is what
-    // raises the fingerprint modal.
-    await refreshRosterSnapshot()
+    // raises the fingerprint modal. This refresh only brings the roster forward
+    // sooner, so a failure must not propagate: the pairing has already happened,
+    // and throwing here would leave the modal open on a completed attempt —
+    // a retry would then mint a second helper and run a second replica pairing,
+    // producing two identically-named replica channels. The poll catches up.
+    try {
+      await refreshRosterSnapshot()
+    } catch (error) {
+      console.warn('roster refresh after replica pairing failed', error)
+    }
   }
 
   /**
    * Ask the replica group which version its members hold.
    *
-   * The events land through the ordinary event fold: `SyncCheckComplete`
+   * The events land through the ordinary event fold: `ReplicaDiscoveryComplete`
    * reports the outcome, and a hydration event follows only if this device
    * actually was behind.
    */
-  async function handleSyncCheck(): Promise<void> {
-    setSyncCheckRunning(true)
+  async function handleReplicaDiscovery(): Promise<void> {
+    setReplicaDiscoveryRunning(true)
     try {
-      const events = await startSyncCheck(replicaProtocol)
+      const events = await startReplicaDiscovery(replicaProtocol)
       let updated = ownerRef.current
       for (const event of events) {
         updated = applyOwnerEvent(updated, event)
@@ -6622,9 +6648,9 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
         onUpdateRef.current(updated)
       }
     } catch (err) {
-      reportError('Sync check failed', err)
+      reportError('Replica discovery failed', err)
     } finally {
-      setSyncCheckRunning(false)
+      setReplicaDiscoveryRunning(false)
     }
   }
 
@@ -7574,8 +7600,8 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
                 onOpenFingerprint={setFingerprintChannelId}
                 onSyncNow={replica => void handleReplicaSyncNow(replica)}
                 onUnpair={handleTogglePair}
-                onSyncCheck={() => void handleSyncCheck()}
-                syncCheckRunning={syncCheckRunning}
+                onReplicaDiscovery={() => void handleReplicaDiscovery()}
+                replicaDiscoveryRunning={replicaDiscoveryRunning}
                 onRemoveFromGroup={replica => void handleRemoveFromGroup(replica)}
                 removingReplicaIds={removingReplicaIds}
                 onToggleOffline={replica => void handleToggleReplicaPeerOffline(replica)}

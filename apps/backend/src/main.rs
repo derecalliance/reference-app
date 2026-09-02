@@ -63,6 +63,25 @@ async fn main() {
         arbiter_handle,
     ));
 
+    // Bound synchronously, before `axum::serve` starts, so a taken port aborts
+    // boot here rather than failing silently inside a detached task — the
+    // exact black-hole the config validation elsewhere in this file works to
+    // prevent: a helper advertising an endpoint nothing is listening on pairs
+    // successfully and then black-holes every reply.
+    if state.defaults.grpc_enabled {
+        let grpc_port = state.defaults.grpc_port;
+        let incoming = derec_backend::grpc::bind(grpc_port).unwrap_or_else(|e| {
+            tracing::error!(port = grpc_port, error = %e, "failed to bind gRPC port");
+            eprintln!("failed to bind gRPC listen port {grpc_port}: {e}");
+            std::process::exit(1);
+        });
+
+        let grpc_state = Arc::clone(&state);
+        tokio::spawn(async move {
+            derec_backend::grpc::serve(grpc_state, incoming).await;
+        });
+    }
+
     let app = build_router(state);
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))

@@ -8,7 +8,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::info;
 use uuid::Uuid;
 
@@ -27,6 +27,44 @@ pub struct MailboxMessage {
 #[derive(Debug, Serialize)]
 pub struct PollMessagesResponse {
     pub messages: Vec<MailboxMessage>,
+}
+
+/// What happened to a message handed to an actor's inbox.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DispatchOutcome {
+    Delivered,
+    /// The actor is simulating offline; the message is discarded, not queued.
+    Dropped,
+    NoInbox,
+}
+
+/// Hand raw wire bytes to an actor's inbox.
+///
+/// Shared by both transports so a suspended helper drops gRPC traffic exactly
+/// as it drops HTTP, and so a browser actor receives over gRPC without knowing
+/// that is what happened.
+pub fn dispatch_to_inbox(state: &AppState, actor_id: Uuid, bytes: Vec<u8>) -> DispatchOutcome {
+    if state.disabled_helpers.contains_key(&actor_id) {
+        info!(actor_id = %actor_id, bytes = bytes.len(), "message dropped — actor is offline");
+        return DispatchOutcome::Dropped;
+    }
+
+    match state.actor_inboxes.get(&actor_id) {
+        Some(entry) => {
+            let len = bytes.len();
+            match entry.value() {
+                ActorInbox::Browser(tx) => {
+                    let _ = tx.send(bytes);
+                }
+                ActorInbox::Provisioned(addr) => {
+                    addr.do_send(IncomingMessage(bytes));
+                }
+            }
+            info!(actor_id = %actor_id, bytes = len, "message delivered to inbox");
+            DispatchOutcome::Delivered
+        }
+        None => DispatchOutcome::NoInbox,
+    }
 }
 
 /// POST /derec/:actor_id
@@ -51,33 +89,11 @@ pub async fn deliver_message(
             .into_response();
     }
 
-    if state.disabled_helpers.contains_key(&actor_id) {
-        info!(
-            actor_id = %actor_id,
-            bytes = body.len(),
-            "message dropped — actor is offline"
-        );
-        return StatusCode::ACCEPTED.into_response();
-    }
-
-    match state.actor_inboxes.get(&actor_id) {
-        Some(entry) => {
-            match entry.value() {
-                ActorInbox::Browser(tx) => {
-                    let _ = tx.send(body.to_vec());
-                }
-                ActorInbox::Provisioned(addr) => {
-                    addr.do_send(IncomingMessage(body.to_vec()));
-                }
-            }
-            info!(
-                actor_id = %actor_id,
-                bytes = body.len(),
-                "message delivered to inbox"
-            );
+    match dispatch_to_inbox(&state, actor_id, body.to_vec()) {
+        DispatchOutcome::Delivered | DispatchOutcome::Dropped => {
             StatusCode::ACCEPTED.into_response()
         }
-        None => not_found("actor inbox not found"),
+        DispatchOutcome::NoInbox => not_found("actor inbox not found"),
     }
 }
 
@@ -114,4 +130,87 @@ pub async fn poll_mailbox(
         .collect();
 
     (StatusCode::OK, Json(PollMessagesResponse { messages })).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RelayRequest {
+    /// The endpoint to deliver to, as the peer advertised it.
+    pub uri: String,
+    /// Raw wire bytes, base64url-encoded — the same encoding
+    /// [`MailboxMessage`] uses in the other direction.
+    pub data: String,
+}
+
+/// Whether any registered actor currently advertises `uri`.
+///
+/// The relay exists so a browser owner can reach a gRPC peer it cannot dial
+/// itself. Restricting it to advertised endpoints is what keeps it from being
+/// a general-purpose proxy.
+pub fn relay_target_is_known(state: &AppState, uri: &str) -> bool {
+    state
+        .actors
+        .all()
+        .iter()
+        .any(|actor| actor.transports.iter().any(|t| t.uri == uri))
+}
+
+/// POST /derec/relay
+///
+/// Dial an endpoint on a browser owner's behalf. A browser has no HTTP/2
+/// trailer access and so cannot speak gRPC; the backend already terminates
+/// transport for every actor here, so performing the dial is a small extension
+/// of that rather than a new role.
+pub async fn relay(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<RelayRequest>,
+) -> Response {
+    if !state.defaults.grpc_relay_enabled {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "error": "relay disabled" })),
+        )
+            .into_response();
+    }
+
+    if !relay_target_is_known(&state, &req.uri) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "error": "unknown relay target" })),
+        )
+            .into_response();
+    }
+
+    let Ok(bytes) = URL_SAFE_NO_PAD.decode(&req.data) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "invalid base64url payload" })),
+        )
+            .into_response();
+    };
+
+    let transport = crate::transport::CompositeTransport::new(
+        crate::transport::HttpTransport::new(state.http_client.clone()),
+        crate::transport::GrpcTransport::new(),
+    );
+    let endpoint = derec_proto::TransportProtocol {
+        protocol: if req.uri.starts_with("grpc") {
+            derec_proto::Protocol::Grpc as i32
+        } else {
+            derec_proto::Protocol::Https as i32
+        },
+        uri: req.uri.clone(),
+    };
+
+    use derec_library::protocol::DeRecTransport as _;
+    match transport.send(std::slice::from_ref(&endpoint), bytes).await {
+        Ok(()) => StatusCode::ACCEPTED.into_response(),
+        Err(e) => {
+            tracing::error!(uri = %req.uri, error = %e, "relay delivery failed");
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": "relay delivery failed" })),
+            )
+                .into_response()
+        }
+    }
 }

@@ -181,6 +181,31 @@ async fn a_malformed_replica_for_owner_secret_is_rejected() {
 }
 
 #[actix_rt::test]
+async fn minting_a_contact_pins_its_channel_for_grpc_ingress() {
+    // gRPC has no path to carry an actor id, so the first inbound message on a
+    // freshly minted contact can only be routed by its channel id — and no
+    // channel store has seen that id yet.
+    let (state, router) = app();
+    let (actor_id, _own_secret) = create_helper(&router).await;
+
+    let response = post_contact(&router, actor_id, "contact_mode=inline_keys").await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    let channel_id: u64 = body["channel_id"]
+        .as_str()
+        .expect("channel_id present")
+        .parse()
+        .expect("decimal channel id");
+
+    assert_eq!(
+        state.channel_router.resolve(channel_id),
+        Some(actor_id),
+        "a minted contact must be routable before any store knows it"
+    );
+}
+
+#[actix_rt::test]
 async fn an_empty_replica_for_owner_secret_is_rejected_not_treated_as_absent() {
     // A client that builds `?replica_for_owner_secret=${ownerSecret}` with an
     // unpopulated value sends an empty string. Treating that as "absent"

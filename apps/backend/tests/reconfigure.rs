@@ -12,7 +12,7 @@ use derec_backend::actor::{
     build_protocol, ListChannelsMsg, ListInstanceSecretsMsg, ProtocolConfig, ProvisionedActor,
     ReconfigureMsg,
 };
-use derec_backend::models::{Role, UnpairAck};
+use derec_backend::models::{Role, Transport, TransportProtocol, UnpairAck};
 use derec_backend::stores::ActorProtocol;
 use derec_library::protocol::{ChannelRecord, DeRecChannelStore, HelperChannel};
 use derec_library::types::ChannelId;
@@ -23,7 +23,10 @@ const CHANNEL_ID: u64 = 0xC0FFEE;
 fn config() -> ProtocolConfig {
     ProtocolConfig {
         secret_id: SECRET_ID,
-        transport_uri: "http://localhost:5000/derec/helpers/test".to_owned(),
+        own_transports: vec![Transport {
+            protocol: TransportProtocol::Https,
+            uri: "http://localhost:5000/derec/00000000-0000-0000-0000-000000000001".to_owned(),
+        }],
         communication_info: HashMap::from([("name".to_owned(), "Alex".to_owned())]),
         timeout_secs: 300,
         unpair_ack: UnpairAck::Required,
@@ -55,7 +58,7 @@ fn spawn(protocol: ActorProtocol) -> Addr<ProvisionedActor> {
 fn helper_channel() -> HelperChannel {
     HelperChannel {
         channel_id: ChannelId(CHANNEL_ID),
-        transport: Default::default(),
+        transports: Default::default(),
         communication_info: HashMap::from([("name".to_owned(), "Bob".to_owned())]),
         // This actor is the helper, so the peer is the owner.
         peer_role: derec_proto::SenderKind::Owner,

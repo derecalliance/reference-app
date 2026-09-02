@@ -93,6 +93,24 @@ function addToIndex(key: string, value: string): void {
 // ── Channel store ────────────────────────────────────────────────────────────
 
 /**
+ * Lift a channel record written before SDK 0.0.3 onto the endpoint *list*.
+ *
+ * `HelperChannel.transport` / `ReplicaMember.transport` became `transports`,
+ * and the field carries no serde default — deliberately, so a stale row fails
+ * loudly instead of decoding into a channel that looks paired and has no
+ * endpoint. The documented migration is to wrap the stored object in an array,
+ * which is what this does.
+ *
+ * Done as a **text** substitution, like the splice below and for the same
+ * reason: every id in the record is a `u64`, and `JSON.parse` would round
+ * anything above 2^53. The endpoint object is flat — `{"uri":…,"protocol":N}`
+ * — so `[^{}]*` matches exactly its body.
+ */
+function liftLegacyTransport(text: string): string {
+  return text.replace(/"transport":(\{[^{}]*\})/, '"transports":[$1]')
+}
+
+/**
  * Splice stored records into the JSON array the library expects.
  *
  * The bytes are spliced as **text** rather than parsed and re-serialised.
@@ -108,12 +126,97 @@ function spliceRecords(rows: Array<string | null>, variant: 'Helper' | 'Replica'
 
   for (const row of rows) {
     if (!row) continue
-    const text = new TextDecoder().decode(fromBase64Url(row))
+    const text = liftLegacyTransport(new TextDecoder().decode(fromBase64Url(row)))
     if (!text.startsWith(tag)) continue
     inner.push(text.slice(tag.length, -1))
   }
 
   return new TextEncoder().encode(`[${inner.join(',')}]`)
+}
+
+// ── Listing filters ──────────────────────────────────────────────────────────
+//
+// The library narrows `listHelpers` / `listReplicas` with a filter and does
+// **not** re-apply it to what comes back — a store that ignores it hands the
+// protocol rows it asked to be spared, and the protocol acts on them. So it
+// has to be applied here.
+//
+// localStorage has no query language to push the filter into, so this is the
+// list-and-match shape the SDK documents as correct-but-unoptimised. Ids come
+// from the index, where they are already strings; `status` and `role` are read
+// by parsing a throwaway copy of the record. Parsing is safe *for predicates*
+// — the values are enum names, not `u64`s — while the record itself is still
+// spliced from the original text, so no id is ever routed through `JSON.parse`.
+
+type ChannelStatusName = 'Pending' | 'Paired' | 'Unpairing'
+
+interface ChannelFilter<Role> {
+  ids: string[]
+  status: ChannelStatusName[]
+  role: Role | null
+  exclude: string[]
+}
+
+/** Serde omits a defaulted field, so an absent `status` is the default. */
+const DEFAULT_STATUS: ChannelStatusName = 'Paired'
+
+/**
+ * The `status` and `role` of a stored record, or `null` when it cannot be
+ * read. A row that will not parse cannot be shown to satisfy the filter, so it
+ * is dropped rather than passed through — the library would fail to decode it
+ * a moment later anyway.
+ */
+function readAttributes(
+  row: string,
+  variant: 'Helper' | 'Replica',
+  roleField: 'peer_role' | 'role',
+): { status: ChannelStatusName; role: unknown } | null {
+  try {
+    const text = new TextDecoder().decode(fromBase64Url(row))
+    const parsed = JSON.parse(text) as Record<string, Record<string, unknown> | undefined>
+    const record = parsed[variant]
+    if (!record) return null
+    return {
+      status: (record['status'] as ChannelStatusName | undefined) ?? DEFAULT_STATUS,
+      // Left as-is rather than coerced: the filter's role and the record's
+      // role are the same Rust enum through the same serde, so comparing them
+      // raw stays correct whatever representation that is.
+      role: record[roleField],
+    }
+  } catch {
+    return null
+  }
+}
+
+function selectRows(
+  ids: string[],
+  toKey: (id: string) => string,
+  filter: ChannelFilter<unknown> | undefined,
+  variant: 'Helper' | 'Replica',
+  roleField: 'peer_role' | 'role',
+): Array<string | null> {
+  const kept: Array<string | null> = []
+
+  for (const id of ids) {
+    if (filter) {
+      if (filter.ids.length > 0 && !filter.ids.includes(id)) continue
+      if (filter.exclude.includes(id)) continue
+    }
+
+    const row = localStorage.getItem(toKey(id))
+    if (!row) continue
+
+    if (filter && (filter.status.length > 0 || filter.role !== null)) {
+      const attrs = readAttributes(row, variant, roleField)
+      if (!attrs) continue
+      if (filter.status.length > 0 && !filter.status.includes(attrs.status)) continue
+      if (filter.role !== null && filter.role !== attrs.role) continue
+    }
+
+    kept.push(row)
+  }
+
+  return kept
 }
 
 export function makeChannelStore(namespace: string) {
@@ -134,13 +237,6 @@ export function makeChannelStore(namespace: string) {
       : memberIndexKey(namespace, secretId)
   }
 
-  function readIndexed(
-    ids: string[],
-    toKey: (id: string) => string,
-  ): Array<string | null> {
-    return ids.map(id => localStorage.getItem(toKey(id)))
-  }
-
   return {
     async load(
       secretId: string,
@@ -148,7 +244,9 @@ export function makeChannelStore(namespace: string) {
       replicaId: string,
     ): Promise<Uint8Array | null> {
       const val = localStorage.getItem(rowKey(secretId, channelId, replicaId))
-      return val ? fromBase64Url(val) : null
+      if (!val) return null
+      const text = liftLegacyTransport(new TextDecoder().decode(fromBase64Url(val)))
+      return new TextEncoder().encode(text)
     },
 
     async save(
@@ -182,29 +280,52 @@ export function makeChannelStore(namespace: string) {
       return existed
     },
 
-    /** JSON array of the helper channels stored under `secretId`. */
-    async listHelpers(secretId: string): Promise<Uint8Array> {
+    /**
+     * JSON array of the helper channels stored under `secretId` that `filter`
+     * selects. Filter ids are channel ids and its role is the peer's role.
+     */
+    async listHelpers(
+      secretId: string,
+      filter?: ChannelFilter<unknown>,
+    ): Promise<Uint8Array> {
       const ids = loadStringArray(helperIndexKey(namespace, secretId))
       return spliceRecords(
-        readIndexed(ids, id => helperRecordKey(namespace, secretId, id)),
+        selectRows(
+          ids,
+          id => helperRecordKey(namespace, secretId, id),
+          filter,
+          'Helper',
+          'peer_role',
+        ),
         'Helper',
       )
     },
 
     /**
-     * JSON array of the replica-group members stored under `secretId`,
-     * including this device's own row.
+     * JSON array of the replica-group members stored under `secretId` that
+     * `filter` selects, including this device's own row unless the filter
+     * excludes it. Filter ids are replica ids and its role is the member's.
      *
      * The order chooses the app's source-succession policy: when the group's
      * `Source` is removed, the protocol promotes the first entry here that is
      * neither departing nor leaving. The index is append-only, so this is join
      * order — the longest-standing member succeeds. That is a deliberate
-     * choice, not the storage engine's default.
+     * choice, not the storage engine's default. Filtering preserves it, since
+     * it only ever drops entries.
      */
-    async listReplicas(secretId: string): Promise<Uint8Array> {
+    async listReplicas(
+      secretId: string,
+      filter?: ChannelFilter<unknown>,
+    ): Promise<Uint8Array> {
       const ids = loadStringArray(memberIndexKey(namespace, secretId))
       return spliceRecords(
-        readIndexed(ids, id => memberRecordKey(namespace, secretId, id)),
+        selectRows(
+          ids,
+          id => memberRecordKey(namespace, secretId, id),
+          filter,
+          'Replica',
+          'role',
+        ),
         'Replica',
       )
     },
@@ -639,7 +760,7 @@ interface StateKeyFields {
  * Only the fields that form a kind's *key* may take part, and which those are
  * is per kind rather than "every field present". Kind 4 is the one that bites:
  * its item carries the device's `local_version` while
- * `StateKey::PendingSyncCheck` carries none, so including it would key the
+ * `StateKey::PendingReplicaDiscovery` carries none, so including it would key the
  * write as `4:<version>` while every read looked for `4` — the row would be
  * written and then never found, and the check would never resolve.
  *
@@ -653,7 +774,7 @@ interface StateKeyFields {
  *   1 PendingRecovery     → secret_id (recovered) + version
  *   2 PendingUnpair       → channel_id
  *   3 SharingRound        → version (one row per publishing round)
- *   4 PendingSyncCheck    → (none; at most one per secret)
+ *   4 PendingReplicaDiscovery    → (none; at most one per secret)
  */
 function canonicalStateKey(fields: StateKeyFields): string {
   switch (fields.kind) {
@@ -731,10 +852,51 @@ export function makeStateStore(namespace: string) {
 
 // ── Transport ────────────────────────────────────────────────────────────────
 
-export function makeTransport(sendFn: (uri: string, message: Uint8Array) => Promise<void>) {
+/**
+ * The library hands over every endpoint the peer advertised that survived its
+ * transport policy, in the peer's own order, and leaves the choice between
+ * them to the application.
+ *
+ * HTTP endpoints are posted directly. gRPC endpoints go through the backend
+ * relay: a browser cannot speak gRPC itself, and the backend already
+ * terminates transport for every actor here. Anything else is skipped. The
+ * first endpoint that accepts wins; the promise rejects only when none did.
+ */
+export function makeTransport(
+  sendFn: (uri: string, message: Uint8Array) => Promise<void>,
+  relayFn: (uri: string, message: Uint8Array) => Promise<void>,
+) {
   return {
-    async send(endpoint: { protocol: string; uri: string }, message: Uint8Array): Promise<void> {
-      await sendFn(endpoint.uri, message)
+    async send(
+      endpoints: ReadonlyArray<{ protocol: string; uri: string }>,
+      message: Uint8Array,
+    ): Promise<void> {
+      const plan = endpoints
+        .map(e => {
+          const protocol = e.protocol.toLowerCase()
+          if (protocol === 'https') return { uri: e.uri, deliver: sendFn }
+          if (protocol === 'grpc') return { uri: e.uri, deliver: relayFn }
+          return null
+        })
+        .filter((leg): leg is { uri: string; deliver: typeof sendFn } => leg !== null)
+
+      if (plan.length === 0) {
+        throw new Error(
+          `transport: no dialable endpoint among the peer's ${endpoints.length} offer(s)`,
+        )
+      }
+
+      const failures: string[] = []
+      for (const leg of plan) {
+        try {
+          await leg.deliver(leg.uri, message)
+          return
+        } catch (err) {
+          failures.push(`${leg.uri}: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+
+      throw new Error(`transport: no endpoint accepted the message (${failures.join('; ')})`)
     },
   }
 }

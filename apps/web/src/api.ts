@@ -5,11 +5,13 @@ import {
   type UnpairAck,
 } from './config'
 import { DEFAULT_CONTACT_MODE, type ContactModeKey } from './contactModes'
+import type { TransportMix } from './transportMix'
 
 import { API_BASE } from './apiBase'
 
-interface BETransport {
-  protocol: 'https'
+/** One endpoint an actor advertises, in the actor's own preference order. */
+export interface TransportDto {
+  protocol: 'https' | 'grpc'
   uri: string
 }
 
@@ -17,7 +19,14 @@ interface BEActor {
   id: string
   role: 'owner' | 'helper'
   name: string
-  transport: BETransport
+  /**
+   * `Actor.transport` on the wire is the first entry of `transports` — for a
+   * `grpc` or `both` helper that is a `grpc` endpoint, not `https`, so this
+   * carries the real protocol rather than asserting one.
+   */
+  transport: TransportDto
+  /** Every endpoint this actor advertises, in preference order. */
+  transports: TransportDto[]
   /** This actor's own secret_id (u64 decimal string) — the secret it protects
    *  as Owner. Peers helping it must bind their helper-role protocol instance
    *  to this value. */
@@ -93,10 +102,27 @@ const JSON_HEADERS = { 'Content-Type': 'application/json' }
  *  strings and binary fields base64url-encoded. Key material is optional: it
  *  is inlined only under ContactMode.InlineKeys — HashedKeys carries a binding
  *  hash instead, NoKeys carries neither. */
+export interface TransportProtocolDto {
+  uri: string
+  /** Lowercase `Protocol` discriminant name: `"https"` or `"grpc"`. */
+  protocol: string
+}
+
 export interface ContactMessageDto {
   channel_id: string
   nonce: string
-  transport_protocol: { uri: string; protocol: string }
+  /**
+   * Deprecated on the wire since SDK 0.0.3 and removed at 0.0.5, but still
+   * what a peer predating `supported_transports` reads — so a sender keeps it
+   * filled with the first entry of the list.
+   */
+  transport_protocol: TransportProtocolDto
+  /**
+   * Every endpoint the initiator serves, in its own preference order.
+   * Optional so a contact minted by an older peer still parses; readers fall
+   * back to `transport_protocol`.
+   */
+  supported_transports?: TransportProtocolDto[]
   /** ContactMode numeric value: 0 = InlineKeys, 1 = HashedKeys, 2 = NoKeys. */
   contact_mode: number
   mlkem_encapsulation_key?: string
@@ -247,10 +273,9 @@ export async function apiCreateReplicaContact(
  *  channel_id is the transient pairing id — the handshake rotates to a
  *  long-term id that surfaces on PairingCompleted.
  *
- *  Backend-managed actors are participants and replicas only — the
- *  `start-pairing` route rejects anything but `owner`/`helper` — so this
- *  intentionally takes the narrower role type rather than the app-wide
- *  `PairingRole`. */
+ *  Backend-managed actors only ever take these two roles — the `start-pairing`
+ *  route rejects anything but `owner`/`helper` — so this intentionally takes
+ *  the narrower role type rather than the app-wide `PairingRole`. */
 export async function apiStartActorPairing(
   actorId: string,
   contact: ContactMessageDto,
@@ -270,13 +295,13 @@ export async function apiStartActorPairing(
   return res.json() as Promise<{ channel_id: string }>
 }
 
-// ── Participants ─────────────────────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
 export interface AddHelperResponse {
   id: string
   role: 'helper'
   name: string
-  transport: BETransport
+  transport: TransportDto
   secret_id: string
 }
 
@@ -298,16 +323,21 @@ export interface EnsureHelpersResult {
  * `names` are candidates for whatever ends up being created. The caller cannot
  * know that count in advance (it depends on what other owners have already
  * provisioned), so it offers a full set and the server takes what it needs.
+ *
+ * `transports` is the target composition of the pool by mode; it must sum to
+ * `total` and the server rejects a mismatch, along with a request for
+ * gRPC/Both helpers while its gRPC listener is disabled.
  */
 export async function apiEnsureHelpers(
   total: number,
   names: string[],
+  transports: TransportMix,
   settings: ProvisioningSettings,
 ): Promise<EnsureHelpersResult> {
   const res = await request(`/helpers/ensure`, {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ total, names, ...settingsBody(settings) }),
+    body: JSON.stringify({ total, names, transports, ...settingsBody(settings) }),
   })
   if (!res.ok) {
     throw new Error(await errorMessage(res, `ensure helpers failed: ${res.status}`))
@@ -438,7 +468,10 @@ export async function apiLinkHelperChannels(
  *
  * The channel is named explicitly rather than inferred from the actor: a
  * `NoKeys` pairing — and every replica-mode pairing — can land on any
- * provisioned actor, and one actor may hold several such channels at once.
+ * provisioned actor, and one actor may hold several such channels at once. The
+ * backend resolves the channel to the protocol instance that holds it, so a
+ * replica-mode channel — which lives on the mirrored owner's instance rather
+ * than the actor's own — is served the same as any other.
  */
 export async function apiGetActorFingerprint(
   actorId: string,

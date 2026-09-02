@@ -16,12 +16,15 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 pub mod actor;
 pub mod config;
 pub mod envelope;
+pub mod grpc;
 pub mod instances;
 pub mod models;
 pub mod provisioning;
+pub mod routing;
 pub mod routes;
 pub mod state;
 pub mod stores;
+pub mod transport;
 
 use state::AppState;
 
@@ -47,7 +50,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         // A NoKeys pairing — and every replica-mode pairing — can land on any
         // provisioned actor and on any of its channels, so the channel these
-        // act on is named explicitly rather than inferred from the actor.
+        // act on is named explicitly rather than inferred from the actor. The
+        // actor resolves which of its protocol instances holds that channel,
+        // so a replica-mode channel (which lives on the mirrored owner's
+        // instance, not the actor's own) is served like any other.
         .route(
             "/actors/{actor_id}/fingerprint",
             get(routes::actors::get_fingerprint),
@@ -75,6 +81,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             post(routes::helpers::post_browser_contact)
                 .get(routes::helpers::get_browser_contact),
         )
+        // Registered ahead of `/derec/{actor_id}` so `relay` is matched
+        // literally rather than parsed as that segment's UUID.
+        .route("/derec/relay", post(routes::derec::relay))
         .route("/derec/{actor_id}", post(routes::derec::deliver_message))
         .route("/derec/{actor_id}/mailbox", get(routes::derec::poll_mailbox))
         .layer(TraceLayer::new_for_http())

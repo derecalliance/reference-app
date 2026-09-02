@@ -24,7 +24,8 @@ import {
   apiCreateReplicaContact,
   type BEActorWithStatus,
 } from './api'
-import { dtoToContactMessage } from './contactDto'
+import { dtoToContactMessage, protocolName } from './contactDto'
+import { resolveRosterActor } from './peerIdentity'
 import { toBase64Url } from './derecApi'
 import type { BagVersion, PairedParticipant, SecretBag } from './types'
 
@@ -252,9 +253,9 @@ export interface ReplicaProtocol {
   getFingerprint(channelId: bigint | number): Promise<string>
   verifyFingerprint(channelId: bigint | number, fingerprint: string): Promise<boolean>
   /** Ask the group which version its members hold. Takes no parameters. */
-  startSyncCheck(): Promise<DeRecEvent[]>
+  startReplicaDiscovery(): Promise<DeRecEvent[]>
   /** Remove a member from the group by its decimal `replica_id`. */
-  startRemoveReplica(params: { replica_id: string; memo?: string }): Promise<DeRecEvent[]>
+  startUnpairReplica(params: { replica_id: string; memo?: string }): Promise<DeRecEvent[]>
 }
 
 /**
@@ -263,11 +264,11 @@ export interface ReplicaProtocol {
  *
  * Takes no parameters — the group and this device's own version both come from
  * the stores. Resolves once the round is dispatched; the outcome arrives later
- * as `SyncCheckComplete`, and a hydration event follows only when this device
- * actually was behind.
+ * as `ReplicaDiscoveryComplete`, and a hydration event follows only when this
+ * device actually was behind.
  */
-export async function startSyncCheck(protocol: ReplicaProtocol): Promise<DeRecEvent[]> {
-  return protocol.startSyncCheck()
+export async function startReplicaDiscovery(protocol: ReplicaProtocol): Promise<DeRecEvent[]> {
+  return protocol.startReplicaDiscovery()
 }
 
 /**
@@ -286,7 +287,7 @@ export async function removeReplicaMember(
   replicaId: string,
   memo?: string,
 ): Promise<DeRecEvent[]> {
-  return protocol.startRemoveReplica({
+  return protocol.startUnpairReplica({
     replica_id: replicaId,
     ...(memo === undefined ? {} : { memo }),
   })
@@ -1204,12 +1205,17 @@ export function adoptedVaultState(
   const actorByUri = new Map(actors.map(a => [a.transport.uri, a]))
 
   const participants: PairedParticipant[] = adoption.secret.helpers.map(h => {
-    const actor = actorByUri.get(h.transport_uri)
+    const { actor, transportUri } = resolveRosterActor(h.transports, actorByUri)
+    // The matched entry's own discriminant, not an assumption: a `grpc` or
+    // `both` helper's first-recognised endpoint may be a `grpc://` one.
+    const transportProtocol = protocolName(
+      h.transports.find(t => t.uri === transportUri)?.protocol ?? 0,
+    )
     return {
       id: actor?.id ?? `peer-${h.channel_id}`,
       name: actor?.name || h.communication_info['name'] || 'Unknown',
       channelId: h.channel_id,
-      transport: { protocol: 'https' as const, uri: h.transport_uri },
+      transport: { protocol: transportProtocol, uri: transportUri },
       connectionStatus: 'paired' as const,
       // Every peer in the owner's snapshot held a share for that owner.
       peerRole: 'helper' as const,

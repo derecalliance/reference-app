@@ -21,17 +21,19 @@ use std::time::Duration;
 
 use actix::prelude::*;
 use derec_backend::actor::{
-    ChannelStatusMsg, CreateContactMsg, EnsureReplicaInstanceMsg, InstanceForChannelMsg,
-    PendingChannelIdsMsg, ProtocolConfig, ProvisionedActor, build_protocol,
+    ChannelStatusMsg, CreateContactMsg, EnsureReplicaInstanceMsg, GetFingerprintMsg,
+    InstanceForChannelMsg, PendingChannelIdsMsg, ProtocolConfig, ProvisionedActor,
+    VerifyFingerprintMsg, build_protocol,
 };
 use derec_backend::config::Defaults;
-use derec_backend::models::{Role, UnpairAck};
+use derec_backend::models::{Role, TransportMode, UnpairAck};
 use derec_backend::provisioning::{provisioned_actor, register_browser_actor, spawn_provisioned};
 use derec_backend::state::{ActorInbox, AppState};
 use derec_backend::stores::ActorProtocol;
 use derec_library::protocol::{
     ChannelQuery, ChannelRecord, ChannelStatus, DeRecChannelStore, DeRecFlow,
 };
+use derec_library::protocol::types::ReplicaFilter;
 use derec_library::types::ChannelId;
 use uuid::Uuid;
 
@@ -72,7 +74,8 @@ fn spawn_helper(state: &Arc<AppState>, name: &str) -> (Uuid, Addr<ProvisionedAct
 }
 
 fn spawn_actor(state: &Arc<AppState>, role: Role, name: &str) -> (Uuid, Addr<ProvisionedActor>) {
-    let actor = provisioned_actor(role, name, &state.base_url);
+    let actor =
+        provisioned_actor(role, name, &state.base_url, &state.grpc_authority(), TransportMode::Http);
     state.actors.register(actor.clone());
     spawn_provisioned(state, &actor, TIMEOUT_SECS, UnpairAck::Required);
 
@@ -112,7 +115,13 @@ fn register_unreachable_owner(state: &Arc<AppState>, name: &str) -> Owner {
 }
 
 fn build_owner(state: &Arc<AppState>, name: &str, reachable: bool) -> Owner {
-    let actor = provisioned_actor(Role::Owner, name, &state.base_url);
+    let actor = provisioned_actor(
+        Role::Owner,
+        name,
+        &state.base_url,
+        &state.grpc_authority(),
+        TransportMode::Http,
+    );
     let secret_id: u64 = actor.secret_id.parse().expect("secret id is a u64");
     if reachable {
         state.actors.register(actor.clone());
@@ -124,7 +133,7 @@ fn build_owner(state: &Arc<AppState>, name: &str, reachable: bool) -> Owner {
 
     let config = ProtocolConfig {
         secret_id,
-        transport_uri: actor.transport.uri.clone(),
+        own_transports: actor.transports.clone(),
         communication_info: HashMap::from([("name".to_owned(), name.to_owned())]),
         timeout_secs: TIMEOUT_SECS,
         unpair_ack: UnpairAck::Required,
@@ -250,7 +259,7 @@ async fn owner_status(owner: &Owner, channel_id: u64) -> Option<ChannelStatus> {
     let members = owner
         .protocol
         .channel_store
-        .replicas(owner.secret_id)
+        .replicas(owner.secret_id, ReplicaFilter::default())
         .await
         .expect("the in-memory channel store is readable");
     statuses.extend(
@@ -340,6 +349,96 @@ async fn a_replica_mode_pairing_is_confirmed_on_the_helpers_replica_instance() {
         "the owner side must stay Pending until a human confirms it — \
          auto-confirmation is helper behaviour and must not reach across the \
          channel"
+    );
+}
+
+#[actix_rt::test]
+async fn a_replica_mode_channels_fingerprint_is_served_by_its_owning_instance() {
+    // `GET /actors/{id}/fingerprint` and `POST /actors/{id}/confirm-fingerprint`
+    // are documented as serving any channel on any provisioned actor, replica
+    // mode included. A replica-mode channel lives on the instance bound to the
+    // *owner's* secret, and only that instance holds its shared key — so a
+    // handler that reached for the actor's own instance would answer
+    // `channel has no shared key — not yet paired` for every one of them, and
+    // the route would 500 rather than return a fingerprint.
+    //
+    // This test lives here rather than in `replica_contact.rs` because deriving
+    // a fingerprint needs a shared key, and a shared key exists only once the
+    // handshake has completed. That file mints a contact and stops.
+    let state = serve().await;
+    let (helper_id, helper) = spawn_helper(&state, "Alex");
+    let mut owner = register_owner(&state, "Alice");
+
+    helper
+        .send(EnsureReplicaInstanceMsg { owner_secret_id: owner.secret_id })
+        .await
+        .expect("the helper actor is alive")
+        .expect("the replica instance is created");
+
+    let contact = helper
+        .send(CreateContactMsg {
+            contact_mode: derec_proto::ContactMode::InlineKeys,
+            nonce: None,
+            replica_for_owner_secret: Some(owner.secret_id),
+        })
+        .await
+        .expect("the helper actor is alive")
+        .expect("the replica instance mints a contact");
+
+    owner
+        .protocol
+        .start(DeRecFlow::Pairing {
+            kind: derec_proto::SenderKind::ReplicaSource,
+            contact,
+            peer_communication_info: HashMap::from([("name".to_owned(), "Alex".to_owned())]),
+        })
+        .await
+        .expect("the owner starts a replica pairing");
+
+    let channel_id = await_helper_channel(&state, helper_id, &mut owner).await;
+
+    assert_eq!(
+        helper
+            .send(InstanceForChannelMsg { channel_id })
+            .await
+            .expect("the helper actor is alive"),
+        Some(owner.secret_id),
+        "the channel must belong to the replica instance, or this test asserts \
+         nothing about instance targeting"
+    );
+
+    // Waiting for `Paired` is how the test knows both sides finished the
+    // handshake, and so that both stores hold the channel's shared key.
+    assert_eq!(
+        await_helper_status(&state, &helper, &mut owner, channel_id, ChannelStatus::Paired).await,
+        Some(ChannelStatus::Paired),
+    );
+
+    let fingerprint = helper
+        .send(GetFingerprintMsg { channel_id })
+        .await
+        .expect("the helper actor is alive")
+        .expect("a replica-mode channel's fingerprint is retrievable");
+
+    let owner_fingerprint = owner
+        .protocol
+        .get_fingerprint(ChannelId(channel_id))
+        .await
+        .expect("the owner derives its own fingerprint for the same channel");
+
+    assert_eq!(
+        fingerprint, owner_fingerprint,
+        "both sides derive the fingerprint from the same shared key, so a \
+         value that differs means the helper answered from the wrong instance"
+    );
+
+    assert!(
+        helper
+            .send(VerifyFingerprintMsg { channel_id, fingerprint: owner_fingerprint })
+            .await
+            .expect("the helper actor is alive")
+            .expect("verification runs against the instance holding the channel"),
+        "confirming a replica-mode channel must reach the instance that holds it"
     );
 }
 

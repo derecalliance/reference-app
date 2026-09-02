@@ -89,11 +89,12 @@ pub fn bad_request(message: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::TransportMode;
     use crate::provisioning::provisioned_actor;
     use crate::state::ActorRegistry;
 
     fn actor(role: Role) -> Actor {
-        provisioned_actor(role, "test", "http://localhost")
+        provisioned_actor(role, "test", "http://localhost", "localhost:50051", TransportMode::Http)
     }
 
     /// The registry alone, without an `AppState` (which needs a live Actix

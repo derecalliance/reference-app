@@ -170,4 +170,102 @@ describe('ownerPersistence', () => {
 
     expect(loadActiveOwner()?.ownerId).toBe('o1')
   })
+
+  // ── Roster snapshots written before SDK 0.0.3 ──────────────────────────────
+  //
+  // A roster entry carried one bare `transportUri` under recoverable-payload
+  // v2 and carries `transports` under v3. `protocol.restore` reads the list, so
+  // a snapshot left in this shape would restore helpers with no endpoint.
+
+  describe('legacy recovered-secret snapshots', () => {
+    /** Writes the pre-0.0.3 shape directly — the current types cannot express it. */
+    function persistLegacySnapshot(): void {
+      const stored = {
+        type: 'owner',
+        owner: {
+          ...owner('o1', 'Alice'),
+          recoveredSecrets: [
+            {
+              secretId: '42',
+              version: 3,
+              label: 'v3',
+              snapshot: {
+                helpers: [
+                  {
+                    channelId: '901',
+                    transportUri: 'https://example.test/helper-1',
+                    communicationInfo: { name: 'Richard' },
+                    sharedKey: 'a2V5',
+                  },
+                ],
+                secrets: [],
+                replicas: {
+                  channelId: '900',
+                  members: [
+                    {
+                      replicaId: 'ff01',
+                      transportUri: 'grpcs://example.test:443',
+                      role: 'Destination',
+                      communicationInfo: {},
+                    },
+                  ],
+                  sharedKey: 'a2V5',
+                },
+              },
+            },
+          ],
+        },
+      }
+      localStorage.setItem('derec:owner:o1', JSON.stringify(stored))
+    }
+
+    it('lifts a helper’s single uri into the endpoint list', () => {
+      persistLegacySnapshot()
+
+      const helper = loadOwnerById('o1')!.recoveredSecrets[0].snapshot.helpers[0]
+      expect(helper.transports).toEqual([
+        { uri: 'https://example.test/helper-1', protocol: 0 },
+      ])
+      // The stale key is dropped rather than carried alongside the list.
+      expect('transportUri' in helper).toBe(false)
+    })
+
+    it('derives the protocol from the scheme, as v2 payloads force', () => {
+      persistLegacySnapshot()
+
+      const member = loadOwnerById('o1')!.recoveredSecrets[0].snapshot.replicas!.members[0]
+      expect(member.transports).toEqual([{ uri: 'grpcs://example.test:443', protocol: 1 }])
+    })
+
+    it('leaves a current snapshot untouched', () => {
+      const current = owner('o1', 'Alice')
+      current.recoveredSecrets = [
+        {
+          secretId: '42',
+          version: 3,
+          label: 'v3',
+          snapshot: {
+            helpers: [
+              {
+                channelId: '901',
+                transports: [
+                  { uri: 'https://a.example/derec', protocol: 0 },
+                  { uri: 'grpcs://a.example:443', protocol: 1 },
+                ],
+                communicationInfo: {},
+                sharedKey: 'a2V5',
+              },
+            ],
+            secrets: [],
+          },
+        },
+      ]
+      persistOwner(current)
+
+      expect(loadOwnerById('o1')!.recoveredSecrets[0].snapshot.helpers[0].transports).toEqual([
+        { uri: 'https://a.example/derec', protocol: 0 },
+        { uri: 'grpcs://a.example:443', protocol: 1 },
+      ])
+    })
+  })
 })

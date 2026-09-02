@@ -101,6 +101,12 @@ export interface ServerDefaults {
   authenticationMethod: AuthenticationMethod
   unpairAck: UnpairAck
   autoAcceptUnpairRequests: boolean
+  /** Prefills the wizard's transport breakdown for the helper pool. */
+  helperTransports: { http: number; grpc: number; both: number }
+  /** Whether the backend runs the gRPC ingress listener at all. */
+  grpcEnabled: boolean
+  /** Whether the backend dials gRPC on a browser owner's behalf via `/derec/relay`. */
+  grpcRelayEnabled: boolean
 }
 
 export const FALLBACK_SERVER_DEFAULTS: ServerDefaults = {
@@ -112,6 +118,9 @@ export const FALLBACK_SERVER_DEFAULTS: ServerDefaults = {
   authenticationMethod: DEFAULT_AUTHENTICATION_METHOD,
   unpairAck: DEFAULT_UNPAIR_ACK,
   autoAcceptUnpairRequests: DEFAULT_AUTO_ACCEPT_UNPAIR_REQUESTS,
+  helperTransports: { http: DEFAULT_PARTICIPANT_COUNT, grpc: 0, both: 0 },
+  grpcEnabled: true,
+  grpcRelayEnabled: true,
 }
 
 /** Wire shape of `GET /config` — snake_case, mirroring the backend's TOML keys. */
@@ -124,6 +133,9 @@ export interface ServerDefaultsDto {
   authentication_method: string
   unpair_ack: string
   auto_accept_unpair_requests: boolean
+  helper_transports: { http: number; grpc: number; both: number }
+  grpc_enabled: boolean
+  grpc_relay_enabled: boolean
 }
 
 /**
@@ -136,6 +148,19 @@ export interface ServerDefaultsDto {
 export function toServerDefaults(dto: Partial<ServerDefaultsDto> | null | undefined): ServerDefaults {
   const count = (value: unknown, fallback: number): number =>
     typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : fallback
+
+  const helperTransports = (
+    value: unknown,
+    fallback: ServerDefaults['helperTransports'],
+  ): ServerDefaults['helperTransports'] => {
+    if (typeof value !== 'object' || value === null) return fallback
+    const v = value as Partial<Record<'http' | 'grpc' | 'both', unknown>>
+    return {
+      http: count(v.http, fallback.http),
+      grpc: count(v.grpc, fallback.grpc),
+      both: count(v.both, fallback.both),
+    }
+  }
 
   return {
     participantCount: count(dto?.participant_count, FALLBACK_SERVER_DEFAULTS.participantCount),
@@ -155,5 +180,17 @@ export function toServerDefaults(dto: Partial<ServerDefaultsDto> | null | undefi
       typeof dto?.auto_accept_unpair_requests === 'boolean'
         ? dto.auto_accept_unpair_requests
         : FALLBACK_SERVER_DEFAULTS.autoAcceptUnpairRequests,
+    helperTransports: helperTransports(
+      dto?.helper_transports,
+      FALLBACK_SERVER_DEFAULTS.helperTransports,
+    ),
+    grpcEnabled:
+      typeof dto?.grpc_enabled === 'boolean'
+        ? dto.grpc_enabled
+        : FALLBACK_SERVER_DEFAULTS.grpcEnabled,
+    grpcRelayEnabled:
+      typeof dto?.grpc_relay_enabled === 'boolean'
+        ? dto.grpc_relay_enabled
+        : FALLBACK_SERVER_DEFAULTS.grpcRelayEnabled,
   }
 }

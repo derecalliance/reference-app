@@ -53,3 +53,22 @@ unpair_ack = "required"
 # Whether an incoming unpair request is accepted quietly (true) or surfaced as a
 # confirmation dialog the operator must answer (false). UI behaviour only.
 auto_accept_unpair_requests = true
+
+# The gRPC transport listener. Provisioned helpers can advertise a `grpc://`
+# endpoint only while this is running; set false to run HTTP-only.
+grpc_enabled = true
+grpc_port = 50051
+
+# Whether the backend will dial gRPC on a browser owner's behalf. A browser
+# cannot speak gRPC itself. Turning this off makes a gRPC-only helper
+# unreachable from a browser, which is a behaviour worth observing on purpose.
+grpc_relay_enabled = true
+
+# Prefills the wizard's transport breakdown. Must sum to `participant_count`.
+# NOTE: table sections must be the last thing in the file — any plain
+# `key = value` line after a `[table]` header is parsed as belonging to that
+# table, not to the top level.
+[helper_transports]
+http = 7
+grpc = 0
+both = 0

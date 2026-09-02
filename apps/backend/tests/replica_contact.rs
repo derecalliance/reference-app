@@ -8,7 +8,7 @@ use derec_backend::actor::{
     build_protocol, CreateContactMsg, InstanceForChannelMsg, ListInstanceSecretsMsg,
     ProtocolConfig, ProvisionedActor,
 };
-use derec_backend::models::{Role, UnpairAck};
+use derec_backend::models::{Role, Transport, TransportProtocol, UnpairAck};
 
 const OWN_SECRET: u64 = 0xA1;
 const ALICE_SECRET: u64 = 0x7F;
@@ -16,8 +16,10 @@ const ALICE_SECRET: u64 = 0x7F;
 fn config(secret_id: u64) -> ProtocolConfig {
     ProtocolConfig {
         secret_id,
-        transport_uri: "http://localhost:5000/derec/00000000-0000-0000-0000-000000000001"
-            .to_owned(),
+        own_transports: vec![Transport {
+            protocol: TransportProtocol::Https,
+            uri: "http://localhost:5000/derec/00000000-0000-0000-0000-000000000001".to_owned(),
+        }],
         communication_info: HashMap::from([("name".to_owned(), "Alex".to_owned())]),
         timeout_secs: 300,
         unpair_ack: UnpairAck::Required,

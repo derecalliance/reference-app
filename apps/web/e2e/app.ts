@@ -16,6 +16,20 @@ type CounterLabel =
   | 'Minimum paired to protect'
   | 'Recommended paired'
   | 'Pre-pair locally'
+  | 'gRPC only'
+  | 'Both transports'
+
+/**
+ * Target composition of the shared helper pool by transport mode. Mirrors
+ * `TransportMix` in `src/transportMix.ts` — kept local rather than imported so
+ * the e2e project stays self-contained (its `tsconfig.e2e.json` only includes
+ * `e2e`, not `src`).
+ */
+export interface TransportMix {
+  http: number
+  grpc: number
+  both: number
+}
 
 export interface OwnerSetupOptions {
   /** Owner name, e.g. `Alice`. Also becomes the tab title. */
@@ -32,6 +46,12 @@ export interface OwnerSetupOptions {
   minParticipants?: number
   /** Paired participants below which the app shows a warning. */
   recommendedParticipants?: number
+  /**
+   * Target composition of the helper pool by transport. The three counters
+   * rebalance each other, so only `grpc` and `both` are driven explicitly —
+   * `http` is left to absorb whatever they do not take.
+   */
+  transports?: TransportMix
 }
 
 /**
@@ -78,6 +98,10 @@ export async function setUpOwner(page: Page, options: OwnerSetupOptions): Promis
   await setCounter(page, 'Minimum paired to protect', options.minParticipants)
   await setCounter(page, 'Recommended paired', options.recommendedParticipants)
   await setCounter(page, 'Pre-pair locally', options.prePaired)
+  if (options.transports) {
+    await setCounter(page, 'gRPC only', options.transports.grpc)
+    await setCounter(page, 'Both transports', options.transports.both)
+  }
   await page.getByRole('button', { name: /^Next/ }).click()
 
   await expect(page.getByRole('heading', { name: 'Protocol settings' })).toBeVisible()

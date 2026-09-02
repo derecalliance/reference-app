@@ -1,16 +1,59 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransportProtocol {
     Https,
+    Grpc,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Transport {
     pub protocol: TransportProtocol,
     pub uri: String,
+}
+
+/// Which transports one provisioned helper serves.
+///
+/// This is about what it *advertises*. Every provisioned actor dials both
+/// regardless — a gRPC-only helper still answers a peer over HTTP if that is
+/// what the peer advertised.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransportMode {
+    /// The status quo, and what an omitted mode resolves to.
+    #[default]
+    Http,
+    Grpc,
+    Both,
+}
+
+impl TransportMode {
+    /// The endpoints a helper in this mode advertises, in preference order.
+    ///
+    /// `Both` leads with gRPC. The order is an arbitrary fixed app preference:
+    /// the library hands a peer's whole list to `DeRecTransport::send` and
+    /// takes no view on which entry is dialed.
+    pub fn endpoints(&self, base_url: &str, grpc_authority: &str, actor_id: Uuid) -> Vec<Transport> {
+        let http = Transport {
+            protocol: TransportProtocol::Https,
+            uri: format!("{base_url}/derec/{actor_id}"),
+        };
+        // No actor path: tonic builds the request URI from the authority plus
+        // the fixed method path, so anything after it is dropped. The actor is
+        // recovered from the envelope's channel id instead.
+        let grpc = Transport {
+            protocol: TransportProtocol::Grpc,
+            uri: format!("grpc://{grpc_authority}"),
+        };
+
+        match self {
+            TransportMode::Http => vec![http],
+            TransportMode::Grpc => vec![grpc],
+            TransportMode::Both => vec![grpc, http],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -18,6 +61,36 @@ pub struct Transport {
 pub enum Role {
     Owner,
     Helper,
+}
+
+/// A target *composition* for the shared helper pool.
+///
+/// `EnsureHelpersRequest` states a target, not a quantity to add, so a
+/// transport preference has to be expressed the same way: how many helpers of
+/// each mode should exist once the call returns.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransportBreakdown {
+    #[serde(default)]
+    pub http: u8,
+    #[serde(default)]
+    pub grpc: u8,
+    #[serde(default)]
+    pub both: u8,
+}
+
+impl TransportBreakdown {
+    pub fn total(&self) -> usize {
+        self.http as usize + self.grpc as usize + self.both as usize
+    }
+
+    /// Every mode with a non-zero target, paired with that target.
+    pub fn modes(&self) -> [(TransportMode, usize); 3] {
+        [
+            (TransportMode::Http, self.http as usize),
+            (TransportMode::Grpc, self.grpc as usize),
+            (TransportMode::Both, self.both as usize),
+        ]
+    }
 }
 
 /// How the app decides that two pairing channels belong to the same user.
@@ -89,7 +162,19 @@ pub struct Actor {
     pub id: Uuid,
     pub role: Role,
     pub name: String,
+    /// The first of [`Self::transports`]. Kept because several front-end call
+    /// sites want "an address for this actor" and gain nothing from the list.
     pub transport: Transport,
+    /// Every endpoint this actor advertises, in preference order.
+    ///
+    /// The relay's allowlist (`relay_target_is_known` in `routes::derec`)
+    /// trusts these by exact string match, on the strength of two facts that
+    /// hold together: `Actor` derives `Serialize` but not `Deserialize`, so a
+    /// value here can never be supplied by a request body, and every
+    /// non-test constructor (`provisioning::provisioned_actor`) builds these
+    /// URIs from server config. If a client could ever populate this field,
+    /// the relay would dial whatever URI it was handed — an open proxy.
+    pub transports: Vec<Transport>,
     /// This actor's own `secret_id` — the secret it protects when acting as
     /// Owner — as a decimal string (a `u64` exceeds JavaScript's exact
     /// integer range).
@@ -157,6 +242,9 @@ pub struct RegisterOwnerResponse {
 pub struct AddHelperRequest {
     /// Display name for the new helper.
     pub name: String,
+    /// What this helper advertises. Omitted means HTTP — today's behaviour.
+    #[serde(default)]
+    pub transport_mode: TransportMode,
     #[serde(flatten)]
     pub settings: ProtocolSettingsRequest,
 }
@@ -184,6 +272,10 @@ pub struct EnsureHelpersRequest {
     /// Anything not covered falls back to a numbered label.
     #[serde(default)]
     pub names: Vec<String>,
+    /// Target composition of the pool by transport. Must sum to `total`.
+    /// Omitted means every helper is HTTP.
+    #[serde(default)]
+    pub transports: Option<TransportBreakdown>,
     #[serde(flatten)]
     pub settings: ProtocolSettingsRequest,
 }

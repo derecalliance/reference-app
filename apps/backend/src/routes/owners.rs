@@ -9,7 +9,7 @@ use axum::{
 use tracing::info;
 
 use crate::{
-    models::{RegisterOwnerRequest, RegisterOwnerResponse, Role},
+    models::{RegisterOwnerRequest, RegisterOwnerResponse, Role, TransportMode},
     provisioning::{provisioned_actor, register_browser_actor},
     routes::actor_guard::not_found,
     state::AppState,
@@ -51,7 +51,13 @@ pub async fn register(
             }
         }
         None => {
-            let actor = provisioned_actor(Role::Owner, &req.name, &state.base_url);
+            let actor = provisioned_actor(
+                Role::Owner,
+                &req.name,
+                &state.base_url,
+                &state.grpc_authority(),
+                TransportMode::Http,
+            );
             state.actors.register(actor.clone());
             info!(actor_id = %actor.id, name = %actor.name, "owner registered");
             actor

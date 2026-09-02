@@ -15,26 +15,56 @@
 // `replicaFlows` need it; importing it from the page module would make the
 // dependency cyclic.
 
-import { ContactMode, type ContactMessage } from '@derec-alliance/web'
-import type { ContactMessageDto } from './api'
+import { ContactMode, type ContactMessage, type TransportProtocol } from '@derec-alliance/web'
+import type { ContactMessageDto, TransportProtocolDto } from './api'
 import { fromBase64Url, toBase64Url } from './derecApi'
 
 /** Numeric TransportProtocol discriminant for HTTPS. */
 export const TRANSPORT_PROTOCOL_HTTPS = 0
+/** Numeric TransportProtocol discriminant for gRPC. */
+export const TRANSPORT_PROTOCOL_GRPC = 1
 
-function transportToWire(t: ContactMessage['transport_protocol']): { uri: string; protocol: string } {
-  return { uri: t?.uri ?? '', protocol: 'https' }
+/** An unrecognised discriminant reads as HTTPS, as protobuf treats an unknown enum. */
+export function protocolName(discriminant: number): 'https' | 'grpc' {
+  return discriminant === TRANSPORT_PROTOCOL_GRPC ? 'grpc' : 'https'
 }
 
-function transportFromWire(t: { uri: string; protocol: string }): { uri: string; protocol: number } {
-  return { uri: t.uri, protocol: TRANSPORT_PROTOCOL_HTTPS }
+/** An unrecognised name reads as HTTPS, as protobuf treats an unknown enum. */
+function protocolDiscriminant(name: string): number {
+  return name.toLowerCase() === 'grpc' ? TRANSPORT_PROTOCOL_GRPC : TRANSPORT_PROTOCOL_HTTPS
+}
+
+function transportToWire(t: TransportProtocol): TransportProtocolDto {
+  return { uri: t.uri, protocol: protocolName(t.protocol) }
+}
+
+function transportFromWire(t: TransportProtocolDto): TransportProtocol {
+  return { uri: t.uri, protocol: protocolDiscriminant(t.protocol) }
+}
+
+/**
+ * The endpoints a DTO advertises: the list when present, and otherwise the
+ * deprecated singular field, which is all a peer predating the list sends.
+ */
+function endpointsFromDto(dto: ContactMessageDto): TransportProtocol[] {
+  const list = dto.supported_transports ?? []
+  return list.length > 0
+    ? list.map(transportFromWire)
+    : [transportFromWire(dto.transport_protocol)]
 }
 
 export function contactMessageToDto(c: ContactMessage): ContactMessageDto {
+  const supported = c.supported_transports.map(transportToWire)
   return {
     channel_id: c.channel_id.toString(),
     nonce: c.nonce.toString(),
-    transport_protocol: transportToWire(c.transport_protocol),
+    // Mirrors the first entry of the list, which is how the library fills it
+    // on the wire; a DTO that disagreed would hand a pre-0.0.3 reader a
+    // different endpoint than a current one.
+    transport_protocol: c.transport_protocol
+      ? transportToWire(c.transport_protocol)
+      : (supported[0] ?? { uri: '', protocol: 'https' }),
+    supported_transports: supported,
     contact_mode: c.contact_mode,
     mlkem_encapsulation_key: c.mlkem_encapsulation_key
       ? toBase64Url(c.mlkem_encapsulation_key)
@@ -47,10 +77,12 @@ export function contactMessageToDto(c: ContactMessage): ContactMessageDto {
 }
 
 export function dtoToContactMessage(dto: ContactMessageDto): ContactMessage {
+  const supported = endpointsFromDto(dto)
   return {
     channel_id: BigInt(dto.channel_id),
     nonce: BigInt(dto.nonce),
-    transport_protocol: transportFromWire(dto.transport_protocol),
+    transport_protocol: supported[0],
+    supported_transports: supported,
     contact_mode: dto.contact_mode ?? ContactMode.InlineKeys,
     mlkem_encapsulation_key: dto.mlkem_encapsulation_key
       ? fromBase64Url(dto.mlkem_encapsulation_key)

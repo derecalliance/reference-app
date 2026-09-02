@@ -45,9 +45,9 @@ export interface ReplicasTabProps {
    * group and this device's version from the stores — so it belongs on the
    * section header, not on a channel.
    */
-  onSyncCheck: () => void
-  /** `null` when no check is running. */
-  syncCheckRunning: boolean
+  onReplicaDiscovery: () => void
+  /** True while a discovery round is in flight. */
+  replicaDiscoveryRunning: boolean
   /**
    * Evict a member from the group by its replica id.
    *
@@ -77,8 +77,8 @@ export function ReplicasTab({
   onOpenFingerprint,
   onSyncNow,
   onUnpair,
-  onSyncCheck,
-  syncCheckRunning,
+  onReplicaDiscovery,
+  replicaDiscoveryRunning,
   onRemoveFromGroup,
   removingReplicaIds,
   onToggleOffline,
@@ -100,11 +100,11 @@ export function ReplicasTab({
           <h3 className="sub-heading">Replica channels</h3>
           <button
             className="secondary side-action-btn"
-            onClick={onSyncCheck}
-            disabled={syncCheckRunning}
+            onClick={onReplicaDiscovery}
+            disabled={replicaDiscoveryRunning}
             title="Ask the group which version each member holds, and catch up if this device is behind"
           >
-            {syncCheckRunning ? 'Checking…' : 'Check sync'}
+            {replicaDiscoveryRunning ? 'Checking…' : 'Check sync'}
           </button>
         </div>
         <div className="channel-table">

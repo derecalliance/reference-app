@@ -29,6 +29,21 @@ export async function sendMessage(uri: string, message: Uint8Array): Promise<voi
 }
 
 /**
+ * Ask the backend to deliver a message to an endpoint this browser cannot
+ * dial. A browser has no HTTP/2 trailer access and so cannot speak gRPC.
+ */
+export async function relayMessage(uri: string, message: Uint8Array): Promise<void> {
+  const res = await fetch(`${API_BASE}/derec/relay`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ uri, data: toBase64Url(message) }),
+  })
+  if (!res.ok) {
+    throw new Error(`Failed to relay message to ${uri}: ${res.status} ${res.statusText}`)
+  }
+}
+
+/**
  * Polls an actor's mailbox and returns all pending wire messages, draining the
  * queue.  Each message's `bytes` field is ready to pass to
  * `DeRecProtocolWasm.process()`.

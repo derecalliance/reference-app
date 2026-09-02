@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     actor::{ProtocolConfig, ProvisionedActor},
-    models::{Actor, Role, Transport, TransportProtocol, UnpairAck},
+    models::{Actor, Role, TransportMode, UnpairAck},
     state::{ActorInbox, AppState},
 };
 
@@ -47,7 +47,7 @@ pub fn spawn_provisioned(state: &AppState, actor: &Actor, timeout_secs: u32, unp
 
     let config = ProtocolConfig {
         secret_id,
-        transport_uri: actor.transport.uri.clone(),
+        own_transports: actor.transports.clone(),
         communication_info,
         timeout_secs,
         unpair_ack,
@@ -88,16 +88,21 @@ fn actor_secret_id() -> u64 {
 }
 
 /// Mint a new actor.
-pub fn provisioned_actor(role: Role, name: &str, base_url: &str) -> Actor {
+pub fn provisioned_actor(
+    role: Role,
+    name: &str,
+    base_url: &str,
+    grpc_authority: &str,
+    mode: TransportMode,
+) -> Actor {
     let actor_id = Uuid::new_v4();
+    let transports = mode.endpoints(base_url, grpc_authority, actor_id);
     Actor {
         id: actor_id,
         role,
         name: name.to_owned(),
-        transport: Transport {
-            protocol: TransportProtocol::Https,
-            uri: format!("{base_url}/derec/{actor_id}"),
-        },
+        transport: transports[0].clone(),
+        transports,
         secret_id: actor_secret_id().to_string(),
     }
 }
@@ -105,6 +110,7 @@ pub fn provisioned_actor(role: Role, name: &str, base_url: &str) -> Actor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::TransportProtocol;
 
     #[test]
     fn every_actor_gets_its_own_freshly_drawn_secret_id() {
@@ -116,15 +122,71 @@ mod tests {
     }
 
     #[test]
-    fn a_transport_uri_is_the_base_url_plus_the_actor_id() {
+    fn an_http_helper_advertises_only_its_http_endpoint() {
         // The URI is what peers post to, and `deliver_message` parses the id
-        // back out of it, so the two must agree on the shape. There is no role
-        // segment: an actor id is a UUID and identifies the actor by itself.
-        let actor = provisioned_actor(Role::Helper, "test", "http://localhost:5000");
+        // back out of it, so the two must agree on the shape.
+        let actor = provisioned_actor(
+            Role::Helper,
+            "test",
+            "http://localhost:5000",
+            "localhost:50051",
+            TransportMode::Http,
+        );
 
+        assert_eq!(actor.transports.len(), 1);
         assert_eq!(
-            actor.transport.uri,
+            actor.transports[0].uri,
             format!("http://localhost:5000/derec/{}", actor.id)
         );
+        assert_eq!(actor.transports[0].protocol, TransportProtocol::Https);
+    }
+
+    #[test]
+    fn a_grpc_helper_advertises_an_authority_with_no_actor_path() {
+        // gRPC has no path to carry an actor id — the id is recovered from the
+        // envelope's channel id instead.
+        let actor = provisioned_actor(
+            Role::Helper,
+            "test",
+            "http://localhost:5000",
+            "localhost:50051",
+            TransportMode::Grpc,
+        );
+
+        assert_eq!(actor.transports.len(), 1);
+        assert_eq!(actor.transports[0].uri, "grpc://localhost:50051");
+        assert_eq!(actor.transports[0].protocol, TransportProtocol::Grpc);
+    }
+
+    #[test]
+    fn a_both_helper_advertises_grpc_first() {
+        // An arbitrary but fixed app preference: the order carries no protocol
+        // meaning, and the library takes no view on which a dialer picks.
+        let actor = provisioned_actor(
+            Role::Helper,
+            "test",
+            "http://localhost:5000",
+            "localhost:50051",
+            TransportMode::Both,
+        );
+
+        assert_eq!(actor.transports.len(), 2);
+        assert_eq!(actor.transports[0].protocol, TransportProtocol::Grpc);
+        assert_eq!(actor.transports[1].protocol, TransportProtocol::Https);
+    }
+
+    #[test]
+    fn the_singular_transport_mirrors_the_first_entry() {
+        // Four front-end call sites read `transport.uri` as "an address for
+        // this actor"; it must never disagree with the head of the list.
+        let actor = provisioned_actor(
+            Role::Helper,
+            "test",
+            "http://localhost:5000",
+            "localhost:50051",
+            TransportMode::Both,
+        );
+
+        assert_eq!(actor.transport, actor.transports[0]);
     }
 }

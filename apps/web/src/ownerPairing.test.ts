@@ -298,6 +298,7 @@ describe('applyPairingCompleted — replica channel record', () => {
           role: 'owner',
           name: 'Alice',
           transport: { protocol: 'https', uri: 'https://example.test/owner-1' },
+          transports: [{ protocol: 'https', uri: 'https://example.test/owner-1' }],
           secret_id: '42',
         },
       ],
