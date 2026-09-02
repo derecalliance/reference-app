@@ -66,6 +66,17 @@ export interface ReplicaChannelRowProps {
   /** A removal for this member is in flight. */
   removingFromGroup: boolean
   onRemoveFromGroup: () => void
+  /**
+   * Whether this row can simulate its peer going offline.
+   *
+   * `false` unless the peer is a provisioned helper: a browser peer has no
+   * backend actor whose delivery could be suspended, and a legacy `replica`
+   * actor is toggled from the side panel instead.
+   */
+  canToggleOffline: boolean
+  /** Whether the peer is currently suspended. Meaningless unless `canToggleOffline`. */
+  offline: boolean
+  onToggleOffline: () => void
 }
 
 /** The status word for a replica channel, with expiry outranking everything. */
@@ -134,6 +145,9 @@ export function ReplicaChannelRow({
   canRemoveFromGroup,
   removingFromGroup,
   onRemoveFromGroup,
+  canToggleOffline,
+  offline,
+  onToggleOffline,
 }: ReplicaChannelRowProps) {
   // The countdown ticks in this row and nothing above it, and a row with
   // nothing pending never arms a timer at all.
@@ -149,7 +163,9 @@ export function ReplicaChannelRow({
     <div className="channel-block">
       <div className="channel-row-top">
         <span
-          className={`participant-dot ${view?.status === 'paired' ? 'paired' : 'available'}`}
+          className={`participant-dot ${
+            offline ? 'offline' : view?.status === 'paired' ? 'paired' : 'available'
+          }`}
           aria-hidden="true"
         />
         <span className="channel-row-name" style={{ flex: 'none' }}>
@@ -180,6 +196,22 @@ export function ReplicaChannelRow({
             title="Evict this device from the replica group"
           >
             {removingFromGroup ? 'Removing…' : 'Remove from group'}
+          </button>
+        )}
+        {/* Simulates the peer dropping off the network. The channel survives —
+            this suspends delivery to the helper, which is what makes a missed
+            mirror observable without tearing anything down. */}
+        {canToggleOffline && (
+          <button
+            className="channel-link-btn"
+            onClick={onToggleOffline}
+            title={
+              offline
+                ? `Resume message delivery to ${name}`
+                : `Suspend message delivery to ${name}`
+            }
+          >
+            {offline ? 'Go Online' : 'Go Offline'}
           </button>
         )}
         <button

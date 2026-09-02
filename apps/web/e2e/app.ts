@@ -399,6 +399,24 @@ export async function addReplica(page: Page, name: string): Promise<void> {
 }
 
 /**
+ * Dismiss the comparison without answering it.
+ *
+ * Writes nothing — the channel stays `Pending` and its deadline keeps running,
+ * which is exactly what makes the row's own confirm prompt a safe way back in.
+ *
+ * Required before touching anything outside the dialog: MUI's modal manager
+ * marks the rest of the app `aria-hidden` while it is open, so the tab strip is
+ * invisible to the role engine and the backdrop would swallow the click anyway.
+ */
+export async function dismissReplicaFingerprint(page: Page, name: string): Promise<void> {
+  const dialog = replicaFingerprintDialog(page, name)
+  await expect(dialog).toBeVisible({ timeout: 60_000 })
+
+  await dialog.getByRole('button', { name: 'Doesn’t match' }).click()
+  await expect(dialog).toBeHidden({ timeout: 30_000 })
+}
+
+/**
  * Confirm the comparison {@link addReplica} raised.
  *
  * Only this device compares. The helper on the other end auto-confirms — it is

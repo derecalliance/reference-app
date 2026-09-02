@@ -67,6 +67,13 @@ export interface ReplicasTabProps {
   onRemoveFromGroup: (view: ReplicaView) => void
   /** Replica ids whose removal is in flight. */
   removingReplicaIds: ReadonlySet<string>
+  /**
+   * Suspend or resume message delivery to a row's peer.
+   *
+   * Only ever called for a row whose peer is a provisioned helper — the row
+   * offers no control otherwise, because there is no actor to suspend.
+   */
+  onToggleOffline: (view: ReplicaView) => void
 }
 
 export function ReplicasTab({
@@ -85,6 +92,7 @@ export function ReplicasTab({
   syncCheckRunning,
   onRemoveFromGroup,
   removingReplicaIds,
+  onToggleOffline,
 }: ReplicasTabProps) {
   if (channels.length === 0 && awaitingPairing.length === 0) {
     return (
@@ -147,6 +155,11 @@ export function ReplicasTab({
                     view?.peerReplicaId != null && removingReplicaIds.has(view.peerReplicaId)
                   }
                   onRemoveFromGroup={() => view && onRemoveFromGroup(view)}
+                  // Offered only for a peer the `/helpers` endpoints will
+                  // accept, which is exactly what a non-null id means.
+                  canToggleOffline={view?.helperActorId != null}
+                  offline={view?.offline === true}
+                  onToggleOffline={() => view && onToggleOffline(view)}
                 />
               )
             })}

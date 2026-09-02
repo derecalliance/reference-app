@@ -64,6 +64,7 @@ function view(overrides: Partial<ReplicaView> = {}): ReplicaView {
     provisioned: false,
     direction: 'replica_source',
     peerReplicaId: null,
+    helperActorId: null,
     ...overrides,
   }
 }
@@ -98,6 +99,7 @@ const BASE: ReplicasTabProps = {
   syncCheckRunning: false,
   onRemoveFromGroup: () => {},
   removingReplicaIds: new Set<string>(),
+  onToggleOffline: () => {},
 }
 
 function render(overrides: Partial<ReplicasTabProps> = {}): void {

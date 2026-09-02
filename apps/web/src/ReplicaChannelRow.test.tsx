@@ -46,6 +46,7 @@ function view(overrides: Partial<ReplicaView> = {}): ReplicaView {
     provisioned: false,
     direction: 'replica_source',
     peerReplicaId: null,
+    helperActorId: null,
     ...overrides,
   }
 }
@@ -67,6 +68,9 @@ const BASE: ReplicaChannelRowProps = {
   canRemoveFromGroup: false,
   removingFromGroup: false,
   onRemoveFromGroup: () => {},
+  canToggleOffline: false,
+  offline: false,
+  onToggleOffline: () => {},
 }
 
 function render(overrides: Partial<ReplicaChannelRowProps> = {}): void {
@@ -104,6 +108,33 @@ describe('how a replica channel declares itself', () => {
   it('offers no Link action — a replica channel cannot be linked to a share', () => {
     render()
     expect(text()).not.toMatch(/\bLink\b/)
+  })
+})
+
+describe('taking a replica peer offline', () => {
+  it('offers no control when the peer is not a provisioned helper', () => {
+    // A browser peer has no backend actor to suspend, so the affordance must
+    // not exist rather than exist and fail.
+    render({ canToggleOffline: false })
+    expect(text()).not.toMatch(/Go Offline|Go Online/)
+  })
+
+  it('offers to suspend a helper peer that is delivering', () => {
+    render({ canToggleOffline: true, offline: false })
+    expect(buttonLabelled(/Go Offline/)).toBeTruthy()
+  })
+
+  it('offers to resume a helper peer that is suspended', () => {
+    render({ canToggleOffline: true, offline: true })
+    expect(buttonLabelled(/Go Online/)).toBeTruthy()
+  })
+
+  it('asks its caller to flip the peer when pressed', () => {
+    let toggled = 0
+    render({ canToggleOffline: true, offline: true, onToggleOffline: () => { toggled += 1 } })
+
+    buttonLabelled(/Go Online/).click()
+    expect(toggled).toBe(1)
   })
 })
 

@@ -2,6 +2,7 @@ import { test, expect } from './fixtures'
 import {
   addAndPairReplica,
   addReplica,
+  dismissReplicaFingerprint,
   openTab,
   pairParticipant,
   pairReplica,
@@ -40,6 +41,12 @@ test.describe('replica groups', () => {
     // answered.
     await addReplica(page, name)
 
+    // Put the comparison away unanswered. Dismissing writes nothing, so this
+    // leaves precisely the state under test — and it is what makes the tab
+    // reachable at all, since the open modal hides the rest of the app from
+    // the accessibility tree.
+    await dismissReplicaFingerprint(page, name)
+
     // The handshake alone must never be enough. Every replica pairing is gated
     // regardless of contact mode, so a channel whose codes nobody has compared
     // stays `Pending` and carries no secret — asserted on the owner's own row,
@@ -51,7 +58,9 @@ test.describe('replica groups', () => {
 
     // And confirming is what lifts it — otherwise the assertion above would
     // pass just as well against a replica flow that had stopped working
-    // entirely.
+    // entirely. The row's own prompt is the standing way back into a dismissed
+    // comparison, so this covers that route too.
+    await row.getByRole('button', { name: 'Confirm fingerprint' }).click()
     await pairReplica(page, name)
     await expect(row.locator('.status-tag')).toHaveText('Verified', { timeout: 60_000 })
 

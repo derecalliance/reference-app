@@ -3497,6 +3497,14 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
   const [replicaRowsLoaded, setReplicaRowsLoaded] = useState(false)
   /** Last roster read, kept so the projection can be recomputed without a request. */
   const rosterSnapshotRef = useRef<readonly BEActorWithStatus[] | null>(null)
+  /**
+   * A helper provisioned for an Add Replica attempt whose pairing then failed.
+   *
+   * Held so the retry reuses it. Nothing removes an actor — there is no such
+   * route — so the alternative is a helper left in the shared pool for every
+   * press of a button the user is being invited to press again.
+   */
+  const pendingReplicaHelperRef = useRef<{ name: string; helperId: string } | null>(null)
 
   /**
    * Recompute the projection from the roster already in hand.
@@ -6553,25 +6561,44 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
    * to the name they chose. The second is that the pool is shared server-wide
    * and sized deliberately in the setup wizard; quietly consuming one of its
    * members would take a helper the user meant to pair as a helper. This is
-   * also what the superseded `/replicas` path did — one actor per replica — so
-   * it adds no actors that the old flow did not.
+   * The one it adds is a `helper`, though, where the old path added a
+   * `replica` — so unlike the old one it joins the shared pool the setup
+   * wizard counts. That is correct under this model (a replica-backing helper
+   * really is a helper) but it does mean the pool grows, which is why a failed
+   * attempt must not add to it. See `pendingReplicaHelperRef`.
    *
    * This device is always the `replica_source`: a helper has no UI to consent
    * with, so the only direction that makes sense is mirroring *out*. The role
    * goes through `pairReplica`, which resolves it via `senderKindFor`.
    */
   async function handleAddReplica(name: string): Promise<void> {
-    const helper = await apiAddHelper(name, provisioningSettings)
+    // Reuse the helper a previous failed attempt provisioned under this name.
+    // The modal stays open on error so the user can retry, and no route removes
+    // an actor — so minting a fresh one per attempt would leave a trail of
+    // them in the shared pool, one per press. Reuse is safe: the replica
+    // instance is created idempotently, and a half-finished pairing leaves at
+    // most a `Pending` channel, which the library expires on its own.
+    const pending = pendingReplicaHelperRef.current
+    const helperId =
+      pending?.name === name
+        ? pending.helperId
+        : (await apiAddHelper(name, provisioningSettings)).id
+
+    // Recorded *before* anything that can throw, so a failure leaves the id
+    // findable rather than stranded.
+    pendingReplicaHelperRef.current = { name, helperId }
 
     await pairReplica({
       protocol: replicaProtocol,
       ownerId: owner.ownerId,
-      replicaId: helper.id,
+      replicaId: helperId,
       replicaName: name,
       role: 'replica_source',
       // What makes this a replica of *this* vault rather than a helper of it.
       ownerSecretId: owner.ownSecretId,
     })
+
+    pendingReplicaHelperRef.current = null
     // The handshake completes over the mailbox poll; `PairingCompleted` is what
     // raises the fingerprint modal.
     await refreshRosterSnapshot()
@@ -6688,9 +6715,35 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
     // raises the fingerprint modal, on this device and on the replica alike.
   }
 
+  /** Legacy provisioned `replica` actors, from the side panel row. */
   async function handleToggleReplicaOffline(replica: ReplicaView): Promise<void> {
     await apiToggleReplicaStatus(replica.id, !replica.offline)
     await refreshRosterSnapshot()
+  }
+
+  /**
+   * Suspend or resume delivery to a replica channel's peer, from its row.
+   *
+   * The counterpart to the side panel's control, for the peers that replaced
+   * the actors it was built for: a helper paired in replica mode answers on
+   * `/helpers`, not `/replicas`. `helperActorId` is non-null only for such a
+   * peer, so the guard is a type narrowing rather than a real branch — the row
+   * offers no control at all otherwise.
+   */
+  async function handleToggleReplicaPeerOffline(replica: ReplicaView): Promise<void> {
+    const helperActorId = replica.helperActorId
+    if (!helperActorId) return
+
+    try {
+      await apiToggleParticipantStatus(helperActorId, !replica.offline)
+      await refreshRosterSnapshot()
+    } catch (err) {
+      reportError(
+        `Could not take ${replica.name} ${replica.offline ? 'online' : 'offline'}`,
+        err,
+        { helperActorId },
+      )
+    }
   }
 
   /** Re-read the roster now rather than waiting out a poll interval. */
@@ -7556,6 +7609,7 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
                 syncCheckRunning={syncCheckRunning}
                 onRemoveFromGroup={replica => void handleRemoveFromGroup(replica)}
                 removingReplicaIds={removingReplicaIds}
+                onToggleOffline={replica => void handleToggleReplicaPeerOffline(replica)}
               />
             )}
             {activeTab === 'secrets' && (

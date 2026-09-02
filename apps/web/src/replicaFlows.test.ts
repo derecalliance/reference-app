@@ -863,6 +863,7 @@ function replicaView(overrides: Partial<ReplicaView> = {}): ReplicaView {
     provisioned: true,
     direction: 'replica_source',
     peerReplicaId: null,
+    helperActorId: null,
     ...overrides,
   }
 }
@@ -1149,6 +1150,76 @@ describe('replicaViews', () => {
       provisioned: false,
       direction: 'replica_source',
     })
+  })
+
+  // ── Helper-backed replicas ─────────────────────────────────────────────────
+  //
+  // A helper paired in replica mode is an ordinary `participant` on the roster,
+  // so — like a browser peer — its row comes from the channel record. Unlike a
+  // browser peer it *has* a backend actor, and the link to it is the actor-keyed
+  // record `resolveReplicaPairing` wrote. That link is what lets the row offer
+  // the controls only a provisioned peer can answer.
+
+  it('resolves the peer helper for a channel this device paired', () => {
+    const views = replicaViews(
+      [
+        { id: 'owner-1', role: 'owner', name: 'Alice', transport, secret_id: '42' },
+        { id: 'helper-9', role: 'participant', name: 'Laptop', transport, secret_id: '7' },
+      ],
+      withChannels(
+        { '900': { channelId: '900', role: 'replica_source', peerName: 'Laptop' } },
+        // Written by `resolveReplicaPairing` when the handshake completed.
+        { replicas: { 'helper-9': { local: false, peer: 'none', channelId: '900' } } },
+      ),
+    )
+
+    expect(views).toHaveLength(1)
+    expect(views[0].helperActorId).toBe('helper-9')
+  })
+
+  it('reads a helper peer’s offline flag off the roster', () => {
+    // A browser peer's liveness is unobservable, so `offline` was hardcoded
+    // false for every locally-recorded channel. A helper peer has an actor and
+    // the roster reports it — without this the row could never show a
+    // suspended peer as suspended.
+    const views = replicaViews(
+      [{ id: 'helper-9', role: 'participant', name: 'Laptop', transport, secret_id: '7', disabled: true }],
+      withChannels(
+        { '900': { channelId: '900', role: 'replica_source', peerName: 'Laptop' } },
+        { replicas: { 'helper-9': { local: false, peer: 'none', channelId: '900' } } },
+      ),
+    )
+
+    expect(views[0].offline).toBe(true)
+  })
+
+  it('names no helper for a browser peer', () => {
+    // The guard on the controls: a browser replica has no backend actor, so
+    // offering to suspend one would send a row id at an endpoint that has
+    // never heard of it.
+    const views = replicaViews(
+      browserRoster,
+      withChannels({ '900': { channelId: '900', role: 'replica_source', peerName: 'Bob' } }),
+    )
+
+    expect(views[0].helperActorId).toBeNull()
+    expect(views[0].offline).toBe(false)
+  })
+
+  it('names no helper when the recorded peer is a legacy replica actor', () => {
+    // `/helpers/{id}/toggle-status` rejects anything that is not a
+    // `participant`, so a `replica` actor must not be handed out here — its own
+    // control lives in the side panel and answers on `/replicas`.
+    const views = replicaViews(
+      [replicaActor({ id: 'replica-7' })],
+      withChannels(
+        { '900': { channelId: '900', role: 'replica_source', peerName: 'Old' } },
+        { replicas: { 'replica-7': { local: false, peer: 'none', channelId: '900' } } },
+      ),
+    )
+
+    const row = views.find(v => v.channelId === '900')
+    expect(row?.helperActorId).toBeNull()
   })
 
   it('carries the establishment stamp onto a browser row', () => {

@@ -1631,6 +1631,16 @@ export interface ReplicaView {
    * [`removeReplicaMember`].
    */
   peerReplicaId: string | null
+  /**
+   * The peer's provisioned *helper* actor id, or `null` when there is none to
+   * name.
+   *
+   * `null` for a browser peer, which has no backend actor at all, and for a
+   * legacy `replica` actor, whose controls live in the side panel and answer on
+   * `/replicas` rather than `/helpers`. So a non-null value means exactly one
+   * thing: this row's peer is a helper the `/helpers` endpoints will accept.
+   */
+  helperActorId: string | null
 }
 
 /**
@@ -1651,8 +1661,40 @@ function defaultPeerLabel(localRole: ReplicaPairingRole): string {
   return pairingRoleLabel(complementRole(localRole))
 }
 
+/**
+ * The provisioned helper on the other end of `channelId`, if there is one.
+ *
+ * The pairing this device dispatched recorded the peer's actor id against the
+ * channel — `recordPendingReplicaPairing`, resolved by `resolveReplicaPairing`
+ * — and that is the only link back to it: nothing on the wire and nothing on
+ * the channel record names the peer's actor.
+ *
+ * Restricted to `participant` actors on purpose. The one thing a caller can do
+ * with this is drive the `/helpers` endpoints, which reject anything else, so
+ * returning a legacy `replica` actor here would hand out an id that 400s.
+ * Confirmation records keyed by row id rather than actor id cannot collide:
+ * they carry no `channelId`, and no roster actor answers to a row id anyway.
+ */
+function helperActorForChannel(
+  actors: readonly RosterActor[],
+  state: ReplicaState,
+  channelId: string,
+): RosterActor | null {
+  const peerActorId = Object.entries(state.replicas).find(
+    ([, record]) => record.channelId === channelId,
+  )?.[0]
+  if (peerActorId === undefined) return null
+
+  return actors.find(a => a.id === peerActorId && a.role === 'participant') ?? null
+}
+
 /** Project one locally-recorded replica channel into a row. */
-function localChannelView(channel: ReplicaChannelRecord, state: ReplicaState): ReplicaView {
+function localChannelView(
+  channel: ReplicaChannelRecord,
+  state: ReplicaState,
+  /** The peer's provisioned helper, when the peer is one. */
+  helper: RosterActor | null,
+): ReplicaView {
   const id = replicaChannelRowId(channel.channelId)
   const record = state.replicas[id] ?? EMPTY_RECORD
 
@@ -1664,9 +1706,10 @@ function localChannelView(channel: ReplicaChannelRecord, state: ReplicaState): R
     // reachable here. Everything after that is the ordinary machine: this
     // device's own `verifyFingerprint` promotes it, exactly as in the library.
     status: nextReplicaStatus('pending', { localConfirmed: record.local }),
-    // `disabled` is a backend actor flag; a browser peer has no such actor and
-    // this device has no way to observe its liveness.
-    offline: false,
+    // `disabled` is a backend actor flag. A helper peer has one and the roster
+    // reports it; a browser peer has no such actor and this device has no way
+    // to observe its liveness, so it can only ever read as online.
+    offline: helper?.disabled === true,
     peerConfirmation: record.peer,
     lastSync: state.syncs[channel.channelId] ?? null,
     establishedAt: channel.establishedAt ?? null,
@@ -1674,6 +1717,7 @@ function localChannelView(channel: ReplicaChannelRecord, state: ReplicaState): R
     provisioned: false,
     direction: channel.role,
     peerReplicaId: channel.peerReplicaId ?? null,
+    helperActorId: helper?.id ?? null,
   }
 }
 
@@ -1683,10 +1727,12 @@ function localChannelView(channel: ReplicaChannelRecord, state: ReplicaState): R
  *
  * There are **two** row sources, because there are two kinds of replica:
  *
- * - A *provisioned* replica is a `Role::Replica` actor on the roster.
- * - A *browser* replica is another browser that joined as an ordinary owner
- *   actor and paired on a replica channel. Nothing on the roster distinguishes
- *   it from any other owner, so its row can only come from the channel record
+ * - A *provisioned* replica is a legacy `Role::Replica` actor on the roster.
+ * - Everything else is a channel this device recorded at pairing time: a helper
+ *   paired in replica mode, or another browser that joined as an ordinary owner
+ *   actor. Neither is distinguishable *as a replica* on the roster — the first
+ *   is an ordinary helper there and the second an ordinary owner — so their
+ *   rows can only come from the channel record
  *   this device wrote at pairing time.
  *
  * Every locally-recorded channel that no provisioned row already accounts for
@@ -1738,6 +1784,9 @@ export function replicaViews(actors: readonly RosterActor[], state: ReplicaState
         // outright once the handshake has completed here.
         direction: (channelId ? state.channels[channelId]?.role : undefined) ?? 'replica_source',
         peerReplicaId: (channelId ? state.channels[channelId]?.peerReplicaId : undefined) ?? null,
+        // A `replica` actor is not a helper: its status is toggled through
+        // `/replicas`, from the side panel row this projection feeds.
+        helperActorId: null,
       }
     })
 
@@ -1747,7 +1796,9 @@ export function replicaViews(actors: readonly RosterActor[], state: ReplicaState
 
   const local = Object.values(state.channels)
     .filter(channel => !alreadyShown.has(channel.channelId))
-    .map(channel => localChannelView(channel, state))
+    .map(channel =>
+      localChannelView(channel, state, helperActorForChannel(actors, state, channel.channelId)),
+    )
 
   return [...provisioned, ...local]
 }
