@@ -40,3 +40,8 @@ actix-rt = "2"
 # Envelope decoding: inbound messages are routed to a per-secret protocol
 # instance by the cleartext `channel_id` on the DeRecMessage envelope.
 prost = "0.14.4"
+
+[dev-dependencies]
+# `ServiceExt::oneshot`, for HTTP-level integration tests that drive a real
+# handler through `derec_backend::build_router` instead of calling it directly.
+tower = { version = "0.5", features = ["util"] }

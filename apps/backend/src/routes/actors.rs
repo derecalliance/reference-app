@@ -52,7 +52,7 @@ pub struct ContactModeQuery {
     /// pairing. Decimal string: a `u64` exceeds JavaScript's exact integer
     /// range, so it never travels as a JSON number.
     #[serde(default)]
-    replica_for_owner_secret: Option<String>,
+    pub replica_for_owner_secret: Option<String>,
 }
 
 impl ContactModeQuery {
@@ -74,9 +74,16 @@ impl ContactModeQuery {
     }
 
     /// Parse the mirrored owner's secret id, if one was supplied.
+    ///
+    /// Absent means "no replica pairing" and is a legitimate `None`. Present
+    /// but empty (`?replica_for_owner_secret=`) is not the same thing — a
+    /// client that built the query string from an unpopulated value would
+    /// otherwise silently mint an ordinary contact instead of a replica one —
+    /// so, like `contact_mode()` above, any value present that isn't a valid
+    /// `u64` is rejected rather than treated as absent.
     fn replica_for_owner_secret(&self) -> Result<Option<u64>, Response> {
         match self.replica_for_owner_secret.as_deref() {
-            None | Some("") => Ok(None),
+            None => Ok(None),
             Some(raw) => raw.parse::<u64>().map(Some).map_err(|_| {
                 (
                     StatusCode::BAD_REQUEST,

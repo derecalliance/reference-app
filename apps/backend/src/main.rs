@@ -1,15 +1,10 @@
 use std::sync::Arc;
 
-use axum::{
-    Router,
-    routing::{get, post},
-};
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{info, warn};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
+use derec_backend::build_router;
 use derec_backend::config::{self, Defaults};
-use derec_backend::routes;
 use derec_backend::state::AppState;
 
 #[tokio::main]
@@ -117,64 +112,4 @@ fn load_defaults() -> Defaults {
             std::process::exit(1);
         }
     }
-}
-
-fn build_router(state: Arc<AppState>) -> Router {
-    Router::new()
-        .route("/health", get(routes::health::handler))
-        .route("/config", get(routes::config::get))
-        .route("/owners", post(routes::owners::register))
-        .route("/actors", get(routes::actors::list))
-        .route("/actors/{actor_id}/contact", post(routes::actors::create_contact))
-        .route(
-            "/actors/{actor_id}/start-pairing",
-            post(routes::actors::start_pairing),
-        )
-        // Actor-generic, unlike the replica-scoped pair below: a NoKeys pairing
-        // can land on any provisioned actor, so the channel is explicit.
-        .route(
-            "/actors/{actor_id}/fingerprint",
-            get(routes::actors::get_fingerprint),
-        )
-        .route(
-            "/actors/{actor_id}/confirm-fingerprint",
-            post(routes::actors::confirm_fingerprint),
-        )
-        .route("/helpers", post(routes::helpers::add))
-        .route("/helpers/ensure", post(routes::helpers::ensure))
-        .route(
-            "/helpers/{helper_id}/toggle-status",
-            post(routes::helpers::toggle_status),
-        )
-        .route(
-            "/helpers/{helper_id}/channels",
-            get(routes::helpers::list_channels),
-        )
-        .route(
-            "/helpers/{helper_id}/link",
-            post(routes::helpers::link_channels),
-        )
-        .route(
-            "/helpers/{helper_id}/browser-contact",
-            post(routes::helpers::post_browser_contact)
-                .get(routes::helpers::get_browser_contact),
-        )
-        .route("/replicas", post(routes::replicas::add))
-        .route(
-            "/replicas/{replica_id}/fingerprint",
-            get(routes::replicas::get_fingerprint),
-        )
-        .route(
-            "/replicas/{replica_id}/confirm-fingerprint",
-            post(routes::replicas::confirm_fingerprint),
-        )
-        .route(
-            "/replicas/{replica_id}/toggle-status",
-            post(routes::replicas::toggle_status),
-        )
-        .route("/derec/{actor_id}", post(routes::derec::deliver_message))
-        .route("/derec/{actor_id}/mailbox", get(routes::derec::poll_mailbox))
-        .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::permissive())
-        .with_state(state)
 }
