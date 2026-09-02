@@ -840,7 +840,7 @@ export default function SetupWizard({ onReady }: Props) {
       try {
         const actors = await apiGetActors()
         if (!cancelled) {
-          setExistingParticipants(actors.filter(a => a.role === 'participant').length)
+          setExistingParticipants(actors.filter(a => a.role === 'helper').length)
         }
       } catch {
         // Only drives an explanatory line; leave it unknown rather than wrong.
@@ -996,7 +996,7 @@ export default function SetupWizard({ onReady }: Props) {
       const ownerActor = await apiRegisterOwner(claimedName ?? 'recovering owner', claimActorId)
 
       const actors = await apiGetActors()
-      const peers = actors.filter(a => a.role === 'participant')
+      const peers = actors.filter(a => a.role === 'helper')
 
       const owner: Owner = {
         ownerId: ownerActor.id,

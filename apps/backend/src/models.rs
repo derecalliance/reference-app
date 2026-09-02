@@ -17,8 +17,7 @@ pub struct Transport {
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     Owner,
-    Participant,
-    Replica,
+    Helper,
 }
 
 /// How the app decides that two pairing channels belong to the same user.
@@ -109,7 +108,7 @@ pub struct ActorWithStatus {
     /// Protocol channel ID, present only if pairing has completed for this actor.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel_id: Option<String>,
-    /// Shared symmetric key for the participant channel (base64url-encoded), present only for participants.
+    /// Shared symmetric key for the helper channel (base64url-encoded), present only for helpers.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shared_key: Option<String>,
     /// Whether this actor is currently simulating offline status.
@@ -123,16 +122,6 @@ pub struct ActorWithStatus {
     /// another device's replica, which registers as an ordinary `Role::Owner`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub browser_managed: Option<bool>,
-    /// Whether this replica has confirmed the peer's fingerprint.
-    ///
-    /// Only ever set for `Role::Replica` actors, which are backend-provisioned
-    /// by definition: confirmation happens inside the backend's own protocol
-    /// instance (`/replicas/:id/confirm-fingerprint`), and there is nothing
-    /// else to observe it. A second browser device mirroring an owner is a
-    /// `Role::Owner` actor and confirms in its own context, which the backend
-    /// never sees.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub replica_confirmed: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -206,22 +195,4 @@ pub struct EnsureHelpersResponse {
     /// How many of them this call had to create. Lets the caller report
     /// "reused 7, created 2" rather than guessing.
     pub created: usize,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct AddReplicaRequest {
-    /// Display name for the new replica (e.g. "Alice's Laptop").
-    pub name: String,
-    /// The owner actor whose vault this replica mirrors. Several independent
-    /// `Role::Owner` actors may be registered at once — one per browser context
-    /// — so "the owner" is not well defined and the caller must name which one.
-    pub owner_actor_id: Uuid,
-    #[serde(flatten)]
-    pub settings: ProtocolSettingsRequest,
-}
-
-#[derive(Debug, Serialize)]
-pub struct AddReplicaResponse {
-    #[serde(flatten)]
-    pub actor: Actor,
 }

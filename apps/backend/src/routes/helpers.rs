@@ -95,10 +95,10 @@ pub async fn add(
 ) -> Response {
     let (timeout_secs, unpair_ack) = req.settings.resolve(&state.defaults);
 
-    // `None`: a helper protects its own secret and never inherits an
-    // owner's. Only a `Role::Replica` does, and only from an explicitly named
-    // owner — see `provisioning::actor_secret_id`.
-    let helper = provisioned_actor(Role::Participant, &req.name, &state.base_url, None);
+    // Every actor protects its own secret. Mirroring an owner's vault is an
+    // extra protocol *instance* bound to that owner's secret, added on demand
+    // when a replica-mode contact is minted — see `provisioning::actor_secret_id`.
+    let helper = provisioned_actor(Role::Helper, &req.name, &state.base_url);
 
     spawn_provisioned(&state, &helper, timeout_secs, unpair_ack);
     state.actors.register(helper.clone());
@@ -155,9 +155,9 @@ pub async fn ensure(
         state.actors.ensure_participants(req.total as usize, |pool_index| {
             let name = helper_name(&names, taken, pool_index);
             taken += 1;
-            // `None`: a helper protects its own secret and never inherits
-            // an owner's — see `provisioning::actor_secret_id`.
-            provisioned_actor(Role::Participant, &name, &state.base_url, None)
+            // Every actor protects its own secret — see
+            // `provisioning::actor_secret_id`.
+            provisioned_actor(Role::Helper, &name, &state.base_url)
         });
 
     // Spawning touches the arbiter and several maps, so it happens out here
@@ -190,7 +190,7 @@ pub async fn toggle_status(
     Path(helper_id): Path<Uuid>,
     body: Option<Json<SetStatusRequest>>,
 ) -> Response {
-    if let Err(response) = ensure_actor_role(&state, &helper_id, Role::Participant) {
+    if let Err(response) = ensure_actor_role(&state, &helper_id, Role::Helper) {
         return response;
     }
 
@@ -285,7 +285,7 @@ pub async fn list_channels(
     State(state): State<Arc<AppState>>,
     Path(helper_id): Path<Uuid>,
 ) -> Response {
-    if let Err(response) = ensure_actor_role(&state, &helper_id, Role::Participant) {
+    if let Err(response) = ensure_actor_role(&state, &helper_id, Role::Helper) {
         return response;
     }
 
@@ -316,7 +316,7 @@ pub async fn link_channels(
     Path(helper_id): Path<Uuid>,
     Json(req): Json<LinkChannelsRequest>,
 ) -> Response {
-    if let Err(response) = ensure_actor_role(&state, &helper_id, Role::Participant) {
+    if let Err(response) = ensure_actor_role(&state, &helper_id, Role::Helper) {
         return response;
     }
 

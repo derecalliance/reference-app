@@ -131,26 +131,18 @@ pub(crate) async fn enrich_actors(state: &AppState, actors: &[Actor]) -> Vec<Act
         let channel_id = state
             .helper_channels
             .get(&a.id)
-            .and_then(|v| v.value().last().cloned())
-            .or_else(|| {
-                state
-                    .replica_channels
-                    .get(&a.id)
-                    .and_then(|v| v.value().last().cloned())
-            });
+            .and_then(|v| v.value().last().cloned());
 
-        let disabled = if state.disabled_helpers.contains_key(&a.id)
-            || state.disabled_replicas.contains_key(&a.id)
-        {
+        let disabled = if state.disabled_helpers.contains_key(&a.id) {
             Some(true)
         } else {
             None
         };
 
-        // Only participants carry one, and only once pairing has produced a
+        // Only helpers carry one, and only once pairing has produced a
         // channel whose key the backend instance actually holds.
         let shared_key = match (a.role, channel_id.as_deref().map(str::parse::<u64>)) {
-            (Role::Participant, Some(Ok(cid))) => match provisioned_addr(state, &a.id) {
+            (Role::Helper, Some(Ok(cid))) => match provisioned_addr(state, &a.id) {
                 Some(addr) => addr
                     .send(LoadSharedKeyMsg { channel_id: cid })
                     .await
@@ -168,20 +160,12 @@ pub(crate) async fn enrich_actors(state: &AppState, actors: &[Actor]) -> Vec<Act
             None
         };
 
-        let replica_confirmed = if a.role == Role::Replica && state.replica_confirmed.contains_key(&a.id)
-        {
-            Some(true)
-        } else {
-            None
-        };
-
         result.push(ActorWithStatus {
             actor: a.clone(),
             channel_id,
             shared_key,
             disabled,
             browser_managed,
-            replica_confirmed,
         });
     }
 
@@ -205,12 +189,12 @@ pub(crate) fn provisioned_addr(
 
 /// POST /actors/:actor_id/contact
 ///
-/// Unified endpoint for creating a contact message for any provisioned actor,
-/// regardless of role (participant or replica). All message exchange between
-/// parties must flow through the actor's transport URI (mailbox).
+/// Unified endpoint for creating a contact message for any provisioned actor.
+/// All message exchange between parties must flow through the actor's transport
+/// URI (mailbox).
 ///
-/// Role is not checked — both provisioned roles use this endpoint, and the
-/// `ActorInbox` match below is what rejects a browser actor.
+/// Role is not checked — the `ActorInbox` match below is what rejects a browser
+/// actor, and `replica_for_owner_secret` is what selects replica mode.
 pub async fn create_contact(
     State(state): State<Arc<AppState>>,
     Path(actor_id): Path<Uuid>,
@@ -450,10 +434,10 @@ pub async fn start_pairing(
 
 // ── Fingerprint confirmation ────────────────────────────────────────────────
 //
-// Actor-generic, unlike the replica-scoped pair in `routes::replicas`: those
-// infer the channel from the replica's pairing history, which only works for a
-// role that pairs once. A `NoKeys` pairing can happen on any provisioned actor
-// and on any of its channels, so these take the channel explicitly.
+// The channel is named explicitly rather than inferred from the actor. A
+// `NoKeys` pairing — and every replica-mode pairing — can happen on any
+// provisioned actor and on any of its channels, and one actor may hold several
+// at once, so there is nothing an actor id alone could resolve to.
 
 #[derive(Debug, Deserialize)]
 pub struct ChannelQueryParam {

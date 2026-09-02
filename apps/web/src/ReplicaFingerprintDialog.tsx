@@ -13,10 +13,7 @@ import {
 } from '@mui/material'
 import {
   acceptFingerprintMatch,
-  confirmPeerFingerprint,
   fetchFingerprint,
-  fetchPeerFingerprint,
-  type PeerConfirmation,
   type ReplicaPairingRole,
   type ReplicaRecord,
   type ReplicaProtocol,
@@ -70,20 +67,15 @@ type AttemptState =
   /**
    * This device is confirmed and there is nothing further it can do here.
    *
-   * Terminal. `verify_fingerprint` is idempotent — a second call on a channel
-   * it already promoted still matches and still returns `true` — so leaving
-   * Confirm live would let the user press it repeatedly and watch the very same
-   * state be set again, which reads as the dialog having frozen.
+   * Terminal, and the only success state: the peer confirms on its own protocol
+   * instance and this device never sees that happen. `verify_fingerprint` is
+   * idempotent — a second call on a channel it already promoted still matches
+   * and still returns `true` — so leaving Confirm live would let the user press
+   * it repeatedly and watch the very same state be set again, which reads as
+   * the dialog having frozen.
    */
   | { kind: 'local-only' }
   | { kind: 'error'; message: string }
-  /**
-   * This device verified and that is recorded; only reporting the *peer's*
-   * confirmation failed. Distinct from `error` because the two leave the
-   * channel in very different places, and only this one is retryable without
-   * re-comparing codes.
-   */
-  | { kind: 'peer-error'; message: string }
 
 function messageOf(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback
@@ -114,7 +106,7 @@ export function ReplicaFingerprintDialog({
   onConfirm,
   onClose,
 }: ReplicaFingerprintDialogProps) {
-  const { id: replicaId, channelId, provisioned } = replica
+  const { channelId } = replica
 
   // This is where the user spends time comparing codes, so it is where the
   // deadline belongs. `null` on a channel that is already confirmed — nothing
@@ -122,45 +114,32 @@ export function ReplicaFingerprintDialog({
   const expiry = useReplicaExpiry(replica, protocolTimeoutSecs)
 
   const [ownCode, setOwnCode] = useState<string | null>(null)
-  const [peerCode, setPeerCode] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [attempt, setAttempt] = useState<AttemptState>({ kind: 'idle' })
 
-  const loadCodes = useCallback(async () => {
+  // Only this device's code. Every peer now confirms on its own protocol
+  // instance — a helper auto-confirms server-side, another browser device
+  // confirms on its own screen — so there is no second code to fetch and
+  // nothing here may assert the peer's decision on its behalf.
+  const loadCode = useCallback(async () => {
     if (!channelId) return
     setLoading(true)
     setLoadError(null)
     try {
       setOwnCode(await fetchFingerprint(protocol, channelId))
-      // A provisioned replica has no UI of its own, so this device reads its
-      // code over HTTP and stands in for the human at the other end. A browser
-      // peer shows its own code on its own screen and confirms for itself —
-      // there is no backend protocol instance to ask, and the endpoint rejects
-      // an actor that is not a `Role::Replica`.
-      if (provisioned) setPeerCode(await fetchPeerFingerprint(replicaId))
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : 'Could not derive the fingerprint.')
     } finally {
       setLoading(false)
     }
-  }, [channelId, protocol, provisioned, replicaId])
+  }, [channelId, protocol])
 
   useEffect(() => {
     if (!open) return
     setAttempt({ kind: 'idle' })
-    void loadCodes()
-  }, [open, loadCodes])
-
-  /** The peer's side of the confirmation, verified through the protocol. */
-  async function resolvePeerConfirmation(
-    confirmedChannelId: string,
-  ): Promise<PeerConfirmation> {
-    if (ownCode === null) return 'none'
-    return (await confirmPeerFingerprint(replicaId, confirmedChannelId, ownCode))
-      ? 'protocol-verified'
-      : 'none'
-  }
+    void loadCode()
+  }, [open, loadCode])
 
   /**
    * The operator says the codes match. Records this device's side.
@@ -192,41 +171,15 @@ export function ReplicaFingerprintDialog({
       return
     }
 
-    // Record the local side the moment it is earned, before anything else can
-    // fail. `confirmFingerprint` has already promoted the library channel to
-    // `Paired`; a backend call that throws afterwards (a `channel_id mismatch`
-    // 400, a `replica not yet paired` 409) must not leave the row reading
-    // `pending` forever against a channel that is, in fact, confirmed here.
     // Only ever *add* a confirmation — writing `peer: 'none'` would clobber one
     // earned on an earlier attempt.
     onConfirm({ local: true })
 
-    // A browser peer's confirmation happens on that device, against its own
-    // protocol instance. Nothing here can observe it, and nothing here may
-    // assert it on the peer's behalf — this device has confirmed its own side
-    // and that is the whole of what it knows.
-    if (!provisioned) {
-      setAttempt({ kind: 'local-only' })
-      return
-    }
-
-    let peer: PeerConfirmation
-    try {
-      peer = await resolvePeerConfirmation(channelId)
-    } catch (err) {
-      setAttempt({
-        kind: 'peer-error',
-        message: messageOf(err, 'The replica’s confirmation could not be recorded.'),
-      })
-      return
-    }
-
-    if (peer === 'none') {
-      setAttempt({ kind: 'local-only' })
-      return
-    }
-    onConfirm({ peer })
-    onClose()
+    // The peer's confirmation happens on the peer, against its own protocol
+    // instance. Nothing here can observe it, and nothing here may assert it on
+    // the peer's behalf — this device has confirmed its own side and that is
+    // the whole of what it knows.
+    setAttempt({ kind: 'local-only' })
   }
 
   const verifying = attempt.kind === 'verifying'
@@ -243,9 +196,7 @@ export function ReplicaFingerprintDialog({
       <DialogContent>
         <Stack spacing={2.5} sx={{ pt: 1 }}>
           <DialogContentText>
-            {provisioned
-              ? `Both codes below are derived from the shared key. Confirm only if they are identical — `
-              : `Check that ${replica.name} is showing this same code. Confirm only if the two are identical — `}
+            {`Check that ${replica.name} is showing this same code. Confirm only if the two are identical — `}
             {mirrorDirectionText(replica.direction)}
           </DialogContentText>
 
@@ -269,7 +220,7 @@ export function ReplicaFingerprintDialog({
             <Alert
               severity="error"
               action={
-                <Button color="inherit" size="small" onClick={() => void loadCodes()}>
+                <Button color="inherit" size="small" onClick={() => void loadCode()}>
                   Retry
                 </Button>
               }
@@ -279,29 +230,9 @@ export function ReplicaFingerprintDialog({
           )}
 
           {ownCode && (
-            <Stack spacing={0.5}>
-              {/* Labelled only when there is a second code to tell it apart
-                  from; on a browser pair this is simply "the code". */}
-              {provisioned && (
-                <Typography variant="overline" component="h3" color="text.secondary">
-                  This device
-                </Typography>
-              )}
-              <Typography sx={CODE_SX} aria-label={`This device's code: ${ownCode}`}>
-                {ownCode}
-              </Typography>
-            </Stack>
-          )}
-
-          {peerCode && (
-            <Stack spacing={0.5}>
-              <Typography variant="overline" component="h3" color="text.secondary">
-                {replica.name}
-              </Typography>
-              <Typography sx={CODE_SX} aria-label={`${replica.name}'s code: ${peerCode}`}>
-                {peerCode}
-              </Typography>
-            </Stack>
+            <Typography sx={CODE_SX} aria-label={`This device's code: ${ownCode}`}>
+              {ownCode}
+            </Typography>
           )}
 
           {attempt.kind === 'local-only' && (
@@ -311,30 +242,16 @@ export function ReplicaFingerprintDialog({
                   Confirmed on this device. {replica.name} still has to confirm on theirs
                   before their vault can be offered here.
                 </>
-              ) : provisioned ? (
-                <>
-                  Confirmed on this device, which may now mirror its vault. {replica.name}{' '}
-                  still has to confirm before it will accept the copy — if it confirms
-                  after this, use “Sync now” on the replica’s row to re-send.
-                </>
               ) : (
                 // Naming the required step, not offering it as a fallback: this
-                // device cannot see a browser peer's confirmation, so it will
-                // not mirror on its own and the user has to press the button.
+                // device cannot see the peer's confirmation, so it will not
+                // mirror on its own and the user has to press the button.
                 <>
                   Confirmed on this device. This device cannot see {replica.name}’s
                   confirmation, so it will not mirror automatically — once they have
-                  confirmed on their own screen, press “Sync now” on their row.
+                  confirmed, press “Sync now” on their row.
                 </>
               )}
-            </Alert>
-          )}
-
-          {attempt.kind === 'peer-error' && (
-            <Alert severity="warning">
-              This device is confirmed — that is recorded and will not be lost. Recording{' '}
-              {replica.name}’s confirmation failed: {attempt.message} Confirm again to
-              retry just that step.
             </Alert>
           )}
 

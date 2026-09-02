@@ -51,7 +51,7 @@ pub async fn register(
             }
         }
         None => {
-            let actor = provisioned_actor(Role::Owner, &req.name, &state.base_url, None);
+            let actor = provisioned_actor(Role::Owner, &req.name, &state.base_url);
             state.actors.register(actor.clone());
             info!(actor_id = %actor.id, name = %actor.name, "owner registered");
             actor

@@ -43,7 +43,6 @@ function view(overrides: Partial<ReplicaView> = {}): ReplicaView {
     lastSync: null,
     establishedAt: Date.now(),
     firstSyncStarted: false,
-    provisioned: false,
     direction: 'replica_source',
     peerReplicaId: null,
     helperActorId: null,

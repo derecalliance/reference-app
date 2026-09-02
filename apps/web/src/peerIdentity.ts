@@ -10,7 +10,7 @@
 
 export interface PeerActorCandidate {
   id: string
-  role: 'owner' | 'participant' | 'replica'
+  role: 'owner' | 'helper'
   name: string
   transport: { protocol: 'https'; uri: string }
   browser_managed?: boolean

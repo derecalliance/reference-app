@@ -45,8 +45,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/actors/{actor_id}/start-pairing",
             post(routes::actors::start_pairing),
         )
-        // Actor-generic, unlike the replica-scoped pair below: a NoKeys pairing
-        // can land on any provisioned actor, so the channel is explicit.
+        // A NoKeys pairing — and every replica-mode pairing — can land on any
+        // provisioned actor and on any of its channels, so the channel these
+        // act on is named explicitly rather than inferred from the actor.
         .route(
             "/actors/{actor_id}/fingerprint",
             get(routes::actors::get_fingerprint),
@@ -73,19 +74,6 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/helpers/{helper_id}/browser-contact",
             post(routes::helpers::post_browser_contact)
                 .get(routes::helpers::get_browser_contact),
-        )
-        .route("/replicas", post(routes::replicas::add))
-        .route(
-            "/replicas/{replica_id}/fingerprint",
-            get(routes::replicas::get_fingerprint),
-        )
-        .route(
-            "/replicas/{replica_id}/confirm-fingerprint",
-            post(routes::replicas::confirm_fingerprint),
-        )
-        .route(
-            "/replicas/{replica_id}/toggle-status",
-            post(routes::replicas::toggle_status),
         )
         .route("/derec/{actor_id}", post(routes::derec::deliver_message))
         .route("/derec/{actor_id}/mailbox", get(routes::derec::poll_mailbox))

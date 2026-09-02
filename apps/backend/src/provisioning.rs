@@ -79,34 +79,16 @@ pub fn spawn_provisioned(state: &AppState, actor: &Actor, timeout_secs: u32, unp
     state.actor_inboxes.insert(actor_id, ActorInbox::Provisioned(addr));
 }
 
-/// Decides the `secret_id` a newly minted actor binds its protocol to.
-///
-/// A replica destination mirrors one named owner's vault, and the share store
-/// keys on `(secret_id, channel_id, version, replica_id)` — a destination under
-/// a different `secret_id` would miss every lookup. It therefore inherits the
-/// owner's, resolved by the caller from the explicit `owner_actor_id` on the
-/// request (see `replicas::resolve_owner_secret_id`). Every other role protects
-/// its own secret, and the argument is ignored for them.
-///
-/// There is deliberately no "find the owner" fallback: several `Role::Owner`
-/// actors are routinely registered at once — one per browser context — so a
-/// guess would not error, it would silently bind the replica to the wrong vault.
-fn actor_secret_id(role: Role, owner_secret_id: Option<u64>) -> u64 {
-    match (role, owner_secret_id) {
-        (Role::Replica, Some(owner)) => owner,
-        _ => rand::random::<u64>(),
-    }
+/// Every actor protects its own secret. A replica relationship no longer
+/// changes this: it is an extra protocol *instance* bound to the mirrored
+/// owner's secret, added on demand by `EnsureReplicaInstanceMsg`, not a
+/// different actor with a different identity.
+fn actor_secret_id() -> u64 {
+    rand::random::<u64>()
 }
 
 /// Mint a new actor.
-///
-/// `owner_secret_id` is only read for `Role::Replica` — see [`actor_secret_id`].
-pub fn provisioned_actor(
-    role: Role,
-    name: &str,
-    base_url: &str,
-    owner_secret_id: Option<u64>,
-) -> Actor {
+pub fn provisioned_actor(role: Role, name: &str, base_url: &str) -> Actor {
     let actor_id = Uuid::new_v4();
     Actor {
         id: actor_id,
@@ -116,7 +98,7 @@ pub fn provisioned_actor(
             protocol: TransportProtocol::Https,
             uri: format!("{base_url}/derec/{actor_id}"),
         },
-        secret_id: actor_secret_id(role, owner_secret_id).to_string(),
+        secret_id: actor_secret_id().to_string(),
     }
 }
 
@@ -125,37 +107,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn replica_inherits_the_owner_secret_id() {
-        let owner = 0xDEAD_BEEF_u64;
-        assert_eq!(actor_secret_id(Role::Replica, Some(owner)), owner);
-    }
+    fn every_actor_gets_its_own_freshly_drawn_secret_id() {
+        let first = actor_secret_id();
+        let second = actor_secret_id();
 
-    #[test]
-    fn non_replicas_get_their_own_secret_id() {
-        // Two assertions rather than one `assert_ne!` against a constant: an
-        // implementation that returned `owner` for every role would make the
-        // two calls *equal to each other* as well as equal to `owner`, so the
-        // second assertion catches it without relying on a random draw missing
-        // a fixed value.
-        let owner = 0xDEAD_BEEF_u64;
-
-        for role in [Role::Participant, Role::Owner] {
-            let first = actor_secret_id(role, Some(owner));
-            let second = actor_secret_id(role, Some(owner));
-            assert_ne!(first, owner, "{role:?} must not inherit the owner's secret id");
-            assert_ne!(first, second, "{role:?} must get a fresh id each time");
-        }
-    }
-
-    #[test]
-    fn replica_without_a_known_owner_falls_back_to_a_fresh_id() {
-        // A replica added with no resolvable owner must still get a usable,
-        // freshly drawn id rather than panicking or reusing a constant;
-        // adoption will reseat it later.
-        let first = actor_secret_id(Role::Replica, None);
-        let second = actor_secret_id(Role::Replica, None);
         assert_ne!(first, 0);
-        assert_ne!(first, second);
+        assert_ne!(first, second, "each actor must get a fresh id");
     }
 
     #[test]
@@ -163,7 +120,7 @@ mod tests {
         // The URI is what peers post to, and `deliver_message` parses the id
         // back out of it, so the two must agree on the shape. There is no role
         // segment: an actor id is a UUID and identifies the actor by itself.
-        let actor = provisioned_actor(Role::Participant, "test", "http://localhost:5000", None);
+        let actor = provisioned_actor(Role::Helper, "test", "http://localhost:5000");
 
         assert_eq!(
             actor.transport.uri,

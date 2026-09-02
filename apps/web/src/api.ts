@@ -15,7 +15,7 @@ interface BETransport {
 
 interface BEActor {
   id: string
-  role: 'owner' | 'participant' | 'replica'
+  role: 'owner' | 'helper'
   name: string
   transport: BETransport
   /** This actor's own secret_id (u64 decimal string) — the secret it protects
@@ -33,12 +33,6 @@ export interface BEActorWithStatus extends BEActor {
    *  every browser actor whatever its role, including one mirroring another
    *  device — that registers as an ordinary `owner` actor. */
   browser_managed?: boolean
-  /** `replica` actors only: the backend-run replica confirmed the peer's
-   *  fingerprint. `replica` actors are backend-provisioned by definition, so
-   *  this is never set for a second browser device mirroring an owner — that
-   *  device is an `owner` actor and confirms in its own context, which the
-   *  backend never observes. */
-  replica_confirmed?: boolean
 }
 
 /** GET /actors — every actor on this server, enriched with pairing status. */
@@ -280,7 +274,7 @@ export async function apiStartActorPairing(
 
 export interface AddHelperResponse {
   id: string
-  role: 'participant'
+  role: 'helper'
   name: string
   transport: BETransport
   secret_id: string
@@ -437,96 +431,14 @@ export async function apiLinkHelperChannels(
   }
 }
 
-// ── Replicas ─────────────────────────────────────────────────────────────────
-//
-// A replica mirrors one specific owner's vault. Several independent `owner`
-// actors may be registered at once — one per browser context — so "the owner"
-// is not well defined and every replica names the owner it mirrors explicitly.
-
-/** POST /replicas — the created replica actor (flattened). */
-export interface AddReplicaResponse {
-  id: string
-  role: 'replica'
-  name: string
-  transport: BETransport
-  /** The mirrored owner's `secret_id`, since a replica shares its vault. */
-  secret_id: string
-}
-
-export async function apiAddReplica(
-  name: string,
-  /** The owner actor whose vault this replica mirrors. Required — see above. */
-  ownerActorId: string,
-  settings: ProvisioningSettings,
-): Promise<AddReplicaResponse> {
-  const res = await request(`/replicas`, {
-    method: 'POST',
-    headers: JSON_HEADERS,
-    body: JSON.stringify({
-      name,
-      owner_actor_id: ownerActorId,
-      ...settingsBody(settings),
-    }),
-  })
-  if (!res.ok) {
-    throw new Error(await errorMessage(res, `add-replica failed: ${res.status}`))
-  }
-  return res.json() as Promise<AddReplicaResponse>
-}
-
-/** A provisioned replica's own fingerprint, for out-of-band comparison.
- *
- *  Provisioned replicas only: the backend computes this inside its own protocol
- *  instance for a `replica` actor. A second browser device mirroring an owner is
- *  not one — it registers as an ordinary `owner` actor — so calling this with its
- *  id is rejected with 400 "actor is an owner, not a replica". Such a device
- *  derives the fingerprint from its own instance instead. */
-export async function apiGetReplicaFingerprint(replicaId: string): Promise<string> {
-  const res = await request(`/replicas/${encodeURIComponent(replicaId)}/fingerprint`)
-  if (!res.ok) {
-    throw new Error(await errorMessage(res, `replica fingerprint failed: ${res.status}`))
-  }
-  const body = (await res.json()) as { fingerprint: string }
-  return body.fingerprint
-}
-
-/**
- * Have a provisioned replica verify our fingerprint, promoting its side of the
- * channel from `Pending` to `Paired`.
- *
- * A mismatch comes back as `400 {"error":"fingerprint mismatch"}` and is
- * surfaced as `false`, not thrown: comparing two codes out of band and getting
- * it wrong is an ordinary, retryable outcome, not a failure of the request.
- * Every other non-2xx still throws.
- */
-export async function apiConfirmReplicaFingerprint(
-  replicaId: string,
-  channelId: string,
-  fingerprint: string,
-): Promise<boolean> {
-  const res = await request(
-    `/replicas/${encodeURIComponent(replicaId)}/confirm-fingerprint`,
-    {
-      method: 'POST',
-      headers: JSON_HEADERS,
-      body: JSON.stringify({ channel_id: channelId, fingerprint }),
-    },
-  )
-  if (res.ok) {
-    const body = (await res.json()) as { confirmed: boolean }
-    return body.confirmed
-  }
-  const body = (await res.json().catch(() => ({}))) as { error?: string }
-  if (res.status === 400 && body.error === 'fingerprint mismatch') return false
-  throw new Error(body.error ?? `confirm-fingerprint failed: ${res.status}`)
-}
+// ── Fingerprint confirmation ─────────────────────────────────────────────────
 
 /**
  * A provisioned actor's own fingerprint for one of its channels.
  *
- * Actor-generic, unlike `apiGetReplicaFingerprint`, which infers the channel
- * from the replica's single pairing. A `NoKeys` pairing can land on any
- * provisioned actor and on any channel, so this names the channel explicitly.
+ * The channel is named explicitly rather than inferred from the actor: a
+ * `NoKeys` pairing — and every replica-mode pairing — can land on any
+ * provisioned actor, and one actor may hold several such channels at once.
  */
 export async function apiGetActorFingerprint(
   actorId: string,
@@ -547,9 +459,10 @@ export async function apiGetActorFingerprint(
  * Have a provisioned actor confirm our fingerprint, promoting its side of the
  * channel from `Pending` to `Paired`.
  *
- * Returns `false` on mismatch rather than throwing — see
- * `apiConfirmReplicaFingerprint`, except that here a mismatch is the
- * man-in-the-middle signal and callers must surface it, not silently retry.
+ * Returns `false` on mismatch rather than throwing: comparing two codes out of
+ * band and getting it wrong is an ordinary outcome, not a failure of the
+ * request. It is also the man-in-the-middle signal, so callers must surface it
+ * rather than silently retry. Every other non-2xx still throws.
  */
 export async function apiConfirmActorFingerprint(
   actorId: string,
@@ -573,20 +486,3 @@ export async function apiConfirmActorFingerprint(
   throw new Error(body.error ?? `confirm-fingerprint failed: ${res.status}`)
 }
 
-/** Simulate a replica going offline/online. Omit `disabled` to toggle. */
-export async function apiToggleReplicaStatus(
-  replicaId: string,
-  disabled?: boolean,
-): Promise<{ disabled: boolean }> {
-  const res = await request(`/replicas/${encodeURIComponent(replicaId)}/toggle-status`, {
-    method: 'POST',
-    ...(disabled !== undefined && {
-      headers: JSON_HEADERS,
-      body: JSON.stringify({ disabled }),
-    }),
-  })
-  if (!res.ok) {
-    throw new Error(await errorMessage(res, `replica toggle-status failed: ${res.status}`))
-  }
-  return res.json() as Promise<{ disabled: boolean }>
-}

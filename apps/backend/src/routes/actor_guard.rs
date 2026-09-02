@@ -2,7 +2,7 @@
 //!
 //! `AppState::actor_inboxes`, `disabled_helpers`, `helper_channels`
 //! and friends are all keyed by actor UUID, and several of them are written by
-//! routes that mean something quite specific by the entry: `disabled_replicas`
+//! routes that mean something quite specific by the entry: `disabled_helpers`
 //! is consulted by `deliver_message` for *every* actor, so writing an owner's id
 //! into it silently drops that owner's mail. Resolving a target from one of
 //! those maps therefore says nothing about whether the actor is the right kind
@@ -56,8 +56,7 @@ pub fn ensure_actor_role(state: &AppState, actor_id: &Uuid, role: Role) -> Resul
 fn noun(role: Role) -> &'static str {
     match role {
         Role::Owner => "owner",
-        Role::Participant => "participant",
-        Role::Replica => "replica",
+        Role::Helper => "helper",
     }
 }
 
@@ -66,7 +65,7 @@ fn noun(role: Role) -> &'static str {
 fn with_article(role: Role) -> String {
     let article = match role {
         Role::Owner => "an",
-        Role::Participant | Role::Replica => "a",
+        Role::Helper => "a",
     };
     format!("{article} {}", noun(role))
 }
@@ -94,7 +93,7 @@ mod tests {
     use crate::state::ActorRegistry;
 
     fn actor(role: Role) -> Actor {
-        provisioned_actor(role, "test", "http://localhost", Some(42))
+        provisioned_actor(role, "test", "http://localhost")
     }
 
     /// The registry alone, without an `AppState` (which needs a live Actix
@@ -110,49 +109,42 @@ mod tests {
     #[test]
     fn a_registered_actor_resolves_whatever_its_role() {
         let owner = actor(Role::Owner);
-        let participant = actor(Role::Participant);
-        let registry = registry_with(vec![owner.clone(), participant.clone()]);
+        let helper = actor(Role::Helper);
+        let registry = registry_with(vec![owner.clone(), helper.clone()]);
 
         assert!(registry.get(&owner.id).is_some());
-        assert!(registry.get(&participant.id).is_some());
+        assert!(registry.get(&helper.id).is_some());
     }
 
     #[test]
     fn an_unregistered_actor_is_rejected() {
         let registry = registry_with(vec![actor(Role::Owner)]);
 
-        assert!(registry.get(&actor(Role::Participant).id).is_none());
+        assert!(registry.get(&actor(Role::Helper).id).is_none());
     }
 
     #[test]
     fn a_role_route_rejects_an_actor_of_another_role() {
-        // Regression: `replicas/{id}/toggle-status` on an owner's id wrote that
-        // id into `disabled_replicas`, and `deliver_message` consults it for
+        // Regression: `helpers/{id}/toggle-status` on an owner's id wrote that
+        // id into `disabled_helpers`, and `deliver_message` consults it for
         // every actor — silently dropping the owner's entire mailbox.
         let owner = actor(Role::Owner);
-        let participant = actor(Role::Participant);
-        let registry = registry_with(vec![owner.clone(), participant.clone(), actor(Role::Replica)]);
+        let registry = registry_with(vec![owner.clone(), actor(Role::Helper)]);
 
         assert_eq!(
-            registry.get_with_role(&owner.id, Role::Replica).err(),
+            registry.get_with_role(&owner.id, Role::Helper).err(),
             Some(RoleMismatch::WrongRole { actual: Role::Owner })
-        );
-        assert_eq!(
-            registry.get_with_role(&participant.id, Role::Replica).err(),
-            Some(RoleMismatch::WrongRole {
-                actual: Role::Participant
-            })
         );
     }
 
     #[test]
     fn a_role_route_accepts_the_matching_role() {
-        let replica = actor(Role::Replica);
-        let registry = registry_with(vec![actor(Role::Owner), replica.clone()]);
+        let helper = actor(Role::Helper);
+        let registry = registry_with(vec![actor(Role::Owner), helper.clone()]);
 
         assert_eq!(
-            registry.get_with_role(&replica.id, Role::Replica).map(|a| a.id),
-            Ok(replica.id)
+            registry.get_with_role(&helper.id, Role::Helper).map(|a| a.id),
+            Ok(helper.id)
         );
     }
 }

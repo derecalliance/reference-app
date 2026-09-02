@@ -2506,17 +2506,6 @@ recovery-pairing-notice {
   border-color: var(--danger);
   background: var(--danger-bg);
 }
-/* ── Provisioned replicas (side panel) ─────────────────────────────────────────── */
-/* Mirrors the provisioned-participants section directly above it — same header
-   row, same accordion item, same action buttons — because it is the same kind of
-   thing: a backend-hosted actor this owner can add, pair and take offline. */
-
-.side-replica-direction {
-  font-size: 11px;
-  color: var(--text);
-  padding: 4px 0;
-}
-
 /* ── QR scanning ─────────────────────────────────────────────────────────── */
 
 .form-label-row {

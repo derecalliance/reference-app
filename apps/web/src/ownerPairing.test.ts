@@ -372,7 +372,6 @@ describe('applyPairingCompleted — replica channel record', () => {
       channelId: '1234',
       name: 'Second device',
       status: 'pending',
-      provisioned: false,
       direction: 'replica_source',
     })
   })

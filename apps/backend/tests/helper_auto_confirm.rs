@@ -21,9 +21,8 @@ use std::time::Duration;
 
 use actix::prelude::*;
 use derec_backend::actor::{
-    ChannelStatusMsg, CreateContactMsg, EnsureReplicaInstanceMsg, GetFingerprintMsg,
-    InstanceForChannelMsg, PendingChannelIdsMsg, ProtocolConfig, ProvisionedActor,
-    VerifyFingerprintMsg, build_protocol,
+    ChannelStatusMsg, CreateContactMsg, EnsureReplicaInstanceMsg, InstanceForChannelMsg,
+    PendingChannelIdsMsg, ProtocolConfig, ProvisionedActor, build_protocol,
 };
 use derec_backend::config::Defaults;
 use derec_backend::models::{Role, UnpairAck};
@@ -42,10 +41,6 @@ const TIMEOUT_SECS: u32 = 300;
 /// three legs a `NoKeys` handshake takes, plus the auto-confirmation behind it.
 const POLL_ATTEMPTS: usize = 400;
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
-
-/// Mirrors the actor's own `TICK_INTERVAL`, which is private to that module.
-/// A test that waits on the tick has to know how long one is.
-const TICK_INTERVAL: Duration = Duration::from_secs(15);
 
 /// Bring up the real router on an ephemeral port and return an `AppState` whose
 /// `base_url` points at it, so every actor minted from it gets a transport URI
@@ -73,26 +68,11 @@ async fn serve() -> Arc<AppState> {
 
 /// Provision a hosted helper exactly as `POST /helpers` does.
 fn spawn_helper(state: &Arc<AppState>, name: &str) -> (Uuid, Addr<ProvisionedActor>) {
-    spawn_actor(state, Role::Participant, name, None)
+    spawn_actor(state, Role::Helper, name)
 }
 
-/// Provision a replica exactly as `POST /replicas` does — including the secret
-/// binding, which a replica inherits from the owner it mirrors.
-fn spawn_replica(
-    state: &Arc<AppState>,
-    name: &str,
-    owner_secret_id: u64,
-) -> (Uuid, Addr<ProvisionedActor>) {
-    spawn_actor(state, Role::Replica, name, Some(owner_secret_id))
-}
-
-fn spawn_actor(
-    state: &Arc<AppState>,
-    role: Role,
-    name: &str,
-    owner_secret_id: Option<u64>,
-) -> (Uuid, Addr<ProvisionedActor>) {
-    let actor = provisioned_actor(role, name, &state.base_url, owner_secret_id);
+fn spawn_actor(state: &Arc<AppState>, role: Role, name: &str) -> (Uuid, Addr<ProvisionedActor>) {
+    let actor = provisioned_actor(role, name, &state.base_url);
     state.actors.register(actor.clone());
     spawn_provisioned(state, &actor, TIMEOUT_SECS, UnpairAck::Required);
 
@@ -132,7 +112,7 @@ fn register_unreachable_owner(state: &Arc<AppState>, name: &str) -> Owner {
 }
 
 fn build_owner(state: &Arc<AppState>, name: &str, reachable: bool) -> Owner {
-    let actor = provisioned_actor(Role::Owner, name, &state.base_url, None);
+    let actor = provisioned_actor(Role::Owner, name, &state.base_url);
     let secret_id: u64 = actor.secret_id.parse().expect("secret id is a u64");
     if reachable {
         state.actors.register(actor.clone());
@@ -198,23 +178,6 @@ async fn await_helper_channel(state: &AppState, helper_id: Uuid, owner: &mut Own
         actix_rt::time::sleep(POLL_INTERVAL).await;
     }
     panic!("the helper never completed the pairing handshake");
-}
-
-/// A provisioned replica records its channels in `replica_channels`. Same idea
-/// as [`await_helper_channel`], different index.
-async fn await_replica_channel(state: &AppState, replica_id: Uuid, owner: &mut Owner) -> u64 {
-    for _ in 0..POLL_ATTEMPTS {
-        pump(state, owner).await;
-        if let Some(channel_id) = state
-            .replica_channels
-            .get(&replica_id)
-            .and_then(|entry| entry.first().cloned())
-        {
-            return channel_id.parse().expect("channel id is a u64");
-        }
-        actix_rt::time::sleep(POLL_INTERVAL).await;
-    }
-    panic!("the replica never completed the pairing handshake");
 }
 
 /// Wait until the actor reports exactly one channel awaiting confirmation, and
@@ -519,82 +482,5 @@ async fn the_tick_backstop_confirms_a_channel_the_event_path_missed() {
             .expect("the helper actor is alive")
             .is_empty(),
         "the sweep must leave nothing behind"
-    );
-}
-
-#[actix_rt::test]
-async fn a_provisioned_replica_does_not_auto_confirm() {
-    // Auto-confirmation is scoped to `Role::Participant`. `POST /replicas` mints
-    // `Role::Replica`, whose confirmation is still driven externally through
-    // `/replicas/{id}/confirm-fingerprint` until a later task folds the role
-    // into helpers — and `e2e/replicas.spec.ts` asserts a replica is not paired
-    // until that call is made.
-    //
-    // This waits past a full `TICK_INTERVAL`, so it pins the exclusion on both
-    // triggers: the `PairingCompleted` notify and the tick backstop.
-    let state = serve().await;
-    let mut owner = register_owner(&state, "Alice");
-    let (replica_id, replica) = spawn_replica(&state, "Richard", owner.secret_id);
-
-    let contact = replica
-        .send(CreateContactMsg {
-            contact_mode: derec_proto::ContactMode::InlineKeys,
-            nonce: None,
-            replica_for_owner_secret: None,
-        })
-        .await
-        .expect("the replica actor is alive")
-        .expect("the replica mints a contact");
-
-    owner
-        .protocol
-        .start(DeRecFlow::Pairing {
-            kind: derec_proto::SenderKind::ReplicaSource,
-            contact,
-            peer_communication_info: HashMap::from([("name".to_owned(), "Richard".to_owned())]),
-        })
-        .await
-        .expect("the owner starts a replica pairing");
-
-    let channel_id = await_replica_channel(&state, replica_id, &mut owner).await;
-
-    // Long enough to cover at least one tick, so a backstop that ignored the
-    // role would have fired by now.
-    let deadline = TICK_INTERVAL + Duration::from_secs(5);
-    let started = std::time::Instant::now();
-    while started.elapsed() < deadline {
-        pump(&state, &mut owner).await;
-        assert_eq!(
-            replica
-                .send(ChannelStatusMsg { channel_id })
-                .await
-                .expect("the replica actor is alive"),
-            Some(ChannelStatus::Pending),
-            "a provisioned replica must not confirm its own fingerprint — its \
-             confirmation is still driven by POST /replicas/{{id}}/confirm-fingerprint"
-        );
-        actix_rt::time::sleep(POLL_INTERVAL).await;
-    }
-
-    // And the externally driven path still works, so the exclusion is a
-    // deferral rather than a dead end.
-    let fingerprint = replica
-        .send(GetFingerprintMsg { channel_id })
-        .await
-        .expect("the replica actor is alive")
-        .expect("the replica derives a fingerprint");
-    let confirmed = replica
-        .send(VerifyFingerprintMsg { channel_id, fingerprint })
-        .await
-        .expect("the replica actor is alive")
-        .expect("verification completes");
-
-    assert!(confirmed, "the external confirmation still promotes the channel");
-    assert_eq!(
-        replica
-            .send(ChannelStatusMsg { channel_id })
-            .await
-            .expect("the replica actor is alive"),
-        Some(ChannelStatus::Paired),
     );
 }

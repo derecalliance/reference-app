@@ -45,7 +45,7 @@ fn spawn(protocol: ActorProtocol) -> Addr<ProvisionedActor> {
         protocol,
         config(),
         uuid::Uuid::new_v4(),
-        Role::Participant,
+        Role::Helper,
         state,
     )
     .start()

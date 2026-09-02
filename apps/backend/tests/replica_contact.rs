@@ -32,7 +32,7 @@ fn spawn() -> Addr<ProvisionedActor> {
     let cfg = config(OWN_SECRET);
     let protocol = build_protocol(&cfg).expect("protocol builds");
     let state = derec_backend::test_support::app_state();
-    ProvisionedActor::new(protocol, cfg, uuid::Uuid::new_v4(), Role::Participant, state).start()
+    ProvisionedActor::new(protocol, cfg, uuid::Uuid::new_v4(), Role::Helper, state).start()
 }
 
 #[actix_rt::test]

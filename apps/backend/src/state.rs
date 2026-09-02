@@ -85,13 +85,13 @@ impl ActorRegistry {
     {
         let mut actors = self.write();
 
-        let existing = actors.iter().filter(|a| a.role == Role::Participant).count();
+        let existing = actors.iter().filter(|a| a.role == Role::Helper).count();
         let created: Vec<Actor> = (existing..desired).map(&mut mint).collect();
         actors.extend(created.iter().cloned());
 
         let participants = actors
             .iter()
-            .filter(|a| a.role == Role::Participant)
+            .filter(|a| a.role == Role::Helper)
             .cloned()
             .collect();
 
@@ -138,9 +138,6 @@ pub struct AppState {
     /// Helper-side channel IDs per actor (one entry per paired owner).
     pub helper_channels: Arc<DashMap<Uuid, Vec<String>>>,
     pub disabled_helpers: Arc<DashMap<Uuid, ()>>,
-    pub replica_channels: Arc<DashMap<Uuid, Vec<String>>>,
-    pub replica_confirmed: Arc<DashMap<Uuid, ()>>,
-    pub disabled_replicas: Arc<DashMap<Uuid, ()>>,
     /// Contact messages posted by browser-managed participants for the owner to fetch.
     pub browser_participant_contacts: Arc<DashMap<Uuid, String>>,
     /// Operator-supplied starting values for the front end. Read once at boot
@@ -164,9 +161,6 @@ impl AppState {
             browser_receivers: Arc::new(DashMap::new()),
             helper_channels: Arc::new(DashMap::new()),
             disabled_helpers: Arc::new(DashMap::new()),
-            replica_channels: Arc::new(DashMap::new()),
-            replica_confirmed: Arc::new(DashMap::new()),
-            disabled_replicas: Arc::new(DashMap::new()),
             browser_participant_contacts: Arc::new(DashMap::new()),
             defaults: Arc::new(defaults),
             base_url: base_url.into(),
@@ -207,7 +201,7 @@ mod tests {
     use crate::provisioning::provisioned_actor;
 
     fn actor(role: Role, name: &str) -> Actor {
-        provisioned_actor(role, name, "http://localhost", Some(42))
+        provisioned_actor(role, name, "http://localhost")
     }
 
     #[test]
@@ -237,7 +231,7 @@ mod tests {
         // list; an unordered container would reshuffle the UI on every poll.
         let registry = ActorRegistry::default();
         for name in ["first", "second", "third", "fourth"] {
-            registry.register(actor(Role::Participant, name));
+            registry.register(actor(Role::Helper, name));
         }
 
         let names: Vec<String> = registry.all().into_iter().map(|a| a.name).collect();
@@ -248,12 +242,12 @@ mod tests {
     #[test]
     fn a_role_lookup_accepts_the_matching_role() {
         let registry = ActorRegistry::default();
-        let replica = actor(Role::Replica, "Alice's laptop");
-        registry.register(replica.clone());
+        let helper = actor(Role::Helper, "Alex");
+        registry.register(helper.clone());
 
         assert_eq!(
-            registry.get_with_role(&replica.id, Role::Replica).map(|a| a.id),
-            Ok(replica.id)
+            registry.get_with_role(&helper.id, Role::Helper).map(|a| a.id),
+            Ok(helper.id)
         );
     }
 
@@ -264,11 +258,11 @@ mod tests {
     // a target for the pool rather than an order to create seven more.
 
     fn participants(registry: &ActorRegistry) -> usize {
-        registry.all().iter().filter(|a| a.role == Role::Participant).count()
+        registry.all().iter().filter(|a| a.role == Role::Helper).count()
     }
 
     fn ensure(registry: &ActorRegistry, desired: usize) -> EnsuredParticipants {
-        registry.ensure_participants(desired, |i| actor(Role::Participant, &format!("p{i}")))
+        registry.ensure_participants(desired, |i| actor(Role::Helper, &format!("p{i}")))
     }
 
     #[test]
@@ -323,19 +317,18 @@ mod tests {
     }
 
     #[test]
-    fn owners_and_replicas_do_not_count_towards_the_pool() {
-        // Only `Role::Participant` is the shared helper pool. Counting owners
+    fn owners_do_not_count_towards_the_pool() {
+        // Only `Role::Helper` is the shared helper pool. Counting owners
         // would let two browser tabs suppress creation of real participants.
         let registry = ActorRegistry::default();
         registry.register(actor(Role::Owner, "Alice"));
         registry.register(actor(Role::Owner, "Bob"));
-        registry.register(actor(Role::Replica, "Alice's laptop"));
 
         let outcome = ensure(&registry, 3);
 
         assert_eq!(outcome.created.len(), 3);
         assert_eq!(outcome.participants.len(), 3);
-        assert_eq!(registry.all().len(), 6);
+        assert_eq!(registry.all().len(), 5);
     }
 
     #[test]
@@ -378,7 +371,7 @@ mod tests {
                 let registry = Arc::clone(&registry);
                 std::thread::spawn(move || {
                     registry.ensure_participants(7, |i| {
-                        actor(Role::Participant, &format!("t{t}-p{i}"))
+                        actor(Role::Helper, &format!("t{t}-p{i}"))
                     })
                 })
             })
@@ -404,7 +397,7 @@ mod tests {
                 let registry = Arc::clone(&registry);
                 std::thread::spawn(move || {
                     registry.ensure_participants(want, |i| {
-                        actor(Role::Participant, &format!("w{want}-p{i}"))
+                        actor(Role::Helper, &format!("w{want}-p{i}"))
                     })
                 })
             })
@@ -418,19 +411,19 @@ mod tests {
 
     #[test]
     fn a_role_lookup_distinguishes_wrong_role_from_missing() {
-        // The two map onto different status codes: naming a participant on a
-        // replica route is a caller error (400), naming nothing at all is 404.
+        // The two map onto different status codes: naming an owner on a
+        // helper route is a caller error (400), naming nothing at all is 404.
         let registry = ActorRegistry::default();
         let owner = actor(Role::Owner, "Alice");
         registry.register(owner.clone());
-        let stranger = actor(Role::Replica, "nobody");
+        let stranger = actor(Role::Helper, "nobody");
 
         assert_eq!(
-            registry.get_with_role(&owner.id, Role::Replica).err(),
+            registry.get_with_role(&owner.id, Role::Helper).err(),
             Some(RoleMismatch::WrongRole { actual: Role::Owner })
         );
         assert_eq!(
-            registry.get_with_role(&stranger.id, Role::Replica).err(),
+            registry.get_with_role(&stranger.id, Role::Helper).err(),
             Some(RoleMismatch::NotFound)
         );
     }

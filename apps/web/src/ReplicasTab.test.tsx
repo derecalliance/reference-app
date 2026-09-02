@@ -61,7 +61,6 @@ function view(overrides: Partial<ReplicaView> = {}): ReplicaView {
     lastSync: null,
     establishedAt: Date.now(),
     firstSyncStarted: false,
-    provisioned: false,
     direction: 'replica_source',
     peerReplicaId: null,
     helperActorId: null,
@@ -76,7 +75,7 @@ const BROWSER_REPLICA: ReplicaChannel = {
   peerRole: 'replica_destination',
 }
 
-const PROVISIONED_REPLICA: ReplicaChannel = {
+const HELPER_REPLICA: ReplicaChannel = {
   id: 'peer-5678',
   name: 'Hosted mirror',
   channelId: '5678',
@@ -85,7 +84,6 @@ const PROVISIONED_REPLICA: ReplicaChannel = {
 
 const BASE: ReplicasTabProps = {
   channels: [BROWSER_REPLICA],
-  awaitingPairing: [],
   viewByChannelId: new Map([['1234', view()]]),
   protocolTimeoutSecs: 300,
   syncingChannelId: null,
@@ -121,12 +119,12 @@ describe('what the Replicas tab lists', () => {
     expect(text()).toContain('Replica destination')
   })
 
-  it('lists both a browser-paired and a provisioned replica, each with its own role', () => {
+  it('lists both a browser-paired and a helper-backed replica, each with its own role', () => {
     render({
-      channels: [BROWSER_REPLICA, PROVISIONED_REPLICA],
+      channels: [BROWSER_REPLICA, HELPER_REPLICA],
       viewByChannelId: new Map([
         ['1234', view()],
-        ['5678', view({ id: 'hosted', name: 'Hosted mirror', channelId: '5678', provisioned: true })],
+        ['5678', view({ id: 'replica-channel:5678', name: 'Hosted mirror', channelId: '5678' })],
       ]),
     })
 
@@ -152,18 +150,8 @@ describe('what the Replicas tab lists', () => {
     expect(labels).toContain('Sync now')
   })
 
-  it('lists a provisioned replica that has never paired, so the tab is complete', () => {
-    render({
-      channels: [],
-      awaitingPairing: [view({ id: 'hosted', name: 'Spare laptop', channelId: null, provisioned: true })],
-    })
-
-    expect(text()).toContain('Spare laptop')
-    expect(text()).toContain('Not paired')
-  })
-
   it('says so plainly when there are no replicas at all', () => {
-    render({ channels: [], awaitingPairing: [], viewByChannelId: new Map() })
+    render({ channels: [], viewByChannelId: new Map() })
 
     expect(text()).toContain('No replicas yet')
   })

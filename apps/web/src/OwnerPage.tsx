@@ -33,7 +33,7 @@ import {
   type ContactModeKey,
 } from './contactModes'
 import { selectAutoPairTargets } from './autoPairSelection'
-import { type BEActorWithStatus, type ProvisionedChannel, type ProvisioningSettings, apiListParticipantChannels, apiLinkHelperChannels, apiAddHelper, apiCreateActorContact, apiGetActors, apiGetBrowserContact, apiPostBrowserContact, apiStartActorPairing, apiToggleParticipantStatus, apiToggleReplicaStatus, type ContactMessageDto } from './api'
+import { type BEActorWithStatus, type ProvisionedChannel, type ProvisioningSettings, apiListParticipantChannels, apiLinkHelperChannels, apiAddHelper, apiCreateActorContact, apiGetActors, apiGetBrowserContact, apiPostBrowserContact, apiStartActorPairing, apiToggleParticipantStatus, type ContactMessageDto } from './api'
 import { complementRole, senderKindFor, type PairingRole } from './pairingRoles'
 import { canDrivePeerViaBackend } from './ownerPairing'
 import {
@@ -3494,7 +3494,6 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
   // ran a second poll of its own, which is what let the two disagree about a
   // row's status.
   const [replicaRows, setReplicaRows] = useState<ReplicaView[]>([])
-  const [replicaRowsLoaded, setReplicaRowsLoaded] = useState(false)
   /** Last roster read, kept so the projection can be recomputed without a request. */
   const rosterSnapshotRef = useRef<readonly BEActorWithStatus[] | null>(null)
   /**
@@ -3532,7 +3531,6 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
         if (cancelled) return
         rosterSnapshotRef.current = resp
         setReplicaRows(replicaViews(resp, loadReplicaState(owner.ownerId)))
-        setReplicaRowsLoaded(true)
       })
       // Silent: the poll below surfaces connectivity problems, and a failure
       // here only means the projection arrives on the next tick instead.
@@ -5639,7 +5637,7 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
         // backend's channel_id may belong to another owner's pairing. This
         // owner's pairing status is managed exclusively via PairingCompleted.
         for (const actor of actors) {
-          if (actor.role !== 'participant') continue
+          if (actor.role !== 'helper') continue
           if (updated.participants.some(h => h.id === actor.id)) continue
           changed = true
           updated = {
@@ -5681,18 +5679,17 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
         }
 
         // One projection, computed once and used by everything: the channel-list
-        // replica rows, the provisioned-replica section, the fingerprint modal,
-        // and the automatic first-sync trigger below.
+        // replica rows, the Replicas tab, the fingerprint modal, and the
+        // automatic first-sync trigger below.
         const views = replicaViews(actors, loadReplicaState(ownerId))
         rosterSnapshotRef.current = actors
         setReplicaRows(views)
-        setReplicaRowsLoaded(true)
 
         // Mirror to a replica destination the moment it becomes eligible.
         // Driven from this poll on purpose: the promotion to `paired` can
         // complete with nothing replica-shaped on screen (the peer confirms
         // last), and it keys off the status transition alone, so it holds for a
-        // provisioned replica and a second browser device alike. Only rows this
+        // helper peer and a second browser device alike. Only rows this
         // device is the `replica_source` of are ever due — see
         // `replicaSyncTargets`. The round itself is fired and forgotten — the
         // trigger owns its own in-flight guard and reports its own failures.
@@ -6703,32 +6700,13 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
     }
   }
 
-  async function handlePairReplica(replica: ReplicaView): Promise<void> {
-    await pairReplica({
-      protocol: replicaProtocol,
-      ownerId: owner.ownerId,
-      replicaId: replica.id,
-      replicaName: replica.name,
-      role: 'replica_source',
-    })
-    // The handshake completes over the mailbox poll; `PairingCompleted` is what
-    // raises the fingerprint modal, on this device and on the replica alike.
-  }
-
-  /** Legacy provisioned `replica` actors, from the side panel row. */
-  async function handleToggleReplicaOffline(replica: ReplicaView): Promise<void> {
-    await apiToggleReplicaStatus(replica.id, !replica.offline)
-    await refreshRosterSnapshot()
-  }
-
   /**
    * Suspend or resume delivery to a replica channel's peer, from its row.
    *
-   * The counterpart to the side panel's control, for the peers that replaced
-   * the actors it was built for: a helper paired in replica mode answers on
-   * `/helpers`, not `/replicas`. `helperActorId` is non-null only for such a
-   * peer, so the guard is a type narrowing rather than a real branch — the row
-   * offers no control at all otherwise.
+   * A helper paired in replica mode answers on `/helpers` like any other
+   * helper. `helperActorId` is non-null only for such a peer, so the guard is a
+   * type narrowing rather than a real branch — the row offers no control at all
+   * for a browser peer, which has no backend actor to suspend.
    */
   async function handleToggleReplicaPeerOffline(replica: ReplicaView): Promise<void> {
     const helperActorId = replica.helperActorId
@@ -6751,7 +6729,6 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
     const resp = await apiGetActors()
     rosterSnapshotRef.current = resp
     setReplicaRows(replicaViews(resp, loadReplicaState(owner.ownerId)))
-    setReplicaRowsLoaded(true)
   }
 
   /**
@@ -7378,7 +7355,6 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
   const replicaViewByChannelId = new Map(
     replicaRows.flatMap(view => (view.channelId === null ? [] : [[view.channelId, view] as const])),
   )
-  const provisionedReplicas = replicaRows.filter(view => view.provisioned)
 
   // The two channel lists, from one pass over the roster: participant channels
   // go to the Channels tab and replica channels to the Replicas tab, and a
@@ -7391,15 +7367,10 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
   const pairedChannels = splitPairedChannels(
     owner.participants.filter(p => !p.channelId || !unconfirmedChannelIds.has(p.channelId)),
   )
-  // Provisioned replicas that have never completed a handshake. A browser
-  // replica always has a channel, so this can only be a hosted one waiting to
-  // be paired from the side panel.
-  const replicasAwaitingPairing = replicaRows.filter(view => view.channelId === null)
 
   // The row the fingerprint modal is for. Resolved by channel because that is
-  // what both the auto-raise and the row's own prompt carry, and because a
-  // provisioned replica and a browser peer are keyed differently everywhere
-  // else.
+  // what both the auto-raise and the row's own prompt carry — and because the
+  // channel is the only thing a replica relationship is written down against.
   const fingerprintReplica =
     fingerprintChannelId === null ? null : replicaViewByChannelId.get(fingerprintChannelId) ?? null
 
@@ -7542,9 +7513,7 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
               aria-selected={activeTab === 'replicas'}
             >
               Replicas
-              <span className="tab-count">
-                {pairedChannels.replicas.length + replicasAwaitingPairing.length}
-              </span>
+              <span className="tab-count">{pairedChannels.replicas.length}</span>
             </button>
             <button
               role="tab"
@@ -7595,7 +7564,6 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
             {activeTab === 'replicas' && (
               <ReplicasTab
                 channels={pairedChannels.replicas}
-                awaitingPairing={replicasAwaitingPairing}
                 viewByChannelId={replicaViewByChannelId}
                 protocolTimeoutSecs={protocolTimeoutSecs}
                 syncingChannelId={syncingChannelId}
@@ -7639,14 +7607,7 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
             p => !p.browserManaged && !isReplicaChannel(p),
           )}
           replicaSection={
-            <OwnerReplicaSection
-              replicas={provisionedReplicas}
-              loaded={replicaRowsLoaded}
-              onAdd={handleAddReplica}
-              onPair={handlePairReplica}
-              onToggleOffline={handleToggleReplicaOffline}
-              onOpenFingerprint={setFingerprintChannelId}
-            />
+            <OwnerReplicaSection onAdd={handleAddReplica} />
           }
           listChannels={listParticipantChannels}
           linkChannels={linkParticipantChannels}

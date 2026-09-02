@@ -20,10 +20,8 @@ import {
 import { complementRole, senderKindFor, type ReplicaPairingRole } from './pairingRoles'
 import { pairingRoleLabel } from './pairingRoleOptions'
 import {
-  apiConfirmReplicaFingerprint,
   apiCreateActorContact,
   apiCreateReplicaContact,
-  apiGetReplicaFingerprint,
   type BEActorWithStatus,
 } from './api'
 import { dtoToContactMessage } from './contactDto'
@@ -300,9 +298,7 @@ export interface PairReplicaOptions {
   protocol: ReplicaProtocol
   /** This device's own owner actor id — the key its replica bookkeeping lives under. */
   ownerId: string
-  /** Backend actor id of the peer to pair with — a helper, or a legacy
-   *  provisioned replica actor. Which of the two it is decides where the
-   *  contact is minted from; see `ownerSecretId`. */
+  /** Backend actor id of the helper to pair with. */
   replicaId: string
   /** Display name, forwarded to the peer as communication info. */
   replicaName: string
@@ -312,15 +308,15 @@ export interface PairReplicaOptions {
    */
   role?: ReplicaPairingRole
   /**
-   * This owner's own `secret_id`, set when the peer is an ordinary helper.
+   * This owner's own `secret_id` — what makes the peer a replica of this vault.
    *
    * A helper's *own* instance is bound to the helper's own secret, so a contact
    * minted from it yields a helper relationship no matter what `sender_kind`
    * the handshake declares. Passing this mints from an instance bound to the
-   * mirrored vault instead, which is what makes the peer a replica of it.
+   * mirrored vault instead.
    *
-   * Omitted for a legacy provisioned `replica` actor, whose single instance is
-   * already bound to the owner's secret at provisioning time.
+   * Omitting it pairs the same actor as an ordinary helper, which is what makes
+   * this the one field separating the two.
    */
   ownerSecretId?: string
 }
@@ -396,42 +392,22 @@ export async function acceptFingerprintMatch(
   return protocol.verifyFingerprint(BigInt(channelId), formatFingerprint(ownCode))
 }
 
-// ── Peer-side operations (provisioned replicas) ──────────────────────────────
-//
-// A provisioned replica has no UI of its own, so this device drives both ends:
-// it reads the fixture's fingerprint over HTTP and posts its own back for the
-// fixture to verify.
-
-/** Read a provisioned replica's own fingerprint. */
-export async function fetchPeerFingerprint(replicaId: string): Promise<string> {
-  return apiGetReplicaFingerprint(replicaId)
-}
-
-/** Have a provisioned replica verify our fingerprint. `false` on mismatch. */
-export async function confirmPeerFingerprint(
-  replicaId: string,
-  channelId: string,
-  ownCode: string,
-): Promise<boolean> {
-  return apiConfirmReplicaFingerprint(replicaId, channelId, formatFingerprint(ownCode))
-}
-
 // ── Local replica state ──────────────────────────────────────────────────────
 //
-// Two things the actor roster cannot tell us have to be remembered locally:
+// The actor roster cannot tell us any of this, so it is remembered locally:
 //
 //  1. Which side has confirmed. `record.local` is set the moment this device
-//     verifies the peer's fingerprint — before the backend's own
-//     `replica_confirmed` flag can possibly have caught up.
+//     verifies the peer's fingerprint. The peer's own confirmation happens on
+//     its own protocol instance and is never reported back, so nothing else
+//     records it either.
 //  2. The long-term channel id, learned from this device's own
-//     `PairingCompleted` event as soon as the handshake completes here — ahead
-//     of the backend's `replica_channels`, which only updates once its own
-//     protocol instance for the replica observes the same completion.
-//  3. The replica channels themselves. A browser replica is an ordinary owner
-//     actor — the relationship lives on the *channel*, established by the role
-//     each side declared at pairing time — so the actor roster has nothing to
-//     project a row from. `channels` is the only record that such a pairing
-//     happened, and the only place the direction is written down.
+//     `PairingCompleted` event as soon as the handshake completes here.
+//  3. The replica channels themselves. Nothing on the roster marks a replica:
+//     the peer is an ordinary helper (or, for another browser device, an
+//     ordinary owner) and the relationship lives on the *channel*, established
+//     by the role each side declared at pairing time. `channels` is the only
+//     record that such a pairing happened, and the only place the direction is
+//     written down.
 //
 // Sharing the `derec:` prefix keeps all of it inside the app's storage sweep.
 
@@ -440,8 +416,8 @@ const REPLICA_STATE_KEY_PREFIX = 'derec:replica-state:'
 /**
  * Whether a replica's peer has confirmed the shared fingerprint.
  *
- * `protocol-verified` is set only once the peer's own protocol instance has
- * verified this device's code — see `confirmPeerFingerprint`.
+ * `protocol-verified` means the peer's own protocol instance has verified this
+ * device's code.
  *
  * **Not** a gate on this device's own status: the peer's verify promotes the
  * peer's channel record, and this device's promotion is settled by its own
@@ -452,10 +428,12 @@ const REPLICA_STATE_KEY_PREFIX = 'derec:replica-state:'
  * whole reason an explicit sync action exists; see
  * [`ManualReplicaSyncOutcome`].
  *
- * Only ever observable for a *provisioned* replica, whose confirmation this
- * device drives over HTTP. A browser peer confirms on its own screen against
- * its own protocol instance, and stays `'none'` here because this device has no
- * way to see it.
+ * **Nothing reports it today**, so in practice every row reads `'none'`. Every
+ * peer now confirms on its own protocol instance — a helper auto-confirms
+ * server-side, another browser device confirms on its own screen — and neither
+ * outcome travels back to this device. The value is kept because the question
+ * is a real one and the answer would change what the source may assume; it is
+ * an observation this app cannot currently make, not a state that cannot exist.
  */
 export type PeerConfirmation = 'none' | 'protocol-verified'
 
@@ -479,11 +457,9 @@ export interface ReplicaRecord {
 /**
  * A replica channel this device took part in establishing.
  *
- * Recorded from `PairingCompleted` for **every** replica pairing, provisioned or
- * browser-to-browser. For a provisioned replica it is redundant with the roster
- * (which is why `replicaViews` de-duplicates on `channelId`); for a browser peer
- * it is the only evidence the channel exists, because that peer joined the
- * registered as an ordinary owner actor.
+ * Recorded from `PairingCompleted` for **every** replica pairing, whether the
+ * peer is a helper or another browser device. It is the only evidence such a
+ * channel exists: neither peer is marked as a replica on the roster.
  */
 export interface ReplicaChannelRecord {
   /** Long-term channel id — the key of this record. */
@@ -537,27 +513,30 @@ export interface ReplicaSyncRecord {
 }
 
 export interface ReplicaState {
-  /** Keyed by replica actor id. */
+  /**
+   * Keyed by row id — see [`replicaChannelRowId`] — or, for the pairing this
+   * device dispatched, by the peer's backend actor id, which is what
+   * `resolveReplicaPairing` writes.
+   */
   replicas: Record<string, ReplicaRecord>
   /**
-   * Transient pairing channel id → replica actor id, recorded when a pairing is
-   * dispatched and consumed when it completes. The handshake rotates to a
-   * long-term id, so this is the only thing that ties the completion event back
-   * to the replica it belongs to.
+   * Transient pairing channel id → the peer's backend actor id, recorded when a
+   * pairing is dispatched and consumed when it completes. The handshake rotates
+   * to a long-term id, so this is the only thing that ties the completion event
+   * back to the peer it belongs to.
    */
   pendingPairings: Record<string, string>
   /**
    * Long-term channel id → the replica channel established under it.
    *
-   * Keyed by channel because that is what a replica pairing *is* under the
-   * corrected model: there is no replica actor to key on when the peer is
-   * another browser.
+   * Keyed by channel because that is what a replica pairing *is*: a mode, not a
+   * kind of actor, so there is no replica actor to key on.
    */
   channels: Record<string, ReplicaChannelRecord>
   /**
    * Long-term channel id → last acknowledged sync.
    *
-   * Keyed by *channel*, not by replica actor id, because that is the only
+   * Keyed by *channel*, not by the peer's actor id, because that is the only
    * identifier a `ReplicaSecretAcked` carries that this device can resolve.
    * `from_replica_id` is the peer's protocol-level replica id, which is not the
    * backend actor id the roster is keyed by, and when the destination is a
@@ -1370,10 +1349,11 @@ export function canRequestReplicaSync(view: ReplicaView): boolean {
  *    so the newly-confirmed peer is already served without a follow-up round.
  *
  * So the automatic path waits for positive evidence that the peer will accept.
- * That is only ever available for a provisioned replica, whose confirmation
- * this device drives over HTTP. A browser peer stays `'none'` and is mirrored
- * by the user pressing "Sync now" once both screens are confirmed —
- * `canRequestReplicaSync` deliberately does not consult this.
+ * No peer reports that today — see [`PeerConfirmation`] — so this list is
+ * currently always empty and every mirror is dispatched by the user pressing
+ * "Sync now", or by the library's own publish when this device's verify
+ * promotes the channel. `canRequestReplicaSync` deliberately does not consult
+ * this, which is what keeps the manual path available regardless.
  */
 export function replicasAwaitingFirstSync(views: readonly ReplicaView[]): ReplicaSyncTarget[] {
   return replicaSyncTargets(
@@ -1610,15 +1590,6 @@ export interface ReplicaView {
    */
   firstSyncStarted: boolean
   /**
-   * Backed by a `Role::Replica` actor on the roster.
-   *
-   * `false` for a browser peer, which joined as an ordinary owner actor. The
-   * distinction is operational, not cosmetic: the backend replica endpoints
-   * (fingerprint read/confirm, take offline) exist only for a provisioned
-   * replica and reject anything else, so only a `provisioned` row may call them.
-   */
-  provisioned: boolean
-  /**
    * Which side of the mirror **this** device is on for this channel.
    *
    * `replica_source` mirrors its vault to the peer; `replica_destination` is
@@ -1635,16 +1606,15 @@ export interface ReplicaView {
    * The peer's provisioned *helper* actor id, or `null` when there is none to
    * name.
    *
-   * `null` for a browser peer, which has no backend actor at all, and for a
-   * legacy `replica` actor, whose controls live in the side panel and answer on
-   * `/replicas` rather than `/helpers`. So a non-null value means exactly one
-   * thing: this row's peer is a helper the `/helpers` endpoints will accept.
+   * `null` for a browser peer, which has no backend actor at all. So a non-null
+   * value means exactly one thing: this row's peer is a helper the `/helpers`
+   * endpoints will accept.
    */
   helperActorId: string | null
 }
 
 /**
- * Row id for a replica channel that has no provisioned actor to be keyed by.
+ * Row id for a replica channel.
  *
  * Prefixed so it can never collide with a backend actor id, and derived from the
  * channel so it is stable across reloads — `recordConfirmation` and
@@ -1669,11 +1639,10 @@ function defaultPeerLabel(localRole: ReplicaPairingRole): string {
  * — and that is the only link back to it: nothing on the wire and nothing on
  * the channel record names the peer's actor.
  *
- * Restricted to `participant` actors on purpose. The one thing a caller can do
- * with this is drive the `/helpers` endpoints, which reject anything else, so
- * returning a legacy `replica` actor here would hand out an id that 400s.
- * Confirmation records keyed by row id rather than actor id cannot collide:
- * they carry no `channelId`, and no roster actor answers to a row id anyway.
+ * Restricted to `helper` actors on purpose. The one thing a caller can do with
+ * this is drive the `/helpers` endpoints, which reject anything else, so
+ * returning an `owner` actor — what another browser device mirroring this vault
+ * registers as — would hand out an id that 400s.
  */
 function helperActorForChannel(
   actors: readonly RosterActor[],
@@ -1685,7 +1654,7 @@ function helperActorForChannel(
   )?.[0]
   if (peerActorId === undefined) return null
 
-  return actors.find(a => a.id === peerActorId && a.role === 'participant') ?? null
+  return actors.find(a => a.id === peerActorId && a.role === 'helper') ?? null
 }
 
 /** Project one locally-recorded replica channel into a row. */
@@ -1714,7 +1683,6 @@ function localChannelView(
     lastSync: state.syncs[channel.channelId] ?? null,
     establishedAt: channel.establishedAt ?? null,
     firstSyncStarted: record.firstSyncStarted === true,
-    provisioned: false,
     direction: channel.role,
     peerReplicaId: channel.peerReplicaId ?? null,
     helperActorId: helper?.id ?? null,
@@ -1722,83 +1690,20 @@ function localChannelView(
 }
 
 /**
- * Project the actor roster and this device's own channel records into replica
- * rows.
+ * Project this device's own channel records into replica rows.
  *
- * There are **two** row sources, because there are two kinds of replica:
+ * Every row comes from a channel this device recorded at pairing time, because
+ * that is the only place the relationship is written down. Nothing on the
+ * roster marks a replica: a helper paired in replica mode is an ordinary helper
+ * there, and another browser device mirroring this vault is an ordinary owner.
+ * A replica is a pairing *mode*, so what it produces is a channel.
  *
- * - A *provisioned* replica is a legacy `Role::Replica` actor on the roster.
- * - Everything else is a channel this device recorded at pairing time: a helper
- *   paired in replica mode, or another browser that joined as an ordinary owner
- *   actor. Neither is distinguishable *as a replica* on the roster — the first
- *   is an ordinary helper there and the second an ordinary owner — so their
- *   rows can only come from the channel record
- *   this device wrote at pairing time.
- *
- * Every locally-recorded channel that no provisioned row already accounts for
- * gets a row. De-duplication is on `channelId`: a provisioned replica writes a
- * channel record too (the fold that writes them does not, and should not, know
- * what kind of peer it paired with), so keying the merge on anything else would
- * show it twice.
- *
- * Within a provisioned row, two merges happen, both in the same direction — the
- * backend is authoritative once it has caught up, and local state fills the gap
- * until then:
- *
- * - `channel_id` comes from the backend's own protocol instance for the
- *   replica, which only learns it once that instance observes the same
- *   `PairingCompleted` this device already has. Until then, this falls back
- *   to what this device recorded locally.
- * - `replica_confirmed` is the *peer's* confirmation, reported once the
- *   backend has verified it. When set it outranks local bookkeeping. It informs
- *   `peerConfirmation` and nothing else — a peer's verify promotes the peer's
- *   channel, never this device's.
+ * `actors` is still consulted, but only to enrich a row: it is where a helper
+ * peer's `disabled` flag and its actor id come from, and neither is derivable
+ * from the channel record.
  */
 export function replicaViews(actors: readonly RosterActor[], state: ReplicaState): ReplicaView[] {
-  const provisioned = actors
-    .filter(a => a.role === 'replica')
-    .map((a): ReplicaView => {
-      const record = state.replicas[a.id] ?? EMPTY_RECORD
-      const channelId = a.channel_id ?? record.channelId ?? null
-      const peerConfirmation: PeerConfirmation =
-        a.replica_confirmed === true ? 'protocol-verified' : record.peer
-
-      return {
-        id: a.id,
-        name: a.name,
-        channelId,
-        status: nextReplicaStatus(channelId ? 'pending' : 'unpaired', {
-          localConfirmed: record.local,
-        }),
-        offline: a.disabled === true,
-        peerConfirmation,
-        lastSync: channelId ? state.syncs[channelId] ?? null : null,
-        // Only ever this device's own stamp: the backend reports neither the
-        // channel's creation time nor the replica's, so a provisioned row whose
-        // handshake completed in another tab has no deadline to show.
-        establishedAt: (channelId ? state.channels[channelId]?.establishedAt : undefined) ?? null,
-        firstSyncStarted: record.firstSyncStarted === true,
-        provisioned: true,
-        // A provisioned replica is only ever paired from the panel's own Pair
-        // action, which declares `replica_source`; the recorded channel says so
-        // outright once the handshake has completed here.
-        direction: (channelId ? state.channels[channelId]?.role : undefined) ?? 'replica_source',
-        peerReplicaId: (channelId ? state.channels[channelId]?.peerReplicaId : undefined) ?? null,
-        // A `replica` actor is not a helper: its status is toggled through
-        // `/replicas`, from the side panel row this projection feeds.
-        helperActorId: null,
-      }
-    })
-
-  const alreadyShown = new Set(
-    provisioned.flatMap(view => (view.channelId === null ? [] : [view.channelId])),
+  return Object.values(state.channels).map(channel =>
+    localChannelView(channel, state, helperActorForChannel(actors, state, channel.channelId)),
   )
-
-  const local = Object.values(state.channels)
-    .filter(channel => !alreadyShown.has(channel.channelId))
-    .map(channel =>
-      localChannelView(channel, state, helperActorForChannel(actors, state, channel.channelId)),
-    )
-
-  return [...provisioned, ...local]
 }

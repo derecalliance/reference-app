@@ -350,8 +350,13 @@ impl ProvisionedActor {
                         .cloned()
                         .unwrap_or_default();
 
+                    // One index for both pairing modes. A helper paired in
+                    // replica mode is still this same actor — what separates
+                    // the two is the *instance* the channel lives in, not the
+                    // kind of actor holding it — so there is nothing left for a
+                    // second map to distinguish.
                     match self.role {
-                        Role::Participant => {
+                        Role::Helper => {
                             self.state
                                 .helper_channels
                                 .entry(self.actor_id)
@@ -369,7 +374,8 @@ impl ProvisionedActor {
                                 channel_id = channel_id.0,
                                 pairing_channel_id = pairing_channel_id.0,
                                 peer_name = %peer_name,
-                                "participant pairing complete — channel recorded"
+                                secret_id = secret_id,
+                                "helper pairing complete — channel recorded"
                             );
 
                             // Helpers are unattended bots: there is no operator
@@ -383,19 +389,6 @@ impl ProvisionedActor {
                                 channel_id: channel_id.0,
                                 attempts_left: AUTO_CONFIRM_ATTEMPTS,
                             });
-                        }
-                        Role::Replica => {
-                            self.state
-                                .replica_channels
-                                .entry(self.actor_id)
-                                .or_default()
-                                .push(cid);
-                            info!(
-                                actor_id = %self.actor_id,
-                                channel_id = channel_id.0,
-                                pairing_channel_id = pairing_channel_id.0,
-                                "replica pairing complete — channel recorded"
-                            );
                         }
                         Role::Owner => {}
                     }
@@ -479,9 +472,6 @@ impl ProvisionedActor {
                     {
                         entry.retain(|c| c != &cid);
                     }
-                    if let Some(mut entry) = self.state.replica_channels.get_mut(&self.actor_id) {
-                        entry.retain(|c| c != &cid);
-                    }
                     info!(
                         actor_id = %self.actor_id,
                         channel_id = channel_id.0,
@@ -537,7 +527,7 @@ impl Handler<TickMsg> for ProvisionedActor {
 
         // Only helpers confirm their own fingerprints, so only they need the
         // backstop below. Captured here because the async block has no `self`.
-        let auto_confirms = self.role == Role::Participant;
+        let auto_confirms = self.role == Role::Helper;
 
         Box::pin(
             async move {

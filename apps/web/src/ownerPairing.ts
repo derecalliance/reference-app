@@ -270,10 +270,10 @@ export function applyPairingCompleted(
               name: replicaName,
               channelId,
               // Deliberately not resolved against the backend roster the way a
-              // participant row is. A browser replica is an ordinary owner actor
-              // that is indistinguishable from any other, and a provisioned one
-              // is a `Role::Replica` actor the participant resolver does not
-              // model — either way the lookup could only relabel this row with
+              // participant row is. Nothing on the roster marks a replica: a
+              // browser one is an ordinary owner actor indistinguishable from
+              // any other, and a helper paired in replica mode is an ordinary
+              // helper — so the lookup could only relabel this row with
               // somebody else's identity.
               transport: { protocol: 'https' as const, uri: '' },
               connectionStatus: 'paired' as const,

@@ -1,59 +1,34 @@
 import { useState } from 'react'
-import { pairingRoleLabel } from './pairingRoleOptions'
-import type { ReplicaView } from './replicaFlows'
 
 /**
- * Provisioned replica actors, in the owner page's side panel.
+ * The "add a replica" affordance, in the owner page's side panel.
  *
- * Sits directly below the provisioned helpers and is deliberately built from
- * the same classes and the same affordances — add, expand, status, take offline
- * — because it was the same kind of thing: a backend-hosted actor this owner
- * has.
+ * Sits directly below the provisioned helpers because that is where a user
+ * looks for "another thing that holds my vault", and it is deliberately built
+ * from the same classes so the two read as one panel.
  *
- * **The list is now legacy and the action is not.** A replica is a pairing
- * mode, not a kind of actor: "+ Add" pairs a helper in replica mode, and the
- * result is a channel, so it surfaces on the Replicas tab like every other
- * replica channel. Only replica *actors* from the superseded `/replicas`
- * provisioning path appear in the list below, which is why a fresh owner sees
- * an empty one. When that path goes, so do the list, the row and its actions —
- * the header and its button are what outlive them.
- *
- * A browser replica has no entry here either, and for the same reason: it is
- * another of the user's own devices joining as an ordinary owner actor, and its
- * channel is listed on the Replicas tab.
+ * **There is no list here, and that is the point.** A replica is a pairing
+ * mode, not a kind of actor: "+ Add" pairs a helper in replica mode, and what
+ * that produces is a *channel*, which the Replicas tab lists alongside every
+ * other replica channel — including one to another browser device, which joins
+ * as an ordinary owner actor. Nothing on the roster marks either as a replica,
+ * so there is nothing for a side-panel list to be built from.
  */
 
 export interface OwnerReplicaSectionProps {
-  /** Provisioned replica rows, already filtered by the page. */
-  replicas: ReplicaView[]
-  /** `null` until the first roster poll lands — distinguishes "loading" from "none". */
-  loaded: boolean
+  /** Provision a helper under this name and pair it as a replica of this vault. */
   onAdd: (name: string) => Promise<void>
-  /** Start a `replica_source` handshake against this replica. */
-  onPair: (replica: ReplicaView) => Promise<void>
-  onToggleOffline: (replica: ReplicaView) => Promise<void>
-  /** Open the fingerprint comparison for this replica's channel. */
-  onOpenFingerprint: (channelId: string) => void
 }
 
-export function OwnerReplicaSection({
-  replicas,
-  loaded,
-  onAdd,
-  onPair,
-  onToggleOffline,
-  onOpenFingerprint,
-}: OwnerReplicaSectionProps) {
+export function OwnerReplicaSection({ onAdd }: OwnerReplicaSectionProps) {
   const [addOpen, setAddOpen] = useState(false)
 
   return (
     <div className="side-panel-section">
       <div className="panel-header-row">
         <div>
-          <h3 className="panel-heading">Provisioned replicas</h3>
-          <p className="panel-subtitle">
-            {loaded ? `${replicas.length} provisioned` : 'Loading…'}
-          </p>
+          <h3 className="panel-heading">Replicas</h3>
+          <p className="panel-subtitle">Mirror this vault onto another device</p>
         </div>
         <button
           className="secondary small"
@@ -64,24 +39,10 @@ export function OwnerReplicaSection({
         </button>
       </div>
 
-      {loaded && replicas.length === 0 ? (
-        <p className="panel-subtitle">
-          None here. “+ Add” pairs a helper as a replica of this vault — it appears on
-          the Replicas tab, not in this list.
-        </p>
-      ) : (
-        <ul className="side-participant-list" role="list">
-          {replicas.map(replica => (
-            <SideReplicaItem
-              key={replica.id}
-              replica={replica}
-              onPair={() => onPair(replica)}
-              onToggleOffline={() => onToggleOffline(replica)}
-              onOpenFingerprint={onOpenFingerprint}
-            />
-          ))}
-        </ul>
-      )}
+      <p className="panel-subtitle">
+        “+ Add” pairs a helper as a replica of this vault. It appears on the Replicas
+        tab, with every other replica channel.
+      </p>
 
       {addOpen && (
         <AddReplicaModal
@@ -93,125 +54,6 @@ export function OwnerReplicaSection({
         />
       )}
     </div>
-  )
-}
-
-/** The status word for a provisioned replica row. */
-function statusLabel(replica: ReplicaView): { text: string; className: string } {
-  switch (replica.status) {
-    case 'unpaired':
-      return { text: 'Not paired', className: 'available' }
-    case 'pending':
-      return { text: 'Pending', className: 'available' }
-    case 'paired':
-      return { text: 'Paired', className: 'paired' }
-  }
-}
-
-function SideReplicaItem({
-  replica,
-  onPair,
-  onToggleOffline,
-  onOpenFingerprint,
-}: {
-  replica: ReplicaView
-  onPair: () => Promise<void>
-  onToggleOffline: () => Promise<void>
-  onOpenFingerprint: (channelId: string) => void
-}) {
-  const [expanded, setExpanded] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const status = statusLabel(replica)
-  const { channelId } = replica
-
-  async function run(action: () => Promise<void>) {
-    setBusy(true)
-    setError(null)
-    try {
-      await action()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'The action could not be completed.')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <li className="side-participant-item">
-      <button
-        className="side-participant-header"
-        onClick={() => setExpanded(v => !v)}
-        aria-expanded={expanded}
-      >
-        <span
-          className={`participant-dot ${
-            replica.offline ? 'offline' : replica.status === 'paired' ? 'paired' : 'available'
-          }`}
-          aria-hidden="true"
-        />
-        <span className="side-participant-name">{replica.name}</span>
-        {replica.offline ? (
-          <span className="status-tag offline">Offline</span>
-        ) : (
-          <span className={`status-tag ${status.className}`}>{status.text}</span>
-        )}
-        <svg
-          width="12"
-          height="12"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className={`chevron-icon ${expanded ? 'expanded' : ''}`}
-          aria-hidden="true"
-        >
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
-      </button>
-
-      {expanded && (
-        <div className="side-participant-details">
-          <div className="side-detail-row">
-            <span className="side-detail-label">Channel ID</span>
-            <span className="side-detail-value" title={channelId ?? ''}>
-              {channelId ?? '—'}
-            </span>
-          </div>
-          <p className="side-replica-direction">
-            This device is the {pairingRoleLabel(replica.direction).toLowerCase()} on this
-            channel.
-          </p>
-          {error && <p className="field-error">{error}</p>}
-          <div className="side-participant-actions">
-            {replica.status === 'unpaired' ? (
-              <button
-                className="pair-action-btn pair"
-                disabled={busy}
-                onClick={() => void run(onPair)}
-              >
-                {busy ? 'Pairing…' : 'Pair'}
-              </button>
-            ) : (
-              channelId !== null && (
-                <button className="pair-action-btn" onClick={() => onOpenFingerprint(channelId)}>
-                  {replica.status === 'pending' ? 'Confirm fingerprint' : 'View fingerprint'}
-                </button>
-              )
-            )}
-            <button
-              className={`pair-action-btn ${replica.offline ? 'pair' : 'unpair'}`}
-              disabled={busy}
-              onClick={() => void run(onToggleOffline)}
-            >
-              {busy ? '…' : replica.offline ? 'Go Online' : 'Go Offline'}
-            </button>
-          </div>
-        </div>
-      )}
-    </li>
   )
 }
 

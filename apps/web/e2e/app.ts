@@ -328,17 +328,24 @@ export async function unpairParticipant(page: Page, index = 0): Promise<string> 
 // fixture is a `Destination`. Being unattended, they auto-confirm their own
 // fingerprint, so only this device compares.
 
-/** The replicas side-panel section, which is where "+ Add" lives. */
+/**
+ * The replicas side-panel section, which is where "+ Add" lives.
+ *
+ * Matched on its heading rather than on loose text: the section names the
+ * Replicas tab in its own body, and so may its sibling one day.
+ */
 function replicaSection(page: Page): Locator {
-  return page.locator('.side-panel-section').filter({ hasText: 'Provisioned replicas' })
+  return page
+    .locator('.side-panel-section')
+    .filter({ has: page.getByRole('heading', { name: 'Replicas', exact: true }) })
 }
 
 /**
  * A replica's channel row on the Replicas tab, by the name it was added under.
  *
  * The Replicas tab, not the side panel: a replica is a pairing mode rather than
- * a kind of actor, so what it produces is a channel. The side panel lists only
- * replica *actors* from the superseded provisioning path, and there are none.
+ * a kind of actor, so what it produces is a channel. The side panel holds the
+ * "+ Add" action and no list at all.
  *
  * Matched on the whole name because the backend is reused between runs and a
  * loose match would resolve to rows an earlier run left behind.
@@ -448,13 +455,7 @@ export async function addAndPairReplica(page: Page, name: string): Promise<void>
   await pairReplica(page, name)
 }
 
-/**
- * How many replica channel rows this owner has.
- *
- * Not the Replicas tab badge: that also counts provisioned replicas awaiting
- * pairing, and provisioned replicas are server-wide, so every fixture any other
- * owner ever created is in that number.
- */
+/** How many replica channel rows this owner has. */
 export async function replicaChannelCount(page: Page): Promise<number> {
   return page
     .locator('.replicas-tab-section')
