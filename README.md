@@ -58,9 +58,9 @@ Two constraints shape how these tests are written:
   plus a Web Lock, so a second owner — a replica device, the other side of a
   pairing — needs its own `BrowserContext`, not just another page.
   `newOwnerContext()` in `e2e/app.ts` is the helper for that.
-- **The backend is shared state.** One actor registry and one participant pool
+- **The backend is shared state.** One actor registry and one helper pool
   serve every test, so the suite runs single-worker and serially. A test should
-  treat the participant pool as something that may already exist.
+  treat the helper pool as something that may already exist.
 
 The specs cover the setup wizard, all three contact modes (including the
 `NoKeys` fingerprint gate and its refusal path), replica groups (pairing,
@@ -213,9 +213,12 @@ Exercised end to end and covered by `apps/web/e2e/replicas.spec.ts`: pairing
 behind the fingerprint gate, a three-member group, mirroring with per-member
 acknowledgement, sync check, and eviction.
 
-That coverage uses **provisioned** replicas — backend fixtures — rather than a
-second browser context, because one context can then drive both ends of the
-fingerprint comparison. The protocol path is identical, but the browser-to-
-browser variant is still only manually verified, and adoption (the destructive
-step above) has no automated coverage at all: it is gated on a human confirming
-a dialog that erases the device's vault.
+That coverage pairs the group's `Destination`s with **provisioned helpers** —
+backend fixtures — rather than a second browser context: a replica is a
+pairing mode, not a kind of actor, so a helper paired in replica mode follows
+the same protocol path an owner's second device would, and an unattended
+fixture auto-confirms its own fingerprint, leaving this device to compare only
+its own. The protocol path is identical, but the browser-to-browser variant is
+still only manually verified, and adoption (the destructive step above) has no
+automated coverage at all: it is gated on a human confirming a dialog that
+erases the device's vault.

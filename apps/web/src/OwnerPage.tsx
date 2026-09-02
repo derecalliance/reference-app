@@ -3488,11 +3488,12 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
 
   // ── Replica projection ─────────────────────────────────────────────────────
   //
-  // One projection, read by three surfaces: the replica rows in the channel
-  // list, the provisioned-replica section in the side panel, and the fingerprint
-  // modal. It is fed by the roster poll that already runs below — the old panel
-  // ran a second poll of its own, which is what let the two disagree about a
-  // row's status.
+  // One projection, read by two surfaces: the replica rows in the channel list
+  // and the fingerprint modal. The side panel's "Replicas" section holds no
+  // list of its own — it only offers "+ Add", which pairs a helper in replica
+  // mode — so it does not read this. Fed by the roster poll that already runs
+  // below — an earlier version of the side panel ran a second poll of its own,
+  // which is what let the two disagree about a row's status.
   const [replicaRows, setReplicaRows] = useState<ReplicaView[]>([])
   /** Last roster read, kept so the projection can be recomputed without a request. */
   const rosterSnapshotRef = useRef<readonly BEActorWithStatus[] | null>(null)

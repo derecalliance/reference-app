@@ -82,10 +82,16 @@ function messageOf(err: unknown, fallback: string): string {
 }
 
 /** What confirming this channel unlocks, from this device's side of the mirror. */
-function mirrorDirectionText(direction: ReplicaPairingRole): string {
-  return direction === 'replica_source'
-    ? 'this device will not mirror its vault to the replica until you confirm here, and the replica will not accept the copy until it confirms on its own screen.'
-    : 'the peer will not offer its vault to this device until you confirm here.'
+function mirrorDirectionText(direction: ReplicaPairingRole, peerIsHelper: boolean): string {
+  if (direction !== 'replica_source') {
+    return 'the peer will not offer its vault to this device until you confirm here.'
+  }
+  const base = 'this device will not mirror its vault to the replica until you confirm here'
+  // For a helper peer, what happens on its end is already covered above — it
+  // has no screen and nothing to wait on, so there is nothing further to add.
+  return peerIsHelper
+    ? `${base}.`
+    : `${base}, and the replica will not accept the copy until it confirms on its own screen.`
 }
 
 /** The code is the whole content of this dialog, so it is set like it. */
@@ -196,8 +202,10 @@ export function ReplicaFingerprintDialog({
       <DialogContent>
         <Stack spacing={2.5} sx={{ pt: 1 }}>
           <DialogContentText>
-            {`Check that ${replica.name} is showing this same code. Confirm only if the two are identical — `}
-            {mirrorDirectionText(replica.direction)}
+            {replica.helperActorId
+              ? `${replica.name} is a helper paired in replica mode: it derives and confirms this code automatically, with no screen on its end to check it against — `
+              : `Check that ${replica.name} is showing this same code. Confirm only if the two are identical — `}
+            {mirrorDirectionText(replica.direction, replica.helperActorId != null)}
           </DialogContentText>
 
           <ReplicaExpiryNotice expiry={expiry} variant="dialog" />
@@ -248,8 +256,10 @@ export function ReplicaFingerprintDialog({
                 // mirror on its own and the user has to press the button.
                 <>
                   Confirmed on this device. This device cannot see {replica.name}’s
-                  confirmation, so it will not mirror automatically — once they have
-                  confirmed, press “Sync now” on their row.
+                  confirmation, so it will not mirror automatically —{' '}
+                  {replica.helperActorId
+                    ? `${replica.name} confirms itself automatically as a helper, so press “Sync now” on their row to send the mirror.`
+                    : 'once they have confirmed, press “Sync now” on their row.'}
                 </>
               )}
             </Alert>

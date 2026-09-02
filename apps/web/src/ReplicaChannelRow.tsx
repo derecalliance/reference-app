@@ -70,8 +70,7 @@ export interface ReplicaChannelRowProps {
    * Whether this row can simulate its peer going offline.
    *
    * `false` unless the peer is a provisioned helper: a browser peer has no
-   * backend actor whose delivery could be suspended, and a legacy `replica`
-   * actor is toggled from the side panel instead.
+   * backend actor whose delivery could be suspended.
    */
   canToggleOffline: boolean
   /** Whether the peer is currently suspended. Meaningless unless `canToggleOffline`. */
@@ -252,7 +251,9 @@ export function ReplicaChannelRow({
             Confirmed on this device
             {view?.peerConfirmation === 'protocol-verified'
               ? ' and by the peer.'
-              : '. The peer confirms on its own screen, which this device cannot see.'}
+              : view?.helperActorId != null
+                ? '. The peer confirms itself automatically, as a helper — this device cannot observe it.'
+                : '. The peer confirms on its own screen, which this device cannot see.'}
           </span>
           <button className="channel-link-btn" onClick={onOpenFingerprint}>
             View fingerprint
