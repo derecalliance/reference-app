@@ -33,7 +33,7 @@ import {
   type ContactModeKey,
 } from './contactModes'
 import { selectAutoPairTargets } from './autoPairSelection'
-import { type BEActorWithStatus, type ProvisionedChannel, type ProvisioningSettings, apiAddReplica, apiListParticipantChannels, apiLinkParticipantChannels, apiAddParticipant, apiCreateActorContact, apiGetActors, apiGetBrowserContact, apiPostBrowserContact, apiStartActorPairing, apiToggleParticipantStatus, apiToggleReplicaStatus, type ContactMessageDto } from './api'
+import { type BEActorWithStatus, type ProvisionedChannel, type ProvisioningSettings, apiAddReplica, apiListParticipantChannels, apiLinkHelperChannels, apiAddHelper, apiCreateActorContact, apiGetActors, apiGetBrowserContact, apiPostBrowserContact, apiStartActorPairing, apiToggleParticipantStatus, apiToggleReplicaStatus, type ContactMessageDto } from './api'
 import { complementRole, senderKindFor, type PairingRole } from './pairingRoles'
 import { canDrivePeerViaBackend } from './ownerPairing'
 import {
@@ -5793,7 +5793,7 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
     channelId: string,
     linkTo: string,
   ): Promise<void> {
-    await apiLinkParticipantChannels(participantId, channelId, linkTo)
+    await apiLinkHelperChannels(participantId, channelId, linkTo)
     log({
       role: 'owner',
       flow: 'pairing',
@@ -6889,7 +6889,7 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
   }
 
   async function handleAddParticipant(name: string, autoPair: boolean) {
-    const resp = await apiAddParticipant(name, provisioningSettings)
+    const resp = await apiAddHelper(name, provisioningSettings)
     const newParticipant: PairedParticipant = {
       id: resp.id,
       name: resp.name,

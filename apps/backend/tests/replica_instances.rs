@@ -20,7 +20,7 @@ const CAROL_SECRET: u64 = 0xC3;
 fn config(secret_id: u64) -> ProtocolConfig {
     ProtocolConfig {
         secret_id,
-        transport_uri: "http://localhost:5000/derec/participants/test".to_owned(),
+        transport_uri: "http://localhost:5000/derec/helpers/test".to_owned(),
         communication_info: HashMap::from([("name".to_owned(), "Alex".to_owned())]),
         timeout_secs: 300,
         unpair_ack: UnpairAck::Required,

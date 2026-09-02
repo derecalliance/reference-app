@@ -140,24 +140,24 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/actors/{actor_id}/confirm-fingerprint",
             post(routes::actors::confirm_fingerprint),
         )
-        .route("/participants", post(routes::participants::add))
-        .route("/participants/ensure", post(routes::participants::ensure))
+        .route("/helpers", post(routes::helpers::add))
+        .route("/helpers/ensure", post(routes::helpers::ensure))
         .route(
-            "/participants/{participant_id}/toggle-status",
-            post(routes::participants::toggle_status),
+            "/helpers/{helper_id}/toggle-status",
+            post(routes::helpers::toggle_status),
         )
         .route(
-            "/participants/{participant_id}/channels",
-            get(routes::participants::list_channels),
+            "/helpers/{helper_id}/channels",
+            get(routes::helpers::list_channels),
         )
         .route(
-            "/participants/{participant_id}/link",
-            post(routes::participants::link_channels),
+            "/helpers/{helper_id}/link",
+            post(routes::helpers::link_channels),
         )
         .route(
-            "/participants/{participant_id}/browser-contact",
-            post(routes::participants::post_browser_contact)
-                .get(routes::participants::get_browser_contact),
+            "/helpers/{helper_id}/browser-contact",
+            post(routes::helpers::post_browser_contact)
+                .get(routes::helpers::get_browser_contact),
         )
         .route("/replicas", post(routes::replicas::add))
         .route(

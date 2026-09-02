@@ -251,16 +251,16 @@ export interface AddParticipantResponse {
 }
 
 export interface EnsureParticipantsResult {
-  /** The whole pool, including participants other owners provisioned. */
-  participants: AddParticipantResponse[]
+  /** The whole pool, including helpers other owners provisioned. */
+  helpers: AddParticipantResponse[]
   /** How many of them this call had to create. */
   created: number
 }
 
 /**
- * Bring the shared participant pool up to `total`.
+ * Bring the shared helper pool up to `total`.
  *
- * Provisioned participants belong to the server, not to the owner who asked for
+ * Provisioned helpers belong to the server, not to the owner who asked for
  * them — everyone pairs with the same fixtures. So this states how many should
  * exist, not how many to add: asking for 7 when 7 exist creates none, asking
  * for 9 creates 2, and asking for fewer than exist removes nothing.
@@ -269,33 +269,33 @@ export interface EnsureParticipantsResult {
  * know that count in advance (it depends on what other owners have already
  * provisioned), so it offers a full set and the server takes what it needs.
  */
-export async function apiEnsureParticipants(
+export async function apiEnsureHelpers(
   total: number,
   names: string[],
   settings: ProvisioningSettings,
 ): Promise<EnsureParticipantsResult> {
-  const res = await request(`/participants/ensure`, {
+  const res = await request(`/helpers/ensure`, {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ total, names, ...settingsBody(settings) }),
   })
   if (!res.ok) {
-    throw new Error(await errorMessage(res, `ensure participants failed: ${res.status}`))
+    throw new Error(await errorMessage(res, `ensure helpers failed: ${res.status}`))
   }
   return res.json() as Promise<EnsureParticipantsResult>
 }
 
-export async function apiAddParticipant(
+export async function apiAddHelper(
   name: string,
   settings: ProvisioningSettings,
 ): Promise<AddParticipantResponse> {
-  const res = await request(`/participants`, {
+  const res = await request(`/helpers`, {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ name, ...settingsBody(settings) }),
   })
   if (!res.ok) {
-    throw new Error(await errorMessage(res, `add-participant failed: ${res.status}`))
+    throw new Error(await errorMessage(res, `add-helper failed: ${res.status}`))
   }
   return res.json() as Promise<AddParticipantResponse>
 }
@@ -305,7 +305,7 @@ export async function apiToggleParticipantStatus(
   disabled?: boolean,
 ): Promise<{ disabled: boolean }> {
   const res = await request(
-    `/participants/${encodeURIComponent(participantId)}/toggle-status`,
+    `/helpers/${encodeURIComponent(participantId)}/toggle-status`,
     {
       method: 'POST',
       ...(disabled !== undefined && {
@@ -326,7 +326,7 @@ export async function apiPostBrowserContact(
   contactJson: string,
 ): Promise<void> {
   const res = await request(
-    `/participants/${encodeURIComponent(participantId)}/browser-contact`,
+    `/helpers/${encodeURIComponent(participantId)}/browser-contact`,
     {
       method: 'POST',
       headers: JSON_HEADERS,
@@ -343,7 +343,7 @@ export async function apiGetBrowserContact(
   participantId: string,
 ): Promise<ContactMessageDto | null> {
   const res = await request(
-    `/participants/${encodeURIComponent(participantId)}/browser-contact`,
+    `/helpers/${encodeURIComponent(participantId)}/browser-contact`,
   )
   if (res.status === 404) return null
   if (!res.ok) {
@@ -375,7 +375,7 @@ export async function apiListParticipantChannels(
   participantId: string,
 ): Promise<ProvisionedChannel[]> {
   const res = await request(
-    `/participants/${encodeURIComponent(participantId)}/channels`,
+    `/helpers/${encodeURIComponent(participantId)}/channels`,
   )
   if (!res.ok) {
     throw new Error(await errorMessage(res, `list channels failed: ${res.status}`))
@@ -386,12 +386,12 @@ export async function apiListParticipantChannels(
 
 /** Link `channelId` to `linkToChannelId` on the provisioned helper, declaring
  *  that both belong to the same owner. Undirected and idempotent. */
-export async function apiLinkParticipantChannels(
-  participantId: string,
+export async function apiLinkHelperChannels(
+  helperId: string,
   channelId: string,
   linkToChannelId: string,
 ): Promise<void> {
-  const res = await request(`/participants/${encodeURIComponent(participantId)}/link`, {
+  const res = await request(`/helpers/${encodeURIComponent(helperId)}/link`, {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ channel_id: channelId, link_to_channel_id: linkToChannelId }),

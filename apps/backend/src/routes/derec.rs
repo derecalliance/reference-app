@@ -51,7 +51,7 @@ pub async fn deliver_message(
             .into_response();
     }
 
-    if state.disabled_participants.contains_key(&actor_id)
+    if state.disabled_helpers.contains_key(&actor_id)
         || state.disabled_replicas.contains_key(&actor_id)
     {
         info!(

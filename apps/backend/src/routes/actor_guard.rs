@@ -1,6 +1,6 @@
 //! Resolving the `{actor_id}` path segment shared by most routes.
 //!
-//! `AppState::actor_inboxes`, `disabled_participants`, `participant_channels`
+//! `AppState::actor_inboxes`, `disabled_helpers`, `helper_channels`
 //! and friends are all keyed by actor UUID, and several of them are written by
 //! routes that mean something quite specific by the entry: `disabled_replicas`
 //! is consulted by `deliver_message` for *every* actor, so writing an owner's id

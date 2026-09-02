@@ -3,6 +3,6 @@ pub mod actors;
 pub mod config;
 pub mod derec;
 pub mod health;
+pub mod helpers;
 pub mod owners;
-pub mod participants;
 pub mod replicas;

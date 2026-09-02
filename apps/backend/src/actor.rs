@@ -294,7 +294,7 @@ impl ProvisionedActor {
                     match self.role {
                         Role::Participant => {
                             self.state
-                                .participant_channels
+                                .helper_channels
                                 .entry(self.actor_id)
                                 .or_default()
                                 .push(cid);
@@ -404,7 +404,7 @@ impl ProvisionedActor {
                     // Drop the channel from the per-actor index so the roster
                     // enrichment stops reporting this actor as paired on a
                     // channel that no longer exists.
-                    if let Some(mut entry) = self.state.participant_channels.get_mut(&self.actor_id)
+                    if let Some(mut entry) = self.state.helper_channels.get_mut(&self.actor_id)
                     {
                         entry.retain(|c| c != &cid);
                     }
@@ -1072,7 +1072,7 @@ mod tests {
     fn config() -> ProtocolConfig {
         ProtocolConfig {
             secret_id: SECRET_ID,
-            transport_uri: "http://localhost:5000/derec/participants/test".to_owned(),
+            transport_uri: "http://localhost:5000/derec/helpers/test".to_owned(),
             communication_info: HashMap::from([("name".to_owned(), "Alex".to_owned())]),
             timeout_secs: 300,
             unpair_ack: UnpairAck::Required,

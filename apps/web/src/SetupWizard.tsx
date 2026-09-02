@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import './SetupWizard.css'
 import type { Owner, PairedParticipant } from './types'
 import {
-  apiEnsureParticipants,
+  apiEnsureHelpers,
   apiGetActors,
   apiGetServerDefaults,
   apiRegisterOwner,
@@ -918,7 +918,7 @@ export default function SetupWizard({ onReady }: Props) {
         { length: data.participantCount },
         () => `${faker.person.firstName()} ${faker.person.lastName()}`,
       )
-      const { participants: provisioned, created } = await apiEnsureParticipants(
+      const { helpers: provisioned, created } = await apiEnsureHelpers(
         data.participantCount,
         candidateNames,
         settings,

@@ -165,30 +165,30 @@ pub struct RegisterOwnerResponse {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct AddParticipantRequest {
-    /// Display name for the new participant.
+pub struct AddHelperRequest {
+    /// Display name for the new helper.
     pub name: String,
     #[serde(flatten)]
     pub settings: ProtocolSettingsRequest,
 }
 
 #[derive(Debug, Serialize)]
-pub struct AddParticipantResponse {
+pub struct AddHelperResponse {
     #[serde(flatten)]
     pub actor: Actor,
 }
 
-/// Bring the shared participant pool up to a size.
+/// Bring the shared helper pool up to a size.
 ///
-/// Provisioned participants belong to the server rather than to whoever asked
+/// Provisioned helpers belong to the server rather than to whoever asked
 /// for them, so this states a target, not a quantity to add. Asking for fewer
-/// than exist is a no-op: another owner may be paired with a participant this
+/// than exist is a no-op: another owner may be paired with a helper this
 /// caller does not want.
 #[derive(Debug, Deserialize)]
-pub struct EnsureParticipantsRequest {
-    /// How many participants should exist once this call returns.
+pub struct EnsureHelpersRequest {
+    /// How many helpers should exist once this call returns.
     pub total: u8,
-    /// Display names offered for any participants that need creating, taken in
+    /// Display names offered for any helpers that need creating, taken in
     /// order from the first one created. The caller cannot know in advance how
     /// many that will be — that depends on what other owners have already
     /// provisioned — so it sends candidates and the server uses what it needs.
@@ -200,9 +200,9 @@ pub struct EnsureParticipantsRequest {
 }
 
 #[derive(Debug, Serialize)]
-pub struct EnsureParticipantsResponse {
-    /// The whole pool, including participants other owners provisioned.
-    pub participants: Vec<Actor>,
+pub struct EnsureHelpersResponse {
+    /// The whole pool, including helpers other owners provisioned.
+    pub helpers: Vec<Actor>,
     /// How many of them this call had to create. Lets the caller report
     /// "reused 7, created 2" rather than guessing.
     pub created: usize,

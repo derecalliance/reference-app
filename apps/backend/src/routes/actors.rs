@@ -15,7 +15,7 @@ use crate::{
     actor::{CreateContactMsg, LoadSharedKeyMsg, StartFlowMsg},
     models::{Actor, ActorWithStatus, ListActorsResponse, Role},
     routes::actor_guard::ensure_actor_exists,
-    routes::participants::{ContactMessageDto, contact_to_dto},
+    routes::helpers::{ContactMessageDto, contact_to_dto},
     state::{ActorInbox, AppState},
 };
 use derec_library::protocol::DeRecEvent;
@@ -100,7 +100,7 @@ pub(crate) async fn enrich_actors(state: &AppState, actors: &[Actor]) -> Vec<Act
 
     for a in actors {
         let channel_id = state
-            .participant_channels
+            .helper_channels
             .get(&a.id)
             .and_then(|v| v.value().last().cloned())
             .or_else(|| {
@@ -110,7 +110,7 @@ pub(crate) async fn enrich_actors(state: &AppState, actors: &[Actor]) -> Vec<Act
                     .and_then(|v| v.value().last().cloned())
             });
 
-        let disabled = if state.disabled_participants.contains_key(&a.id)
+        let disabled = if state.disabled_helpers.contains_key(&a.id)
             || state.disabled_replicas.contains_key(&a.id)
         {
             Some(true)

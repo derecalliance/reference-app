@@ -13,8 +13,7 @@ use uuid::Uuid;
 
 use crate::{
     models::{
-        AddParticipantRequest, AddParticipantResponse, EnsureParticipantsRequest,
-        EnsureParticipantsResponse, Role,
+        AddHelperRequest, AddHelperResponse, EnsureHelpersRequest, EnsureHelpersResponse, Role,
     },
     provisioning::{provisioned_actor, spawn_provisioned},
     routes::actor_guard::{ensure_actor_role, not_found},
@@ -84,35 +83,35 @@ pub struct ToggleStatusResponse {
     pub disabled: bool,
 }
 
-/// POST /participants
+/// POST /helpers
 ///
-/// Provisions one backend-run participant. The caller supplies the protocol
+/// Provisions one backend-run helper. The caller supplies the protocol
 /// settings the new actor should run with — the front end owns configuration,
 /// so there is no server-held policy to inherit. Omitted settings fall back to
 /// the operator-supplied defaults served at `GET /config`.
 pub async fn add(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<AddParticipantRequest>,
+    Json(req): Json<AddHelperRequest>,
 ) -> Response {
     let (timeout_secs, unpair_ack) = req.settings.resolve(&state.defaults);
 
-    // `None`: a participant protects its own secret and never inherits an
+    // `None`: a helper protects its own secret and never inherits an
     // owner's. Only a `Role::Replica` does, and only from an explicitly named
     // owner — see `provisioning::actor_secret_id`.
-    let participant = provisioned_actor(Role::Participant, &req.name, &state.base_url, None);
+    let helper = provisioned_actor(Role::Participant, &req.name, &state.base_url, None);
 
-    spawn_provisioned(&state, &participant, timeout_secs, unpair_ack);
-    state.actors.register(participant.clone());
+    spawn_provisioned(&state, &helper, timeout_secs, unpair_ack);
+    state.actors.register(helper.clone());
 
     info!(
-        participant_id = %participant.id,
-        name = %participant.name,
-        "participant provisioned"
+        helper_id = %helper.id,
+        name = %helper.name,
+        "helper provisioned"
     );
 
     (
         StatusCode::CREATED,
-        Json(AddParticipantResponse { actor: participant }),
+        Json(AddHelperResponse { actor: helper }),
     )
         .into_response()
 }
@@ -134,9 +133,9 @@ fn participant_name(names: &[String], taken: usize, pool_index: usize) -> String
         .unwrap_or_else(|| format!("Participant {}", pool_index + 1))
 }
 
-/// POST /participants/ensure
+/// POST /helpers/ensure
 ///
-/// Bring the shared participant pool up to `total`, provisioning only the
+/// Bring the shared helper pool up to `total`, provisioning only the
 /// shortfall. Every owner pairs with the same fixtures, so a second owner
 /// asking for seven when seven already exist should get those seven rather
 /// than another seven of its own.
@@ -146,70 +145,70 @@ fn participant_name(names: &[String], taken: usize, pool_index: usize) -> String
 /// same moment each fill an empty pool.
 pub async fn ensure(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<EnsureParticipantsRequest>,
+    Json(req): Json<EnsureHelpersRequest>,
 ) -> Response {
     let (timeout_secs, unpair_ack) = req.settings.resolve(&state.defaults);
     let names = req.names;
     let mut taken = 0usize;
 
-    let EnsuredParticipants { created, participants } =
+    let EnsuredParticipants { created, participants: helpers } =
         state.actors.ensure_participants(req.total as usize, |pool_index| {
             let name = participant_name(&names, taken, pool_index);
             taken += 1;
-            // `None`: a participant protects its own secret and never inherits
+            // `None`: a helper protects its own secret and never inherits
             // an owner's — see `provisioning::actor_secret_id`.
             provisioned_actor(Role::Participant, &name, &state.base_url, None)
         });
 
     // Spawning touches the arbiter and several maps, so it happens out here
     // rather than inside the registry lock.
-    for participant in &created {
-        spawn_provisioned(&state, participant, timeout_secs, unpair_ack);
+    for helper in &created {
+        spawn_provisioned(&state, helper, timeout_secs, unpair_ack);
     }
 
     info!(
         requested = req.total,
         created = created.len(),
-        pool = participants.len(),
-        "participant pool ensured"
+        pool = helpers.len(),
+        "helper pool ensured"
     );
 
     (
         StatusCode::OK,
-        Json(EnsureParticipantsResponse { created: created.len(), participants }),
+        Json(EnsureHelpersResponse { created: created.len(), helpers }),
     )
         .into_response()
 }
 
-/// POST /participants/:participant_id/toggle-status
+/// POST /helpers/:helper_id/toggle-status
 ///
-/// Simulates the participant going offline/online. The role check matters:
-/// `disabled_participants` is consulted by `deliver_message` for every actor,
+/// Simulates the helper going offline/online. The role check matters:
+/// `disabled_helpers` is consulted by `deliver_message` for every actor,
 /// so writing an owner's id into it would silently drop that owner's mail.
 pub async fn toggle_status(
     State(state): State<Arc<AppState>>,
-    Path(participant_id): Path<Uuid>,
+    Path(helper_id): Path<Uuid>,
     body: Option<Json<SetStatusRequest>>,
 ) -> Response {
-    if let Err(response) = ensure_actor_role(&state, &participant_id, Role::Participant) {
+    if let Err(response) = ensure_actor_role(&state, &helper_id, Role::Participant) {
         return response;
     }
 
     let want_disabled = match body {
         Some(Json(req)) => req.disabled,
-        None => !state.disabled_participants.contains_key(&participant_id),
+        None => !state.disabled_helpers.contains_key(&helper_id),
     };
 
     if want_disabled {
-        state.disabled_participants.insert(participant_id, ());
+        state.disabled_helpers.insert(helper_id, ());
     } else {
-        state.disabled_participants.remove(&participant_id);
+        state.disabled_helpers.remove(&helper_id);
     }
 
     info!(
-        participant_id = %participant_id,
+        helper_id = %helper_id,
         disabled = want_disabled,
-        "participant status updated"
+        "helper status updated"
     );
 
     (
@@ -226,32 +225,32 @@ pub async fn toggle_status(
 // bound to it — so a node willing to help several owners publishes one contact
 // per owner secret.
 
-/// POST /participants/:participant_id/browser-contact
+/// POST /helpers/:helper_id/browser-contact
 pub async fn post_browser_contact(
     State(state): State<Arc<AppState>>,
-    Path(participant_id): Path<Uuid>,
+    Path(helper_id): Path<Uuid>,
     body: String,
 ) -> Response {
-    if !state.actors.contains(&participant_id) {
+    if !state.actors.contains(&helper_id) {
         return not_found("actor not found");
     }
 
-    state.browser_participant_contacts.insert(participant_id, body);
-    info!(participant_id = %participant_id, "browser contact stored");
+    state.browser_participant_contacts.insert(helper_id, body);
+    info!(helper_id = %helper_id, "browser contact stored");
 
     StatusCode::OK.into_response()
 }
 
-/// GET /participants/:participant_id/browser-contact
+/// GET /helpers/:helper_id/browser-contact
 pub async fn get_browser_contact(
     State(state): State<Arc<AppState>>,
-    Path(participant_id): Path<Uuid>,
+    Path(helper_id): Path<Uuid>,
 ) -> Response {
-    if !state.actors.contains(&participant_id) {
+    if !state.actors.contains(&helper_id) {
         return not_found("actor not found");
     }
 
-    match state.browser_participant_contacts.get(&participant_id) {
+    match state.browser_participant_contacts.get(&helper_id) {
         Some(contact) => (StatusCode::OK, contact.value().clone()).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
@@ -278,20 +277,20 @@ pub struct ListChannelsResponse {
     pub channels: Vec<crate::actor::ChannelSummary>,
 }
 
-/// GET /participants/:participant_id/channels
+/// GET /helpers/:helper_id/channels
 ///
 /// Every channel this actor holds, so an operator can pick which one a newly
 /// paired owner should be linked to.
 pub async fn list_channels(
     State(state): State<Arc<AppState>>,
-    Path(participant_id): Path<Uuid>,
+    Path(helper_id): Path<Uuid>,
 ) -> Response {
-    if let Err(response) = ensure_actor_role(&state, &participant_id, Role::Participant) {
+    if let Err(response) = ensure_actor_role(&state, &helper_id, Role::Participant) {
         return response;
     }
 
-    let Some(addr) = provisioned_addr(&state, &participant_id) else {
-        return not_found("participant has no backend protocol instance");
+    let Some(addr) = provisioned_addr(&state, &helper_id) else {
+        return not_found("helper has no backend protocol instance");
     };
 
     match addr.send(crate::actor::ListChannelsMsg).await {
@@ -311,13 +310,13 @@ pub async fn list_channels(
     }
 }
 
-/// POST /participants/:participant_id/link
+/// POST /helpers/:helper_id/link
 pub async fn link_channels(
     State(state): State<Arc<AppState>>,
-    Path(participant_id): Path<Uuid>,
+    Path(helper_id): Path<Uuid>,
     Json(req): Json<LinkChannelsRequest>,
 ) -> Response {
-    if let Err(response) = ensure_actor_role(&state, &participant_id, Role::Participant) {
+    if let Err(response) = ensure_actor_role(&state, &helper_id, Role::Participant) {
         return response;
     }
 
@@ -340,8 +339,8 @@ pub async fn link_channels(
             .into_response();
     }
 
-    let Some(addr) = provisioned_addr(&state, &participant_id) else {
-        return not_found("participant has no backend protocol instance");
+    let Some(addr) = provisioned_addr(&state, &helper_id) else {
+        return not_found("helper has no backend protocol instance");
     };
 
     match addr
@@ -350,7 +349,7 @@ pub async fn link_channels(
     {
         Ok(Ok(())) => {
             info!(
-                participant_id = %participant_id,
+                helper_id = %helper_id,
                 channel_id = channel_id,
                 link_to_channel_id = link_to_channel_id,
                 "operator linked channels"

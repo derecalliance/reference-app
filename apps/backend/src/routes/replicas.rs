@@ -16,7 +16,7 @@ use crate::{
     provisioning::{provisioned_actor, spawn_provisioned},
     routes::actor_guard::{bad_request, ensure_actor_role, not_found},
     routes::actors::provisioned_addr,
-    routes::participants::{SetStatusRequest, ToggleStatusResponse},
+    routes::helpers::{SetStatusRequest, ToggleStatusResponse},
     state::{ActorRegistry, AppState, RoleMismatch},
 };
 

@@ -135,9 +135,9 @@ pub struct AppState {
     pub actor_inboxes: Arc<DashMap<Uuid, ActorInbox>>,
     /// Receiver halves for browser actor inboxes; drained by the poll_mailbox handler.
     pub browser_receivers: Arc<DashMap<Uuid, Arc<Mutex<mpsc::UnboundedReceiver<Vec<u8>>>>>>,
-    /// Participant-side channel IDs per actor (one entry per paired owner).
-    pub participant_channels: Arc<DashMap<Uuid, Vec<String>>>,
-    pub disabled_participants: Arc<DashMap<Uuid, ()>>,
+    /// Helper-side channel IDs per actor (one entry per paired owner).
+    pub helper_channels: Arc<DashMap<Uuid, Vec<String>>>,
+    pub disabled_helpers: Arc<DashMap<Uuid, ()>>,
     pub replica_channels: Arc<DashMap<Uuid, Vec<String>>>,
     pub replica_confirmed: Arc<DashMap<Uuid, ()>>,
     pub disabled_replicas: Arc<DashMap<Uuid, ()>>,
@@ -162,8 +162,8 @@ impl AppState {
             actors: Arc::new(ActorRegistry::default()),
             actor_inboxes: Arc::new(DashMap::new()),
             browser_receivers: Arc::new(DashMap::new()),
-            participant_channels: Arc::new(DashMap::new()),
-            disabled_participants: Arc::new(DashMap::new()),
+            helper_channels: Arc::new(DashMap::new()),
+            disabled_helpers: Arc::new(DashMap::new()),
             replica_channels: Arc::new(DashMap::new()),
             replica_confirmed: Arc::new(DashMap::new()),
             disabled_replicas: Arc::new(DashMap::new()),
