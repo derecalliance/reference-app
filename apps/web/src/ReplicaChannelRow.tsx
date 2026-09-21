@@ -47,14 +47,20 @@ export interface ReplicaChannelRowProps {
   syncing: boolean
   /** Some row's sync is running — a protect round is global, so all are blocked. */
   syncBlocked: boolean
-  /** An unpair request for this channel is in flight. */
-  unpairing: boolean
   /** The sync result this row should show, or `null`. */
   syncNotice: ReplicaRowSyncNotice | null
   onDismissSyncNotice: () => void
   onOpenFingerprint: () => void
   onSyncNow: () => void
-  onUnpair: () => void
+  /**
+   * Drop this row from *this device only*, telling the peer nothing.
+   *
+   * The escape hatch, and deliberately not a teardown: a replica has no
+   * channel-level unpair — the library's only removal names a member, which
+   * `onRemoveFromGroup` does — so a row whose pairing never announced a replica
+   * id has nothing the protocol will act on. Without this it is unremovable.
+   */
+  onForget: () => void
   /**
    * Whether this row can be evicted from the replica group.
    *
@@ -135,12 +141,11 @@ export function ReplicaChannelRow({
   protocolTimeoutSecs,
   syncing,
   syncBlocked,
-  unpairing,
   syncNotice,
   onDismissSyncNotice,
   onOpenFingerprint,
   onSyncNow,
-  onUnpair,
+  onForget,
   canRemoveFromGroup,
   removingFromGroup,
   onRemoveFromGroup,
@@ -184,8 +189,9 @@ export function ReplicaChannelRow({
             {syncing ? 'Syncing…' : 'Sync now'}
           </button>
         )}
-        {/* Distinct from Unpair: that tears down this channel, while this
-            removes the member from the roster the group publishes. */}
+        {/* The real teardown: a replica is removed from the group by *member*,
+            never by channel — every member answers on the one shared channel,
+            so there is no channel-level unpair for the protocol to run. */}
         {canRemoveFromGroup && (
           <button
             className="channel-unpair-btn"
@@ -213,13 +219,17 @@ export function ReplicaChannelRow({
             {offline ? 'Go Online' : 'Go Offline'}
           </button>
         )}
+        {/* Always offered, because it is the only action that cannot fail.
+            "Remove from group" needs a member id the protocol may never have
+            announced, and this row used to carry an "Unpair" that dispatched
+            the *helper* unpair flow — which the library rejects on every
+            replica channel, leaving a row nothing could clear. */}
         <button
-          className="channel-unpair-btn"
-          onClick={onUnpair}
-          disabled={unpairing}
-          aria-busy={unpairing || undefined}
+          className="channel-link-btn"
+          onClick={onForget}
+          title={`Remove ${name} from this device's list without telling them`}
         >
-          {unpairing ? 'Unpairing…' : 'Unpair'}
+          Forget
         </button>
       </div>
 

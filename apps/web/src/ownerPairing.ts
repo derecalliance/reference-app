@@ -376,7 +376,7 @@ export function applyPairingCompleted(
           ...snapshot,
           participants: snapshot.participants.map(h =>
             h.id === tempId
-              ? { ...h, id: peerActor.id, name: peerActor.name, transport: { protocol: peerActor.transport.protocol, uri: peerActor.transport.uri }, browserManaged: peerActor.browser_managed ?? false }
+              ? { ...h, id: peerActor.id, name: peerActor.name, transport: { protocol: peerActor.transport.protocol, uri: peerActor.transport.uri }, transports: peerActor.transports, browserManaged: peerActor.browser_managed ?? false }
               : h
           ),
         })

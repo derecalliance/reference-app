@@ -757,6 +757,29 @@ export function forgetReplicaMember(ownerId: string, peerReplicaId: string): Rep
     .map(c => c.channelId)
   if (doomed.length === 0) return current
 
+  return saveReplicaState(ownerId, pruneChannels(current, doomed))
+}
+
+/**
+ * Drop this device's bookkeeping for one replica **channel**, by channel id.
+ *
+ * The sibling of [`forgetReplicaMember`], for the rows that one cannot reach.
+ * Eviction names a *member*, and a member is only named once `ReplicaPaired`
+ * has announced its replica id — so a pairing that never completed, or one
+ * whose announcement was lost, leaves a row with a channel and no member to
+ * evict. Keyed by channel, this reaches those rows.
+ *
+ * Purely local: the peer is not told, and no protocol flow runs. That is the
+ * point — it is the way out of a row the library will not act on, which
+ * otherwise stays on screen forever offering actions that all fail.
+ */
+export function forgetReplicaChannel(ownerId: string, channelId: string): ReplicaState {
+  const current = loadReplicaState(ownerId)
+  return saveReplicaState(ownerId, pruneChannels(current, [channelId]))
+}
+
+/** Remove every trace of `doomed` channel ids from a replica state. */
+function pruneChannels(current: ReplicaState, doomed: readonly string[]): ReplicaState {
   const channels = { ...current.channels }
   const syncs = { ...current.syncs }
   for (const channelId of doomed) {
@@ -774,7 +797,14 @@ export function forgetReplicaMember(ownerId: string, peerReplicaId: string): Rep
     ),
   )
 
-  return saveReplicaState(ownerId, { ...current, channels, syncs, replicas })
+  // A pairing still in flight against a doomed channel has nothing left to
+  // resolve to, and a stale entry would re-attach the row on the next
+  // `PairingCompleted`.
+  const pendingPairings = Object.fromEntries(
+    Object.entries(current.pendingPairings).filter(([transientId]) => !doomed.includes(transientId)),
+  )
+
+  return { ...current, channels, syncs, replicas, pendingPairings }
 }
 
 /**

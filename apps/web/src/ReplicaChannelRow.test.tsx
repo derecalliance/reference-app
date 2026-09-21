@@ -58,12 +58,11 @@ const BASE: ReplicaChannelRowProps = {
   protocolTimeoutSecs: 300,
   syncing: false,
   syncBlocked: false,
-  unpairing: false,
   syncNotice: null,
   onDismissSyncNotice: () => {},
   onOpenFingerprint: () => {},
   onSyncNow: () => {},
-  onUnpair: () => {},
+  onForget: () => {},
   canRemoveFromGroup: false,
   removingFromGroup: false,
   onRemoveFromGroup: () => {},
@@ -209,5 +208,40 @@ describe('once this device has confirmed', () => {
   it('offers no "Sync now" while the channel is still pending', () => {
     render()
     expect(text()).not.toMatch(/Sync now/)
+  })
+})
+
+describe('clearing a replica row', () => {
+  it('offers no "Unpair" — the helper unpair flow does not address a replica', () => {
+    // The library stores group members by replica id, never by channel id, so
+    // `Unpair { channel_id }` was rejected on every replica channel — healthy
+    // ones included — and left the row with nothing that could clear it.
+    render({ view: view({ status: 'paired' }) })
+    expect(text()).not.toMatch(/Unpair/)
+  })
+
+  it('always offers Forget, even when there is no member to remove', () => {
+    // The state a failed pairing leaves: a channel, and no replica id. This is
+    // the only action such a row has.
+    const onForget = vi.fn()
+    render({ view: view({ peerReplicaId: null }), canRemoveFromGroup: false, onForget })
+    buttonLabelled(/^Forget$/).click()
+
+    expect(onForget).toHaveBeenCalledTimes(1)
+  })
+
+  it('still offers Forget beside a member that can be properly evicted', () => {
+    render({
+      view: view({ status: 'paired', peerReplicaId: '77' }),
+      canRemoveFromGroup: true,
+    })
+
+    expect(text()).toContain('Remove from group')
+    expect(text()).toContain('Forget')
+  })
+
+  it('says Forget is local, so it is not mistaken for a teardown', () => {
+    render({ onForget: () => {} })
+    expect(buttonLabelled(/^Forget$/).title).toMatch(/without telling them/i)
   })
 })

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { errorText } from './errorText'
 import {
   Alert,
   AlertTitle,
@@ -72,7 +73,7 @@ type AdoptionState =
 /** Present an unexpected throw the same way a structured refusal is presented. */
 function failureFrom(err: unknown): RestoreFailure {
   if (err instanceof ReplicaAdoptionError) return err.failure
-  const message = err instanceof Error ? err.message : String(err)
+  const message = errorText(err)
   return {
     code: 'UNKNOWN',
     message,

@@ -1,6 +1,7 @@
 //! The gRPC listener resolves an actor from the envelope and hands the bytes
 //! to the same inbox HTTP would.
 
+use derec_backend::debug::Carrier;
 use derec_backend::grpc::GrpcIngress;
 use derec_backend::grpc::pb::de_rec_transport_server::DeRecTransport;
 use derec_backend::routes::derec::{DispatchOutcome, dispatch_to_inbox};
@@ -34,7 +35,7 @@ async fn an_envelope_routes_to_the_actor_its_channel_is_pinned_to() {
 
     assert_eq!(resolved, actor_id);
     assert_eq!(
-        dispatch_to_inbox(&state, resolved, envelope(4242)),
+        dispatch_to_inbox(&state, resolved, Carrier::Grpc, envelope(4242)),
         DispatchOutcome::Delivered
     );
 }
@@ -56,7 +57,7 @@ async fn a_disabled_actor_drops_grpc_traffic_exactly_as_it_drops_http() {
     state.disabled_helpers.insert(actor_id, ());
 
     assert_eq!(
-        dispatch_to_inbox(&state, actor_id, envelope(1)),
+        dispatch_to_inbox(&state, actor_id, Carrier::Grpc, envelope(1)),
         DispatchOutcome::Dropped
     );
 }

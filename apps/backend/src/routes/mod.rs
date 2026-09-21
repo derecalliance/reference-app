@@ -1,6 +1,7 @@
 pub mod actor_guard;
 pub mod actors;
 pub mod config;
+pub mod debug;
 pub mod derec;
 pub mod health;
 pub mod helpers;

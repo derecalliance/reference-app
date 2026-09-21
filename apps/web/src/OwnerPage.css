@@ -587,6 +587,29 @@
   color: var(--success);
 }
 
+/* Which transport a peer advertises. Quieter than the role tag beside it —
+   this is reference information you scan for, not a status you react to. */
+.transport-tag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+  font-family: var(--mono);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  background: transparent;
+}
+
+/* gRPC is the newer path and the one people are usually looking for, so it
+   carries the accent; plain HTTPS stays neutral. */
+.transport-tag--grpc,
+.transport-tag--grpc-https {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .channel-id-inline {
   font-family: var(--mono, monospace);
   font-size: 11px;
@@ -923,6 +946,20 @@
   font-size: 13px;
   color: var(--text);
   margin: 0;
+}
+
+/*
+  Explanatory prose under a section heading.
+
+  Used where a section is a diagnostic rather than a list of things the user
+  put there, and so has to say what it is before it says what is in it.
+*/
+.tab-section-note {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  margin: 6px 0 10px;
+  max-width: 78ch;
 }
 
 .form-hint {
@@ -2548,4 +2585,118 @@ recovery-pairing-notice {
   /* Fill rather than letterbox: a QR only has to be *within* frame to decode,
      and cropping keeps the preview matching what the detector sees. */
   object-fit: cover;
+}
+
+/* ── Inspect tab ─────────────────────────────────────────────────────────────
+   The server's own view of itself. Denser than the rest of the app on purpose:
+   this is a reference surface you scan and copy from, not one you act in. */
+
+.inspect-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.inspect-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.inspect-live {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  margin-right: auto;
+}
+
+.inspect-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.inspect-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.inspect-grid dt {
+  color: var(--muted);
+}
+
+.inspect-grid dd {
+  margin: 0;
+}
+
+.inspect-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.inspect-table th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 4px 12px 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.inspect-table td {
+  padding: 6px 12px 6px 0;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.inspect-table code {
+  font-size: 12px;
+  word-break: break-all;
+}
+
+/* A property of the actor rather than a status to react to, so it sits quieter
+   than `.status-tag` and does not compete with the name beside it. */
+.inspect-flag {
+  margin-left: 6px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
+.inspect-flag.offline {
+  color: var(--warning);
+  border-color: var(--warning);
+}
+
+.inspect-hint {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+  margin: 0;
+}
+
+/* Conditional guidance, not a fault. `localhost` is correct for the ordinary
+   single-machine case, so colouring this as a warning on every default run
+   would just train people to ignore it. */
+.inspect-note {
+  color: var(--muted);
+}
+
+/* Route tiers reuse the transport-tag shape; `pinned` is the one that usually
+   explains a stalled pairing, so it reads as a caution. */
+.transport-tag--pinned {
+  border-color: var(--warning);
+  color: var(--warning);
 }

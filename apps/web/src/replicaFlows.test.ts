@@ -8,10 +8,14 @@ import {
   clearReplicaState,
   createReplicaFirstSyncTrigger,
   describeRestoreFailure,
+  forgetReplicaChannel,
+  forgetReplicaMember,
   loadReplicaState,
   markReplicaFirstSyncStarted,
   recordConfirmation,
+  recordPendingReplicaPairing,
   recordReplicaChannel,
+  recordReplicaSync,
   replicaChannelRowId,
   acceptFingerprintMatch,
   formatFingerprint,
@@ -1289,6 +1293,69 @@ describe('recordReplicaChannel', () => {
     clearReplicaState('chan-e')
 
     expect(loadReplicaState('chan-e').channels).toEqual({})
+  })
+})
+
+describe('forgetReplicaChannel', () => {
+  it('drops the channel, its sync record and its confirmation row', () => {
+    recordReplicaChannel('forget-a', {
+      channelId: '900',
+      role: 'replica_destination',
+      peerName: 'Bob',
+    })
+    recordConfirmation('forget-a', replicaChannelRowId('900'), { local: true, channelId: '900' })
+    recordReplicaSync('forget-a', '900', { version: 3, syncedAt: 1_700_000 })
+
+    forgetReplicaChannel('forget-a', '900')
+
+    const state = loadReplicaState('forget-a')
+    expect(state.channels).toEqual({})
+    expect(state.syncs).toEqual({})
+    expect(state.replicas).toEqual({})
+  })
+
+  it('reaches a channel whose pairing never announced a replica id', () => {
+    // The case `forgetReplicaMember` cannot serve: eviction names a member, and
+    // a pairing that failed before `ReplicaPaired` left none to name. Without a
+    // channel-keyed forget such a row is unremovable.
+    recordReplicaChannel('forget-b', { channelId: '900', role: 'replica_destination' })
+    expect(loadReplicaState('forget-b').channels['900']?.peerReplicaId).toBeUndefined()
+
+    expect(forgetReplicaMember('forget-b', 'never-announced').channels).toHaveProperty('900')
+
+    forgetReplicaChannel('forget-b', '900')
+    expect(loadReplicaState('forget-b').channels).toEqual({})
+  })
+
+  it('leaves every other channel of the same owner alone', () => {
+    recordReplicaChannel('forget-c', { channelId: '900', role: 'replica_source' })
+    recordReplicaChannel('forget-c', { channelId: '901', role: 'replica_source' })
+    recordReplicaSync('forget-c', '901', { version: 1, syncedAt: 5 })
+
+    forgetReplicaChannel('forget-c', '900')
+
+    const state = loadReplicaState('forget-c')
+    expect(Object.keys(state.channels)).toEqual(['901'])
+    expect(state.syncs['901']).toEqual({ version: 1, syncedAt: 5 })
+  })
+
+  it('clears a pending pairing keyed by the forgotten transient channel', () => {
+    // Left behind, the next `PairingCompleted` for that transient id would
+    // re-attach the row this just removed.
+    recordPendingReplicaPairing('forget-d', 'transient-1', 'replica-9')
+    recordReplicaChannel('forget-d', { channelId: 'transient-1', role: 'replica_source' })
+
+    forgetReplicaChannel('forget-d', 'transient-1')
+
+    expect(loadReplicaState('forget-d').pendingPairings).toEqual({})
+  })
+
+  it('is a no-op for a channel that was never recorded', () => {
+    recordReplicaChannel('forget-e', { channelId: '900', role: 'replica_source' })
+
+    forgetReplicaChannel('forget-e', 'not-a-channel')
+
+    expect(Object.keys(loadReplicaState('forget-e').channels)).toEqual(['900'])
   })
 })
 

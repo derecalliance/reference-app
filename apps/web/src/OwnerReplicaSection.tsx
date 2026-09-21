@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { errorText } from './errorText'
 
 /**
  * The "add a replica" affordance, in the owner page's side panel.
@@ -77,7 +78,7 @@ function AddReplicaModal({
     try {
       await onAdd(trimmed)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(errorText(err))
       setSubmitting(false)
     }
   }

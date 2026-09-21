@@ -64,6 +64,53 @@ impl ChannelRouter {
             .or_else(|| self.pinned.get(&channel_id))
             .map(|entry| *entry.value())
     }
+
+    /// Every route this server holds, with the tier holding it.
+    ///
+    /// For the debug surface only. Which tier a channel sits in is the single
+    /// most useful thing to know when a message will not route: `pinned` means
+    /// a contact was minted but the pairing never completed, `bound` means the
+    /// handshake finished. Ordered by channel id so two reads of an unchanged
+    /// router compare equal — `DashMap` iteration order does not.
+    pub fn routes(&self) -> Vec<Route> {
+        let mut routes: Vec<Route> = self
+            .bound
+            .iter()
+            .map(|e| Route {
+                channel_id: *e.key(),
+                actor_id: *e.value(),
+                tier: Tier::Bound,
+            })
+            .chain(self.pinned.iter().map(|e| Route {
+                channel_id: *e.key(),
+                actor_id: *e.value(),
+                tier: Tier::Pinned,
+            }))
+            .collect();
+        routes.sort_by_key(|r| (r.channel_id, r.tier));
+        routes
+    }
+}
+
+/// Which tier of [`ChannelRouter`] holds a route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Tier {
+    /// Store-derived and authoritative: the pairing completed.
+    Bound,
+    /// A channel that exists only in memory — a contact minted, or one this
+    /// server is about to pair against. Resolves only until `bound` supersedes it.
+    Pinned,
+}
+
+/// One route, as the debug surface reports it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Route {
+    /// Decimal string: a `u64` exceeds JavaScript's exact integer range.
+    #[serde(serialize_with = "crate::debug::u64_as_string")]
+    pub channel_id: u64,
+    pub actor_id: Uuid,
+    pub tier: Tier,
 }
 
 #[cfg(test)]

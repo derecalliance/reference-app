@@ -43,15 +43,41 @@ pub enum DispatchOutcome {
 /// Shared by both transports so a suspended helper drops gRPC traffic exactly
 /// as it drops HTTP, and so a browser actor receives over gRPC without knowing
 /// that is what happened.
-pub fn dispatch_to_inbox(state: &AppState, actor_id: Uuid, bytes: Vec<u8>) -> DispatchOutcome {
+pub fn dispatch_to_inbox(
+    state: &AppState,
+    actor_id: Uuid,
+    carrier: crate::debug::Carrier,
+    bytes: Vec<u8>,
+) -> DispatchOutcome {
+    use crate::debug::{Direction, Outcome};
+
+    let len = bytes.len();
+    // Correlation key for anyone reading the log. Best effort: a body that
+    // will not decode is still worth recording — that it arrived at all is
+    // the interesting part — so a failure here yields `None`, not an early
+    // return that would lose the event.
+    let channel_id = crate::envelope::decode(&bytes).ok().map(|m| m.channel_id);
+
+    let record = |outcome: Outcome, detail: &str| {
+        state.events.record(
+            Direction::Inbound,
+            carrier,
+            outcome,
+            Some(actor_id),
+            channel_id,
+            len,
+            detail,
+        );
+    };
+
     if state.disabled_helpers.contains_key(&actor_id) {
-        info!(actor_id = %actor_id, bytes = bytes.len(), "message dropped — actor is offline");
+        info!(actor_id = %actor_id, bytes = len, "message dropped — actor is offline");
+        record(Outcome::Dropped, "actor is simulating offline; message discarded");
         return DispatchOutcome::Dropped;
     }
 
     match state.actor_inboxes.get(&actor_id) {
         Some(entry) => {
-            let len = bytes.len();
             match entry.value() {
                 ActorInbox::Browser(tx) => {
                     let _ = tx.send(bytes);
@@ -61,9 +87,13 @@ pub fn dispatch_to_inbox(state: &AppState, actor_id: Uuid, bytes: Vec<u8>) -> Di
                 }
             }
             info!(actor_id = %actor_id, bytes = len, "message delivered to inbox");
+            record(Outcome::Delivered, "delivered to the actor's inbox");
             DispatchOutcome::Delivered
         }
-        None => DispatchOutcome::NoInbox,
+        None => {
+            record(Outcome::Refused, "actor has no inbox registered");
+            DispatchOutcome::NoInbox
+        }
     }
 }
 
@@ -89,7 +119,7 @@ pub async fn deliver_message(
             .into_response();
     }
 
-    match dispatch_to_inbox(&state, actor_id, body.to_vec()) {
+    match dispatch_to_inbox(&state, actor_id, crate::debug::Carrier::Http, body.to_vec()) {
         DispatchOutcome::Delivered | DispatchOutcome::Dropped => {
             StatusCode::ACCEPTED.into_response()
         }
@@ -201,10 +231,42 @@ pub async fn relay(
         uri: req.uri.clone(),
     };
 
+    // The browser could not dial this itself, so from a reader's point of view
+    // the message left *here*. Recorded as such, tagged with the relay, which
+    // is the only way to tell relayed traffic from this server's own.
+    use crate::debug::{Carrier, Direction, Outcome};
+    let carrier = if req.uri.starts_with("grpc") {
+        Carrier::GrpcViaRelay
+    } else {
+        Carrier::Http
+    };
+    let channel_id = crate::envelope::decode(&bytes).ok().map(|m| m.channel_id);
+    let len = bytes.len();
+
     use derec_library::protocol::DeRecTransport as _;
     match transport.send(std::slice::from_ref(&endpoint), bytes).await {
-        Ok(()) => StatusCode::ACCEPTED.into_response(),
+        Ok(()) => {
+            state.events.record(
+                Direction::Outbound,
+                carrier,
+                Outcome::Delivered,
+                None,
+                channel_id,
+                len,
+                format!("relayed on a browser owner's behalf to {}", req.uri),
+            );
+            StatusCode::ACCEPTED.into_response()
+        }
         Err(e) => {
+            state.events.record(
+                Direction::Outbound,
+                carrier,
+                Outcome::Refused,
+                None,
+                channel_id,
+                len,
+                format!("relay to {} failed: {e}", req.uri),
+            );
             tracing::error!(uri = %req.uri, error = %e, "relay delivery failed");
             (
                 StatusCode::BAD_GATEWAY,

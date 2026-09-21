@@ -13,6 +13,8 @@ export interface PeerActorCandidate {
   role: 'owner' | 'helper'
   name: string
   transport: { protocol: 'https' | 'grpc'; uri: string }
+  /** Every endpoint this actor advertises, in its own preference order. */
+  transports?: { protocol: 'https' | 'grpc'; uri: string }[]
   browser_managed?: boolean
 }
 

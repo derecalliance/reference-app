@@ -369,3 +369,10 @@
   max-height: 300px;
   overflow-y: auto;
 }
+
+/* Server-sourced rows answer a different question from the page's own — what
+   the backend did with a message, not what this page asked for — so they need
+   their own cue. Deliberately the quietest badge in the set: infrastructure,
+   not a party to the protocol, and it must not read as `participant`. */
+.cbadge.role-server      { background: rgba(159, 165, 147, 0.18); color: #9fa593; }
+.cbadge.flow-transport   { background: rgba(159, 165, 147, 0.14); color: #9fa593; }

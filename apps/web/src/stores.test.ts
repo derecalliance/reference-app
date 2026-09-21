@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { makeChannelStore, makeStateStore, makeTransport } from './stores'
+import { listReplicaMembers, makeChannelStore, makeStateStore, makeTransport } from './stores'
 
 const NS = 'test-ns'
 const SECRET = '42'
@@ -439,5 +439,79 @@ describe('state store', () => {
     expect(await store.loadAll(SECRET, 1)).toHaveLength(2)
     expect(await store.remove(SECRET, encode({ kind: 0, channel_id: 'a' }))).toBe(true)
     expect(await store.loadAll(SECRET, 0)).toHaveLength(1)
+  })
+})
+
+describe('listReplicaMembers', () => {
+  beforeEach(() => localStorage.clear())
+
+  /** A member as the library really writes it — `u64` ids as raw JSON numbers. */
+  function realMember(replicaId: string, channelId: string, role: string, name?: string) {
+    return new TextEncoder().encode(
+      `{"Replica":{"channel_id":${channelId},"replica_id":${replicaId},` +
+        `"transports":[{"uri":"http://localhost:5000/derec/x","protocol":0}],` +
+        `"communication_info":${name ? `{"name":"${name}"}` : '{}'},` +
+        `"role":"${role}","status":"Paired","created_at":1789141946}}`,
+    )
+  }
+
+  it('lists every member the library holds, in index order', async () => {
+    const store = makeChannelStore(NS)
+    await store.save(SECRET, '5959044494957203082', '5390914407180990607',
+      realMember('5390914407180990607', '5959044494957203082', 'Source'))
+    await store.save(SECRET, '5959044494957203082', '8992586122067177522',
+      realMember('8992586122067177522', '5959044494957203082', 'Destination', 'Device-a'))
+
+    expect(listReplicaMembers(NS, SECRET)).toEqual([
+      {
+        replicaId: '5390914407180990607',
+        channelId: '5959044494957203082',
+        role: 'Source',
+        status: 'Paired',
+        name: null,
+      },
+      {
+        replicaId: '8992586122067177522',
+        channelId: '5959044494957203082',
+        role: 'Destination',
+        status: 'Paired',
+        name: 'Device-a',
+      },
+    ])
+  })
+
+  it('keeps both u64 ids exact', async () => {
+    // `JSON.parse` rounds these — 8992586122067177522 comes back as
+    // 8992586122067178000 — and a rounded id names a member that does not
+    // exist, so an eviction built on it would silently evict nothing.
+    const store = makeChannelStore(NS)
+    await store.save(SECRET, '18446744073709551615', '9223372036854775807',
+      realMember('9223372036854775807', '18446744073709551615', 'Destination'))
+
+    const [member] = listReplicaMembers(NS, SECRET)
+    expect(member.replicaId).toBe('9223372036854775807')
+    expect(member.channelId).toBe('18446744073709551615')
+  })
+
+  it('is empty for a partition with no group', () => {
+    expect(listReplicaMembers(NS, SECRET)).toEqual([])
+  })
+
+  it('skips an index entry whose record has gone', async () => {
+    const store = makeChannelStore(NS)
+    await store.save(SECRET, '100', '7', realMember('7', '100', 'Destination'))
+    localStorage.removeItem(`derec:${NS}:${SECRET}:channel:replica:7`)
+
+    expect(listReplicaMembers(NS, SECRET)).toEqual([])
+  })
+
+  it('reads a record that will not parse as a member with unknown fields', async () => {
+    // Dropping it would hide a member that still blocks its replica id.
+    const store = makeChannelStore(NS)
+    await store.save(SECRET, '100', '7', new TextEncoder().encode('not json'))
+
+    expect(listReplicaMembers(NS, SECRET)).toEqual([
+      { replicaId: '7', channelId: null, role: null, status: 'Paired', name: null },
+    ])
   })
 })

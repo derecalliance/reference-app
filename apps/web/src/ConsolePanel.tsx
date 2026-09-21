@@ -13,6 +13,7 @@ function formatTime(date: Date): string {
 const ROLE_LABEL: Record<ConsoleRole, string> = {
   owner: 'Owner',
   participant: 'Participant',
+  server: 'Server',
 }
 
 const FLOW_LABEL: Record<ConsoleFlow, string> = {
@@ -24,6 +25,45 @@ const FLOW_LABEL: Record<ConsoleFlow, string> = {
   discovery: 'Discovery',
   recovery: 'Recovery',
   protocol: 'Protocol',
+  transport: 'Transport',
+}
+
+/**
+ * The whole log as JSON, oldest first.
+ *
+ * Reversed because the panel shows newest-first for reading, but a log you
+ * paste into a bug report or hand to an agent wants chronological order.
+ */
+function serializeLog(entries: ConsoleEntry[]): string {
+  return JSON.stringify(
+    [...entries].reverse().map(entry => ({
+      timestamp: entry.timestamp.toISOString(),
+      role: entry.role,
+      flow: entry.flow,
+      step: entry.step,
+      description: entry.description,
+      ...(entry.payload !== undefined ? { payload: entry.payload } : {}),
+      ...(entry.response !== undefined ? { response: entry.response } : {}),
+    })),
+    null,
+    2,
+  )
+}
+
+function copyAll(entries: ConsoleEntry[]): Promise<void> {
+  return navigator.clipboard.writeText(serializeLog(entries))
+}
+
+function downloadAll(entries: ConsoleEntry[]): void {
+  const blob = new Blob([serializeLog(entries)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `derec-console-${new Date().toISOString().replace(/[:.]/g, '-')}.json`
+  link.click()
+  // The object URL pins the blob in memory until it is revoked, and a debug
+  // session can produce a lot of these.
+  URL.revokeObjectURL(url)
 }
 
 function RoleBadge({ role }: { role: ConsoleRole }) {
@@ -217,6 +257,24 @@ export default function ConsolePanel() {
         </button>
 
         <div className="console-header-actions">
+          <button
+            className="console-clear-btn"
+            onClick={() => void copyAll(entries)}
+            disabled={entries.length === 0}
+            aria-label="Copy the whole log as JSON"
+            title="Copy the whole log as JSON"
+          >
+            Copy all
+          </button>
+          <button
+            className="console-clear-btn"
+            onClick={() => downloadAll(entries)}
+            disabled={entries.length === 0}
+            aria-label="Download the whole log as JSON"
+            title="Download the whole log as JSON"
+          >
+            Download
+          </button>
           <button
             className="console-clear-btn"
             onClick={clear}

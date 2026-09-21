@@ -5,7 +5,32 @@ A minimal reference implementation of the [DeRec protocol](https://github.com/de
 - `apps/web` — React + Vite static frontend. Executes DeRec flows (pairing, sharing, verification, recovery, replicas) client-side and polls the backend for messages.
 - `apps/backend` — Rust + Axum thin backend. Actor registry and message relay only; no protocol logic lives here.
 
-See `CLAUDE.md` for the full architecture and design principles.
+See `CLAUDE.md` for the full architecture and design principles, and
+[`AGENTS.md`](AGENTS.md) if you are an LLM or coding agent driving this over
+HTTP rather than through the UI.
+
+## Debugging it
+
+This is a developer's tool, so it is built to be inspected. There is no
+authentication anywhere — exposing the internals is the point, and it is not
+meant to be reachable from outside your machine.
+
+Three places show you what is happening, all reading the same data:
+
+| | |
+| --- | --- |
+| **Inspect tab** | The server's own view of itself: actors and the endpoints they advertise, which tier of the channel router holds each channel, how many protocol instances each actor runs. Refreshes live. |
+| **Console panel** | What happened, in order — this page's own protocol events *and* the backend's message deliveries, tagged with the transport that actually carried each one. Copy or download the whole log as JSON. |
+| **HTTP** | `GET /debug/state` and `GET /debug/events` return exactly what those two render. The full API is described in [`apps/backend/openapi.yaml`](apps/backend/openapi.yaml); a test keeps it in step with the router. |
+
+The transport badge on each channel row is worth knowing about: `HTTPS`,
+`GRPC` or `GRPC+HTTPS` tells you what that peer advertises. A trailing `~`
+means the badge was derived from a single known address rather than the peer's
+full advertised list, so it may be incomplete.
+
+If a message is not arriving, `routes` in the Inspect tab usually explains it.
+A channel in the `pinned` tier means a contact was minted and the handshake
+never completed; `bound` means it did.
 
 ## Running it
 

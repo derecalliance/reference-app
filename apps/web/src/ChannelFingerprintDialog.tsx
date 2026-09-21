@@ -12,6 +12,7 @@ import {
   Typography,
 } from '@mui/material'
 import { apiConfirmActorFingerprint, apiGetActorFingerprint } from './api'
+import { errorText } from './errorText'
 
 /**
  * Out-of-band fingerprint comparison for a **helper** channel paired with
@@ -62,8 +63,14 @@ type AttemptState =
   | { kind: 'refused' }
   | { kind: 'error'; message: string }
 
+/**
+ * `fallback` is used only when nothing thrown carries any text at all — the
+ * WASM bindings reject with plain `{ code, message }` objects, and testing for
+ * `Error` discarded the only sentence explaining the failure.
+ */
 function messageOf(err: unknown, fallback: string): string {
-  return err instanceof Error ? err.message : fallback
+  const text = errorText(err)
+  return text === 'unknown error' ? fallback : text
 }
 
 /** The code is the whole content of this dialog, so it is set like it. */

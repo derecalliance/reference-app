@@ -21,6 +21,7 @@ import {
 } from './replicaFlows'
 import { ReplicaExpiryNotice } from './ReplicaExpiryNotice'
 import { useReplicaExpiry } from './useReplicaExpiry'
+import { errorText } from './errorText'
 
 /**
  * Out-of-band fingerprint comparison for a replica channel.
@@ -77,8 +78,17 @@ type AttemptState =
   | { kind: 'local-only' }
   | { kind: 'error'; message: string }
 
+/**
+ * `fallback` is used only when nothing thrown carries any text at all.
+ *
+ * The WASM bindings reject with plain `{ code, message }` objects, so testing
+ * for `Error` and giving up threw away the one sentence that says *why* the
+ * channel would not derive or verify — leaving a dialog whose Retry can only
+ * fail again for a reason it never showed.
+ */
 function messageOf(err: unknown, fallback: string): string {
-  return err instanceof Error ? err.message : fallback
+  const text = errorText(err)
+  return text === 'unknown error' ? fallback : text
 }
 
 /** What confirming this channel unlocks, from this device's side of the mirror. */
@@ -135,7 +145,7 @@ export function ReplicaFingerprintDialog({
     try {
       setOwnCode(await fetchFingerprint(protocol, channelId))
     } catch (err) {
-      setLoadError(err instanceof Error ? err.message : 'Could not derive the fingerprint.')
+      setLoadError(messageOf(err, 'Could not derive the fingerprint.'))
     } finally {
       setLoading(false)
     }

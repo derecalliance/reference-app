@@ -185,6 +185,10 @@ pub struct AppState {
     pub arbiter: actix_rt::ArbiterHandle,
     /// `channel_id` → actor, for gRPC ingress only. See [`crate::routing`].
     pub channel_router: Arc<crate::routing::ChannelRouter>,
+    /// What this server did, in order, with the transport each message
+    /// actually travelled over. Read by the Inspect tab and by agents over
+    /// HTTP; see [`crate::debug`].
+    pub events: Arc<crate::debug::EventLog>,
 }
 
 impl AppState {
@@ -206,6 +210,7 @@ impl AppState {
             http_client,
             arbiter,
             channel_router: Arc::new(crate::routing::ChannelRouter::new()),
+            events: Arc::new(crate::debug::EventLog::new()),
         }
     }
 

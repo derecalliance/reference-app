@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
+import { errorText } from './errorText'
 import { Alert, Button, Stack } from '@mui/material'
 import { QRCodeSVG } from 'qrcode.react'
 import {
@@ -17,7 +18,7 @@ import { reportError, reportInfo } from './toastBus'
 import { protocolTimeoutMs, DEFAULT_PROTOCOL_TIMEOUT_SECS, DEFAULT_UNPAIR_ACK } from './config'
 import { ProtocolConfigProvider, useProtocolTimeoutMs } from './ProtocolConfig'
 import { sendMessage, relayMessage, pollMailbox, fromBase64Url, toBase64Url, type MailboxMessage } from './derecApi'
-import { makeChannelStore, makeSecretStore, makeShareStore, makeStateStore, makeUserSecretStore, makeTransport, clearNamespace, loadRawShare, readHelperChannelStatus } from './stores'
+import { makeChannelStore, makeSecretStore, makeShareStore, makeStateStore, makeUserSecretStore, makeTransport, clearNamespace, loadRawShare, readHelperChannelStatus, listReplicaMembers, type StoredReplicaMember } from './stores'
 import { getOrCreateReplicaId } from './replicaIdentity'
 import { QrScanner } from './QrScanner'
 import {
@@ -69,6 +70,7 @@ import {
   clearReplicaState,
   createReplicaFirstSyncTrigger,
   describeRestoreFailure,
+  forgetReplicaChannel,
   forgetReplicaMember,
   loadReplicaState,
   markReplicaFirstSyncStarted,
@@ -96,6 +98,8 @@ import {
 import { loadReplicaAdoptionBlock, saveReplicaAdoptionBlock } from './replicaAdoptionBlock'
 import { TRANSPORT_PROTOCOL_HTTPS, contactMessageToDto, dtoToContactMessage, protocolName } from './contactDto'
 import { resolveRosterActor } from './peerIdentity'
+import { transportLabel, transportLabelIsComplete } from './transportLabel'
+import { InspectTab } from './InspectTab'
 import { AppMuiTheme } from './AppMuiTheme'
 import { ReplicaAdoptionDialog } from './ReplicaAdoptionDialog'
 import { ReplicaFingerprintDialog } from './ReplicaFingerprintDialog'
@@ -562,7 +566,7 @@ function AddSecretModal({
       // round underneath it completes normally.
       setStatus({ kind: 'confirming', participantIds: pairedParticipants.map(h => h.id), version })
     } catch (err) {
-      setStatus({ kind: 'error', message: err instanceof Error ? err.message : String(err) })
+      setStatus({ kind: 'error', message: errorText(err) })
     }
   }
 
@@ -922,7 +926,7 @@ function ShareContactModal({
       })
       .catch((err: unknown) => {
         if (latestModeRef.current !== mode) return
-        setStep({ kind: 'error', message: err instanceof Error ? err.message : String(err) })
+        setStep({ kind: 'error', message: errorText(err) })
       })
       .finally(() => {
         // A superseded run must not clear the flag out from under the newer one.
@@ -1006,6 +1010,35 @@ function ShareContactModal({
         </div>
       </div>
     </div>
+  )
+}
+
+/**
+ * Which transport a peer advertises, on the row where you are already looking.
+ *
+ * Answering this used to mean calling `/actors` and reading JSON — the screen
+ * showed a peer's name, role and channel id but never how to reach it, which
+ * is the first thing you want when a message is not arriving.
+ *
+ * Marked `~` when derived from the single fallback address rather than the
+ * peer's full advertised list, so the badge never claims to be the whole truth.
+ */
+function TransportTag({ h }: { h: PairedParticipant }) {
+  const label = transportLabel(h.transport, h.transports)
+  const complete = transportLabelIsComplete(h.transports)
+
+  return (
+    <span
+      className={`transport-tag transport-tag--${label.toLowerCase().replace('+', '-')}`}
+      title={
+        complete
+          ? `Advertises ${h.transports?.map(t => t.uri).join(', ')}`
+          : `Known address ${h.transport.uri} — this peer may advertise more`
+      }
+    >
+      {label}
+      {complete ? '' : '~'}
+    </span>
   )
 }
 
@@ -1221,7 +1254,7 @@ function PairInitiatorModal<R extends PairingRole>({
     try {
       contact = deserializeContact(payload.trim())
     } catch (err) {
-      setError(`Failed: ${err instanceof Error ? err.message : String(err)}`)
+      setError(`Failed: ${errorText(err)}`)
       return
     }
 
@@ -1262,7 +1295,7 @@ function PairInitiatorModal<R extends PairingRole>({
       setStep({ kind: 'waiting', channelId })
     } catch (err) {
 
-      setError(`Failed: ${err instanceof Error ? err.message : String(err)}`)
+      setError(`Failed: ${errorText(err)}`)
       setStep({ kind: 'input' })
     }
   }
@@ -1476,7 +1509,7 @@ function VerifySharesModal({
     hasStartedRef.current = true
     setSent(true)
     onVerify(version).catch(err => {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(errorText(err))
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -2002,6 +2035,7 @@ function PairedParticipantsList({
                     {pairingRoleLabel(h.peerRole)}
                   </span>
                 )}
+                <TransportTag h={h} />
                 <span className="channel-id-inline">{h.channelId}</span>
                 <span style={{ flex: 1 }} />
                 {h.offline && <span className="status-tag offline">Offline</span>}
@@ -2035,6 +2069,7 @@ function PairedParticipantsList({
                       {pairingRoleLabel(h.peerRole)}
                     </span>
                   )}
+                  <TransportTag h={h} />
                   <span className="channel-id-inline">{h.channelId}</span>
                   <span style={{ flex: 1 }} />
                   {h.offline && <span className="status-tag offline">Offline</span>}
@@ -2089,7 +2124,7 @@ function ProvisionedLinkModal({
     loadChannels()
       .then(setChannels)
       .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : String(err))
+        setError(errorText(err))
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -2109,7 +2144,7 @@ function ProvisionedLinkModal({
       await onLink(selected)
       onClose()
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(errorText(err))
     } finally {
       setSubmitting(false)
     }
@@ -2884,7 +2919,7 @@ function SidePanelParticipantItem({
       const channelId = await startParticipantPairing(contact, 'owner')
       onPairingRequestSent(channelId, participant.id)
     } catch (err) {
-      setPairError(err instanceof Error ? err.message : String(err))
+      setPairError(errorText(err))
     } finally {
       setIsPairing(false)
     }
@@ -3077,7 +3112,7 @@ function AddParticipantModal({
     try {
       await onAdd(name.trim(), autoPair)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(errorText(err))
       setSubmitting(false)
     }
   }
@@ -3283,7 +3318,7 @@ interface ProtectRoundResult {
  * level, outside this switch, and raises itself whichever tab is selected. None
  * of them is gated on this value.
  */
-type ActiveTab = 'participants' | 'replicas' | 'secrets' | 'shares' | 'recovery'
+type ActiveTab = 'participants' | 'replicas' | 'secrets' | 'shares' | 'recovery' | 'inspect'
 
 interface Props {
   owner: Owner
@@ -3511,6 +3546,23 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
   const pendingReplicaHelperRef = useRef<{ name: string; helperId: string } | null>(null)
 
   /**
+   * The replica group as the **library** holds it, not as the app remembers it.
+   *
+   * The two diverge, and only this side decides whether a peer may rejoin: a
+   * member the app has forgotten still occupies its replica id, and the peer is
+   * turned away with "replica id is already in use by another member of the
+   * group" with nothing on screen to explain it. Reading the store is how such
+   * a member becomes visible — and, through `evictReplicaMember`, removable.
+   */
+  const [storedMembers, setStoredMembers] = useState<readonly StoredReplicaMember[]>([])
+
+  const refreshStoredMembers = useCallback(() => {
+    const secretId = ownSecretIdRef.current
+    if (!secretId) return
+    setStoredMembers(listReplicaMembers(`owner:${owner.ownerId}`, secretId))
+  }, [owner.ownerId])
+
+  /**
    * Recompute the projection from the roster already in hand.
    *
    * Local replica state is written synchronously — by the pairing fold, by a
@@ -3519,9 +3571,16 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
    * lying about its status.
    */
   const refreshReplicaRows = useCallback(() => {
+    // Unconditional, and before the roster guard: the library's own group is
+    // readable without a roster, and it is precisely when the app's picture is
+    // incomplete that seeing the protocol's matters.
+    refreshStoredMembers()
+
     const snapshot = rosterSnapshotRef.current
     if (!snapshot) return
     setReplicaRows(replicaViews(snapshot, loadReplicaState(owner.ownerId)))
+    // `refreshStoredMembers` is itself a stable callback over the same owner id.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [owner.ownerId])
 
   // Prime the roster once on mount. The poll below is the steady-state source,
@@ -3554,6 +3613,16 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
    * the row keeps its prompt, and the expiry keeps counting down.
    */
   const [fingerprintChannelId, setFingerprintChannelId] = useState<string | null>(null)
+
+  /**
+   * The replica row whose "Forget" is awaiting confirmation, or `null`.
+   *
+   * Confirmed rather than immediate because forgetting is silent on the wire:
+   * the peer keeps the channel and goes on believing in it, so the user has to
+   * be told that before it happens, not after.
+   */
+  const [forgetReplicaTarget, setForgetReplicaTarget] =
+    useState<{ channelId: string; name: string } | null>(null)
 
   /** The replica channel whose "Sync now" is in flight. One at a time: a round is global. */
   const [syncingChannelId, setSyncingChannelId] = useState<string | null>(null)
@@ -5652,6 +5721,7 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
               name: actor.name,
               channelId: '',
               transport: { protocol: actor.transport.protocol, uri: actor.transport.uri },
+              transports: actor.transports,
               connectionStatus: 'available' as const,
               secretShares: [],
               browserManaged: actor.browser_managed ?? false,
@@ -6666,8 +6736,33 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
    */
   async function handleRemoveFromGroup(replica: ReplicaView): Promise<void> {
     const peerReplicaId = replica.peerReplicaId
-    if (!peerReplicaId) return
+    if (!peerReplicaId) {
+      // The row gates this action on the same field, so reaching here means the
+      // projection changed under the click. Saying so beats returning in
+      // silence, which is how this button came to look broken: a pairing that
+      // never announced a replica id has no member to evict, and "Forget" is
+      // the way off the screen for such a row.
+      reportError(
+        `${replica.name} never announced a replica id, so there is no group member to remove. Use “Forget” to drop the row from this device.`,
+      )
+      return
+    }
 
+    await evictReplicaMember(peerReplicaId, replica.channelId)
+  }
+
+  /**
+   * Evict `peerReplicaId`, whatever the app still remembers about it.
+   *
+   * Takes the id rather than a row because a member can outlive its row: the
+   * library's group is its own record, and nothing the app forgets reaches it.
+   * `channelId` is the row's, when there is one, so the participant entry goes
+   * with it.
+   */
+  async function evictReplicaMember(
+    peerReplicaId: string,
+    channelId: string | null,
+  ): Promise<void> {
     setRemovingReplicaIds(prev => new Set(prev).add(peerReplicaId))
     try {
       const events = await removeReplicaMember(
@@ -6689,31 +6784,29 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
       // one exists — there is nothing to carry it.
       if (ownerRef.current.secretBag) {
         await replicaSyncTrigger.syncNow()
-
-        // The library has dropped the member from its roster. Two app-side
-        // records outlive it and neither is reachable from the library: the
-        // per-channel replica bookkeeping, and the roster row the Replicas tab
-        // actually renders. Left behind, the row keeps offering actions on a
-        // member that is no longer in the group.
-        forgetReplicaMember(owner.ownerId, peerReplicaId)
-
-        const evictedChannelId = replica.channelId
-        if (evictedChannelId) {
-          const next: Owner = {
-            ...ownerRef.current,
-            participants: ownerRef.current.participants.filter(
-              p => p.channelId !== evictedChannelId,
-            ),
-          }
-          ownerRef.current = next
-          onUpdateRef.current(next)
-        }
       } else {
         reportInfo(
           'Eviction announced. It completes on the next protect round — this vault holds no secret to publish yet.',
         )
       }
+
+      // Drop the app-side records unconditionally. The library has flagged the
+      // member either way, and leaving these behind is what stranded rows
+      // before: they are not reachable from the library, so nothing else ever
+      // clears them, and a row that survives its member keeps offering actions
+      // that can no longer do anything.
+      forgetReplicaMember(owner.ownerId, peerReplicaId)
+      if (channelId) {
+        const next: Owner = {
+          ...ownerRef.current,
+          participants: ownerRef.current.participants.filter(p => p.channelId !== channelId),
+        }
+        ownerRef.current = next
+        onUpdateRef.current(next)
+      }
+
       refreshReplicaRows()
+      refreshStoredMembers()
     } catch (err) {
       reportError(`Could not remove replica ${peerReplicaId} from the group`, err, {
         replicaId: peerReplicaId,
@@ -6725,6 +6818,44 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
         return next
       })
     }
+  }
+
+  /**
+   * Drop a replica row from this device, without involving the protocol.
+   *
+   * The escape hatch, and the only replica action that cannot fail. A replica
+   * has no channel-level unpair — `RemoveReplica` names a *member*, and that id
+   * arrives on `ReplicaPaired`, which a pairing that failed never sends — so a
+   * row left by a broken handshake has nothing the library will act on. Before
+   * this existed the row's "Unpair" dispatched the *helper* unpair flow at it,
+   * which the library rejects with "channel id not present in channel store" on
+   * every replica channel, healthy or not; the row could never be cleared.
+   *
+   * Local by construction: the peer is told nothing and keeps its own channel.
+   * That is a real cost, which is why the confirmation says so.
+   */
+  function handleForgetReplica(channelId: string, name: string): void {
+    forgetReplicaChannel(owner.ownerId, channelId)
+
+    const next: Owner = {
+      ...ownerRef.current,
+      participants: ownerRef.current.participants.filter(p => p.channelId !== channelId),
+    }
+    ownerRef.current = next
+    onUpdateRef.current(next)
+
+    // The comparison for a channel that is no longer listed has nothing left to
+    // confirm, and would otherwise stay on screen over an empty tab.
+    setFingerprintChannelId(cur => (cur === channelId ? null : cur))
+    refreshReplicaRows()
+
+    log({
+      role: 'owner',
+      flow: 'unpairing',
+      step: 'replica_forgotten',
+      description: `Forgot replica ${name} (channel ${channelId}) on this device only`,
+      payload: { channelId, peerName: name },
+    })
   }
 
   /**
@@ -7299,7 +7430,7 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
         role: 'owner',
         flow: 'pairing',
         step: 'channel_link_failed',
-        description: `Failed to link channels: ${err instanceof Error ? err.message : String(err)}`,
+        description: `Failed to link channels: ${errorText(err)}`,
         payload: { sourceChannelId, targetChannelId },
       })
     } finally {
@@ -7393,6 +7524,23 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
   // protects this secret when it protects nothing.
   const pairedChannels = splitPairedChannels(
     owner.participants.filter(p => !p.channelId || !unconfirmedChannelIds.has(p.channelId)),
+  )
+
+  /**
+   * Members the library holds that no row on this page accounts for.
+   *
+   * This device's own `Source` entry is excluded — it is the group, not a peer
+   * in it — as is every member a replica row already renders. What remains is
+   * the state that has no other way to be seen: a member left behind by a
+   * pairing the app forgot, or never recorded, still occupying its replica id
+   * and turning that peer away on every attempt to pair again.
+   */
+  const ownReplicaId = getOrCreateReplicaId(owner.ownerId).toString()
+  const knownReplicaIds = new Set(
+    replicaRows.flatMap(view => (view.peerReplicaId === null ? [] : [view.peerReplicaId])),
+  )
+  const orphanedMembers = storedMembers.filter(
+    member => member.replicaId !== ownReplicaId && !knownReplicaIds.has(member.replicaId),
   )
 
   // The row the fingerprint modal is for. Resolved by channel because that is
@@ -7571,6 +7719,15 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
                 <span className="tab-count">{(owner.recoveredSecrets ?? []).length}</span>
               </button>
             )}
+            <button
+              role="tab"
+              className={`tab-btn ${activeTab === 'inspect' ? 'active' : ''}`}
+              onClick={() => setActiveTab('inspect')}
+              aria-selected={activeTab === 'inspect'}
+              title="The server's own view of itself — the same payload GET /debug/state returns"
+            >
+              Inspect
+            </button>
           </div>
 
           <div className="tab-panel" role="tabpanel">
@@ -7594,17 +7751,20 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
                 viewByChannelId={replicaViewByChannelId}
                 protocolTimeoutSecs={protocolTimeoutSecs}
                 syncingChannelId={syncingChannelId}
-                unpairingChannelIds={unpairingChannelIds}
                 syncNoticeFor={replicaSyncNoticeFor}
                 onDismissSyncNotice={dismissReplicaSyncNotice}
                 onOpenFingerprint={setFingerprintChannelId}
                 onSyncNow={replica => void handleReplicaSyncNow(replica)}
-                onUnpair={handleTogglePair}
+                onForget={(channelId, name) => setForgetReplicaTarget({ channelId, name })}
                 onReplicaDiscovery={() => void handleReplicaDiscovery()}
                 replicaDiscoveryRunning={replicaDiscoveryRunning}
                 onRemoveFromGroup={replica => void handleRemoveFromGroup(replica)}
                 removingReplicaIds={removingReplicaIds}
                 onToggleOffline={replica => void handleToggleReplicaPeerOffline(replica)}
+                orphanedMembers={orphanedMembers}
+                onRemoveOrphan={member =>
+                  void evictReplicaMember(member.replicaId, member.channelId)
+                }
               />
             )}
             {activeTab === 'secrets' && (
@@ -7626,6 +7786,7 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
                 onRestoreFromBag={handleRestoreFromBag}
               />
             )}
+            {activeTab === 'inspect' && <InspectTab />}
           </div>
         </div>
 
@@ -8037,6 +8198,57 @@ export default function OwnerPage({ owner, onUpdate }: Props) {
                   Accept
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/*
+        Forget-replica confirmation.
+
+        Confirmed rather than immediate because nothing goes out on the wire:
+        the peer keeps its side of the channel and is never told, so this is the
+        one place the user can learn that before it happens.
+      */}
+      {forgetReplicaTarget && (
+        <div
+          className="modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="forget-replica-title"
+        >
+          <div className="modal">
+            <div className="modal-header">
+              <h2 className="modal-title" id="forget-replica-title">
+                Forget this replica?
+              </h2>
+            </div>
+            <div className="modal-body">
+              <p>
+                Remove <strong>{forgetReplicaTarget.name}</strong> on channel{' '}
+                <code>{forgetReplicaTarget.channelId}</code> from this device’s list.
+              </p>
+              <p>
+                <strong>{forgetReplicaTarget.name} is not told.</strong> They keep their side
+                of the channel and will go on believing it exists. Nothing is mirrored to
+                them again from here. To remove a device from the group properly — so the
+                whole group stops counting it — use “Remove from group” instead, which is
+                offered once the peer has announced its replica id.
+              </p>
+            </div>
+            <div className="modal-actions">
+              <button className="secondary" onClick={() => setForgetReplicaTarget(null)}>
+                Cancel
+              </button>
+              <button
+                className="primary"
+                onClick={() => {
+                  handleForgetReplica(forgetReplicaTarget.channelId, forgetReplicaTarget.name)
+                  setForgetReplicaTarget(null)
+                }}
+              >
+                Forget
+              </button>
             </div>
           </div>
         </div>

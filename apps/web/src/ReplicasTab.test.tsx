@@ -87,17 +87,18 @@ const BASE: ReplicasTabProps = {
   viewByChannelId: new Map([['1234', view()]]),
   protocolTimeoutSecs: 300,
   syncingChannelId: null,
-  unpairingChannelIds: new Set<string>(),
   syncNoticeFor: () => null,
   onDismissSyncNotice: () => {},
   onOpenFingerprint: () => {},
   onSyncNow: () => {},
-  onUnpair: () => {},
+  onForget: () => {},
   onReplicaDiscovery: () => {},
   replicaDiscoveryRunning: false,
   onRemoveFromGroup: () => {},
   removingReplicaIds: new Set<string>(),
   onToggleOffline: () => {},
+  orphanedMembers: [],
+  onRemoveOrphan: () => {},
 }
 
 function render(overrides: Partial<ReplicasTabProps> = {}): void {
@@ -321,5 +322,61 @@ describe('the fingerprint comparison with a different tab open', () => {
     // Still on the other tab: the modal came to the user, not the other way round.
     expect(text()).toContain('Secret Bag')
     expect(text()).not.toContain('Replica channels')
+  })
+})
+
+describe('group members the app cannot account for', () => {
+  const orphan = {
+    replicaId: '3534782649887640751',
+    channelId: '2335620354810298024',
+    role: 'Destination',
+    status: 'Paired' as const,
+    name: 'Bob',
+  }
+
+  it('shows nothing when the group and the rows agree', () => {
+    // The normal state. A standing heading over an empty list would imply the
+    // group is routinely inconsistent.
+    render({ orphanedMembers: [] })
+    expect(text()).not.toContain('Group members with no channel')
+  })
+
+  it('names the member, its replica id, and why it matters', () => {
+    render({ orphanedMembers: [orphan] })
+
+    expect(text()).toContain('Group members with no channel')
+    expect(text()).toContain('Bob')
+    expect(text()).toContain('3534782649887640751')
+    // The error the user actually sees, quoted, so the page connects the two.
+    expect(text()).toContain('already in use by another member of the group')
+  })
+
+  it('offers eviction by replica id', () => {
+    const onRemoveOrphan = vi.fn()
+    render({ orphanedMembers: [orphan], onRemoveOrphan })
+
+    const button = Array.from(host.querySelectorAll('button')).find(
+      b => b.textContent === 'Remove from group',
+    )
+    button!.click()
+
+    expect(onRemoveOrphan).toHaveBeenCalledWith(orphan)
+  })
+
+  it('shows an orphan even when there are no replica channels at all', () => {
+    // The state that stranded the reported session: every row forgotten, the
+    // tab saying "no replicas yet", and the protocol still refusing to pair.
+    render({ channels: [], orphanedMembers: [orphan] })
+
+    expect(text()).toContain('No replicas yet')
+    expect(text()).toContain('3534782649887640751')
+  })
+
+  it('marks a removal in flight', () => {
+    render({
+      orphanedMembers: [orphan],
+      removingReplicaIds: new Set([orphan.replicaId]),
+    })
+    expect(text()).toContain('Removing…')
   })
 })

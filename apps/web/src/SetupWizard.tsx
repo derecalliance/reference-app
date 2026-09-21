@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { errorText } from './errorText'
 import './SetupWizard.css'
 import type { Owner, PairedParticipant, TransportProtocol } from './types'
 import {
@@ -835,7 +836,12 @@ interface Props {
 
 /** Wire an actor DTO into the participant shape the owner state carries. */
 function toParticipant(
-  actor: { id: string; name: string; transport: { protocol: TransportProtocol; uri: string } },
+  actor: {
+    id: string
+    name: string
+    transport: { protocol: TransportProtocol; uri: string }
+    transports?: { protocol: TransportProtocol; uri: string }[]
+  },
   channelId: string,
 ): PairedParticipant {
   return {
@@ -843,6 +849,7 @@ function toParticipant(
     name: actor.name,
     channelId,
     transport: { protocol: actor.transport.protocol, uri: actor.transport.uri },
+    transports: actor.transports,
     connectionStatus: channelId ? 'paired' : 'available',
     secretShares: [],
   }
@@ -969,7 +976,7 @@ export default function SetupWizard({ onReady }: Props) {
         actors.filter(a => a.role === 'owner').map(a => ({ id: a.id, name: a.name })),
       )
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(errorText(err))
     } finally {
       setLoadingClaimable(false)
     }
@@ -1068,7 +1075,7 @@ export default function SetupWizard({ onReady }: Props) {
 
       await onReady(owner)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(errorText(err))
       setBusy(false)
     }
   }
@@ -1137,7 +1144,7 @@ export default function SetupWizard({ onReady }: Props) {
         setBusy(false)
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(errorText(err))
       setBusy(false)
     }
   }

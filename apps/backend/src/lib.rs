@@ -15,6 +15,7 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 pub mod actor;
 pub mod config;
+pub mod debug;
 pub mod envelope;
 pub mod grpc;
 pub mod instances;
@@ -41,6 +42,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(routes::health::handler))
         .route("/config", get(routes::config::get))
+        // The debug surface. Unauthenticated by design: this app ships as a
+        // developer's local container and exposing its internals is the point.
+        .route("/debug/state", get(routes::debug::state))
+        .route("/debug/events", get(routes::debug::events))
         .route("/owners", post(routes::owners::register))
         .route("/actors", get(routes::actors::list))
         .route("/actors/{actor_id}/contact", post(routes::actors::create_contact))

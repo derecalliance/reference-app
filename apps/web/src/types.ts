@@ -45,6 +45,16 @@ export interface PairedParticipant {
   /** Unique identifier for the owner–participant channel (decimal string of u64) */
   channelId: string
   transport: Transport
+  /**
+   * Every endpoint this peer advertises, in its own preference order.
+   *
+   * Optional because not every construction site knows the peer's roster entry
+   * — a channel resolved only from what travelled on the wire has just the one
+   * address. Where it is known it is what distinguishes a gRPC-only peer from
+   * one offering both, which [`Self::transport`] alone cannot: that is only
+   * ever the first entry.
+   */
+  transports?: Transport[]
   secretShares: SecretShareRef[]
   connectionStatus: ParticipantConnectionStatus
   /**

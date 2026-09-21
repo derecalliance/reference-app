@@ -1,4 +1,5 @@
 import { fromBase64Url, toBase64Url } from './derecApi'
+import { errorText } from './errorText'
 
 // ── Key layout ───────────────────────────────────────────────────────────────
 //
@@ -405,6 +406,78 @@ export function readHelperChannelStatus(
   } catch {
     return null
   }
+}
+
+/**
+ * One member of the replica group, as the **library's own store** holds it.
+ *
+ * Read straight from the store rather than from the app's replica bookkeeping,
+ * because the two can disagree and only this side is authoritative about who
+ * the protocol thinks is in the group. A member the app has forgotten — or
+ * never recorded — still blocks a peer from rejoining with the same replica id,
+ * and until this existed nothing in the app could see it, let alone name it.
+ */
+export interface StoredReplicaMember {
+  /** Decimal string; the key the member is stored under and `RemoveReplica` names. */
+  replicaId: string
+  /** Decimal string, or `null` if the record does not parse. */
+  channelId: string | null
+  /** `Source` or `Destination`, as serde wrote it. */
+  role: string | null
+  status: ChannelStatus
+  /** The peer's advertised name, when it sent one. */
+  name: string | null
+}
+
+/**
+ * Every replica-group member in one partition, oldest first.
+ *
+ * `replicaId` comes from the index, which stores it as a string already, and
+ * `channelId` is pulled out with a regex rather than `JSON.parse` — both ids are
+ * `u64` and would be silently rounded by a parse, which is the same reason
+ * `readHelperChannelStatus` reads only the status string.
+ */
+export function listReplicaMembers(namespace: string, secretId: string): StoredReplicaMember[] {
+  const members: StoredReplicaMember[] = []
+
+  for (const replicaId of loadStringArray(memberIndexKey(namespace, secretId))) {
+    const raw = localStorage.getItem(memberRecordKey(namespace, secretId, replicaId))
+    if (!raw) continue
+
+    let text: string
+    try {
+      text = new TextDecoder().decode(fromBase64Url(raw))
+    } catch {
+      continue
+    }
+
+    const record = (() => {
+      try {
+        return (JSON.parse(text) as { Replica?: Record<string, unknown> }).Replica ?? null
+      } catch {
+        return null
+      }
+    })()
+
+    const status = record?.['status']
+    members.push({
+      replicaId,
+      channelId: /"channel_id":(\d+)/.exec(text)?.[1] ?? null,
+      role: typeof record?.['role'] === 'string' ? (record['role'] as string) : null,
+      status:
+        status === 'Pending' || status === 'Paired' || status === 'Unpairing' ? status : 'Paired',
+      name: readMemberName(record),
+    })
+  }
+
+  return members
+}
+
+function readMemberName(record: Record<string, unknown> | null): string | null {
+  const info = record?.['communication_info']
+  if (typeof info !== 'object' || info === null) return null
+  const name = (info as Record<string, unknown>)['name']
+  return typeof name === 'string' && name.trim() !== '' ? name : null
 }
 
 // ── Secret store ─────────────────────────────────────────────────────────────
@@ -892,7 +965,7 @@ export function makeTransport(
           await leg.deliver(leg.uri, message)
           return
         } catch (err) {
-          failures.push(`${leg.uri}: ${err instanceof Error ? err.message : String(err)}`)
+          failures.push(`${leg.uri}: ${errorText(err)}`)
         }
       }
 

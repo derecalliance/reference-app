@@ -117,6 +117,127 @@ test.describe('replica groups', () => {
     await expect(check).toBeEnabled({ timeout: 60_000 })
   })
 
+  /**
+   * A replica row must always have a way off the screen.
+   *
+   * The row used to carry an "Unpair" that dispatched `Unpair { channel_id }`,
+   * the *helper* teardown. The library stores group members by replica id and
+   * never by channel id, so it rejected that on every replica channel — a
+   * healthy, verified, actively-mirroring one included — with "channel id not
+   * present in channel store". Nothing else could clear the row, so a pairing
+   * that went wrong was permanent.
+   */
+  test('a replica row offers no helper-style Unpair', async ({ page, pageErrors }) => {
+    await setUpOwner(page, { name: 'Alice', participants: 3, prePaired: 0, minParticipants: 2 })
+    const name = uniqueReplicaName()
+    await addAndPairReplica(page, name)
+
+    await openTab(page, 'Replicas')
+    const row = replicaChannelRow(page, name)
+    await expect(row.locator('.status-tag')).toHaveText('Verified', { timeout: 60_000 })
+
+    // The action that never worked is gone, and the one that always works is
+    // there in its place.
+    await expect(row.getByRole('button', { name: 'Unpair' })).toHaveCount(0)
+    await expect(row.getByRole('button', { name: 'Forget' })).toBeVisible()
+
+    expect(pageErrors).toEqual([])
+  })
+
+  test('Forget clears a replica row without any protocol call failing', async ({
+    page,
+    pageErrors,
+  }) => {
+    const failures: string[] = []
+    page.on('console', message => {
+      if (message.type() === 'error') failures.push(message.text())
+    })
+
+    await setUpOwner(page, { name: 'Alice', participants: 3, prePaired: 0, minParticipants: 2 })
+    const name = uniqueReplicaName()
+    await addAndPairReplica(page, name)
+
+    await openTab(page, 'Replicas')
+    const row = replicaChannelRow(page, name)
+    await row.getByRole('button', { name: 'Forget' }).click()
+
+    // Confirmed rather than immediate: nothing goes out on the wire, and the
+    // modal is the only place the user can learn that.
+    const confirm = page.locator('.modal-overlay').filter({ hasText: 'Forget this replica?' })
+    await expect(confirm).toContainText('is not told')
+    await confirm.getByRole('button', { name: 'Forget' }).click()
+
+    await expect.poll(() => replicaChannelCount(page), { timeout: 30_000 }).toBe(0)
+
+    // The point of the escape hatch: it cannot fail. A dispatched flow that the
+    // library refuses would land here, which is exactly how the old Unpair
+    // behaved.
+    expect(failures.filter(text => /unpair|channel store/i.test(text))).toEqual([])
+    expect(pageErrors).toEqual([])
+  })
+
+  /**
+   * Forget is app-side only, and that is a real cost: the library goes on
+   * counting the member, so its replica id stays taken and the device behind it
+   * is refused on every attempt to pair again — with nothing on screen to
+   * explain why. The orphan list is what makes that state visible and clearable.
+   */
+  test('a member the app has forgotten is still listed, and can be evicted', async ({
+    page,
+    pageErrors,
+  }) => {
+    await setUpOwner(page, { name: 'Alice', participants: 3, prePaired: 0, minParticipants: 2 })
+    // Eviction completes by publishing a roster, so the vault needs a secret to
+    // publish — and protecting one needs the configured minimum of helpers.
+    await pairParticipant(page, { index: 0, mode: 'Inline keys' })
+    await pairParticipant(page, { index: 1, mode: 'Inline keys' })
+
+    const name = uniqueReplicaName()
+    await addAndPairReplica(page, name)
+    await protectSecret(page, 'Passphrase', 'hunter2')
+
+    await openTab(page, 'Replicas')
+    await replicaChannelRow(page, name).getByRole('button', { name: 'Forget' }).click()
+    await page
+      .locator('.modal-overlay')
+      .filter({ hasText: 'Forget this replica?' })
+      .getByRole('button', { name: 'Forget' })
+      .click()
+    await expect.poll(() => replicaChannelCount(page), { timeout: 30_000 }).toBe(0)
+
+    // The row is gone, but the member is not — and the tab says so rather than
+    // claiming there are no replicas.
+    const orphans = page
+      .locator('.replicas-tab-section')
+      .filter({ hasText: 'Group members with no channel' })
+    await expect(orphans).toBeVisible({ timeout: 30_000 })
+    await expect(orphans).toContainText('Destination')
+
+    // This device's own Source entry is the group, not a peer in it, so exactly
+    // one member is listed.
+    await expect(orphans.locator('.channel-block')).toHaveCount(1)
+
+    await orphans.getByRole('button', { name: 'Remove from group' }).click()
+    await expect(orphans).toBeHidden({ timeout: 90_000 })
+
+    // Gone from the library's own store, not just from the page — only this
+    // device's `Source` entry is left.
+    const memberRoles = () =>
+      page.evaluate(() => {
+        const roles: string[] = []
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i)!
+          if (!key.includes(':channel:replica:')) continue
+          const text = atob(localStorage.getItem(key)!.replace(/-/g, '+').replace(/_/g, '/'))
+          roles.push(/"role":"(\w+)"/.exec(text)?.[1] ?? '?')
+        }
+        return roles.sort()
+      })
+    await expect.poll(memberRoles, { timeout: 90_000 }).toEqual(['Source'])
+
+    expect(pageErrors).toEqual([])
+  })
+
   test('evicting a member removes it from the group and the roster', async ({ page, pageErrors }) => {
     await setUpOwner(page, { name: 'Alice', participants: 3, prePaired: 0, minParticipants: 2 })
     await pairParticipant(page, { index: 0, mode: 'Inline keys' })

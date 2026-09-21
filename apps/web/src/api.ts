@@ -196,6 +196,93 @@ export async function apiRegisterOwner(
 // ── Actors ───────────────────────────────────────────────────────────────────
 
 /** Every actor registered on this server, in registration order. */
+// ── Debug surface ────────────────────────────────────────────────────────────
+//
+// The same payloads `AGENTS.md` points a script at. The Inspect tab renders
+// these rather than assembling its own view, so what a human reads on screen
+// and what an agent reads over HTTP cannot drift apart.
+
+/** One route the gRPC ingress can resolve, and which tier holds it. */
+export interface DebugRoute {
+  /** Decimal string — a `u64` exceeds JavaScript's exact integer range. */
+  channel_id: string
+  actor_id: string
+  /** `bound` — the pairing completed. `pinned` — minted but never completed. */
+  tier: 'bound' | 'pinned'
+}
+
+export interface DebugActor {
+  id: string
+  role: 'owner' | 'helper'
+  name: string
+  transports: TransportDto[]
+  /** Derived from `transports`, so it cannot disagree with them. */
+  transport_mode: 'http' | 'grpc' | 'both'
+  secret_id: string
+  browser_managed: boolean
+  /** Simulating offline: inbound messages are discarded, not queued. */
+  disabled: boolean
+  channels: string[]
+  /** One per protocol instance — its own, plus one per owner it mirrors. */
+  instance_secret_ids: string[]
+}
+
+export interface DebugState {
+  base_url: string
+  grpc: {
+    enabled: boolean
+    port: number
+    authority: string
+    relay_enabled: boolean
+  }
+  actors: DebugActor[]
+  routes: DebugRoute[]
+  events_dropped: number
+  latest_event_seq: number
+}
+
+/** What actually carried a message — not what the peer advertises. */
+export type DebugCarrier = 'http' | 'grpc' | 'grpc_via_relay'
+
+export interface DebugEvent {
+  seq: number
+  at_ms: number
+  direction: 'inbound' | 'outbound'
+  carrier: DebugCarrier
+  outcome: 'delivered' | 'dropped' | 'refused'
+  /** Absent when the message could not be routed — the interesting case. */
+  actor_id?: string
+  channel_id?: string
+  bytes: number
+  detail: string
+}
+
+export interface DebugEvents {
+  events: DebugEvent[]
+  /** Non-zero means the oldest entries are gone — truncation, not silence. */
+  dropped: number
+  /** Pass back as `after` to poll for what comes next. */
+  latest_seq: number
+}
+
+/** GET /debug/state — everything the server currently knows. */
+export async function apiGetDebugState(): Promise<DebugState> {
+  const res = await request(`/debug/state`)
+  if (!res.ok) {
+    throw new Error(`Failed to fetch server state: ${res.status} ${res.statusText}`)
+  }
+  return res.json() as Promise<DebugState>
+}
+
+/** GET /debug/events — what the server did, in order, after `after`. */
+export async function apiGetDebugEvents(after: number): Promise<DebugEvents> {
+  const res = await request(`/debug/events?after=${after}`)
+  if (!res.ok) {
+    throw new Error(`Failed to fetch server events: ${res.status} ${res.statusText}`)
+  }
+  return res.json() as Promise<DebugEvents>
+}
+
 export async function apiGetActors(): Promise<BEActorWithStatus[]> {
   const res = await request(`/actors`)
   if (!res.ok) {
