@@ -29,12 +29,8 @@ base64 = "0.22"
 # SDK. Plaintext endpoints are not a compile-time feature — they are
 # `DeRecProtocolBuilder::with_unsafe_connection`, decided per instance at
 # runtime.
-#
-# 0.0.3 is not on crates.io yet, so both crates are consumed from a sibling
-# checkout of https://github.com/derecalliance/lib-derec. Swap `path` back for
-# `version = "0.0.3"` once the release is published.
-derec-library = { version = "0.0.3", path = "../../../lib-derec/library" }
-derec-proto = { version = "0.0.3", path = "../../../lib-derec/protobufs" }
+derec-library = "0.0.3"
+derec-proto = "0.0.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 rand = "0.8"
 # Operator-supplied defaults for the front end, read from a mounted config file.
