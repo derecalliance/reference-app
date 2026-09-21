@@ -1,15 +1,11 @@
-//! Generate the `DeRecTransport` gRPC service from the sibling `lib-derec`
-//! checkout.
-//!
-//! `extern_path` maps the proto package onto `derec_proto` so the generated
-//! service speaks the exact `DeRecMessage` the library hands `DeRecTransport`,
-//! with no re-encode across a duplicate definition. This is the recipe the
-//! library's own `smoke-tests/grpc` uses.
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let proto_root = "../../../lib-derec/protobufs";
-    println!("cargo:rerun-if-changed={proto_root}/grpc/derectransport.proto");
-    println!("cargo:rerun-if-changed={proto_root}/protobufs/derecmessage.proto");
+    // Vendored from the published `derec-proto` crate rather than read from a
+    // sibling checkout: a Docker build context rooted at this repo cannot see
+    // a sibling, and the crate exposes no supported way to locate the copies it
+    // ships. `tests/proto_drift.rs` guards these against the pinned release.
+    let proto_root = "proto";
+
+    println!("cargo:rerun-if-changed={proto_root}");
 
     tonic_prost_build::configure()
         .build_server(true)
