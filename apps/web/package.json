@@ -17,7 +17,7 @@
     "dev:lan": "vite --host"
   },
   "dependencies": {
-    "@derec-alliance/web": "file:../../../lib-derec/library/target/pkg-web",
+    "@derec-alliance/web": "^0.0.3",
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.1",
     "@faker-js/faker": "^10.4.0",
