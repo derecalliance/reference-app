@@ -180,6 +180,10 @@ pub struct AppState {
     /// Operator-supplied starting values for the front end. Read once at boot
     /// and never mutated — the backend serves them, the front end owns them.
     pub defaults: Arc<Defaults>,
+    /// What this node was configured with and where each value came from.
+    /// Served by `GET /debug/config`. All built-in defaults under
+    /// `test_support`, which builds state without a configuration pass.
+    pub config: Arc<crate::config::Loaded>,
     pub base_url: Arc<str>,
     pub http_client: reqwest::Client,
     pub arbiter: actix_rt::ArbiterHandle,
@@ -206,12 +210,23 @@ impl AppState {
             disabled_helpers: Arc::new(DashMap::new()),
             browser_participant_contacts: Arc::new(DashMap::new()),
             defaults: Arc::new(defaults),
+            config: Arc::new(crate::config::Loaded::default()),
             base_url: base_url.into(),
             http_client,
             arbiter,
             channel_router: Arc::new(crate::routing::ChannelRouter::new()),
             events: Arc::new(crate::debug::EventLog::new()),
         }
+    }
+
+    /// Attach the configuration this node actually booted with.
+    ///
+    /// Separate from [`AppState::new`] so the other construction sites — all
+    /// test fixtures — do not have to supply something they have no opinion
+    /// about.
+    pub fn with_config(mut self, loaded: crate::config::Loaded) -> Self {
+        self.config = Arc::new(loaded);
+        self
     }
 
     /// Host and port peers dial for gRPC, derived from `base_url`'s host and

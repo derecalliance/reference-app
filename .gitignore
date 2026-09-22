@@ -2,6 +2,10 @@
 target/
 .env
 .env.*
+# ...but `examples/.env.example` is documentation, not somebody's local secrets,
+# and developers need it tracked to copy from. The pattern above matches at any
+# depth, so re-including it takes an explicit negation.
+!examples/.env.example
 
 # React
 

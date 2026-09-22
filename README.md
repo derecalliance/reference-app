@@ -39,35 +39,17 @@ registers itself as an owner actor against it — a second tab, an incognito
 window or another machine on the network is simply another owner. There is no
 grouping above that: everything the server knows lives in one actor registry.
 
-### Building the SDK from source (temporary)
+### The SDK
 
-Both halves track SDK **0.0.3**, which is not published yet, so both consume it
-from a sibling checkout of [`lib-derec`](https://github.com/derecalliance/lib-derec)
-rather than from a registry. Clone it next to this repo:
+Both halves track SDK **0.0.4**, taken from the registries: `derec-library`
+and `derec-proto` from crates.io, `@derec-alliance/web` from npm. No sibling
+checkout is required for anything, including the end-to-end tests.
 
-```
-<parent>/
-├── lib-derec/
-└── reference-app/
-```
-
-The backend takes it as a Cargo path dependency and needs nothing built by
-hand. The front end takes a `file:` dependency on the WASM package, which
-**does** have to be built first — and rebuilt whenever `lib-derec` changes:
-
-```
-cd ../lib-derec
-node scripts/prepare-web-package.mjs     # needs wasm-pack and protoc
-cd ../reference-app/apps/web
-npm install
-```
-
-The output lands under `lib-derec/library/target/pkg-web`, so `cargo clean` in
-that repo removes it and the build has to be re-run.
-
-Once 0.0.3 is on the registries this reverts to two version pins:
-`derec-library` / `derec-proto` in `apps/backend/Cargo.toml` and
-`@derec-alliance/web` in `apps/web/package.json`.
+The backend generates its own gRPC transport service, because the published
+`derec-proto` ships message types only. The 15 `.proto` files that needs are
+vendored in `apps/backend/proto/`, and `tests/proto_drift.rs` checks them
+against the pinned release — so bumping the SDK means re-copying them, and the
+test tells you when you forgot.
 
 ### Plaintext endpoints in local development
 
@@ -138,7 +120,7 @@ address the phone can use:
 ```
 # terminal 1 — backend, advertising this machine's LAN address
 cd apps/backend
-BASE_URL=http://192.168.0.28 cargo run
+DEREC_BASE_URL=http://192.168.0.28 cargo run
 
 # terminal 2 — dev server bound to the network rather than loopback
 cd apps/web
@@ -153,7 +135,7 @@ The front end needs no configuration: with `VITE_API_URL` unset it assumes the
 backend is on port 5000 of **whatever host served the page**, so the phone talks
 to the laptop rather than to itself.
 
-`BASE_URL` is the one that must be set. It is not merely where the backend
+`DEREC_BASE_URL` is the one that must be set. It is not merely where the backend
 listens — it is stamped into every transport URI handed to a peer, and that peer
 posts to it. Left at `localhost`, pairing appears to work and then the peer
 sends protocol messages to its *own* loopback. The backend logs a warning at
@@ -221,24 +203,106 @@ of events will end up watching a round nobody dispatched. Read it back from
 `ProtectSecretStarted`. Both bugs of this shape have been fixed and are covered
 by `replicas.spec.ts`.
 
-### Configuring defaults
+### Configuring it
 
-The setup wizard's starting values come from a TOML file the backend reads once
-at boot, so a developer running the image does not have to retype them on every
-run. Copy `apps/backend/config.example.toml` to `config.toml` beside the binary,
-or mount it anywhere and point `DEREC_CONFIG_PATH` at it:
+Two ways in, one merged result: a TOML file and environment variables, with the
+environment winning. Anything settable one way is settable the other.
+
+Worked examples of all of it live in [`examples/`](examples/) — every key
+documented inline, nothing to look up:
+
+| File | Copy it to | For |
+| --- | --- | --- |
+| `examples/config.example.toml` | `apps/backend/config.toml` | the TOML file |
+| `examples/.env.example` | `.env` | environment variables |
+| `examples/docker-compose.example.yaml` | `compose.yaml` | running it in Docker |
+
+Copy `examples/config.example.toml` to `config.toml` beside the binary, or
+mount it anywhere and point `DEREC_CONFIG_PATH` at it:
 
 ```
 docker run -v ./my-config.toml:/etc/derec/config.toml \
            -e DEREC_CONFIG_PATH=/etc/derec/config.toml ...
 ```
 
-Every key is optional — omit one and its built-in default applies. These are
-defaults only: the wizard stays editable, and the settings a node actually runs
-with are whatever the front end sends when it provisions actors. A file that
-cannot be read, parsed or validated aborts the boot rather than silently falling
-back, so a broken config surfaces immediately. No file at all is fine and uses
-the built-in values.
+Every key is optional — omit one and its built-in default applies. The
+`[defaults]` table is defaults only: the wizard stays editable, and the settings
+a node actually runs with are whatever the front end sends when it provisions
+actors. A file that cannot be read, parsed or validated aborts the boot rather
+than silently falling back. No file at all is fine and uses the built-in values.
+
+Precedence, highest first:
+
+| | Source | Beats |
+| --- | --- | --- |
+| 4 | `environment:` or `-e` on the container | everything |
+| 3 | `env_file:` in compose — injects real variables | the file and the defaults |
+| 2 | a `.env` beside the process — fills only variables **not already set** | the config file |
+| 1 | the TOML config file | the built-in defaults |
+
+Tiers 3 and 4 look the same to the app — both are just the environment by the
+time it starts, and compose resolves that precedence itself.
+
+Variable names are flat and prefixed; the table a key lives in does not appear:
+
+| File key | Variable |
+| --- | --- |
+| `server.base_url` | `DEREC_BASE_URL` |
+| `server.port` | `DEREC_PORT` |
+| `defaults.participant_count` | `DEREC_PARTICIPANT_COUNT` |
+| `defaults.pre_paired_count` | `DEREC_PRE_PAIRED_COUNT` |
+| `defaults.min_participants` | `DEREC_MIN_PARTICIPANTS` |
+| `defaults.recommended_participants` | `DEREC_RECOMMENDED_PARTICIPANTS` |
+| `defaults.protocol_timeout_secs` | `DEREC_PROTOCOL_TIMEOUT_SECS` |
+| `defaults.authentication_method` | `DEREC_AUTHENTICATION_METHOD` |
+| `defaults.unpair_ack` | `DEREC_UNPAIR_ACK` |
+| `defaults.auto_accept_unpair_requests` | `DEREC_AUTO_ACCEPT_UNPAIR_REQUESTS` |
+| `defaults.grpc_enabled` | `DEREC_GRPC_ENABLED` |
+| `defaults.grpc_port` | `DEREC_GRPC_PORT` |
+| `defaults.grpc_relay_enabled` | `DEREC_GRPC_RELAY_ENABLED` |
+| `defaults.helper_transports.http` | `DEREC_HELPER_TRANSPORTS_HTTP` |
+| `defaults.helper_transports.grpc` | `DEREC_HELPER_TRANSPORTS_GRPC` |
+| `defaults.helper_transports.both` | `DEREC_HELPER_TRANSPORTS_BOTH` |
+
+`DEREC_CONFIG_PATH` names the config file and is not itself a setting.
+
+`BASE_URL`, `PORT` and `STATIC_DIR` are no longer read. Setting one without its
+`DEREC_`-prefixed replacement aborts the boot with a message naming it, rather
+than leaving a node quietly running on defaults.
+
+A misspelled key in the file aborts the boot — the file is unambiguously yours.
+An unrecognised `DEREC_` variable only warns: the environment is shared.
+
+Validation runs on the **merged** result. `helper_transports` must sum to
+`participant_count`, so overriding the count in `.env` while the file still
+lists the old breakdown is a configuration that passes per-source and fails as
+a whole. See `examples/.env.example`, which calls this out where you would hit
+it.
+
+#### Seeing what was loaded
+
+The node prints its entire resolved configuration at boot — every setting, its
+value, and where the value came from:
+
+```
+configuration
+  file   /etc/derec/config.toml  loaded
+  env    3 DEREC_* variables
+
+  [server]
+  base_url                  http://192.168.0.28  env DEREC_BASE_URL
+  port                      5000                 default
+
+  [defaults]
+  participant_count         3                    env DEREC_PARTICIPANT_COUNT
+  protocol_timeout_secs     300                  default
+  unpair_ack                required             file
+  ...
+```
+
+Every setting is listed, not only the overridden ones — if you set something
+and nothing happened, seeing that key marked `default` is the answer. The same
+data is available as JSON from `GET /debug/config`.
 
 ## Transports
 
@@ -250,7 +314,7 @@ that only offers gRPC, not to give the browser a second way to talk.
 ### The gRPC listener
 
 `grpc_enabled` (default `true`) and `grpc_port` (default `50051`) control the
-backend's own gRPC server. It is separate from the HTTP listener `BASE_URL`
+backend's own gRPC server. It is separate from the HTTP listener `DEREC_BASE_URL`
 points at, and provisioned helpers can only advertise a `grpc://` endpoint
 while it is running — turn `grpc_enabled` off to run HTTP-only.
 

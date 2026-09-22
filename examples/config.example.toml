@@ -1,20 +1,40 @@
 # Default configuration for the DeRec reference app.
 #
-# These values prefill the front-end setup wizard. They are defaults only — the
-# user can change any of them before setting up, and the backend does not
-# enforce them: the settings a node actually runs with are whatever the front
-# end sends on each provisioning request.
+# Two tables:
+#   [server]    how this node runs
+#   [defaults]  starting values for the front-end setup wizard
 #
-# Every key is optional. Omit one and the built-in default (shown below) applies.
-# An unrecognised key is a boot error, so a typo fails loudly instead of being
-# silently ignored.
+# The [defaults] values are defaults only — the user can change any of them
+# before setting up, and the backend does not enforce them: the settings a node
+# actually runs with are whatever the front end sends on each provisioning
+# request.
+#
+# Every key is optional. Omit one and the built-in default (shown below)
+# applies. An unrecognised key is a boot error, so a typo fails loudly.
+#
+# Every key is also an environment variable, which wins over this file. Names
+# are flat and prefixed — the table does not appear:
+#
+#   participant_count           -> DEREC_PARTICIPANT_COUNT
+#   base_url                    -> DEREC_BASE_URL
+#   helper_transports.http      -> DEREC_HELPER_TRANSPORTS_HTTP
+#
+# An unrecognised DEREC_ variable is warned about, not fatal: the environment is
+# shared, and refusing to boot over an unrelated variable would be hostile.
 #
 # Copy this file to `config.toml` next to the binary, or mount it anywhere and
-# point `DEREC_CONFIG_PATH` at it:
-#
-#   docker run -v ./my-config.toml:/etc/derec/config.toml \
-#              -e DEREC_CONFIG_PATH=/etc/derec/config.toml ...
+# point `DEREC_CONFIG_PATH` at it.
 
+[server]
+# Stamped into every transport URI this node hands to a peer, and the address
+# that peer posts back to. The port is appended, so write the host only.
+# A loopback value works right up until a second device joins.
+base_url = "http://localhost"
+
+# The HTTP listener port. The UI and the API share it.
+port = 5000
+
+[defaults]
 # Participants to provision when setting up. Must be at least 1.
 participant_count = 7
 
@@ -65,10 +85,7 @@ grpc_port = 50051
 grpc_relay_enabled = true
 
 # Prefills the wizard's transport breakdown. Must sum to `participant_count`.
-# NOTE: table sections must be the last thing in the file — any plain
-# `key = value` line after a `[table]` header is parsed as belonging to that
-# table, not to the top level.
-[helper_transports]
+[defaults.helper_transports]
 http = 7
 grpc = 0
 both = 0

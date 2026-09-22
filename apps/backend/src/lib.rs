@@ -44,6 +44,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/config", get(routes::config::get))
         // The debug surface. Unauthenticated by design: this app ships as a
         // developer's local container and exposing its internals is the point.
+        .route("/debug/config", get(routes::debug::config))
         .route("/debug/state", get(routes::debug::state))
         .route("/debug/events", get(routes::debug::events))
         .route("/owners", post(routes::owners::register))

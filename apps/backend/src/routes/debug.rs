@@ -78,6 +78,27 @@ pub struct ActorSnapshot {
     pub instance_secret_ids: Vec<String>,
 }
 
+/// GET /debug/config
+///
+/// The resolved configuration and where each value came from — the same data
+/// the boot banner renders. Separate from `GET /config`, which returns a flat
+/// [`crate::config::Defaults`] the front end deserialises directly and must not
+/// grow a wrapper.
+///
+/// This reports `state.config.settings.defaults`, not `state.defaults`. They are
+/// the same values in the binary — `main` builds one from the other — and under
+/// `test_support` both are the built-in defaults. Reporting the loaded one keeps
+/// this an honest account of the configuration pass rather than of whatever
+/// state was later constructed.
+pub async fn config(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "settings": state.config.settings,
+        "origins": state.config.origins,
+        "file_found": state.config.file_found,
+        "unknown_env": state.config.unknown_env,
+    }))
+}
+
 /// GET /debug/state
 pub async fn state(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let log = state.events.since(u64::MAX, 0);

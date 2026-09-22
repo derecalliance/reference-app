@@ -8,16 +8,6 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   base: '/reference-app/',
-  resolve: {
-    // `@derec-alliance/web` has no `exports` map — only `main` (raw
-    // wasm-bindgen output) and `module` (the hand-written re-export surface
-    // that includes SenderKind, ContactMode, etc). Vitest's SSR module
-    // resolution prefers `main` by default, which silently drops those named
-    // exports. This `resolve` block is app-wide (drives dev server and
-    // production build too, not just tests), so keep Vite's default
-    // `mainFields` ordering and only add `module` ahead of `main`.
-    mainFields: ['browser', 'module', 'main'],
-  },
   server: {
     watch: {
       // Playwright writes screenshots, videos and traces into the project root

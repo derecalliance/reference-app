@@ -1,0 +1,46 @@
+# Worked compose example for the DeRec reference app.
+#
+# NOT YET USABLE: `apps/backend/Dockerfile` does not exist — the image is a
+# later phase of the packaging work. Until it lands, `docker compose up` fails
+# at the build step. Everything below the `build:` block is already correct, so
+# this file is worth reading now and works the moment the Dockerfile arrives.
+#
+# Every path below is relative to the REPO ROOT, not to this directory. Copy it
+# up before using it:
+#
+#   cp examples/docker-compose.example.yaml compose.yaml
+#
+# To run it in place instead, tell compose where the project actually is —
+# otherwise it resolves `context: .` against `examples/` and the build fails:
+#
+#   docker compose -f examples/docker-compose.example.yaml --project-directory . up
+
+name: derec
+
+services:
+  node:
+    # Until the image ships, build the backend from this repo.
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+
+    # Bulk configuration. `env_file` injects real environment variables into
+    # the container, so everything here outranks config.toml.
+    env_file: .env
+
+    # Highest precedence — wins over .env and over the file.
+    environment:
+      # ${LAN_IP} is substituted by compose from the .env at the project root —
+      # a different mechanism from `env_file` above, which passes variables
+      # into the container rather than into this file.
+      DEREC_BASE_URL: "http://${LAN_IP:-localhost}"
+      DEREC_CONFIG_PATH: /etc/derec/config.toml
+
+    ports:
+      - "5000:5000"      # HTTP API
+      - "50051:50051"    # gRPC transport
+
+    volumes:
+      - ./apps/backend/config.toml:/etc/derec/config.toml:ro
+
+    restart: unless-stopped

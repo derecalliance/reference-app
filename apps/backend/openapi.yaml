@@ -74,6 +74,48 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Defaults" }
 
+  /debug/config:
+    get:
+      tags: [debug]
+      summary: Resolved configuration and per-setting provenance
+      description: >
+        Every setting the node is running with, the source each value came from
+        (built-in default, the config file, or a named DEREC_ variable), whether
+        a config file was found, and any DEREC_ variables that matched no
+        setting. The same data the boot banner prints.
+      responses:
+        "200":
+          description: Configuration and provenance
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [settings, origins, file_found, unknown_env]
+                properties:
+                  settings:
+                    type: object
+                  origins:
+                    type: array
+                    items:
+                      type: object
+                      required: [path, source]
+                      properties:
+                        path:
+                          type: string
+                          example: defaults.participant_count
+                        source:
+                          type: string
+                          enum: [default, file, env]
+                        variable:
+                          type: string
+                          example: DEREC_PARTICIPANT_COUNT
+                  file_found:
+                    type: boolean
+                  unknown_env:
+                    type: array
+                    items:
+                      type: string
+
   /debug/state:
     get:
       tags: [debug]
