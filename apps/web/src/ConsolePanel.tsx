@@ -1,3 +1,4 @@
+import { copyText } from './clipboard'
 import { useState } from 'react'
 import './ConsolePanel.css'
 import { useConsole, type ConsoleEntry, type ConsoleFlow, type ConsoleRole } from './ConsoleContext'
@@ -50,8 +51,8 @@ function serializeLog(entries: ConsoleEntry[]): string {
   )
 }
 
-function copyAll(entries: ConsoleEntry[]): Promise<void> {
-  return navigator.clipboard.writeText(serializeLog(entries))
+function copyAll(entries: ConsoleEntry[]): Promise<boolean> {
+  return copyText(serializeLog(entries))
 }
 
 function downloadAll(entries: ConsoleEntry[]): void {
@@ -102,7 +103,8 @@ function DetailSection({ title, data }: { title: string; data: unknown }) {
   const text = JSON.stringify(data, null, 2)
 
   function handleCopy() {
-    navigator.clipboard.writeText(text).then(() => {
+    void copyText(text).then(ok => {
+      if (!ok) return
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
     })
@@ -191,7 +193,8 @@ function EntryRow({ entry }: { entry: ConsoleEntry }) {
       null,
       2,
     )
-    navigator.clipboard.writeText(text).then(() => {
+    void copyText(text).then(ok => {
+      if (!ok) return
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
     })

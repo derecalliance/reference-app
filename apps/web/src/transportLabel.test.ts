@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { transportLabel, transportLabelIsComplete } from './transportLabel'
+import { transportLabel } from './transportLabel'
 import type { Transport } from './types'
 
 const https: Transport = { protocol: 'https', uri: 'http://localhost:5000/derec/a' }
@@ -28,18 +28,5 @@ describe('transportLabel', () => {
     // site ever gets that wrong, the list is the one to trust — it is what the
     // peer actually advertised.
     expect(transportLabel(https, [grpc, https])).toBe('GRPC+HTTPS')
-  })
-})
-
-describe('transportLabelIsComplete', () => {
-  it('is false when only the fallback address was available', () => {
-    // A badge built from one address cannot rule out more, so the UI must not
-    // present it as the whole truth.
-    expect(transportLabelIsComplete(undefined)).toBe(false)
-    expect(transportLabelIsComplete([])).toBe(false)
-  })
-
-  it('is true once the advertised list is known', () => {
-    expect(transportLabelIsComplete([grpc])).toBe(true)
   })
 })

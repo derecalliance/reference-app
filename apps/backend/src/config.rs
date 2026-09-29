@@ -47,6 +47,8 @@ const RESERVED_ENV: &[&str] = &[CONFIG_PATH_ENV];
 const ENV_KEYS: &[(&str, &str)] = &[
     ("DEREC_BASE_URL", "server.base_url"),
     ("DEREC_PORT", "server.port"),
+    ("DEREC_DATABASE_URL", "server.database_url"),
+    ("DEREC_STATIC_DIR", "server.static_dir"),
     ("DEREC_PARTICIPANT_COUNT", "defaults.participant_count"),
     ("DEREC_PRE_PAIRED_COUNT", "defaults.pre_paired_count"),
     ("DEREC_MIN_PARTICIPANTS", "defaults.min_participants"),
@@ -115,6 +117,8 @@ struct RawConfig {
 struct RawServer {
     base_url: Option<String>,
     port: Option<u16>,
+    database_url: Option<String>,
+    static_dir: Option<String>,
 }
 
 /// How this node runs.
@@ -125,6 +129,16 @@ pub struct ServerSettings {
     pub base_url: String,
     /// The HTTP listener port.
     pub port: u16,
+    /// Where state lives. See [`crate::db::resolve_url`] for the accepted
+    /// spellings — a bare path means SQLite, anything with a scheme is passed
+    /// through, and `sqlite::memory:` asks for a node that forgets on exit.
+    pub database_url: String,
+    /// Directory of built front-end assets to serve.
+    ///
+    /// Empty serves no UI, which is what a `cargo run` beside a Vite dev server
+    /// wants — Vite is serving the app, and a fallback here would shadow it.
+    /// The image sets `/app/static`.
+    pub static_dir: String,
 }
 
 impl Default for ServerSettings {
@@ -132,6 +146,10 @@ impl Default for ServerSettings {
         Self {
             base_url: "http://localhost".to_owned(),
             port: 5000,
+            database_url: crate::db::DEFAULT_DATABASE_URL.to_owned(),
+            // Unset by default: the ordinary development loop is `cargo run`
+            // plus `npm run dev`, where Vite serves the UI.
+            static_dir: String::new(),
         }
     }
 }
@@ -142,6 +160,8 @@ impl ServerSettings {
         Self {
             base_url: raw.base_url.unwrap_or(base.base_url),
             port: raw.port.unwrap_or(base.port),
+            database_url: raw.database_url.unwrap_or(base.database_url),
+            static_dir: raw.static_dir.unwrap_or(base.static_dir),
         }
     }
 
@@ -151,6 +171,9 @@ impl ServerSettings {
         }
         if self.base_url.is_empty() {
             return Err("base_url must not be empty".to_owned());
+        }
+        if self.database_url.trim().is_empty() {
+            return Err("database_url must not be empty".to_owned());
         }
         Ok(())
     }
@@ -1218,6 +1241,49 @@ mod tests {
         let found = with_env(&[("BASE_URL", "http://10.0.0.5")], legacy_env_in_use);
 
         assert_eq!(found, vec![("BASE_URL", "DEREC_BASE_URL")]);
+    }
+
+    #[test]
+    fn the_database_url_comes_through_the_same_ladder_as_everything_else() {
+        let loaded = settings_from(
+            "[server]\ndatabase_url = \"./from-file.db\"\n",
+            &[("DEREC_DATABASE_URL", "postgres://db/derec")],
+        );
+
+        assert_eq!(loaded.settings.server.database_url, "postgres://db/derec");
+
+        let origin = loaded
+            .origins
+            .iter()
+            .find(|o| o.path == "server.database_url")
+            .expect("database_url has an origin");
+        assert_eq!(origin.source, Source::Env("DEREC_DATABASE_URL"));
+    }
+
+    #[test]
+    fn an_unset_database_url_is_the_built_in_default() {
+        let loaded = settings_from("", &[]);
+
+        assert_eq!(
+            loaded.settings.server.database_url,
+            crate::db::DEFAULT_DATABASE_URL
+        );
+    }
+
+    #[test]
+    fn a_database_url_from_the_file_is_used_and_reported_as_file() {
+        let loaded = settings_from("[server]\ndatabase_url = \"sqlite::memory:\"\n", &[]);
+
+        assert_eq!(loaded.settings.server.database_url, "sqlite::memory:");
+        assert_eq!(
+            loaded
+                .origins
+                .iter()
+                .find(|o| o.path == "server.database_url")
+                .expect("origin")
+                .source,
+            Source::File
+        );
     }
 
     #[test]

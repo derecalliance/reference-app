@@ -14,8 +14,8 @@ use axum::{
 use serde_json::Value;
 use tower::ServiceExt;
 
-fn app() -> Router {
-    derec_backend::build_router(derec_backend::test_support::app_state())
+async fn app() -> Router {
+    derec_backend::build_router(derec_backend::test_support::app_state().await)
 }
 
 async fn get(router: &Router, path: &str) -> (StatusCode, Value) {
@@ -42,14 +42,14 @@ async fn get(router: &Router, path: &str) -> (StatusCode, Value) {
 // route tests use the same attribute for the same reason.
 #[actix_rt::test]
 async fn debug_config_reports_values_and_origins() {
-    let (status, body) = get(&app(), "/debug/config").await;
+    let (status, body) = get(&app().await, "/debug/config").await;
     assert_eq!(status, StatusCode::OK);
 
     assert!(body["settings"]["defaults"]["participant_count"].is_number());
     assert!(body["settings"]["server"]["port"].is_number());
 
     let origins = body["origins"].as_array().expect("origins array");
-    assert_eq!(origins.len(), 16, "every setting needs an origin");
+    assert_eq!(origins.len(), 18, "every setting needs an origin");
 
     let participant = origins
         .iter()
@@ -67,7 +67,7 @@ async fn debug_config_reports_values_and_origins() {
 // route tests use the same attribute for the same reason.
 #[actix_rt::test]
 async fn plain_config_keeps_its_flat_shape() {
-    let (status, body) = get(&app(), "/config").await;
+    let (status, body) = get(&app().await, "/config").await;
     assert_eq!(status, StatusCode::OK);
 
     // Flat, no nesting, no provenance — the front end reads these keys directly.

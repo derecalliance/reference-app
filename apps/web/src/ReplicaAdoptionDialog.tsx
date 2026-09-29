@@ -129,7 +129,16 @@ export function ReplicaAdoptionDialog({
   return (
     <Dialog
       open={open}
-      onClose={handleCancel}
+      // Answered, not dismissed. A source replacing this device's vault is not
+      // something to notice later: there is no backdrop-click or Escape exit,
+      // so the choice is Reject or Erase and adopt. Rejecting is one click and
+      // discards the offer — the source re-offers on its next sync — which is
+      // what makes refusing to auto-close defensible rather than a trap.
+      onClose={(_event, reason) => {
+        if (reason === 'backdropClick' || reason === 'escapeKeyDown') return
+        handleCancel()
+      }}
+      disableEscapeKeyDown
       fullWidth
       maxWidth="sm"
       aria-labelledby="replica-adopt-title"
@@ -189,8 +198,10 @@ export function ReplicaAdoptionDialog({
       <DialogActions>
         {/* Cancel is the default action: autofocused and filled. Escape and a
             backdrop click resolve here too. */}
+        {/* The safe answer, and the default: filled and autofocused, so the
+            destructive one is never the thing a stray keypress reaches. */}
         <Button variant="contained" onClick={handleCancel} disabled={adopting} autoFocus>
-          {state.kind === 'failed' ? 'Close' : 'Cancel'}
+          {state.kind === 'failed' ? 'Close' : 'Reject'}
         </Button>
         <Button
           variant="outlined"

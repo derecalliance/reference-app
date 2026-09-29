@@ -97,8 +97,8 @@ const BASE: ReplicasTabProps = {
   onRemoveFromGroup: () => {},
   removingReplicaIds: new Set<string>(),
   onToggleOffline: () => {},
-  orphanedMembers: [],
-  onRemoveOrphan: () => {},
+  memberRows: [],
+  onRemoveMember: () => {},
 }
 
 function render(overrides: Partial<ReplicasTabProps> = {}): void {
@@ -334,47 +334,63 @@ describe('group members the app cannot account for', () => {
     name: 'Bob',
   }
 
-  it('shows nothing when the group and the rows agree', () => {
-    // The normal state. A standing heading over an empty list would imply the
-    // group is routinely inconsistent.
-    render({ orphanedMembers: [] })
+  /** The row shape the tab now receives for a member with no direct channel. */
+  const memberRow = {
+    replicaId: orphan.replicaId,
+    name: 'Bob',
+    channelId: orphan.channelId,
+    peerRole: 'replica_destination' as const,
+    view: {
+      id: `replica-member:${orphan.replicaId}`,
+      name: 'Bob',
+      channelId: orphan.channelId,
+      status: 'paired' as const,
+      offline: false,
+      peerConfirmation: 'none' as const,
+      lastSync: null,
+      establishedAt: null,
+      firstSyncStarted: false,
+      direction: 'replica_source' as const,
+      peerReplicaId: orphan.replicaId,
+      helperActorId: null,
+    },
+  }
+
+  it('renders a member with no direct channel as an ordinary row', () => {
+    // Two destinations of one source are in the same group and never pair with
+    // each other. Listing them under a separate "no channel" heading described
+    // the app's bookkeeping; from the group's point of view they are members.
+    render({ memberRows: [memberRow] })
+
+    expect(text()).toContain('Bob')
     expect(text()).not.toContain('Group members with no channel')
   })
 
-  it('names the member, its replica id, and why it matters', () => {
-    render({ orphanedMembers: [orphan] })
-
-    expect(text()).toContain('Group members with no channel')
-    expect(text()).toContain('Bob')
-    expect(text()).toContain('3534782649887640751')
-    // The error the user actually sees, quoted, so the page connects the two.
-    expect(text()).toContain('already in use by another member of the group')
-  })
-
   it('offers eviction by replica id', () => {
-    const onRemoveOrphan = vi.fn()
-    render({ orphanedMembers: [orphan], onRemoveOrphan })
+    // The library's removal names a member rather than a channel, so this is
+    // the one action that still works without a pairing.
+    const onRemoveMember = vi.fn()
+    render({ memberRows: [memberRow], onRemoveMember })
 
     const button = Array.from(host.querySelectorAll('button')).find(
       b => b.textContent === 'Remove from group',
     )
     button!.click()
 
-    expect(onRemoveOrphan).toHaveBeenCalledWith(orphan)
+    expect(onRemoveMember).toHaveBeenCalledWith(orphan.replicaId)
   })
 
-  it('shows an orphan even when there are no replica channels at all', () => {
+  it('shows a member even when this device holds no replica channel at all', () => {
     // The state that stranded the reported session: every row forgotten, the
     // tab saying "no replicas yet", and the protocol still refusing to pair.
-    render({ channels: [], orphanedMembers: [orphan] })
+    render({ channels: [], memberRows: [memberRow] })
 
-    expect(text()).toContain('No replicas yet')
-    expect(text()).toContain('3534782649887640751')
+    expect(text()).toContain('Bob')
   })
 
   it('marks a removal in flight', () => {
     render({
-      orphanedMembers: [orphan],
+      memberRows: [memberRow],
       removingReplicaIds: new Set([orphan.replicaId]),
     })
     expect(text()).toContain('Removing…')

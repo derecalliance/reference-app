@@ -19,11 +19,26 @@ export interface AutoPairCandidate {
   connectionStatus: ParticipantConnectionStatus
   /** Browser-run peers drive their own pairing, so they are never auto-paired. */
   browserManaged?: boolean
+  /** Switched off on the node: it accepts messages for this peer and drops
+   *  them, so a handshake with it can never complete. */
+  offline?: boolean
 }
 
-/** Eligible = provisioned, and not already paired with *this* owner. */
+/**
+ * Eligible = provisioned, switched on, and not already paired with *this* owner.
+ *
+ * `offline` matters as much as `available` does. A participant an operator has
+ * switched off still looks available — nothing is paired with it — but the node
+ * drops its messages, so auto-pairing with one produces a handshake that never
+ * completes and a setup gate that never clears. Picking a peer that cannot
+ * answer is worse than picking fewer peers.
+ */
 function isEligible(participant: AutoPairCandidate): boolean {
-  return participant.connectionStatus === 'available' && !participant.browserManaged
+  return (
+    participant.connectionStatus === 'available' &&
+    !participant.browserManaged &&
+    !participant.offline
+  )
 }
 
 /**

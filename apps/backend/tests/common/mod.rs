@@ -19,7 +19,7 @@ use derec_backend::grpc::pb::de_rec_transport_server::DeRecTransportServer;
 use derec_backend::models::{Role, TransportMode, UnpairAck};
 use derec_backend::provisioning::{provisioned_actor, register_browser_actor, spawn_provisioned};
 use derec_backend::state::{ActorInbox, AppState};
-use derec_backend::stores::ActorProtocol;
+use derec_backend::actor::ActorProtocol;
 use derec_library::protocol::types::Target;
 use derec_library::protocol::{ChannelStatus, DeRecFlow};
 use derec_library::types::ChannelId;
@@ -27,6 +27,15 @@ use tokio::sync::oneshot;
 use tonic::transport::Server;
 use tonic::transport::server::TcpIncoming;
 use uuid::Uuid;
+
+/// Stock protocol settings for a fixture actor.
+fn test_settings() -> derec_backend::registry::actors::ActorSettings {
+    derec_backend::registry::actors::ActorSettings {
+        replica_id: rand::random::<u64>(),
+        timeout_secs: TIMEOUT_SECS,
+        unpair_ack: UnpairAck::Required,
+    }
+}
 
 const TIMEOUT_SECS: u32 = 300;
 const POLL_ATTEMPTS: usize = 400;
@@ -100,6 +109,9 @@ async fn serve() -> (Arc<AppState>, GrpcHandle) {
         defaults,
         reqwest::Client::new(),
         actix_rt::Arbiter::current(),
+        derec_backend::db::connect("sqlite::memory:")
+            .await
+            .expect("an in-memory database always connects"),
     ));
 
     let router = derec_backend::build_router(state.clone());
@@ -123,11 +135,18 @@ async fn serve() -> (Arc<AppState>, GrpcHandle) {
 
 /// Provision a hosted helper in the requested transport mode, exactly as
 /// `POST /helpers` does.
-fn spawn_helper(state: &Arc<AppState>, mode: TransportMode) -> (Uuid, Addr<ProvisionedActor>) {
+async fn spawn_helper(
+    state: &Arc<AppState>,
+    mode: TransportMode,
+) -> (Uuid, Addr<ProvisionedActor>) {
     let actor =
         provisioned_actor(Role::Helper, "Helper", &state.base_url, &state.grpc_authority(), mode);
-    state.actors.register(actor.clone());
-    spawn_provisioned(state, &actor, TIMEOUT_SECS, UnpairAck::Required);
+    state
+        .actors
+        .register(actor.clone(), test_settings())
+        .await
+        .expect("the registry is writable");
+    spawn_provisioned(state, &actor, &test_settings());
 
     let addr = match state
         .actor_inboxes
@@ -146,7 +165,7 @@ fn spawn_helper(state: &Arc<AppState>, mode: TransportMode) -> (Uuid, Addr<Provi
 /// *helper* advertises, and the owner's replies travelling over HTTP is
 /// already exercised elsewhere — nothing here needs the owner itself to speak
 /// gRPC.
-fn register_owner(state: &Arc<AppState>) -> Owner {
+async fn register_owner(state: &Arc<AppState>) -> Owner {
     let actor = provisioned_actor(
         Role::Owner,
         "Owner",
@@ -155,7 +174,11 @@ fn register_owner(state: &Arc<AppState>) -> Owner {
         TransportMode::Http,
     );
     let secret_id: u64 = actor.secret_id.parse().expect("secret id is a u64");
-    state.actors.register(actor.clone());
+    state
+        .actors
+        .register(actor.clone(), test_settings())
+        .await
+        .expect("the registry is writable");
     register_browser_actor(state, actor.id);
 
     let config = ProtocolConfig {
@@ -168,6 +191,8 @@ fn register_owner(state: &Arc<AppState>) -> Owner {
         keep_versions_count: 3,
         replica_id: Some(rand::random()),
         http_client: state.http_client.clone(),
+        pool: state.pool.clone(),
+        actor_id: actor.id,
     };
 
     Owner { id: actor.id, secret_id, protocol: build_protocol(&config).expect("the owner's protocol builds") }
@@ -212,7 +237,11 @@ async fn await_helper_status(
 async fn await_helper_channel(state: &AppState, helper_id: Uuid, owner: &mut Owner) -> u64 {
     for _ in 0..POLL_ATTEMPTS {
         pump(state, owner).await;
-        if let Some(channel_id) = state.helper_channels.get(&helper_id).and_then(|entry| entry.first().cloned()) {
+        if let Some(channel_id) = state
+            .helper_channels
+            .get(&helper_id)
+            .and_then(|entry| entry.first().cloned())
+        {
             return channel_id.parse().expect("channel id is a u64");
         }
         actix_rt::time::sleep(POLL_INTERVAL).await;
@@ -233,8 +262,8 @@ async fn await_helper_channel(state: &AppState, helper_id: Uuid, owner: &mut Own
 /// message would otherwise go unrouted.
 pub async fn owner_paired_with(mode: TransportMode) -> Rig {
     let (state, grpc) = serve().await;
-    let (helper_id, helper) = spawn_helper(&state, mode);
-    let mut owner = register_owner(&state);
+    let (helper_id, helper) = spawn_helper(&state, mode).await;
+    let mut owner = register_owner(&state).await;
 
     let contact = helper
         .send(CreateContactMsg {

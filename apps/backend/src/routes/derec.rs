@@ -43,7 +43,7 @@ pub enum DispatchOutcome {
 /// Shared by both transports so a suspended helper drops gRPC traffic exactly
 /// as it drops HTTP, and so a browser actor receives over gRPC without knowing
 /// that is what happened.
-pub fn dispatch_to_inbox(
+pub async fn dispatch_to_inbox(
     state: &AppState,
     actor_id: Uuid,
     carrier: crate::debug::Carrier,
@@ -70,7 +70,16 @@ pub fn dispatch_to_inbox(
         );
     };
 
-    if state.disabled_helpers.contains_key(&actor_id) {
+    // A registry failure here is treated as "not disabled": dropping a
+    // message because the database hiccuped would silently lose protocol
+    // traffic, which is worse than delivering to a helper the operator meant
+    // to have switched off.
+    if state
+        .disabled_helpers
+        .is_disabled(&actor_id)
+        .await
+        .unwrap_or(false)
+    {
         info!(actor_id = %actor_id, bytes = len, "message dropped — actor is offline");
         record(Outcome::Dropped, "actor is simulating offline; message discarded");
         return DispatchOutcome::Dropped;
@@ -107,8 +116,10 @@ pub async fn deliver_message(
     Path(actor_id): Path<Uuid>,
     body: Bytes,
 ) -> Response {
-    if state.actors.get(&actor_id).is_none() {
-        return not_found("actor not found");
+    match state.actors.get(&actor_id).await {
+        Ok(None) => return not_found("actor not found"),
+        Err(e) => return crate::routes::actor_guard::registry_unavailable(e),
+        Ok(Some(_)) => {}
     }
 
     if body.is_empty() {
@@ -119,7 +130,7 @@ pub async fn deliver_message(
             .into_response();
     }
 
-    match dispatch_to_inbox(&state, actor_id, crate::debug::Carrier::Http, body.to_vec()) {
+    match dispatch_to_inbox(&state, actor_id, crate::debug::Carrier::Http, body.to_vec()).await {
         DispatchOutcome::Delivered | DispatchOutcome::Dropped => {
             StatusCode::ACCEPTED.into_response()
         }
@@ -176,12 +187,19 @@ pub struct RelayRequest {
 /// The relay exists so a browser owner can reach a gRPC peer it cannot dial
 /// itself. Restricting it to advertised endpoints is what keeps it from being
 /// a general-purpose proxy.
-pub fn relay_target_is_known(state: &AppState, uri: &str) -> bool {
+pub async fn relay_target_is_known(state: &AppState, uri: &str) -> bool {
+    // A registry failure denies the relay rather than allowing it: this is an
+    // allowlist, and failing open would turn it into a general-purpose proxy.
     state
         .actors
         .all()
-        .iter()
-        .any(|actor| actor.transports.iter().any(|t| t.uri == uri))
+        .await
+        .map(|actors| {
+            actors
+                .iter()
+                .any(|actor| actor.transports.iter().any(|t| t.uri == uri))
+        })
+        .unwrap_or(false)
 }
 
 /// POST /derec/relay
@@ -202,7 +220,7 @@ pub async fn relay(
             .into_response();
     }
 
-    if !relay_target_is_known(&state, &req.uri) {
+    if !relay_target_is_known(&state, &req.uri).await {
         return (
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({ "error": "unknown relay target" })),

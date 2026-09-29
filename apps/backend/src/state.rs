@@ -168,15 +168,40 @@ pub enum RoleMismatch {
 pub struct AppState {
     /// Every actor on this server. There is no grouping above this: the app
     /// runs as a single local node that developers point browser contexts at.
-    pub actors: Arc<ActorRegistry>,
+    pub actors: Arc<crate::registry::actors::SqlActorRegistry>,
+    /// Helper-side channel IDs per actor (one entry per paired owner).
+    ///
+    /// Deliberately still in memory, and deliberately not a table.
+    ///
+    /// It is a *derived* index: every entry restates a channel the actor's own
+    /// channel store already holds, and it exists so roster enrichment does not
+    /// have to ask each actor. Persisting it would add a second source of truth
+    /// for something the stores already own.
+    ///
+    /// It is also the one registry written from a synchronous context —
+    /// `handle_events` on the actor — so a SQL write here could only be
+    /// fire-and-forget. That is worse than it sounds: the index is written when
+    /// pairing completes and read immediately afterwards by the roster, and
+    /// `helper_auto_confirm`'s tick-backstop test distinguishes "the event path
+    /// ran" from "the backstop swept it" by whether this index is populated. An
+    /// eventually-consistent write makes that unanswerable.
+    ///
+    /// Supervision rebuilds it from each actor's channel store on restart,
+    /// which is the right place for derived data to come back from.
+    pub helper_channels: Arc<DashMap<Uuid, Vec<String>>>,
+    pub disabled_helpers: Arc<crate::registry::flags::DisabledHelpers>,
+    /// Contact messages posted by browser-managed participants for the owner to fetch.
+    pub browser_participant_contacts: Arc<crate::registry::flags::ParticipantContacts>,
+
+    // ── Live delivery handles, not data ─────────────────────────────────────
+    //
+    // These two stay in memory because they cannot be anything else: an
+    // `actix::Addr` and an `mpsc` sender are runtime handles with no
+    // serialised form. They are rebuilt when actors are respawned, which is
+    // why a restart currently leaves persisted actors without an inbox.
     pub actor_inboxes: Arc<DashMap<Uuid, ActorInbox>>,
     /// Receiver halves for browser actor inboxes; drained by the poll_mailbox handler.
     pub browser_receivers: Arc<DashMap<Uuid, Arc<Mutex<mpsc::UnboundedReceiver<Vec<u8>>>>>>,
-    /// Helper-side channel IDs per actor (one entry per paired owner).
-    pub helper_channels: Arc<DashMap<Uuid, Vec<String>>>,
-    pub disabled_helpers: Arc<DashMap<Uuid, ()>>,
-    /// Contact messages posted by browser-managed participants for the owner to fetch.
-    pub browser_participant_contacts: Arc<DashMap<Uuid, String>>,
     /// Operator-supplied starting values for the front end. Read once at boot
     /// and never mutated — the backend serves them, the front end owns them.
     pub defaults: Arc<Defaults>,
@@ -186,6 +211,9 @@ pub struct AppState {
     pub config: Arc<crate::config::Loaded>,
     pub base_url: Arc<str>,
     pub http_client: reqwest::Client,
+    /// The database every actor's stores read and write. A handle, like
+    /// `http_client` beside it.
+    pub pool: sqlx::AnyPool,
     pub arbiter: actix_rt::ArbiterHandle,
     /// `channel_id` → actor, for gRPC ingress only. See [`crate::routing`].
     pub channel_router: Arc<crate::routing::ChannelRouter>,
@@ -201,18 +229,22 @@ impl AppState {
         defaults: Defaults,
         http_client: reqwest::Client,
         arbiter: actix_rt::ArbiterHandle,
+        pool: sqlx::AnyPool,
     ) -> Self {
         Self {
-            actors: Arc::new(ActorRegistry::default()),
+            actors: Arc::new(crate::registry::actors::SqlActorRegistry::new(pool.clone())),
+            helper_channels: Arc::new(DashMap::new()),
+            disabled_helpers: Arc::new(crate::registry::flags::DisabledHelpers::new(pool.clone())),
+            browser_participant_contacts: Arc::new(
+                crate::registry::flags::ParticipantContacts::new(pool.clone()),
+            ),
             actor_inboxes: Arc::new(DashMap::new()),
             browser_receivers: Arc::new(DashMap::new()),
-            helper_channels: Arc::new(DashMap::new()),
-            disabled_helpers: Arc::new(DashMap::new()),
-            browser_participant_contacts: Arc::new(DashMap::new()),
             defaults: Arc::new(defaults),
             config: Arc::new(crate::config::Loaded::default()),
             base_url: base_url.into(),
             http_client,
+            pool,
             arbiter,
             channel_router: Arc::new(crate::routing::ChannelRouter::new()),
             events: Arc::new(crate::debug::EventLog::new()),
@@ -277,16 +309,26 @@ pub mod test_support {
     use crate::config::Defaults;
 
     /// An `AppState` wired to the arbiter of the currently running actix
-    /// system.
+    /// system, over a private in-memory database.
     ///
     /// Must be called from inside an actix runtime — `#[actix_rt::test]` or an
     /// equivalent — because there is no arbiter to hand out otherwise.
-    pub fn app_state() -> Arc<AppState> {
+    ///
+    /// Async because the pool is: `db::connect` opens it and runs migrations.
+    /// Every fixture gets its *own* in-memory database, which is what keeps
+    /// concurrent tests from truncating each other's rows — the failure the SQL
+    /// store suite hit the first time it ran against a shared engine.
+    pub async fn app_state() -> Arc<AppState> {
+        let pool = crate::db::connect("sqlite::memory:")
+            .await
+            .expect("an in-memory database always connects");
+
         Arc::new(AppState::new(
             "http://localhost:5000",
             Defaults::default(),
             reqwest::Client::new(),
             actix_rt::Arbiter::current(),
+            pool,
         ))
     }
 }
@@ -296,6 +338,14 @@ mod tests {
     use super::*;
     use crate::models::TransportMode;
     use crate::provisioning::provisioned_actor;
+
+    /// A private in-memory database per test. A shared one would let two tests
+    /// see each other's rows.
+    async fn test_pool() -> sqlx::AnyPool {
+        crate::db::connect("sqlite::memory:")
+            .await
+            .expect("an in-memory database always connects")
+    }
 
     fn actor(role: Role, name: &str) -> Actor {
         provisioned_actor(role, name, "http://localhost", "localhost:50051", TransportMode::Http)
@@ -637,6 +687,7 @@ mod tests {
             Defaults::default(),
             reqwest::Client::new(),
             actix_rt::Arbiter::current(),
+            test_pool().await,
         );
 
         assert_eq!(state.grpc_authority(), "192.168.0.28:50051");
@@ -652,6 +703,7 @@ mod tests {
             Defaults::default(),
             reqwest::Client::new(),
             actix_rt::Arbiter::current(),
+            test_pool().await,
         );
 
         assert_eq!(state.grpc_authority(), "[::1]:50051");

@@ -1,0 +1,30 @@
+# Build context excludes. Everything here is either rebuilt inside the image or
+# irrelevant to it, and shipping it costs build time and cache invalidation.
+
+# Rust build output — gigabytes, and the wrong target triple anyway.
+target/
+
+# Reinstalled by `npm ci` inside the web builder stage, from the lockfile.
+node_modules/
+
+# Rebuilt by the web builder with `--base=/`; a host `dist/` was built for
+# GitHub Pages and would be wrong here.
+dist/
+
+# Playwright artefacts.
+test-results/
+playwright-report/
+
+# Not needed to build, and it changes on every commit — copying it would
+# invalidate layers for no reason.
+.git/
+
+# Local databases. A host `derec.db` copied into the image would ship one
+# developer's actors to everyone who pulls it.
+*.db
+*.db-wal
+*.db-shm
+
+# Local environment and config, which are supplied at run time.
+.env
+apps/backend/config.toml

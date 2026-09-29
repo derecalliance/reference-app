@@ -3,12 +3,12 @@ import { errorText } from './errorText'
 import './SetupWizard.css'
 import type { Owner, PairedParticipant, TransportProtocol } from './types'
 import {
-  apiEnsureHelpers,
   apiGetActors,
   apiGetServerDefaults,
   apiRegisterOwner,
-  type ProvisioningSettings,
+  type BEActorWithStatus,
 } from './api'
+import { effectiveDefaults } from './protocolDefaults'
 import { useConsole } from './ConsoleContext'
 import { listOwners, loadOwnerById, type OwnerSummary } from './ownerPersistence'
 import { heldOwnerIds } from './ownerLock'
@@ -19,11 +19,10 @@ import {
   type UnpairAck,
 } from './config'
 import { InfoTooltip } from './InfoTooltip'
-import { faker } from '@faker-js/faker'
-import { rebalance, type TransportMix, type TransportModeKey } from './transportMix'
+import type { TransportMix } from './transportMix'
 
 type Flow = 'setup' | 'claim'
-type StepKey = 'choice' | 'ownerName' | 'participantCount' | 'protocolSettings' | 'claimActor'
+type StepKey = 'choice' | 'ownerName' | 'ownerSettings' | 'claimActor'
 
 /** Minimal view of an existing actor surfaced by the picker. Mirrors the
  *  fields the wizard renders; not a full BE DTO. */
@@ -233,372 +232,47 @@ function StepOwnerName({
 }
 
 /**
- * Explains what the requested total will actually do to the shared pool.
+ * The settings that belong to this owner rather than to the node.
  *
- * The number is a target, not an order to create — so the honest thing to show
- * is how it lands against what other owners have already provisioned.
- */
-function PoolEffect({ existing, wanted }: { existing: number | null; wanted: number }) {
-  if (existing === null) return null
-
-  const shortfall = Math.max(0, wanted - existing)
-  const reused = Math.min(existing, wanted)
-
-  if (existing === 0) {
-    return (
-      <p className="wizard-field-hint">
-        No participants on this server yet — all {wanted} will be created.
-      </p>
-    )
-  }
-  if (shortfall === 0) {
-    return (
-      <p className="wizard-field-hint">
-        {existing} already on this server, so you’ll pair with {reused} of them and
-        none will be created.
-      </p>
-    )
-  }
-  return (
-    <p className="wizard-field-hint">
-      {existing} already on this server — {shortfall} more will be created.
-    </p>
-  )
-}
-
-function StepParticipantCount({
-  participantCount,
-  prePairedCount,
-  minParticipants,
-  recommendedParticipants,
-  transports,
-  grpcEnabled,
-  existingParticipants,
-  onChangeParticipantCount,
-  onChangePrePairedCount,
-  onChangeMinParticipants,
-  onChangeRecommendedParticipants,
-  onChangeTransports,
-}: {
-  participantCount: number
-  prePairedCount: number
-  minParticipants: number
-  recommendedParticipants: number
-  /** Target composition of the shared helper pool by transport. */
-  transports: TransportMix
-  /** Whether the backend runs the gRPC ingress listener. When `false` the
-   *  gRPC and Both counters are pinned at zero — the backend rejects a
-   *  request for either outright. */
-  grpcEnabled: boolean
-  /** Participants already on the server, or `null` while unknown. */
-  existingParticipants: number | null
-  onChangeParticipantCount: (n: number) => void
-  onChangePrePairedCount: (n: number) => void
-  onChangeMinParticipants: (n: number) => void
-  onChangeRecommendedParticipants: (n: number) => void
-  onChangeTransports: (mix: TransportMix) => void
-}) {
-  return (
-    <div className="wizard-step">
-      <h2>How many participants?</h2>
-      <p>
-        Participants store encrypted shares of your secret. More participants increases
-        resilience. They are shared by everyone on this server, so this is how many
-        should exist — not how many to add.
-      </p>
-
-      <div className="participant-count-section">
-        <span className="participant-count-section-label">Total participants</span>
-        <div className="participant-count-input">
-          <button
-            className="stepper"
-            onClick={() => {
-              const next = Math.max(1, participantCount - 1)
-              onChangeParticipantCount(next)
-              if (prePairedCount > next) onChangePrePairedCount(next)
-              if (minParticipants > next) onChangeMinParticipants(next)
-              if (recommendedParticipants > next) onChangeRecommendedParticipants(next)
-              // The transport mix must keep summing to the total: fold the
-              // change into http, the mode that absorbs a shrinking pool.
-              onChangeTransports(
-                rebalance(transports, 'http', transports.http + (next - participantCount), next),
-              )
-            }}
-            disabled={participantCount <= 1}
-            aria-label="Decrease total participants"
-          >
-            −
-          </button>
-          <span className="count">{participantCount}</span>
-          <button
-            className="stepper"
-            onClick={() => {
-              const next = participantCount + 1
-              onChangeParticipantCount(next)
-              onChangeTransports(
-                rebalance(transports, 'http', transports.http + (next - participantCount), next),
-              )
-            }}
-            aria-label="Increase total participants"
-          >
-            +
-          </button>
-        </div>
-      </div>
-
-      <PoolEffect existing={existingParticipants} wanted={participantCount} />
-
-      <div className="participant-count-section">
-        <span className="participant-count-section-label">
-          Minimum paired to protect
-          <span className="participant-count-section-hint">Secret protection disabled below this</span>
-        </span>
-        <div className="participant-count-input">
-          <button
-            className="stepper"
-            onClick={() => {
-              const next = Math.max(1, minParticipants - 1)
-              onChangeMinParticipants(next)
-            }}
-            disabled={minParticipants <= 1}
-            aria-label="Decrease minimum participants"
-          >
-            −
-          </button>
-          <span className="count">{minParticipants}</span>
-          <button
-            className="stepper"
-            onClick={() => {
-              const next = minParticipants + 1
-              onChangeMinParticipants(next)
-              if (recommendedParticipants < next) onChangeRecommendedParticipants(next)
-            }}
-            disabled={minParticipants >= participantCount}
-            aria-label="Increase minimum participants"
-          >
-            +
-          </button>
-        </div>
-      </div>
-
-      <div className="participant-count-section">
-        <span className="participant-count-section-label">
-          Recommended paired
-          <span className="participant-count-section-hint">Warning shown below this count</span>
-        </span>
-        <div className="participant-count-input">
-          <button
-            className="stepper"
-            onClick={() => onChangeRecommendedParticipants(Math.max(minParticipants, recommendedParticipants - 1))}
-            disabled={recommendedParticipants <= minParticipants}
-            aria-label="Decrease recommended participants"
-          >
-            −
-          </button>
-          <span className="count">{recommendedParticipants}</span>
-          <button
-            className="stepper"
-            onClick={() => onChangeRecommendedParticipants(recommendedParticipants + 1)}
-            disabled={recommendedParticipants >= participantCount}
-            aria-label="Increase recommended participants"
-          >
-            +
-          </button>
-        </div>
-      </div>
-
-      <div className="participant-count-section">
-        <span className="participant-count-section-label">
-          Pre-pair locally
-          <span className="participant-count-section-hint">Testing only — skips QR exchange</span>
-        </span>
-        <div className="participant-count-input">
-          <button
-            className="stepper"
-            onClick={() => onChangePrePairedCount(Math.max(0, prePairedCount - 1))}
-            disabled={prePairedCount <= 0}
-            aria-label="Decrease pre-paired participants"
-          >
-            −
-          </button>
-          <span className="count">{prePairedCount}</span>
-          <button
-            className="stepper"
-            onClick={() => onChangePrePairedCount(Math.min(participantCount, prePairedCount + 1))}
-            disabled={prePairedCount >= participantCount}
-            aria-label="Increase pre-paired participants"
-          >
-            +
-          </button>
-        </div>
-      </div>
-
-      {/* A breakdown *of* the total above, not another sibling counter, so it
-          nests as one compact block rather than three more full-height rows.
-          Each mode's hint moves to `title` plus a visually-hidden span
-          instead of its own line, following the same trade-off
-          `ContactModeSelector` makes for the same reason — and, as there,
-          the hidden span is wired to its control via `aria-describedby` so a
-          user tabbing straight to a stepper still hears the hint. */}
-      <div className="transport-mix">
-        <span className="transport-mix-heading">
-          Helper transport mix
-          <span className="participant-count-section-hint">
-            How the pool above should be split by transport
-          </span>
-        </span>
-        <div className="transport-mix-rows">
-          {(['grpc', 'both', 'http'] as TransportModeKey[]).map(mode => {
-            const hintId = `transport-mix-${mode}-hint`
-            return (
-              <div className="participant-count-section transport-mix-row" key={mode}>
-                <span className="participant-count-section-label" title={TRANSPORT_HINTS[mode]}>
-                  {TRANSPORT_LABELS[mode]}
-                  <span id={hintId} className="visually-hidden">
-                    {' '}
-                    — {TRANSPORT_HINTS[mode]}
-                  </span>
-                </span>
-                <div className="participant-count-input">
-                  <button
-                    className="stepper"
-                    onClick={() =>
-                      onChangeTransports(rebalance(transports, mode, transports[mode] - 1, participantCount))
-                    }
-                    disabled={transports[mode] <= 0 || (mode !== 'http' && !grpcEnabled)}
-                    aria-label={`Decrease ${TRANSPORT_LABELS[mode]} participants`}
-                    aria-describedby={hintId}
-                  >
-                    −
-                  </button>
-                  <span className="count">{transports[mode]}</span>
-                  <button
-                    className="stepper"
-                    onClick={() =>
-                      onChangeTransports(rebalance(transports, mode, transports[mode] + 1, participantCount))
-                    }
-                    disabled={transports[mode] >= participantCount || (mode !== 'http' && !grpcEnabled)}
-                    aria-label={`Increase ${TRANSPORT_LABELS[mode]} participants`}
-                    aria-describedby={hintId}
-                  >
-                    +
-                  </button>
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-const TRANSPORT_LABELS: Record<TransportModeKey, string> = {
-  http: 'HTTP only',
-  grpc: 'gRPC only',
-  both: 'Both transports',
-}
-
-const TRANSPORT_HINTS: Record<TransportModeKey, string> = {
-  http: 'Reachable directly from this browser',
-  grpc: 'Reached through the backend relay',
-  both: 'Advertises gRPC first, HTTP as failover',
-}
-
-interface ToggleOption<T extends string> {
-  value: T
-  label: string
-  /** Optional hint shown below the toggle when this option is the active one. */
-  hint?: string
-  /** When `true`, the option is rendered but cannot be selected (e.g. a
-   *  feature that's not yet shipped). */
-  disabled?: boolean
-  /** Optional short tag (e.g. "Coming soon") rendered inline next to the
-   *  label. Visually deemphasised. */
-  badge?: string
-  /** Native browser tooltip shown on hover — useful for disabled options
-   *  where we want to explain *why* without burning UI space. */
-  title?: string
-}
-
-/**
- * Compact segmented control for binary (or small N-way) string-valued
- * configuration. Renders as `[ optionA | optionB ]` with the selected option
- * highlighted. Exposed semantics mirror a native radiogroup so screen readers
- * announce it correctly.
+ * Pool size, transport mix and protocol policy moved to Settings: an operator
+ * decides those once for the node, and a real app would not put them in front
+ * of someone creating an account. What is left is what genuinely varies per
+ * owner — a timeout a service might enforce or a self-custody app might let the
+ * user pick, and how many participants to pre-pair.
  *
- * When the active option carries a `hint`, that hint is rendered as a single
- * line below the toggle — replacing the longer per-option descriptions that
- * the vertical radio layout used.
+ * Both start from the node's defaults, with any Settings override on top, and
+ * can be changed here — so two owners on the same node can differ, which is the
+ * point: one set up with two pre-paired participants and another with three.
  */
-function ToggleGroup<T extends string>({
-  ariaLabel,
-  value,
-  options,
-  onChange,
-}: {
-  ariaLabel: string
-  value: T
-  options: ReadonlyArray<ToggleOption<T>>
-  onChange: (next: T) => void
-}) {
-  const activeHint = options.find(o => o.value === value)?.hint
-  return (
-    <>
-      <div className="wizard-toggle-group" role="radiogroup" aria-label={ariaLabel}>
-        {options.map(opt => {
-          const selected = opt.value === value
-          return (
-            <button
-              key={opt.value}
-              type="button"
-              role="radio"
-              aria-checked={selected}
-              aria-disabled={opt.disabled || undefined}
-              disabled={opt.disabled}
-              title={opt.title}
-              className="wizard-toggle-option"
-              onClick={() => {
-                if (selected || opt.disabled) return
-                onChange(opt.value)
-              }}
-            >
-              {opt.label}
-              {opt.badge && (
-                <span className="wizard-toggle-option__badge">{opt.badge}</span>
-              )}
-            </button>
-          )
-        })}
-      </div>
-      {activeHint && <p className="wizard-toggle-hint">{activeHint}</p>}
-    </>
-  )
-}
-
-function StepProtocolSettings({
+function StepOwnerSettings({
   protocolTimeoutSecs,
   onChangeProtocolTimeoutSecs,
-  authenticationMethod,
-  onChangeAuthenticationMethod,
-  unpairAck,
-  onChangeUnpairAck,
-  autoAcceptUnpairRequests,
-  onChangeAutoAcceptUnpairRequests,
+  prePairedCount,
+  onChangePrePairedCount,
+  onlineParticipants,
 }: {
   protocolTimeoutSecs: number
   onChangeProtocolTimeoutSecs: (n: number) => void
-  authenticationMethod: AuthenticationMethod
-  onChangeAuthenticationMethod: (m: AuthenticationMethod) => void
-  unpairAck: UnpairAck
-  onChangeUnpairAck: (v: UnpairAck) => void
-  autoAcceptUnpairRequests: boolean
-  onChangeAutoAcceptUnpairRequests: (v: boolean) => void
+  prePairedCount: number
+  onChangePrePairedCount: (n: number) => void
+  /**
+   * Participants on this node that are switched on, or `null` while unknown.
+   *
+   * The hard ceiling on pre-pairing. Setup no longer provisions, so asking for
+   * more than this would mean auto-pairing against peers that do not exist or
+   * cannot answer — the owner would sit at "0 of N paired" with nothing able to
+   * resolve it.
+   */
+  onlineParticipants: number | null
 }) {
+  const ceiling = onlineParticipants ?? 0
   return (
     <div className="wizard-step">
-      <h2>Protocol settings</h2>
-      <p>Tune how this device behaves. Defaults come from the server's configuration.</p>
+      <h2>Your settings</h2>
+      <p>
+        These belong to this owner. Pool size and protocol policy are set for
+        the whole node, under Settings.
+      </p>
 
       <div className="participant-count-section">
         <span className="participant-count-section-label">
@@ -631,108 +305,39 @@ function StepProtocolSettings({
         </div>
       </div>
 
-      <div className="wizard-radio-section">
-        <div className="wizard-row">
-          <span className="wizard-row__label">Authentication method</span>
-          <ToggleGroup<AuthenticationMethod>
-            ariaLabel="Authentication method"
-            value={authenticationMethod}
-            onChange={onChangeAuthenticationMethod}
-            options={[
-              { value: 'user', label: 'User' },
-              {
-                value: 'application',
-                label: 'Application',
-                disabled: true,
-                title: 'Coming soon',
-              },
-            ]}
-          />
-          <span className="wizard-row__spacer" />
-          <InfoTooltip label="About authentication method">
-            How the app decides that two pairing channels belong to the same
-            user — an app-level concern, not part of the protocol.
-            <ul>
-              <li>
-                <strong>User</strong> — the helper manually links channels when
-                accepting a pairing request, so a recovering owner can re-pair
-                and inherit its prior shares.
-              </li>
-              <li>
-                <strong>Application</strong> <em>(not yet enabled)</em> — the
-                app would supply identity automatically; reserved for a future
-                release.
-              </li>
-            </ul>
-          </InfoTooltip>
-        </div>
-      </div>
-
-      <div
-        className="wizard-section-group"
-        role="group"
-        aria-labelledby="unpair-flow-heading"
-      >
-        <h3 id="unpair-flow-heading" className="wizard-section-group__legend">
-          Unpair flow
-        </h3>
-
-        <div className="wizard-row">
-          <span className="wizard-row__label">Acknowledgement</span>
-          <ToggleGroup<UnpairAck>
-            ariaLabel="Unpair acknowledgement"
-            value={unpairAck}
-            onChange={onChangeUnpairAck}
-            options={[
-              { value: 'required', label: 'Required' },
-              { value: 'not_required', label: 'Fire-and-forget' },
-            ]}
-          />
-          <span className="wizard-row__spacer" />
-          <InfoTooltip label="About unpair acknowledgement">
-            Protocol-level: how the initiator of an unpair flow handles the
-            peer's response. Sent to the backend with each participant and
-            replica this device provisions, so they agree.
-            <ul>
-              <li>
-                <strong>Required</strong> — wait for the peer's acknowledgement
-                before dropping local state (the initiator keeps state until
-                ACK or until the protocol timeout fires).
-              </li>
-              <li>
-                <strong>Fire-and-forget</strong> — drop local state
-                immediately on <code>start(Unpair)</code>; ignore any later
-                peer response.
-              </li>
-            </ul>
-          </InfoTooltip>
-        </div>
-
-        <div className="wizard-row">
-          <span className="wizard-row__label">Incoming requests</span>
-          <ToggleGroup<'auto' | 'prompt'>
-            ariaLabel="Incoming unpair requests"
-            value={autoAcceptUnpairRequests ? 'auto' : 'prompt'}
-            onChange={next => onChangeAutoAcceptUnpairRequests(next === 'auto')}
-            options={[
-              { value: 'auto', label: 'Auto-accept' },
-              { value: 'prompt', label: 'Show modal' },
-            ]}
-          />
-          <span className="wizard-row__spacer" />
-          <InfoTooltip label="About incoming unpair handling">
-            UI-only (not part of the protocol). Stored on this device only.
-            <ul>
-              <li>
-                <strong>Auto-accept</strong> — quietly accept and let the
-                channel disappear with a toast.
-              </li>
-              <li>
-                <strong>Show modal</strong> — surface a confirmation dialog so
-                the operator can accept or reject each request.
-              </li>
-            </ul>
-          </InfoTooltip>
+      <div className="participant-count-section">
+        <span className="participant-count-section-label">
+          Pre-pair locally
+          <span className="participant-count-section-hint">
+            {onlineParticipants === null
+              ? 'Testing only — skips QR exchange. Checking the node…'
+              : ceiling === 0
+                ? 'No participants are online on this node — provision some under Participants.'
+                : `Testing only — skips QR exchange. Up to ${ceiling} online.`}
+          </span>
+        </span>
+        <div className="participant-count-input">
+          <button
+            className="stepper"
+            onClick={() => onChangePrePairedCount(Math.max(0, prePairedCount - 1))}
+            disabled={prePairedCount <= 0}
+            aria-label="Decrease pre-paired participants"
+          >
+            −
+          </button>
+          <span className="count">{Math.min(prePairedCount, ceiling)}</span>
+          <button
+            className="stepper"
+            // Capped at what is online. Setting up an owner provisions nothing,
+            // so anything above this would auto-pair against peers that either
+            // do not exist or are switched off, and the setup gate would never
+            // clear.
+            onClick={() => onChangePrePairedCount(Math.min(ceiling, prePairedCount + 1))}
+            disabled={prePairedCount >= ceiling}
+            aria-label="Increase pre-paired participants"
+          >
+            +
+          </button>
         </div>
       </div>
     </div>
@@ -822,7 +427,10 @@ function StepClaimActor({
 }
 
 const FLOW_STEPS: Record<Flow, StepKey[]> = {
-  setup: ['ownerName', 'participantCount', 'protocolSettings'],
+  // Pool size, transport mix and protocol policy are the node's, not this
+  // owner's: they are set in Settings and read from the effective defaults when
+  // this wizard provisions. What is left is what an owner actually chooses.
+  setup: ['ownerName', 'ownerSettings'],
   // A recovering owner pairs helpers manually, one at a time, by linking
   // against their old channels — so there is nothing to configure here beyond
   // which existing owner actor's mailbox this tab adopts.
@@ -834,6 +442,23 @@ interface Props {
   onReady: (owner: Owner) => Promise<boolean>
 }
 
+/**
+ * The participants this node runs, newest last.
+ *
+ * Browser-managed actors run their protocol in a page and are nobody's to pair
+ * with from here, so the pool is the backend-run helpers — the same definition
+ * the Participants pane uses.
+ */
+async function listPoolParticipants(): Promise<BEActorWithStatus[]> {
+  const actors = await apiGetActors()
+  return actors.filter(a => a.role === 'helper' && !a.browser_managed)
+}
+
+/** Those a new owner could actually reach: switched off is unreachable. */
+function onlineOf(pool: readonly BEActorWithStatus[]): BEActorWithStatus[] {
+  return pool.filter(a => !a.disabled)
+}
+
 /** Wire an actor DTO into the participant shape the owner state carries. */
 function toParticipant(
   actor: {
@@ -841,6 +466,7 @@ function toParticipant(
     name: string
     transport: { protocol: TransportProtocol; uri: string }
     transports?: { protocol: TransportProtocol; uri: string }[]
+    disabled?: boolean
   },
   channelId: string,
 ): PairedParticipant {
@@ -851,6 +477,9 @@ function toParticipant(
     transport: { protocol: actor.transport.protocol, uri: actor.transport.uri },
     transports: actor.transports,
     connectionStatus: channelId ? 'paired' : 'available',
+    // Carried through so auto-pairing skips it: the node drops messages for a
+    // switched-off participant, so a handshake with one never completes.
+    offline: actor.disabled ?? false,
     secretShares: [],
   }
 }
@@ -869,9 +498,9 @@ export default function SetupWizard({ onReady }: Props) {
   // on a perfectly healthy load.
   const [serverReachable, setServerReachable] = useState<boolean | null>(null)
   const [probeNonce, setProbeNonce] = useState(0)
-  // Participants already on the server, so the count step can say what the
-  // requested total will actually do. `null` until the probe lands.
-  const [existingParticipants, setExistingParticipants] = useState<number | null>(null)
+  // Participants on this node that are switched on, or `null` until the probe
+  // lands. The pre-pair ceiling; the wizard provisions nothing itself.
+  const [onlineParticipants, setOnlineParticipants] = useState<number | null>(null)
 
   const [owners, setOwners] = useState<OwnerSummary[]>(() => listOwners())
   const [busyOwnerIds, setBusyOwnerIds] = useState<ReadonlySet<string>>(() => new Set())
@@ -939,19 +568,23 @@ export default function SetupWizard({ onReady }: Props) {
       const { defaults, reachable } = await apiGetServerDefaults()
       if (cancelled) return
       setServerReachable(reachable)
-      setData(current => (current.ownerName ? current : initialData(defaults)))
-      if (!reachable) {
-        setExistingParticipants(null)
-        return
-      }
+      // The node's values with any Settings overrides on top, so the wizard and
+      // the Settings pane cannot disagree about what a default is.
+      setData(current =>
+        current.ownerName ? current : initialData(effectiveDefaults(defaults)),
+      )
+      if (!reachable) return
+
+      // How many participants a new owner could actually pre-pair with. The
+      // wizard no longer creates any, so this is a ceiling it must respect
+      // rather than a number it can satisfy by provisioning more.
       try {
-        const actors = await apiGetActors()
-        if (!cancelled) {
-          setExistingParticipants(actors.filter(a => a.role === 'helper').length)
-        }
+        const pool = await listPoolParticipants()
+        if (!cancelled) setOnlineParticipants(onlineOf(pool).length)
       } catch {
-        // Only drives an explanatory line; leave it unknown rather than wrong.
-        if (!cancelled) setExistingParticipants(null)
+        // Unknown rather than wrong: leaving it null disables pre-pairing
+        // instead of offering a ceiling that may not hold.
+        if (!cancelled) setOnlineParticipants(null)
       }
     }
   }, [probeNonce])
@@ -1013,24 +646,23 @@ export default function SetupWizard({ onReady }: Props) {
   async function handleSetup() {
     setBusy(true)
     setError(null)
-    const settings: ProvisioningSettings = {
-      protocolTimeoutSecs: data.protocolTimeoutSecs,
-      unpairAck: data.unpairAck,
-    }
 
     try {
       const ownerActor = await apiRegisterOwner(data.ownerName)
 
-      const candidateNames = Array.from(
-        { length: data.participantCount },
-        () => `${faker.person.firstName()} ${faker.person.lastName()}`,
-      )
-      const { helpers: provisioned, created } = await apiEnsureHelpers(
-        data.participantCount,
-        candidateNames,
-        data.transports,
-        settings,
-      )
+      // Setting up an owner does not grow the pool. The pool belongs to the
+      // node, and an owner asking for seven where an operator deliberately left
+      // four would quietly undo that decision — which is what used to happen:
+      // deleting three participants and creating an owner put them straight
+      // back. This reads the pool; provisioning is an operator action, under
+      // Participants.
+      const provisioned = await listPoolParticipants()
+
+      // Clamped against the pool as it is *now*, not as the probe found it: an
+      // operator can delete or switch off a participant while the wizard is
+      // open, and auto-pairing against one that is gone leaves the setup gate
+      // waiting on a peer that will never answer.
+      const prePaired = Math.min(data.prePairedCount, onlineOf(provisioned).length)
 
       const owner: Owner = {
         ownerId: ownerActor.id,
@@ -1043,7 +675,7 @@ export default function SetupWizard({ onReady }: Props) {
         participants: provisioned.map(a => toParticipant(a, '')),
         secretBag: null,
         pendingPairings: [],
-        prePairedCount: data.prePairedCount > 0 ? data.prePairedCount : undefined,
+        prePairedCount: prePaired > 0 ? prePaired : undefined,
         minParticipants: data.minParticipants,
         recommendedParticipants: data.recommendedParticipants,
         recoveredSecrets: [],
@@ -1059,8 +691,8 @@ export default function SetupWizard({ onReady }: Props) {
         flow: 'setup',
         step: 'owner_registered',
         description:
-          `Set up with ${owner.participants.length} participant(s) ` +
-          `(${created} newly provisioned), ${data.prePairedCount} to auto-pair`,
+          `Set up against ${owner.participants.length} participant(s) already ` +
+          `on this node, ${prePaired} to auto-pair`,
         payload: {
           ownerId: owner.ownerId,
           ownerName: owner.ownerName,
@@ -1195,32 +827,13 @@ export default function SetupWizard({ onReady }: Props) {
             onChange={v => setData(d => ({ ...d, ownerName: v }))}
           />
         )}
-        {step === 'participantCount' && (
-          <StepParticipantCount
-            participantCount={data.participantCount}
-            prePairedCount={data.prePairedCount}
-            minParticipants={data.minParticipants}
-            recommendedParticipants={data.recommendedParticipants}
-            transports={data.transports}
-            grpcEnabled={data.grpcEnabled}
-            onChangeParticipantCount={n => setData(d => ({ ...d, participantCount: n }))}
-            onChangePrePairedCount={n => setData(d => ({ ...d, prePairedCount: n }))}
-            onChangeMinParticipants={n => setData(d => ({ ...d, minParticipants: n }))}
-            onChangeRecommendedParticipants={n => setData(d => ({ ...d, recommendedParticipants: n }))}
-            onChangeTransports={mix => setData(d => ({ ...d, transports: mix }))}
-            existingParticipants={existingParticipants}
-          />
-        )}
-        {step === 'protocolSettings' && (
-          <StepProtocolSettings
+        {step === 'ownerSettings' && (
+          <StepOwnerSettings
             protocolTimeoutSecs={data.protocolTimeoutSecs}
             onChangeProtocolTimeoutSecs={n => setData(d => ({ ...d, protocolTimeoutSecs: n }))}
-            authenticationMethod={data.authenticationMethod}
-            onChangeAuthenticationMethod={m => setData(d => ({ ...d, authenticationMethod: m }))}
-            unpairAck={data.unpairAck}
-            onChangeUnpairAck={v => setData(d => ({ ...d, unpairAck: v }))}
-            autoAcceptUnpairRequests={data.autoAcceptUnpairRequests}
-            onChangeAutoAcceptUnpairRequests={v => setData(d => ({ ...d, autoAcceptUnpairRequests: v }))}
+            prePairedCount={data.prePairedCount}
+            onChangePrePairedCount={n => setData(d => ({ ...d, prePairedCount: n }))}
+            onlineParticipants={onlineParticipants}
           />
         )}
         {step === 'claimActor' && (

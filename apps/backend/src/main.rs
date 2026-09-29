@@ -5,6 +5,7 @@ use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 use derec_backend::build_router;
 use derec_backend::config;
+use derec_backend::db;
 use derec_backend::state::AppState;
 
 #[tokio::main]
@@ -29,6 +30,22 @@ async fn main() {
     let loaded = load_configuration();
 
     info!("\n{}", config::report(&loaded, &config::configured_path()));
+
+    let pool = match db::connect(&loaded.settings.server.database_url).await {
+        Ok(pool) => pool,
+        Err(e) => {
+            // Same shape as the configuration abort: a node that cannot reach
+            // its database must not come up serving an empty one.
+            eprintln!("database error: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    info!(
+        database = %db::redact_url(&db::resolve_url(&loaded.settings.server.database_url)),
+        "database ready"
+    );
+
 
     let base_url = format!(
         "{}:{}",
@@ -75,9 +92,24 @@ async fn main() {
     };
 
     let state = Arc::new(
-        AppState::new(base_url.as_str(), defaults, http_client, arbiter_handle)
-            .with_config(loaded),
+        AppState::new(
+            base_url.as_str(),
+            defaults,
+            http_client,
+            arbiter_handle,
+            pool,
+        )
+        .with_config(loaded),
     );
+
+    // Turn the persisted rows back into a running node.
+    let recovered = derec_backend::recovery::recover(&state).await;
+    if recovered.failed > 0 {
+        warn!(
+            failed = recovered.failed,
+            "some actors could not be recovered; see the warnings above"
+        );
+    }
 
     // Bound synchronously, before `axum::serve` starts, so a taken port aborts
     // boot here rather than failing silently inside a detached task — the
@@ -108,15 +140,54 @@ async fn main() {
     info!("base URL: {base_url}");
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            tokio::signal::ctrl_c().await.ok();
-            info!("shutting down");
-        })
+        .with_graceful_shutdown(shutdown_signal())
         .await
         .expect("server error");
 
     arbiter_stopper.stop();
     shutdown.notify_one();
+}
+
+/// Resolve on the first shutdown signal, whichever arrives.
+///
+/// SIGINT alone was enough under `cargo run`, where Ctrl-C is how a developer
+/// stops it. `docker stop` sends **SIGTERM**, which nothing handled — so every
+/// stop waited out the full grace period and was then SIGKILLed.
+///
+/// That was untidy before and is a correctness problem now: a SIGKILL closes
+/// the database pool mid-write instead of draining it. Before persistence, the
+/// state a killed process lost was going to be lost anyway.
+///
+/// SIGTERM is Unix-only in `tokio::signal`, which is fine — the container is
+/// Linux — but the code still has to compile elsewhere, hence the `cfg`.
+async fn shutdown_signal() {
+    let interrupt = async {
+        tokio::signal::ctrl_c().await.ok();
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut stream) => {
+                stream.recv().await;
+            }
+            Err(e) => {
+                // Losing the SIGTERM arm is not fatal — SIGINT still works —
+                // but it silently restores the old `docker stop` behaviour, so
+                // it is worth saying out loud.
+                warn!(error = %e, "could not listen for SIGTERM; docker stop will not drain");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = interrupt => info!("shutting down on SIGINT"),
+        () = terminate => info!("shutting down on SIGTERM"),
+    }
 }
 
 /// Read the merged configuration.

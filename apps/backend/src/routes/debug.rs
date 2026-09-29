@@ -104,7 +104,10 @@ pub async fn state(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let log = state.events.since(u64::MAX, 0);
 
     let mut actors = Vec::new();
-    for actor in state.actors.all() {
+    // The debug surface reports what it can rather than failing: an empty
+    // roster with a readable event log is more useful to someone diagnosing a
+    // database problem than a 500 with nothing in it.
+    for actor in state.actors.all().await.unwrap_or_default() {
         let browser_managed = state.browser_receivers.contains_key(&actor.id);
 
         // A browser actor runs its protocol in the page, so there is no
@@ -128,7 +131,11 @@ pub async fn state(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             transports: actor.transports.clone(),
             secret_id: actor.secret_id.clone(),
             browser_managed,
-            disabled: state.disabled_helpers.contains_key(&actor.id),
+            disabled: state
+                .disabled_helpers
+                .is_disabled(&actor.id)
+                .await
+                .unwrap_or(false),
             channels: state
                 .helper_channels
                 .get(&actor.id)

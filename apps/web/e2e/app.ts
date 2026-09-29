@@ -10,14 +10,27 @@ import { expect, type Browser, type BrowserContext, type Locator, type Page } fr
  * `setUpOwner` work on whatever page they are handed.
  */
 
-/** Counter sections on the participant-count step, keyed by their visible label. */
-type CounterLabel =
-  | 'Total participants'
-  | 'Minimum paired to protect'
-  | 'Recommended paired'
-  | 'Pre-pair locally'
-  | 'gRPC only'
-  | 'Both transports'
+/**
+ * Where this run's backend listens; the app is served separately by Vite.
+ *
+ * The suite's own port, not the app's default 5000 — a developer's node on the
+ * default would otherwise be the one these specs provision against. Kept in
+ * step with `playwright.config.ts`, which starts it.
+ */
+export const BACKEND_PORT = 5100
+export const BACKEND_URL = `http://localhost:${BACKEND_PORT}`
+
+/** Pool size for a spec that does not name one — enough for a threshold of 2. */
+const DEFAULT_POOL_SIZE = 3
+
+/**
+ * Counter sections in the wizard, keyed by their visible label.
+ *
+ * Only the owner's own settings are still driven through the UI; the node-level
+ * counters moved to the Settings pane and are seeded through its stored
+ * override instead — see `seedNodeDefaults`.
+ */
+type CounterLabel = 'Pre-pair locally'
 
 /**
  * Target composition of the shared helper pool by transport mode. Mirrors
@@ -84,6 +97,8 @@ export async function openApp(page: Page): Promise<void> {
  * the dashboard to appear.
  */
 export async function setUpOwner(page: Page, options: OwnerSetupOptions): Promise<void> {
+  await ensurePool(page, options)
+  await seedNodeDefaults(page, options)
   await openApp(page)
 
   await page.getByRole('button', { name: 'Set up a new owner' }).click()
@@ -92,22 +107,87 @@ export async function setUpOwner(page: Page, options: OwnerSetupOptions): Promis
   await page.getByPlaceholder('e.g. Alice').fill(options.name)
   await page.getByRole('button', { name: /^Next/ }).click()
 
-  await expect(page.getByRole('heading', { name: 'How many participants?' })).toBeVisible()
-  // Total first: lowering it clamps the three counters below it.
-  await setCounter(page, 'Total participants', options.participants)
-  await setCounter(page, 'Minimum paired to protect', options.minParticipants)
-  await setCounter(page, 'Recommended paired', options.recommendedParticipants)
+  // What is left in the wizard is what belongs to the owner rather than the
+  // node: the timeout, and how many participants to pre-pair.
+  await expect(page.getByRole('heading', { name: 'Your settings' })).toBeVisible()
   await setCounter(page, 'Pre-pair locally', options.prePaired)
-  if (options.transports) {
-    await setCounter(page, 'gRPC only', options.transports.grpc)
-    await setCounter(page, 'Both transports', options.transports.both)
-  }
-  await page.getByRole('button', { name: /^Next/ }).click()
-
-  await expect(page.getByRole('heading', { name: 'Protocol settings' })).toBeVisible()
   await page.getByRole('button', { name: 'Set up' }).click()
 
   await expectOwnerDashboard(page)
+}
+
+/** How many participants this node runs right now. */
+export async function poolSize(page: Page): Promise<number> {
+  const response = await page.request.get(`${BACKEND_URL}/actors`)
+  const body = (await response.json()) as {
+    actors: { role: string; browser_managed?: boolean }[]
+  }
+  return body.actors.filter(a => a.role === 'helper' && !a.browser_managed).length
+}
+
+/**
+ * Make sure the node runs the participants this test needs.
+ *
+ * Setting up an owner deliberately provisions nothing: the pool belongs to the
+ * node, and an owner that grew it would undo an operator's decision to remove
+ * one. Growing the pool is an operator action, so the harness performs it the
+ * way an operator would — against the same endpoint the Participants pane
+ * calls — rather than the wizard doing it as a side effect.
+ *
+ * Only the shortfall is created, so this is safe to call from every spec even
+ * though they share one backend.
+ */
+async function ensurePool(page: Page, options: OwnerSetupOptions): Promise<void> {
+  const total = options.participants ?? DEFAULT_POOL_SIZE
+  if (total <= 0) return
+
+  const transports = options.transports ?? { http: total, grpc: 0, both: 0 }
+  const response = await page.request.post(`${BACKEND_URL}/helpers/ensure`, {
+    data: {
+      total,
+      // Unique per call: the pool is shared and only the shortfall is
+      // created, so a fixed name would collide with one an earlier spec left
+      // behind — and the helpers that reach participants by name would then
+      // match two rows.
+      names: Array.from({ length: total }, () => uniqueReplicaName('Fixture')),
+      transports,
+    },
+  })
+  if (!response.ok()) {
+    throw new Error(
+      `could not provision the pool (${response.status()}): ${await response.text()}`,
+    )
+  }
+}
+
+/**
+ * Put the node-level options in place before the app loads.
+ *
+ * Pool size, thresholds and transport mix are no longer asked for during setup
+ * — they belong to the node and are configured under Settings. Rather than
+ * reach past the app to the backend, this writes the same browser-local
+ * override the Settings pane writes, so the tests exercise the real mechanism
+ * and a change to it fails here rather than silently diverging.
+ *
+ * Stored as a *partial*: anything a test does not name keeps following the
+ * node's own defaults, exactly as the pane behaves.
+ */
+async function seedNodeDefaults(page: Page, options: OwnerSetupOptions): Promise<void> {
+  const overrides: Record<string, unknown> = {}
+  if (options.participants !== undefined) overrides.participantCount = options.participants
+  if (options.minParticipants !== undefined) overrides.minParticipants = options.minParticipants
+  if (options.recommendedParticipants !== undefined) {
+    overrides.recommendedParticipants = options.recommendedParticipants
+  }
+  if (options.transports !== undefined) overrides.helperTransports = options.transports
+  if (Object.keys(overrides).length === 0) return
+
+  // `addInitScript` runs before any of the app's own code on every navigation,
+  // which matters because the wizard reads these on its first render — setting
+  // them afterwards would be a render too late.
+  await page.addInitScript(value => {
+    window.localStorage.setItem('derec.protocolDefaults', JSON.stringify(value))
+  }, overrides)
 }
 
 /** Assert that `page` is on the owner dashboard rather than the wizard. */
@@ -479,13 +559,29 @@ export async function addAndPairReplica(page: Page, name: string): Promise<void>
   await pairReplica(page, name)
 }
 
-/** How many replica channel rows this owner has. */
+/**
+ * How many replica *channel* rows this owner has.
+ *
+ * Group members this device has no channel with are listed in the same section
+ * — they are replicas too — so the row count alone no longer answers this.
+ * "Offers Forget" is what separates them: Forget drops a local record, and a
+ * member row has none to drop.
+ */
 export async function replicaChannelCount(page: Page): Promise<number> {
+  return replicaRows(page).filter({ has: page.getByRole('button', { name: 'Forget' }) }).count()
+}
+
+/** Every row on the Replicas tab: channels this device holds, and group members. */
+export function replicaRows(page: Page) {
   return page
     .locator('.replicas-tab-section')
     .filter({ hasText: 'Replica channels' })
     .locator('.channel-block')
-    .count()
+}
+
+/** Rows for peers known only through the group — no channel of this device's own. */
+export function replicaMemberRows(page: Page) {
+  return replicaRows(page).filter({ hasText: 'This device has no channel of its own' })
 }
 
 /** The count badge on a dashboard tab. */

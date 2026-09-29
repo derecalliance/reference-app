@@ -186,8 +186,20 @@ pub async fn add(
         req.transport_mode,
     );
 
-    spawn_provisioned(&state, &helper, timeout_secs, unpair_ack);
-    state.actors.register(helper.clone());
+    // Minted here rather than inside `spawn_provisioned`, so the value stored
+    // is the value the actor runs with — a respawn reads it back rather than
+    // inventing a new one, which would make this helper a stranger to every
+    // replica group holding its old id.
+    let settings = crate::registry::actors::ActorSettings {
+        replica_id: rand::random::<u64>(),
+        timeout_secs,
+        unpair_ack,
+    };
+
+    spawn_provisioned(&state, &helper, &settings);
+    if let Err(e) = state.actors.register(helper.clone(), settings).await {
+        return crate::routes::actor_guard::registry_unavailable(e);
+    }
 
     info!(
         helper_id = %helper.id,
@@ -264,25 +276,50 @@ pub async fn ensure(
     let (timeout_secs, unpair_ack) = req.settings.resolve(&state.defaults);
     let names = req.names;
 
-    let EnsuredParticipants { created, participants: helpers } =
-        state
+    let ensured = state
             .actors
             .ensure_participants_by_mode(want, |taken, pool_index, mode| {
                 // Every actor protects its own secret — see
                 // `provisioning::actor_secret_id`.
-                provisioned_actor(
+                let actor = provisioned_actor(
                     Role::Helper,
                     &helper_name(&names, taken, pool_index),
                     &state.base_url,
                     &state.grpc_authority(),
                     mode,
-                )
-            });
+                );
+                // Minted with the actor and stored in the same transaction, so
+                // the row a respawn reads back is the one this helper ran with.
+                let settings = crate::registry::actors::ActorSettings {
+                    replica_id: rand::random::<u64>(),
+                    timeout_secs,
+                    unpair_ack,
+                };
+                (actor, settings)
+            })
+            .await;
+
+    let EnsuredParticipants { created, participants: helpers } = match ensured {
+        Ok(ensured) => ensured,
+        Err(e) => return crate::routes::actor_guard::registry_unavailable(e),
+    };
 
     // Spawning touches the arbiter and several maps, so it happens out here
-    // rather than inside the registry lock.
+    // rather than inside the registry transaction.
     for helper in &created {
-        spawn_provisioned(&state, helper, timeout_secs, unpair_ack);
+        // Read back rather than re-minted, so the running actor and its row
+        // agree on `replica_id`.
+        let settings = match state.actors.settings(&helper.id).await {
+            Ok(Some(stored)) => stored,
+            Ok(None) | Err(_) => {
+                tracing::error!(
+                    helper_id = %helper.id,
+                    "no stored settings for a just-created helper; not spawning"
+                );
+                continue;
+            }
+        };
+        spawn_provisioned(&state, helper, &settings);
     }
 
     info!(
@@ -309,19 +346,27 @@ pub async fn toggle_status(
     Path(helper_id): Path<Uuid>,
     body: Option<Json<SetStatusRequest>>,
 ) -> Response {
-    if let Err(response) = ensure_actor_role(&state, &helper_id, Role::Helper) {
+    if let Err(response) = ensure_actor_role(&state, &helper_id, Role::Helper).await {
         return response;
     }
 
-    let want_disabled = match body {
-        Some(Json(req)) => req.disabled,
-        None => !state.disabled_helpers.contains_key(&helper_id),
+    let currently = match state.disabled_helpers.is_disabled(&helper_id).await {
+        Ok(current) => current,
+        Err(e) => return crate::routes::actor_guard::registry_unavailable(e),
     };
 
-    if want_disabled {
-        state.disabled_helpers.insert(helper_id, ());
-    } else {
-        state.disabled_helpers.remove(&helper_id);
+    // No body means "toggle".
+    let want_disabled = match body {
+        Some(Json(req)) => req.disabled,
+        None => !currently,
+    };
+
+    if let Err(e) = state
+        .disabled_helpers
+        .set_disabled(&helper_id, want_disabled)
+        .await
+    {
+        return crate::routes::actor_guard::registry_unavailable(e);
     }
 
     info!(
@@ -337,6 +382,29 @@ pub async fn toggle_status(
         .into_response()
 }
 
+/// DELETE /helpers/:helper_id
+///
+/// Erase a provisioned participant: its actor, its stores and its registry
+/// entry. The pool is server-wide, so this affects every owner using it — and
+/// an owner paired with it keeps its channel, which from then on behaves like a
+/// peer that has gone offline. Unpairing from the owner's side is how that row
+/// is cleared; the backend cannot reach into a browser to do it.
+pub async fn delete(
+    State(state): State<Arc<AppState>>,
+    Path(helper_id): Path<Uuid>,
+) -> Response {
+    // Guards both that it exists and that it is ours to delete: a
+    // browser-managed actor belongs to the page driving it.
+    if let Err(response) = ensure_actor_role(&state, &helper_id, Role::Helper).await {
+        return response;
+    }
+
+    match crate::deletion::delete_participant(&state, helper_id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => crate::routes::actor_guard::registry_unavailable(e),
+    }
+}
+
 // ── Browser-published contacts ───────────────────────────────────────────────
 //
 // Contacts are scoped to a secret. Pairing binds both parties to one
@@ -350,11 +418,19 @@ pub async fn post_browser_contact(
     Path(helper_id): Path<Uuid>,
     body: String,
 ) -> Response {
-    if !state.actors.contains(&helper_id) {
-        return not_found("actor not found");
+    match state.actors.contains(&helper_id).await {
+        Ok(false) => return not_found("actor not found"),
+        Err(e) => return crate::routes::actor_guard::registry_unavailable(e),
+        Ok(true) => {}
     }
 
-    state.browser_participant_contacts.insert(helper_id, body);
+    if let Err(e) = state
+        .browser_participant_contacts
+        .put(&helper_id, &body)
+        .await
+    {
+        return crate::routes::actor_guard::registry_unavailable(e);
+    }
     info!(helper_id = %helper_id, "browser contact stored");
 
     StatusCode::OK.into_response()
@@ -365,13 +441,16 @@ pub async fn get_browser_contact(
     State(state): State<Arc<AppState>>,
     Path(helper_id): Path<Uuid>,
 ) -> Response {
-    if !state.actors.contains(&helper_id) {
-        return not_found("actor not found");
+    match state.actors.contains(&helper_id).await {
+        Ok(false) => return not_found("actor not found"),
+        Err(e) => return crate::routes::actor_guard::registry_unavailable(e),
+        Ok(true) => {}
     }
 
-    match state.browser_participant_contacts.get(&helper_id) {
-        Some(contact) => (StatusCode::OK, contact.value().clone()).into_response(),
-        None => StatusCode::NOT_FOUND.into_response(),
+    match state.browser_participant_contacts.get(&helper_id).await {
+        Ok(Some(contact)) => (StatusCode::OK, contact).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => crate::routes::actor_guard::registry_unavailable(e),
     }
 }
 
@@ -404,7 +483,7 @@ pub async fn list_channels(
     State(state): State<Arc<AppState>>,
     Path(helper_id): Path<Uuid>,
 ) -> Response {
-    if let Err(response) = ensure_actor_role(&state, &helper_id, Role::Helper) {
+    if let Err(response) = ensure_actor_role(&state, &helper_id, Role::Helper).await {
         return response;
     }
 
@@ -435,7 +514,7 @@ pub async fn link_channels(
     Path(helper_id): Path<Uuid>,
     Json(req): Json<LinkChannelsRequest>,
 ) -> Response {
-    if let Err(response) = ensure_actor_role(&state, &helper_id, Role::Helper) {
+    if let Err(response) = ensure_actor_role(&state, &helper_id, Role::Helper).await {
         return response;
     }
 

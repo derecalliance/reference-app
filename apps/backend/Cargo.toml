@@ -20,7 +20,7 @@ figment = { version = "0.10", features = ["toml"] }
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = { version = "1", features = ["derive"] }
@@ -31,13 +31,23 @@ base64 = "0.22"
 # SDK. Plaintext endpoints are not a compile-time feature — they are
 # `DeRecProtocolBuilder::with_unsafe_connection`, decided per instance at
 # runtime.
-derec-library = "0.0.4"
-derec-proto = "0.0.4"
+derec-library = { version = "0.0.5", features = ["serde"] }
+derec-proto = "0.0.5"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 rand = "0.8"
 # Operator-supplied defaults for the front end, read from a mounted config file.
 toml = "0.8"
 thiserror = "2"
+# Persistence. `any` is what makes SQLite and Postgres one code path; SQLite is
+# compiled in, so the image needs no database service and nothing installed.
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio-rustls",
+    "any",
+    "sqlite",
+    "postgres",
+    "migrate",
+    "macros",
+] }
 actix = "0.13"
 actix-rt = "2"
 # Envelope decoding: inbound messages are routed to a per-secret protocol

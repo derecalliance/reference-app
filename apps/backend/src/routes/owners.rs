@@ -36,7 +36,16 @@ pub async fn register(
 ) -> Response {
     let actor = match req.claim_actor_id {
         Some(claim_actor_id) => {
-            match state.actors.get_with_role(&claim_actor_id, Role::Owner) {
+            let found = match state
+                .actors
+                .get_with_role(&claim_actor_id, Role::Owner)
+                .await
+            {
+                Ok(found) => found,
+                Err(e) => return crate::routes::actor_guard::registry_unavailable(e),
+            };
+
+            match found {
                 Ok(actor) => {
                     info!(
                         actor_id = %actor.id,
@@ -58,7 +67,16 @@ pub async fn register(
                 &state.grpc_authority(),
                 TransportMode::Http,
             );
-            state.actors.register(actor.clone());
+            // A browser-run actor's protocol settings live in the page; these
+            // are stored so the row is well-formed and are never read back.
+            let settings = crate::registry::actors::ActorSettings {
+                replica_id: rand::random::<u64>(),
+                timeout_secs: state.defaults.protocol_timeout_secs,
+                unpair_ack: state.defaults.unpair_ack,
+            };
+            if let Err(e) = state.actors.register(actor.clone(), settings).await {
+                return crate::routes::actor_guard::registry_unavailable(e);
+            }
             info!(actor_id = %actor.id, name = %actor.name, "owner registered");
             actor
         }

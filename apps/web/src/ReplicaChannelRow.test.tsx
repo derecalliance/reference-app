@@ -245,3 +245,65 @@ describe('clearing a replica row', () => {
     expect(buttonLabelled(/^Forget$/).title).toMatch(/without telling them/i)
   })
 })
+
+/**
+ * A peer in the same group that this device holds no channel with.
+ *
+ * Two destinations of one source are group members and never pair with each
+ * other. Such a row was first given no-op handlers, which left every action on
+ * screen doing nothing and the row reporting itself "Verified" and "Confirmed
+ * on this device" — asserting a comparison that never happened.
+ */
+describe('a member known only through the group', () => {
+  const member = { viaGroupOnly: true, view: view({ status: 'paired' }) }
+
+  it('claims no verification, because there was no comparison to make', () => {
+    render(member)
+
+    expect(text()).not.toMatch(/Verified/)
+    expect(text()).not.toMatch(/Confirmed on this device/)
+  })
+
+  it('says how it is known instead of leaving the row unexplained', () => {
+    render(member)
+    expect(text()).toMatch(/no channel of its own/i)
+  })
+
+  it('offers no fingerprint — there is no pairing to compare', () => {
+    render(member)
+    expect(text()).not.toMatch(/fingerprint/i)
+  })
+
+  it('offers no Forget — there is no local record to drop', () => {
+    render(member)
+    expect(text()).not.toMatch(/Forget/)
+  })
+
+  it('offers no "Sync now" — a round has no channel to travel over', () => {
+    // `direction: replica_source` would otherwise enable it: the member's role
+    // in the roster is Destination, so this device reads as the source of it.
+    render({ ...member, view: view({ status: 'paired', direction: 'replica_source' }) })
+    expect(text()).not.toMatch(/Sync now/)
+  })
+
+  it('promises no mirror, which would contradict having nothing to sync', () => {
+    render(member)
+    expect(text()).not.toMatch(/next protect round/i)
+  })
+
+  it('still offers eviction, which names the member rather than a channel', () => {
+    const onRemoveFromGroup = vi.fn()
+    render({ ...member, canRemoveFromGroup: true, onRemoveFromGroup })
+    buttonLabelled(/Remove from group/).click()
+
+    expect(onRemoveFromGroup).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves an ordinary channel row untouched', () => {
+    // The flag is opt-in: every existing caller is a real channel.
+    render({ view: view({ status: 'paired' }) })
+
+    expect(text()).toMatch(/Verified/)
+    expect(text()).toMatch(/Forget/)
+  })
+})

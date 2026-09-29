@@ -1,6 +1,7 @@
+import { copyText } from '../clipboard'
 import { useCallback, useEffect, useState } from 'react'
-import { errorText } from './errorText'
-import { apiGetDebugState, type DebugState } from './api'
+import { errorText } from '../errorText'
+import { apiGetDebugState, type DebugState } from '../api'
 
 /**
  * The server's own view of itself, rendered for a human.
@@ -79,7 +80,7 @@ export function InspectTab() {
         </button>
         <button
           className="secondary"
-          onClick={() => void navigator.clipboard.writeText(JSON.stringify(state, null, 2))}
+          onClick={() => void copyText(JSON.stringify(state, null, 2))}
         >
           Copy JSON
         </button>

@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use actix::prelude::*;
-use rand::Rng as _;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
@@ -44,12 +43,28 @@ const AUTO_CONFIRM_RETRY: Duration = Duration::from_millis(250);
 const AUTO_CONFIRM_ATTEMPTS: u8 = 8;
 
 use crate::models::{Role, UnpairAck};
-use crate::state::AppState;
-use crate::stores::{
-    ActorProtocol, InMemoryChannelStore, InMemorySecretStore, InMemoryShareStore,
-    InMemoryStateStore, InMemoryUserSecretStore,
+use crate::sql::{
+    channel::SqlChannelStore, secret::SqlSecretStore, share::SqlShareStore,
+    state::SqlStateStore, user_secret::SqlUserSecretStore,
 };
+use crate::state::AppState;
 use crate::transport::{CompositeTransport, GrpcTransport, HttpTransport};
+
+/// The protocol type every actor runs.
+///
+/// Lives here rather than in `stores.rs` because it is about what an actor
+/// *is*, not about how one storage backend is written — and because the
+/// in-memory stores it used to name are on their way out.
+///
+/// Parameter order is channel, share, secret, user-secret, state, transport.
+pub type ActorProtocol = derec_library::protocol::DeRecProtocol<
+    SqlChannelStore,
+    SqlShareStore,
+    SqlSecretStore,
+    SqlUserSecretStore,
+    SqlStateStore,
+    CompositeTransport,
+>;
 
 /// Everything needed to build this actor's protocol instance.
 #[derive(Clone)]
@@ -71,6 +86,22 @@ pub struct ProtocolConfig {
     /// any replica-mode pairing; `None` for plain participants.
     pub replica_id: Option<u64>,
     pub http_client: reqwest::Client,
+    /// The database every store for this instance reads and writes.
+    ///
+    /// A handle, like `http_client` beside it — cloning shares connections
+    /// rather than opening them, so an actor owning one costs nothing.
+    pub pool: sqlx::AnyPool,
+    /// The actor these stores belong to.
+    ///
+    /// Part of every store's key alongside `secret_id`, because `secret_id`
+    /// alone does not identify an instance: a replica instance is bound to the
+    /// *mirrored owner's* secret, so two actors mirroring one owner would
+    /// otherwise share rows. See the header of `migrations/0001_initial.sql`.
+    ///
+    /// Carried on the config rather than passed separately so a replica
+    /// instance — built from a clone of this config with `secret_id` changed —
+    /// keeps the actor it belongs to.
+    pub actor_id: Uuid,
 }
 
 /// The settings half of the builder chain, shared by fresh construction and
@@ -135,12 +166,16 @@ fn configure_builder<Cs, Sh, Se, Us, St, T, O>(
 /// prompt, so every inbound action is auto-accepted by the library rather than
 /// by a hand-rolled accept loop.
 pub fn build_protocol(config: &ProtocolConfig) -> Result<ActorProtocol, derec_library::Error> {
+    // Every store is keyed by this alongside `secret_id`; see `ProtocolConfig`.
+    let actor = config.actor_id.to_string();
+    let actor = actor.as_str();
+
     let builder = DeRecProtocolBuilder::new(config.secret_id)
-        .with_channel_store(InMemoryChannelStore::default())
-        .with_share_store(InMemoryShareStore::default())
-        .with_secret_store(InMemorySecretStore::default())
-        .with_user_secret_store(InMemoryUserSecretStore::default())
-        .with_state_store(InMemoryStateStore::default())
+        .with_channel_store(SqlChannelStore::new(config.pool.clone(), actor))
+        .with_share_store(SqlShareStore::new(config.pool.clone(), actor))
+        .with_secret_store(SqlSecretStore::new(config.pool.clone(), actor))
+        .with_user_secret_store(SqlUserSecretStore::new(config.pool.clone(), actor))
+        .with_state_store(SqlStateStore::new(config.pool.clone(), actor))
         .with_transport(CompositeTransport::new(
             HttpTransport::new(config.http_client.clone()),
             GrpcTransport::new(),
@@ -162,23 +197,23 @@ pub fn build_protocol(config: &ProtocolConfig) -> Result<ActorProtocol, derec_li
 ///
 /// The SDK exposes `timeouts` and `unpair_ack` on the builder only — there is
 /// no runtime setter for either — so changing them on a live instance means
-/// rebuilding it. That preserves state for exactly one reason: `channel_store`,
-/// `share_store`, `secret_store`, `user_secret_store`, `state_store` and
-/// `transport` are `pub` on `DeRecProtocol` and the type has no `Drop` impl, so
-/// they can be moved out of the old value. Channels, shares and in-flight
-/// orchestrator state all survive.
+/// rebuilding it.
+///
+/// **Channels, shares and in-flight orchestrator state survive because they are
+/// in the database**, not because of the moves below: every store is a handle
+/// on the same pool, so the freshly built ones already read exactly what
+/// `old`'s did. The moves are kept because `transport` genuinely must carry
+/// over — it holds live clients — and because moving all six together keeps
+/// this honest if a store ever regains per-instance state.
 ///
 /// On failure `old` comes back untouched, so a rejected rebuild costs the
 /// caller its settings change and nothing else. That is why the new instance is
-/// built over throwaway empty stores *first* and `old`'s stores are moved in
-/// afterwards, rather than handed to the builder: `build()` consumes the
-/// builder, so a failure with `old`'s stores already inside it would destroy
-/// them with no way to hand them back. Splitting it this way costs one
-/// short-lived set of empty stores and makes the only fallible step happen
-/// while `old` is still whole — everything the builder validates (`threshold`,
-/// the own-transport URI and its plaintext policy) comes from `config` alone,
-/// never from the stores, so validating over empty ones decides the same
-/// outcome.
+/// built first and `old`'s parts are moved in afterwards rather than handed to
+/// the builder: `build()` consumes the builder, so a failure with `old`'s
+/// transport already inside it would destroy it with no way to hand it back.
+/// Everything the builder validates (`threshold`, the own-transport URI and its
+/// plaintext policy) comes from `config` alone, never from the stores, so the
+/// outcome is the same either way.
 fn rebuild_with_stores(
     config: &ProtocolConfig,
     old: ActorProtocol,
@@ -541,6 +576,25 @@ impl ProvisionedActor {
     }
 }
 
+impl actix::Supervised for ProvisionedActor {
+    /// Called instead of `stopped` when a handler panics.
+    ///
+    /// The actor value survives — actix reuses it rather than constructing a
+    /// new one — so the protocol instances, their stores and this actor's
+    /// inbox binding all come back with it. There is nothing to rebuild here.
+    ///
+    /// What this exists for is visibility. Without supervision a panicking
+    /// handler removes the helper for the rest of the process's life, and the
+    /// only symptom is a peer whose messages stop being answered; with it, the
+    /// helper keeps serving and the panic is on the record.
+    fn restarting(&mut self, _ctx: &mut Context<Self>) {
+        warn!(
+            actor_id = %self.actor_id,
+            "actor restarted after a panic; protocol state is retained"
+        );
+    }
+}
+
 impl Actor for ProvisionedActor {
     type Context = Context<Self>;
 
@@ -554,6 +608,39 @@ impl Actor for ProvisionedActor {
         // message is what serializes it against `process()` — both mutate the
         // same round state, and interleaving them would lose an update.
         ctx.run_interval(TICK_INTERVAL, |_actor, ctx| ctx.notify(TickMsg));
+    }
+}
+
+/// Stop this actor for good, ahead of its data being erased.
+///
+/// Dropping the `Addr` is not enough. A supervisor outlives its actor only
+/// while the actor "is not performing any tasks", and this one schedules a
+/// repeating tick in `started` — so it would keep advancing protocol time and
+/// **writing rows back** into the tables the caller is about to delete, leaving
+/// a participant half-deleted.
+///
+/// The instances are dropped before terminating rather than relying on
+/// termination alone: a supervised actor that stops is restarted, and restart
+/// reuses this same value. Draining them means that even if the supervisor
+/// brings it back, its tick finds nothing to advance and writes nothing. The
+/// caller removes it from `actor_inboxes` in the same breath, so nothing can
+/// reach it either way.
+#[derive(Message)]
+#[rtype(result = "()")]
+pub(crate) struct ShutdownMsg;
+
+impl Handler<ShutdownMsg> for ProvisionedActor {
+    type Result = ();
+
+    fn handle(&mut self, _msg: ShutdownMsg, ctx: &mut Context<Self>) {
+        for secret_id in self.instances.secret_ids() {
+            // An instance borrowed by an in-flight call is already out of the
+            // map; that call's future is dropped with the actor, and the
+            // instance with it.
+            drop(self.instances.take(secret_id));
+        }
+        info!(actor_id = %self.actor_id, "actor shut down before deletion");
+        ctx.terminate();
     }
 }
 
@@ -655,17 +742,19 @@ impl Handler<TickMsg> for ProvisionedActor {
     }
 }
 
-/// Incoming protocol bytes from a peer. Routed to the instance that owns the
-/// envelope's channel, then processed after a random delay.
+/// Incoming protocol bytes from a peer, routed to the instance that owns the
+/// envelope's channel.
+///
+/// Processed as soon as the actor reaches it. This used to sit behind a random
+/// 500-3000ms delay standing in for a human deciding — but a provisioned actor
+/// is a fixture, not a person, and the only thing the delay actually bought was
+/// latency: an actor handles one message at a time, so ordering is the
+/// mailbox's job, not a sleep's. Every round trip paid it, several times over,
+/// which is why verification across three helpers took minutes rather than
+/// seconds.
 #[derive(Message)]
 #[rtype(result = "()")]
 pub struct IncomingMessage(pub Vec<u8>);
-
-// Delayed so concurrent messages from the same sender don't race through the
-// protocol in lockstep.
-#[derive(Message)]
-#[rtype(result = "()")]
-struct ProcessDelayed(Vec<u8>);
 
 /// Create an out-of-band contact, selecting the instance bound to
 /// `replica_for_owner_secret` when set, or the own instance otherwise. This
@@ -877,7 +966,7 @@ pub struct ListInstanceSecretsMsg;
 /// instance claims it.
 ///
 /// This is the same routing-index lookup an inbound envelope goes through in
-/// the `ProcessDelayed` handler, exposed so a test can assert on it without
+/// the `IncomingMessage` handler, exposed so a test can assert on it without
 /// standing up a peer. Test and admin observability; carries no key material.
 #[derive(Message)]
 #[rtype(result = "Option<u64>")]
@@ -932,18 +1021,9 @@ pub struct EnsureReplicaInstanceMsg {
 }
 
 impl Handler<IncomingMessage> for ProvisionedActor {
-    type Result = ();
-
-    fn handle(&mut self, msg: IncomingMessage, ctx: &mut Context<Self>) {
-        let delay = Duration::from_millis(rand::thread_rng().gen_range(500..=3000));
-        ctx.notify_later(ProcessDelayed(msg.0), delay);
-    }
-}
-
-impl Handler<ProcessDelayed> for ProvisionedActor {
     type Result = ResponseActFuture<Self, ()>;
 
-    fn handle(&mut self, msg: ProcessDelayed, _ctx: &mut Context<Self>) -> Self::Result {
+    fn handle(&mut self, msg: IncomingMessage, _ctx: &mut Context<Self>) -> Self::Result {
         let bytes = msg.0;
 
         let meta = match crate::envelope::decode(&bytes) {
@@ -1204,15 +1284,38 @@ impl Handler<StartFlowMsg> for ProvisionedActor {
 }
 
 impl Handler<LoadSharedKeyMsg> for ProvisionedActor {
-    type Result = Option<[u8; 32]>;
+    // A future now, not a plain value: the key lives in the database, so
+    // reading it is async. `Message::Result` is unchanged, so senders still
+    // await an `Option<[u8; 32]>` and no call site moves.
+    type Result = ResponseActFuture<Self, Option<[u8; 32]>>;
 
     fn handle(&mut self, msg: LoadSharedKeyMsg, _ctx: &mut Context<Self>) -> Self::Result {
-        let protocol = self.take_own()?;
-        let key = protocol
-            .secret_store
-            .load_shared_key(protocol.secret_id(), msg.channel_id);
-        self.restore_own(protocol);
-        key
+        let Some(protocol) = self.take_own() else {
+            return Box::pin(actix::fut::ready(None));
+        };
+        let secret_id = protocol.secret_id();
+        let channel_id = msg.channel_id;
+
+        Box::pin(
+            async move {
+                // A read failure is reported as "no key" rather than
+                // propagated: the caller's type has no error channel, and the
+                // store already logs nothing useful that a caller could act on
+                // here. The fingerprint flow treats absence as "cannot
+                // confirm", which is the safe reading either way.
+                let key = protocol
+                    .secret_store
+                    .load_shared_key(secret_id, channel_id)
+                    .await
+                    .unwrap_or(None);
+                (protocol, key)
+            }
+            .into_actor(self)
+            .map(move |(protocol, key), actor, _ctx| {
+                actor.restore_own(protocol);
+                key
+            }),
+        )
     }
 }
 
@@ -1521,7 +1624,15 @@ mod tests {
     const CHANNEL_ID: u64 = 0xC0FFEE;
     const SHARED_KEY: [u8; 32] = [7u8; 32];
 
-    fn config() -> ProtocolConfig {
+    /// A private in-memory database per test. A shared one would let two tests
+    /// see each other's rows.
+    async fn pool() -> sqlx::AnyPool {
+        crate::db::connect("sqlite::memory:")
+            .await
+            .expect("an in-memory database always connects")
+    }
+
+    fn config(pool: sqlx::AnyPool) -> ProtocolConfig {
         ProtocolConfig {
             secret_id: SECRET_ID,
             own_transports: vec![Transport {
@@ -1536,6 +1647,8 @@ mod tests {
             keep_versions_count: 3,
             replica_id: Some(0xAB),
             http_client: reqwest::Client::new(),
+            pool,
+            actor_id: uuid::Uuid::new_v4(),
         }
     }
 
@@ -1552,7 +1665,7 @@ mod tests {
     /// the guarantee needs a test rather than a caller to demonstrate it.
     #[actix_rt::test]
     async fn a_rejected_rebuild_hands_the_original_instance_back_with_its_stores() {
-        let mut config = config();
+        let mut config = config(pool().await);
         let mut protocol = build_protocol(&config).expect("the baseline config builds");
         protocol
             .secret_store
@@ -1573,11 +1686,27 @@ mod tests {
         };
 
         assert_eq!(old.secret_id(), SECRET_ID);
+
+        // What this assertion proves changed when the stores moved to SQL.
+        //
+        // It used to distinguish the original instance from a freshly built
+        // stand-in, because a stand-in carried its own empty in-memory store.
+        // Every store is now a handle on one database, so a stand-in would
+        // answer identically and this can no longer tell them apart.
+        //
+        // It is kept because the guarantee it half-covers still matters: the
+        // instance handed back on a rejected rebuild must be usable and must
+        // still see its own data. The "is it literally the same instance" half
+        // is no longer observable through a store — and the reason it is not is
+        // the point of moving them, so this is a loss worth taking rather than
+        // a gap to paper over with a weaker stand-in check.
         assert_eq!(
-            old.secret_store.load_shared_key(SECRET_ID, CHANNEL_ID),
+            old.secret_store
+                .load_shared_key(SECRET_ID, CHANNEL_ID)
+                .await
+                .expect("the store is readable"),
             Some(SHARED_KEY),
-            "the instance handed back must be the original, stores and all — a \
-             freshly built stand-in would answer with an empty store"
+            "the instance handed back must still see the key it stored"
         );
     }
 }

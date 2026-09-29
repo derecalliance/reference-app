@@ -26,6 +26,7 @@ import {
 } from './api'
 import { dtoToContactMessage, protocolName } from './contactDto'
 import { resolveRosterActor } from './peerIdentity'
+import { toBytes } from './bytes'
 import { toBase64Url } from './derecApi'
 import type { BagVersion, PairedParticipant, SecretBag } from './types'
 
@@ -1045,6 +1046,52 @@ export function describeRestoreFailure(err: unknown): RestoreFailure {
   }
 }
 
+/**
+ * A payload whose binary fields could not be read at all.
+ *
+ * Distinguished from a `restore` rejection because nothing was attempted and,
+ * crucially, **nothing was destroyed** — this is raised before the wipe. The
+ * device is exactly as it was, so the message says so rather than inheriting
+ * the "your vault was erased" framing a genuine restore failure carries.
+ */
+export function describeUnreadableSecret(err: unknown): RestoreFailure {
+  const message = err instanceof Error ? err.message : String(err)
+  return {
+    code: 'UNKNOWN',
+    message,
+    channelIds: [],
+    // Not a precondition failure: there is no half-adopted state to protect,
+    // because the wipe never ran.
+    wipeDidNotTake: false,
+    text:
+      `The mirrored copy could not be read, so nothing was changed on this ` +
+      `device — its vault is intact. ${message}`,
+  }
+}
+
+/**
+ * Re-read a mirrored secret's binary fields as real `Uint8Array`s.
+ *
+ * Every bytes field the payload carries goes through `toBytes`, because the
+ * library's declared types are not a guarantee about what actually arrives, and
+ * the WASM boundary rejects anything that is not a genuine view. Structure is
+ * preserved exactly; only the byte fields are rebuilt.
+ */
+export function normalizeReplicaSecret(secret: ReplicaSecretPayload): ReplicaSecretPayload {
+  return {
+    ...secret,
+    helpers: secret.helpers.map(h => ({ ...h, shared_key: toBytes(h.shared_key) })),
+    secrets: secret.secrets.map(s => ({
+      ...s,
+      id: toBytes(s.id),
+      data: toBytes(s.data),
+    })),
+    replicas: secret.replicas
+      ? { ...secret.replicas, shared_key: toBytes(secret.replicas.shared_key) }
+      : secret.replicas,
+  }
+}
+
 /** A `restore` rejection during adoption, carrying the verbatim detail. */
 export class ReplicaAdoptionError extends Error {
   readonly failure: RestoreFailure
@@ -1127,6 +1174,21 @@ export interface ReplicaAdoptionDeps {
   buildInstance(params: ReplicaAdoptionInstanceParams): AdoptableInstance
   /** Feed one event from the restore's own teardown to the app's handler. */
   onEvent(event: DeRecEvent): void
+  /**
+   * Persist the source's committed shares as this device's tracking shares.
+   *
+   * The sync that delivered the mirror wrote these into the store already —
+   * and then step 1 erased the namespace they lived in, because the wipe is
+   * what makes `restore`'s preconditions reachable. `restore` writes none of
+   * its own by design: it cannot attribute a *recovered* share to a canonical
+   * Helper channel. Here it can, because the payload names the channel for
+   * each one, so the state is put back rather than lost.
+   *
+   * Without this the destination holds a vault it can read and recover from
+   * but cannot verify — every Helper answers, and every answer is rejected
+   * with "no committed share stored for this channel/version".
+   */
+  saveTrackingShares(shares: ReplicaSecretShares, secretId: string, version: number): Promise<void>
 }
 
 export interface ReplicaAdoptionOptions {
@@ -1147,6 +1209,15 @@ export interface ReplicaAdoptionOutcome {
   replicaId: bigint
   /** Events `restore` returned, already drained through `deps.onEvent`. */
   events: DeRecEvent[]
+  /**
+   * Why the tracking shares could not be written, when they could not.
+   *
+   * Non-null means the vault is adopted and usable but **not verifiable**: the
+   * helpers will answer a verification round and this device will reject every
+   * answer. Reported rather than thrown, because failing the adoption here
+   * would erase a vault and then refuse the replacement.
+   */
+  trackingSharesError: unknown
 }
 
 /**
@@ -1179,6 +1250,21 @@ export async function adoptReplicaSecret(
 ): Promise<ReplicaAdoptionOutcome> {
   const { adoption, namespace, config, deps } = opts
 
+  // 0. Coerce the payload's binary fields *before* anything is destroyed.
+  //
+  //    The SDK's declared `Uint8Array`s are not always one, and handing a plain
+  //    array back across the WASM boundary fails with "parameter 1 is not of
+  //    type 'ArrayBuffer'". That used to surface from `restore` in step 3 —
+  //    after the wipe — so a payload this device could never have adopted still
+  //    cost it its vault. Whatever cannot be read is rejected here, while the
+  //    device is still intact.
+  let secret: ReplicaSecretPayload
+  try {
+    secret = normalizeReplicaSecret(adoption.secret)
+  } catch (err) {
+    throw new ReplicaAdoptionError(describeUnreadableSecret(err))
+  }
+
   // 1. Wipe. Nothing below may run before these two lines. The FE's own replica
   //    bookkeeping lives outside the namespace, so it takes a second call.
   deps.clearNamespace(namespace)
@@ -1198,18 +1284,38 @@ export async function adoptReplicaSecret(
 
   // 3. One attempt. `ALREADY_RESTORED` / `CONFLICT` here mean step 1 did not
   //    take, and retrying would restore over partially-adopted state.
+  /** Set when the tracking shares could not be written; see the outcome. */
+  let tracking: unknown = null
+
   let events: DeRecEvent[]
   try {
-    events = Array.from(await instance.protocol.restore(adoption.secret, adoption.version))
+    events = Array.from(await instance.protocol.restore(secret, adoption.version))
   } catch (err) {
     throw new ReplicaAdoptionError(describeRestoreFailure(err))
   }
 
-  // 4. Drain. `onEvent` owns its own failures — a handler that throws must not
+  // 4. Put the tracking shares back, after `restore` has created the channels
+  //    they key against. Non-fatal: the vault is adopted either way, and a
+  //    device that cannot verify is worth strictly more than one that reports
+  //    the adoption as failed and blocks itself.
+  try {
+    await deps.saveTrackingShares(adoption.shares, adoption.secretId, adoption.version)
+  } catch (err) {
+    tracking = err
+  }
+
+  // 5. Drain. `onEvent` owns its own failures — a handler that throws must not
   //    turn a completed adoption into a reported failure.
   for (const event of events) deps.onEvent(event)
 
-  return { instance, secretId: adoption.secretId, version: adoption.version, replicaId, events }
+  return {
+    instance,
+    secretId: adoption.secretId,
+    version: adoption.version,
+    replicaId,
+    events,
+    trackingSharesError: tracking,
+  }
 }
 
 /** The FE owner state an adopted vault implies. */
@@ -1226,6 +1332,13 @@ export interface AdoptedVaultState {
  * exactly as the recovery path does. Without it the adopted rows would be
  * anonymous placeholders that backend polling, which reconciles by actor id,
  * could never match.
+ *
+ * The replica group is projected too, not just the helpers. Adoption wipes this
+ * device's own replica bookkeeping before restoring, so the group it belongs to
+ * has to come back from the snapshot — and the snapshot is the only place it
+ * exists afterwards. Without this the destination showed `Replicas 0` while the
+ * source showed the pairing was live: the row was gone from the roster, so the
+ * tab counted nothing, even though the channel itself survived.
  */
 export function adoptedVaultState(
   adoption: PendingReplicaAdoption,
@@ -1260,16 +1373,46 @@ export function adoptedVaultState(
     verifiedParticipantIds: [],
     failedParticipantIds: [],
     secrets: adoption.secret.secrets.map(s => ({
-      id: toBase64Url(s.id),
+      id: toBase64Url(toBytes(s.id)),
       name: s.name,
       // Payloads are text in this app; decode lossily so a binary surprise
       // renders as replacement characters instead of throwing.
-      data: new TextDecoder('utf-8', { fatal: false }).decode(s.data),
+      data: new TextDecoder('utf-8', { fatal: false }).decode(toBytes(s.data)),
     })),
     // Display-only and unread — the library decodes the snapshot itself and no
     // longer surfaces the raw wire bytes.
     rawBytes: '',
     helpers: participants.map(p => ({ id: p.id, name: p.name, channelId: p.channelId })),
+  }
+
+  // The group this device now belongs to. One row for the channel the members
+  // share, naming the source — which from a destination's side is the peer.
+  const group = adoption.secret.replicas
+  const sourceMember = group?.members?.find(m => m.role === 'Source')
+  if (group?.channel_id && sourceMember) {
+    // Nothing on a wire payload is assumed present. The declared types say
+    // these fields are always there; a member arriving without them threw
+    // inside the adoption path, which had already erased the vault — so a
+    // cosmetic roster row cost the device its contents. Defaults here mean the
+    // worst case is a row labelled "Replica source".
+    const transports = sourceMember.transports ?? []
+    const info = sourceMember.communication_info ?? {}
+    const { actor, transportUri } = resolveRosterActor(transports, actorByUri)
+    participants.push({
+      id: actor?.id ?? `peer-${group.channel_id}`,
+      name: actor?.name || info['name'] || 'Replica source',
+      channelId: group.channel_id,
+      transport: {
+        protocol: protocolName(transports.find(t => t.uri === transportUri)?.protocol ?? 0),
+        uri: transportUri,
+      },
+      connectionStatus: 'paired' as const,
+      // The peer is the source; this device is the destination that adopted.
+      peerRole: 'replica_source' as const,
+      // A replica channel holds no share for this device — it mirrors a vault.
+      secretShares: [],
+      browserManaged: actor?.browser_managed,
+    })
   }
 
   return {

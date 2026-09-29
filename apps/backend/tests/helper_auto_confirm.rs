@@ -29,13 +29,22 @@ use derec_backend::config::Defaults;
 use derec_backend::models::{Role, TransportMode, UnpairAck};
 use derec_backend::provisioning::{provisioned_actor, register_browser_actor, spawn_provisioned};
 use derec_backend::state::{ActorInbox, AppState};
-use derec_backend::stores::ActorProtocol;
+use derec_backend::actor::ActorProtocol;
 use derec_library::protocol::{
     ChannelQuery, ChannelRecord, ChannelStatus, DeRecChannelStore, DeRecFlow,
 };
 use derec_library::protocol::types::ReplicaFilter;
 use derec_library::types::ChannelId;
 use uuid::Uuid;
+
+/// Stock protocol settings for a fixture actor.
+fn test_settings() -> derec_backend::registry::actors::ActorSettings {
+    derec_backend::registry::actors::ActorSettings {
+        replica_id: rand::random::<u64>(),
+        timeout_secs: TIMEOUT_SECS,
+        unpair_ack: UnpairAck::Required,
+    }
+}
 
 const TIMEOUT_SECS: u32 = 300;
 
@@ -58,6 +67,9 @@ async fn serve() -> Arc<AppState> {
         Defaults::default(),
         reqwest::Client::new(),
         actix_rt::Arbiter::current(),
+        derec_backend::db::connect("sqlite::memory:")
+            .await
+            .expect("an in-memory database always connects"),
     ));
 
     let router = derec_backend::build_router(state.clone());
@@ -69,15 +81,23 @@ async fn serve() -> Arc<AppState> {
 }
 
 /// Provision a hosted helper exactly as `POST /helpers` does.
-fn spawn_helper(state: &Arc<AppState>, name: &str) -> (Uuid, Addr<ProvisionedActor>) {
-    spawn_actor(state, Role::Helper, name)
+async fn spawn_helper(state: &Arc<AppState>, name: &str) -> (Uuid, Addr<ProvisionedActor>) {
+    spawn_actor(state, Role::Helper, name).await
 }
 
-fn spawn_actor(state: &Arc<AppState>, role: Role, name: &str) -> (Uuid, Addr<ProvisionedActor>) {
+async fn spawn_actor(
+    state: &Arc<AppState>,
+    role: Role,
+    name: &str,
+) -> (Uuid, Addr<ProvisionedActor>) {
     let actor =
         provisioned_actor(role, name, &state.base_url, &state.grpc_authority(), TransportMode::Http);
-    state.actors.register(actor.clone());
-    spawn_provisioned(state, &actor, TIMEOUT_SECS, UnpairAck::Required);
+    state
+        .actors
+        .register(actor.clone(), test_settings())
+        .await
+        .expect("the registry is writable");
+    spawn_provisioned(state, &actor, &test_settings());
 
     let addr = match state
         .actor_inboxes
@@ -100,8 +120,8 @@ struct Owner {
     protocol: ActorProtocol,
 }
 
-fn register_owner(state: &Arc<AppState>, name: &str) -> Owner {
-    build_owner(state, name, true)
+async fn register_owner(state: &Arc<AppState>, name: &str) -> Owner {
+    build_owner(state, name, true).await
 }
 
 /// An owner the helper's replies cannot reach.
@@ -110,11 +130,11 @@ fn register_owner(state: &Arc<AppState>, name: &str) -> Owner {
 /// `deliver_message` answers `404` and `HttpTransport::send` turns that into an
 /// error. See `the_tick_backstop_confirms_a_channel_the_event_path_missed` for
 /// why a test wants that.
-fn register_unreachable_owner(state: &Arc<AppState>, name: &str) -> Owner {
-    build_owner(state, name, false)
+async fn register_unreachable_owner(state: &Arc<AppState>, name: &str) -> Owner {
+    build_owner(state, name, false).await
 }
 
-fn build_owner(state: &Arc<AppState>, name: &str, reachable: bool) -> Owner {
+async fn build_owner(state: &Arc<AppState>, name: &str, reachable: bool) -> Owner {
     let actor = provisioned_actor(
         Role::Owner,
         name,
@@ -124,7 +144,11 @@ fn build_owner(state: &Arc<AppState>, name: &str, reachable: bool) -> Owner {
     );
     let secret_id: u64 = actor.secret_id.parse().expect("secret id is a u64");
     if reachable {
-        state.actors.register(actor.clone());
+        state
+            .actors
+            .register(actor.clone(), test_settings())
+            .await
+            .expect("the registry is writable");
         // A browser inbox, so the helper's replies are buffered rather than
         // handed to an in-process actor. `pump` below drains it, standing in
         // for the front end's poll loop.
@@ -141,6 +165,8 @@ fn build_owner(state: &Arc<AppState>, name: &str, reachable: bool) -> Owner {
         keep_versions_count: 3,
         replica_id: Some(rand::random()),
         http_client: state.http_client.clone(),
+        pool: state.pool.clone(),
+        actor_id: actor.id,
     };
 
     Owner {
@@ -283,8 +309,8 @@ async fn a_replica_mode_pairing_is_confirmed_on_the_helpers_replica_instance() {
     // what `take_own()` would do — derives a fingerprint from a protocol that
     // has never heard of the channel, and the channel stays `Pending` forever.
     let state = serve().await;
-    let (helper_id, helper) = spawn_helper(&state, "Alex");
-    let mut owner = register_owner(&state, "Alice");
+    let (helper_id, helper) = spawn_helper(&state, "Alex").await;
+    let mut owner = register_owner(&state, "Alice").await;
 
     helper
         .send(EnsureReplicaInstanceMsg { owner_secret_id: owner.secret_id })
@@ -366,8 +392,8 @@ async fn a_replica_mode_channels_fingerprint_is_served_by_its_owning_instance() 
     // a fingerprint needs a shared key, and a shared key exists only once the
     // handshake has completed. That file mints a contact and stops.
     let state = serve().await;
-    let (helper_id, helper) = spawn_helper(&state, "Alex");
-    let mut owner = register_owner(&state, "Alice");
+    let (helper_id, helper) = spawn_helper(&state, "Alex").await;
+    let mut owner = register_owner(&state, "Alice").await;
 
     helper
         .send(EnsureReplicaInstanceMsg { owner_secret_id: owner.secret_id })
@@ -449,8 +475,8 @@ async fn a_no_keys_pairing_is_confirmed_by_the_helper_but_not_by_the_owner() {
     // that keeps auto-confirmation honest: it is helper behaviour only, and the
     // owner still has to compare codes and confirm.
     let state = serve().await;
-    let (helper_id, helper) = spawn_helper(&state, "Alex");
-    let mut owner = register_owner(&state, "Alice");
+    let (helper_id, helper) = spawn_helper(&state, "Alex").await;
+    let mut owner = register_owner(&state, "Alice").await;
 
     let contact = helper
         .send(CreateContactMsg {
@@ -524,8 +550,8 @@ async fn the_tick_backstop_confirms_a_channel_the_event_path_missed() {
     // exists. A `NoKeys` pairing would fail on its earlier `PrePair` leg, before
     // any channel is persisted, and produce nothing to sweep.
     let state = serve().await;
-    let (helper_id, helper) = spawn_helper(&state, "Alex");
-    let mut owner = register_unreachable_owner(&state, "Alice");
+    let (helper_id, helper) = spawn_helper(&state, "Alex").await;
+    let mut owner = register_unreachable_owner(&state, "Alice").await;
 
     helper
         .send(EnsureReplicaInstanceMsg { owner_secret_id: owner.secret_id })

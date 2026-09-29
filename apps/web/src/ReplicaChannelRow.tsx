@@ -82,6 +82,19 @@ export interface ReplicaChannelRowProps {
   /** Whether the peer is currently suspended. Meaningless unless `canToggleOffline`. */
   offline: boolean
   onToggleOffline: () => void
+  /**
+   * This peer is known only as a member of the group — there is no channel
+   * between it and this device.
+   *
+   * Two destinations of one source are in the same group and never pair with
+   * each other, so each is a real member with nothing direct to act on. Such a
+   * row must not offer Forget (there is no local record to drop), Sync now
+   * (there is no channel to send over) or a fingerprint (there is no comparison
+   * to make), and above all must not report itself verified — the row would be
+   * asserting a check that never happened. Eviction stays: the library's
+   * removal names a member, not a channel.
+   */
+  viaGroupOnly?: boolean
 }
 
 /** The status word for a replica channel, with expiry outranking everything. */
@@ -152,6 +165,7 @@ export function ReplicaChannelRow({
   canToggleOffline,
   offline,
   onToggleOffline,
+  viaGroupOnly = false,
 }: ReplicaChannelRowProps) {
   // The countdown ticks in this row and nothing above it, and a row with
   // nothing pending never arms a timer at all.
@@ -159,9 +173,14 @@ export function ReplicaChannelRow({
     { status: view?.status ?? 'pending', establishedAt: view?.establishedAt ?? null },
     protocolTimeoutSecs,
   )
-  const status = statusLabel(view, expiry)
-  const awaitingConfirmation = view === null || view.status !== 'paired'
-  const canSync = view !== null && canRequestReplicaSync(view)
+  const status = viaGroupOnly
+    ? { text: 'Group member', className: 'available' }
+    : statusLabel(view, expiry)
+  // A member with no channel is waiting for nothing: there is no comparison to
+  // make and no deadline to miss, so neither the prompt nor the confirmed line
+  // applies to it.
+  const awaitingConfirmation = !viaGroupOnly && (view === null || view.status !== 'paired')
+  const canSync = !viaGroupOnly && view !== null && canRequestReplicaSync(view)
 
   return (
     <div className="channel-block">
@@ -224,13 +243,15 @@ export function ReplicaChannelRow({
             announced, and this row used to carry an "Unpair" that dispatched
             the *helper* unpair flow — which the library rejects on every
             replica channel, leaving a row nothing could clear. */}
-        <button
-          className="channel-link-btn"
-          onClick={onForget}
-          title={`Remove ${name} from this device's list without telling them`}
-        >
-          Forget
-        </button>
+        {!viaGroupOnly && (
+          <button
+            className="channel-link-btn"
+            onClick={onForget}
+            title={`Remove ${name} from this device's list without telling them`}
+          >
+            Forget
+          </button>
+        )}
       </div>
 
       {/*
@@ -255,7 +276,16 @@ export function ReplicaChannelRow({
         </div>
       )}
 
-      {!awaitingConfirmation && (
+      {viaGroupOnly && (
+        <div className="replica-row-prompt replica-row-prompt--quiet">
+          <span className="replica-row-prompt__text">
+            In the same replica group, through the source. This device has no channel of its
+            own to {name}, so there is nothing here to verify or sync — only to evict.
+          </span>
+        </div>
+      )}
+
+      {!viaGroupOnly && !awaitingConfirmation && (
         <div className="replica-row-prompt replica-row-prompt--quiet">
           <span className="replica-row-prompt__text">
             Confirmed on this device
@@ -287,12 +317,18 @@ export function ReplicaChannelRow({
         </div>
       )}
 
-      <div className="channel-row-bottom">
-        <div className="channel-prop">
-          <span className="channel-prop-label">Mirror</span>
-          <span className="channel-prop-value">{mirrorSummary(view)}</span>
+      {/* No mirror line for a member with no channel: the summary would say the
+          vault "goes out on the next protect round", which contradicts the line
+          above it — nothing is ever sent to a peer this device has no channel
+          to. */}
+      {!viaGroupOnly && (
+        <div className="channel-row-bottom">
+          <div className="channel-prop">
+            <span className="channel-prop-label">Mirror</span>
+            <span className="channel-prop-value">{mirrorSummary(view)}</span>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   )
 }

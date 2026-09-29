@@ -1,10 +1,5 @@
 # Worked compose example for the DeRec reference app.
 #
-# NOT YET USABLE: `apps/backend/Dockerfile` does not exist — the image is a
-# later phase of the packaging work. Until it lands, `docker compose up` fails
-# at the build step. Everything below the `build:` block is already correct, so
-# this file is worth reading now and works the moment the Dockerfile arrives.
-#
 # Every path below is relative to the REPO ROOT, not to this directory. Copy it
 # up before using it:
 #
@@ -19,10 +14,19 @@ name: derec
 
 services:
   node:
-    # Until the image ships, build the backend from this repo.
-    build:
-      context: .
-      dockerfile: apps/backend/Dockerfile
+    # The tag names the SDK the image was built against — the SDK is compiled
+    # in, so a different one means a different image, not a different flag.
+    #
+    # Nothing is published yet, so build it first:
+    #
+    #   docker build -f apps/backend/Dockerfile -t derec/reference-app:0.0.4 .
+    #
+    # Swap `image:` for the `build:` block below to have compose do it:
+    #
+    #   build:
+    #     context: .
+    #     dockerfile: apps/backend/Dockerfile
+    image: derec/reference-app:0.0.4
 
     # Bulk configuration. `env_file` injects real environment variables into
     # the container, so everything here outranks config.toml.
@@ -41,6 +45,17 @@ services:
       - "50051:50051"    # gRPC transport
 
     volumes:
+      # A NAMED volume, not a bind mount. SQLite's locking over bind-mounted
+      # host filesystems is unreliable on macOS and Windows, where the mount
+      # crosses gRPC-FUSE or virtiofs, and it presents as intermittent
+      # "database is locked" rather than as anything naming the mount.
+      #
+      # This is what keeps data across `docker rm`; a restart alone survives
+      # without it, on the anonymous volume the image's VOLUME declares.
+      - derec-data:/var/lib/derec
       - ./apps/backend/config.toml:/etc/derec/config.toml:ro
 
     restart: unless-stopped
+
+volumes:
+  derec-data:

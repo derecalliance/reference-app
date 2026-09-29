@@ -1,5 +1,11 @@
 # Rust
 target/
+# SQLite databases from a local run. `-wal` and `-shm` are the journal and
+# shared-memory files SQLite writes beside the database.
+*.db
+*.db-wal
+*.db-shm
+
 .env
 .env.*
 # ...but `examples/.env.example` is documentation, not somebody's local secrets,

@@ -27,14 +27,3 @@ export function transportLabel(
   if (grpc) return 'GRPC'
   return 'HTTPS'
 }
-
-/**
- * Whether the label was derived from a full endpoint list or from the single
- * fallback address.
- *
- * A badge built from one address cannot rule out the peer advertising more, so
- * the UI marks it as partial rather than asserting something it does not know.
- */
-export function transportLabelIsComplete(transports?: Transport[]): boolean {
-  return Boolean(transports?.length)
-}

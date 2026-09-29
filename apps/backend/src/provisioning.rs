@@ -5,13 +5,12 @@
 
 use std::sync::Arc;
 
-use actix::Actor as _;
 use tokio::sync::{Mutex, mpsc};
 use uuid::Uuid;
 
 use crate::{
     actor::{ProtocolConfig, ProvisionedActor},
-    models::{Actor, Role, TransportMode, UnpairAck},
+    models::{Actor, Role, TransportMode},
     state::{ActorInbox, AppState},
 };
 
@@ -31,7 +30,14 @@ pub fn register_browser_actor(state: &AppState, actor_id: Uuid) {
 /// The own instance, bound to `secret_id`, is built eagerly here. Any further
 /// instance — a replica bound to a different owner's secret — is added later,
 /// on demand, via `EnsureReplicaInstanceMsg`; see [`ProvisionedActor`].
-pub fn spawn_provisioned(state: &AppState, actor: &Actor, timeout_secs: u32, unpair_ack: UnpairAck) {
+/// The settings come from the caller rather than being minted here, so a
+/// respawn rebuilds the actor it had rather than a new one: `replica_id` in
+/// particular is the id every stored `ReplicaMember` row references.
+pub fn spawn_provisioned(
+    state: &AppState,
+    actor: &Actor,
+    settings: &crate::registry::actors::ActorSettings,
+) {
     let actor_id = actor.id;
     let role = actor.role;
     let secret_id: u64 = match actor.secret_id.parse() {
@@ -49,15 +55,17 @@ pub fn spawn_provisioned(state: &AppState, actor: &Actor, timeout_secs: u32, unp
         secret_id,
         own_transports: actor.transports.clone(),
         communication_info,
-        timeout_secs,
-        unpair_ack,
+        timeout_secs: settings.timeout_secs,
+        unpair_ack: settings.unpair_ack,
         threshold: 2,
         keep_versions_count: 3,
         // Every actor may take part in replica-mode pairing: the source is an
         // Owner, the destination a Replica. Both sides need a stable id, so it
         // is assigned unconditionally rather than by role.
-        replica_id: Some(rand::random::<u64>()),
+        replica_id: Some(settings.replica_id),
         http_client: state.http_client.clone(),
+        pool: state.pool.clone(),
+        actor_id,
     };
 
     let protocol = match crate::actor::build_protocol(&config) {
@@ -72,7 +80,11 @@ pub fn spawn_provisioned(state: &AppState, actor: &Actor, timeout_secs: u32, unp
 
     // The actor keeps the config so it can rebuild an instance in place when
     // settings change — see `ReconfigureMsg`.
-    let addr = ProvisionedActor::start_in_arbiter(&state.arbiter, move |_ctx| {
+    // Supervised: a panicking handler would otherwise stop this actor for the
+    // rest of the process's life, and the only symptom is a peer whose messages
+    // stop being answered. The actor value is reused on restart, so its
+    // protocol instances and their stores come back with it.
+    let addr = actix::Supervisor::start_in_arbiter(&state.arbiter, move |_ctx| {
         ProvisionedActor::new(protocol, config, actor_id, role, app_state)
     });
 

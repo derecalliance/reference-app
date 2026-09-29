@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
-  adoptReplicaSecret,
+  acceptFingerprintMatch,
+  type AdoptableInstance,
   adoptedVaultState,
   adoptionSourceLabel,
+  adoptReplicaSecret,
+  type AutomaticReplicaSyncOutcome,
   automaticSyncNeedsAttention,
   canRequestReplicaSync,
   clearReplicaState,
@@ -10,40 +13,38 @@ import {
   describeRestoreFailure,
   forgetReplicaChannel,
   forgetReplicaMember,
+  formatFingerprint,
   loadReplicaState,
   markReplicaFirstSyncStarted,
+  mergeReplicaSecretReceipt,
+  mergeReplicaSync,
+  nextReplicaStatus,
+  type PendingReplicaAdoption,
   recordConfirmation,
   recordPendingReplicaPairing,
   recordReplicaChannel,
   recordReplicaSync,
-  replicaChannelRowId,
-  acceptFingerprintMatch,
-  formatFingerprint,
-  type ReplicaProtocol,
-  mergeReplicaSecretReceipt,
-  mergeReplicaSync,
-  nextReplicaStatus,
-  replicaChannelExpiry,
-  replicasAwaitingFirstSync,
-  replicaSyncTargets,
-  replicaViews,
-  ReplicaAdoptionError,
   REPLICA_EXPIRY_WARNING_SECS,
   REPLICA_PAYLOAD_MIRRORS_RECOVERY,
-  type AdoptableInstance,
-  type AutomaticReplicaSyncOutcome,
-  type ReplicaChannelTiming,
-  type PendingReplicaAdoption,
   type ReplicaAdoptionDeps,
+  ReplicaAdoptionError,
   type ReplicaAdoptionInstanceParams,
   type ReplicaAdoptionProtocolConfig,
+  replicaChannelExpiry,
+  replicaChannelRowId,
+  type ReplicaChannelTiming,
   type ReplicaFirstSyncTrigger,
+  type ReplicaProtocol,
+  replicasAwaitingFirstSync,
+  type ReplicaSecretPayload,
   type ReplicaState,
   type ReplicaStatus,
   type ReplicaSyncReason,
   type ReplicaSyncRecord,
   type ReplicaSyncRoundResult,
+  replicaSyncTargets,
   type ReplicaView,
+  replicaViews,
 } from './replicaFlows'
 import { getOrCreateReplicaId } from './replicaIdentity'
 import type { BEActorWithStatus } from './api'
@@ -559,6 +560,10 @@ describe('adoptReplicaSecret', () => {
     /** Whether the wipe had already happened when `restore` ran. */
     wipedBeforeRestore: boolean
     restoreCalls: Array<{ secretId: string; version: number }>
+    /** The payloads `restore` was actually handed, to assert their byte types. */
+    restoredSecrets: ReplicaSecretPayload[]
+    /** Tracking-share writes, to assert they happen and in what order. */
+    savedShares: Array<{ count: number; secretId: string; version: number }>
     drained: DeRecEvent[]
   }
 
@@ -573,6 +578,7 @@ describe('adoptReplicaSecret', () => {
         getReplicaId: () => OWN_REPLICA_ID,
         buildInstance: () => ({ protocol: { restore: async () => [] } }),
         onEvent: () => {},
+      saveTrackingShares: async () => {},
       },
       calls: [],
       wiped: [],
@@ -580,15 +586,18 @@ describe('adoptReplicaSecret', () => {
       wipedBeforeBuild: false,
       wipedBeforeRestore: false,
       restoreCalls: [],
+      restoredSecrets: [],
+      savedShares: [],
       drained: [],
     }
 
     const instance: AdoptableInstance = {
       protocol: {
-        restore: (_secret, version) => {
+        restore: (secret, version) => {
           state.calls.push('restore')
           state.wipedBeforeRestore = state.wiped.length > 0
           state.restoreCalls.push({ secretId: state.buildParams.at(-1)?.secretId ?? '', version })
+          state.restoredSecrets.push(secret)
           return restoreOutcome()
         },
       },
@@ -612,6 +621,10 @@ describe('adoptReplicaSecret', () => {
         state.buildParams.push(params)
         return instance
       },
+      saveTrackingShares: async (shares, secretId, version) => {
+        state.calls.push('saveTrackingShares')
+        state.savedShares.push({ count: shares.length, secretId, version })
+      },
       onEvent: event => {
         state.calls.push(`onEvent:${event.type}`)
         state.drained.push(event)
@@ -623,6 +636,74 @@ describe('adoptReplicaSecret', () => {
   }
 
   const unpaired = (channelId: string): DeRecEvent => ({ type: 'Unpaired', channel_id: channelId })
+
+  it('rejects an unreadable payload without touching the device', async () => {
+    // The failure that motivated this: a payload whose `data` arrived as a
+    // plain array blew up inside `restore` — *after* the wipe — so a copy this
+    // device could never have adopted still cost it its vault. Validation now
+    // runs first, and nothing is destroyed.
+    const h = harness(async () => [])
+    const unreadable: PendingReplicaAdoption = {
+      ...adoption,
+      secret: {
+        helpers: [],
+        secrets: [{ id: new Uint8Array([1]), name: 'Passphrase', data: undefined as never }],
+      },
+    }
+
+    await expect(
+      adoptReplicaSecret({ adoption: unreadable, namespace: NAMESPACE, config, deps: h.deps }),
+    ).rejects.toBeInstanceOf(ReplicaAdoptionError)
+
+    expect(h.calls).toEqual([])
+    expect(h.wiped).toEqual([])
+  })
+
+  it('says the vault is intact when it refused before the wipe', async () => {
+    const h = harness(async () => [])
+    const unreadable: PendingReplicaAdoption = {
+      ...adoption,
+      secret: {
+        helpers: [],
+        secrets: [{ id: new Uint8Array([1]), name: 'Passphrase', data: undefined as never }],
+      },
+    }
+
+    let error: ReplicaAdoptionError | null = null
+    try {
+      await adoptReplicaSecret({ adoption: unreadable, namespace: NAMESPACE, config, deps: h.deps })
+    } catch (err) {
+      error = err as ReplicaAdoptionError
+    }
+    expect(error).toBeInstanceOf(ReplicaAdoptionError)
+
+    // The standing message tells the user their vault was erased. Saying that
+    // when it was not would send someone inspecting a device that is fine.
+    expect(error?.failure.text).toContain('intact')
+    expect(error?.failure.wipeDidNotTake).toBe(false)
+  })
+
+  it('hands restore real byte views, whatever shape the payload arrived in', async () => {
+    const h = harness(async () => [])
+    const plainArrays: PendingReplicaAdoption = {
+      ...adoption,
+      secret: {
+        helpers: [],
+        secrets: [{ id: [1, 2] as never, name: 'Passphrase', data: [104, 105] as never }],
+      },
+    }
+
+    await adoptReplicaSecret({
+      adoption: plainArrays,
+      namespace: NAMESPACE,
+      config,
+      deps: h.deps,
+    })
+
+    const restored = h.restoredSecrets.at(-1)
+    expect(restored?.secrets[0].data).toBeInstanceOf(Uint8Array)
+    expect(restored?.secrets[0].id).toBeInstanceOf(Uint8Array)
+  })
 
   it('clears the FE replica bookkeeping as part of the wipe, before the instance exists', async () => {
     const h = harness(async () => [])
@@ -649,7 +730,7 @@ describe('adoptReplicaSecret', () => {
     expect(h.wipedBeforeRestore).toBe(true)
   })
 
-  it('runs wipe, build and restore in that order, then drains', async () => {
+  it('runs wipe, build, restore and the share write in order, then drains', async () => {
     const h = harness(async () => [unpaired('901'), unpaired('902')])
     await adoptReplicaSecret({ adoption, namespace: NAMESPACE, config, deps: h.deps })
 
@@ -659,6 +740,9 @@ describe('adoptReplicaSecret', () => {
       'getReplicaId',
       'buildInstance',
       'restore',
+      // After `restore`, which creates the channels the shares key against,
+      // and before the drain so a verification triggered by an event has them.
+      'saveTrackingShares',
       'onEvent:Unpaired',
       'onEvent:Unpaired',
     ])
@@ -793,6 +877,62 @@ describe('adoptedVaultState', () => {
       secret_id: '42',
     },
   ]
+
+  /** The same snapshot, plus the replica group the destination belongs to. */
+  const withGroup: PendingReplicaAdoption = {
+    ...adoption,
+    secret: {
+      ...adoption.secret,
+      replicas: {
+        channel_id: '950',
+        shared_key: bytes('group-key'),
+        members: [
+          {
+            replica_id: '1001',
+            role: 'Source',
+            transports: [{ uri: 'https://example.test/source', protocol: 0 }],
+            communication_info: { name: 'AliceA' },
+          },
+          {
+            replica_id: '2002',
+            role: 'Destination',
+            transports: [{ uri: 'https://example.test/me', protocol: 0 }],
+            communication_info: { name: 'BobB' },
+          },
+        ],
+      },
+    },
+  }
+
+  it('keeps the replica group the destination belongs to', () => {
+    // Adoption wipes this device's replica bookkeeping before restoring, so the
+    // snapshot is the only place the group survives. Without projecting it the
+    // destination showed `Replicas 0` while the source showed the pairing live.
+    const { participants } = adoptedVaultState(withGroup, actors, 2)
+
+    const replicas = participants.filter(p => p.peerRole === 'replica_source')
+    expect(replicas).toHaveLength(1)
+    expect(replicas[0].channelId).toBe('950')
+    // The peer is the source; this device is the destination that adopted.
+    expect(replicas[0].name).toBe('AliceA')
+  })
+
+  it('does not count the replica group as a share holder', () => {
+    // A replica mirrors a vault; it holds no share. Counting it would put a
+    // peer into the bag version that no verification round can ever answer for.
+    const { participants, secretBag } = adoptedVaultState(withGroup, actors, 2)
+
+    const replica = participants.find(p => p.peerRole === 'replica_source')
+    expect(secretBag.currentVersion.participantIds).not.toContain(replica?.id)
+    expect(secretBag.currentVersion.helpers.map(h => h.channelId)).not.toContain('950')
+    expect(replica?.secretShares).toEqual([])
+  })
+
+  it('leaves the roster unchanged when the snapshot carries no group', () => {
+    const { participants } = adoptedVaultState(adoption, actors, 2)
+
+    expect(participants.filter(p => p.peerRole === 'replica_source')).toHaveLength(0)
+  })
 
   it('re-identifies an adopted helper against the roster by transport uri', () => {
     const { participants } = adoptedVaultState(adoption, actors, 2)

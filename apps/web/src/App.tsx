@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useId, type ReactNode } from 'react'
 import './App.css'
 import SetupWizard from './SetupWizard'
+import { AppShell } from './AppShell'
+import { AppMuiTheme } from './AppMuiTheme'
 import OwnerPage from './OwnerPage'
 import ConsolePanel from './ConsolePanel'
 import { ConsoleProvider } from './ConsoleContext'
@@ -225,12 +227,22 @@ function AppContent() {
         </button>
       </header>
 
-      <main className={owner ? 'owner-mode' : undefined}>
+      <main className="shell-host">
         {resuming
           ? null
-          : owner === null
-            ? <SetupWizard onReady={adoptOwner} />
-            : <OwnerPage owner={owner} onUpdate={handleOwnerUpdate} />
+          : (
+            <AppShell>
+              {owner === null
+                ? (
+                  // The wizard was centered by `main` before the shell existed;
+                  // the shell fills `main` now, so the centering moves in here.
+                  <div className="shell-centered">
+                    <SetupWizard onReady={adoptOwner} />
+                  </div>
+                )
+                : <OwnerPage owner={owner} onUpdate={handleOwnerUpdate} />}
+            </AppShell>
+          )
         }
       </main>
 
@@ -299,10 +311,16 @@ function AppContent() {
 
 export default function App() {
   return (
-    <ToastProvider>
-      <ConsoleProvider>
-        <AppContent />
-      </ConsoleProvider>
-    </ToastProvider>
+    // Lifted to the root for the shell's own MUI components. `OwnerPage` still
+    // wraps three dialogs in the same provider; nesting an identical theme is a
+    // no-op, and unpicking them is cleanup for its own change rather than a
+    // side effect of adding navigation.
+    <AppMuiTheme>
+      <ToastProvider>
+        <ConsoleProvider>
+          <AppContent />
+        </ConsoleProvider>
+      </ToastProvider>
+    </AppMuiTheme>
   )
 }

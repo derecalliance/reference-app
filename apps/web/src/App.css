@@ -37,11 +37,30 @@ main {
   overflow: auto;
 }
 
-main.owner-mode {
+/* The app shell fills `main` and owns the layout inside it, so the centering
+ * above applies to nothing any more — the shell's own content area does it for
+ * the screens that want it (see `.shell-centered`). */
+main.shell-host {
   align-items: stretch;
   justify-content: flex-start;
   padding: 0;
   overflow: hidden;
+}
+
+/* Screens that were centered by `main` before the shell existed — the setup
+ * wizard and the dialogs it leads to. Applied by `App`, which knows whether
+ * there is an owner; the shell deliberately does not. */
+.shell-centered {
+  flex: 1;
+  display: flex;
+  /* `safe` for the same reason `main` used it: a step taller than the viewport
+   * must fall back to start alignment rather than centering around a scroll
+   * position that clips its top. */
+  align-items: safe center;
+  justify-content: safe center;
+  padding: 40px 24px;
+  min-height: 0;
+  overflow: auto;
 }
 
 

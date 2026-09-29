@@ -13,7 +13,7 @@ use derec_backend::models::{Role, Transport, TransportProtocol, UnpairAck};
 const OWN_SECRET: u64 = 0xA1;
 const ALICE_SECRET: u64 = 0x7F;
 
-fn config(secret_id: u64) -> ProtocolConfig {
+fn config(secret_id: u64, pool: sqlx::AnyPool, actor_id: uuid::Uuid) -> ProtocolConfig {
     ProtocolConfig {
         secret_id,
         own_transports: vec![Transport {
@@ -27,19 +27,27 @@ fn config(secret_id: u64) -> ProtocolConfig {
         keep_versions_count: 3,
         replica_id: Some(0xAB),
         http_client: reqwest::Client::new(),
+        pool,
+        actor_id,
     }
 }
 
-fn spawn() -> Addr<ProvisionedActor> {
-    let cfg = config(OWN_SECRET);
+async fn spawn() -> Addr<ProvisionedActor> {
+    // The actor's stores and the state share one pool, as they do in
+    // production — provisioning builds every `ProtocolConfig` from
+    // `state.pool`.
+    let state = derec_backend::test_support::app_state().await;
+    // One id for both: the stores are keyed by it, and the actor must be the
+    // same actor its own stores were built for.
+    let actor_id = uuid::Uuid::new_v4();
+    let cfg = config(OWN_SECRET, state.pool.clone(), actor_id);
     let protocol = build_protocol(&cfg).expect("protocol builds");
-    let state = derec_backend::test_support::app_state();
-    ProvisionedActor::new(protocol, cfg, uuid::Uuid::new_v4(), Role::Helper, state).start()
+    ProvisionedActor::new(protocol, cfg, actor_id, Role::Helper, state).start()
 }
 
 #[actix_rt::test]
 async fn a_replica_mode_contact_is_minted_from_the_owners_instance() {
-    let addr = spawn();
+    let addr = spawn().await;
 
     addr.send(derec_backend::actor::EnsureReplicaInstanceMsg {
         owner_secret_id: ALICE_SECRET,
@@ -71,7 +79,7 @@ async fn a_replica_mode_contact_is_minted_from_the_owners_instance() {
 
 #[actix_rt::test]
 async fn an_ordinary_contact_still_mints_from_the_own_instance() {
-    let addr = spawn();
+    let addr = spawn().await;
 
     let contact = addr
         .send(CreateContactMsg {

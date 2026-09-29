@@ -1,10 +1,24 @@
-// In-memory implementations of the derec-library store and transport traits.
+// In-memory implementations of the derec-library store traits, kept as the
+// **conformance control**.
 //
-// Every store is partitioned by `secret_id`: a single backend instance can
-// serve many secrets on the same device (Owner of one secret, Helper for N
-// other Owners). The protocol holds each store by `&mut Self`, so these
-// implementations never see overlapping calls and need no internal
-// synchronization.
+// Nothing in production constructs these any more — every actor runs on the SQL
+// stores in `crate::sql`. They stay because `tests/store_conformance.rs` runs
+// the conformance suite against them, and a suite that has only ever run
+// against the implementation it was written from is not evidence of anything.
+// A second, independent implementation is what makes its assertions checkable.
+//
+// They have already earned it. The `linked_channels` contract documented below
+// — the start node is included, so an unlinked channel returns itself — is what
+// identified a recovery bug in the SQL store that every unit test and both
+// engines' conformance runs had passed.
+//
+// Every store here is partitioned by `secret_id`. The SQL stores are
+// additionally keyed by `actor_id`, because two actors can hold instances bound
+// to the same secret and a shared database needs a discriminator these do not:
+// see the header of `migrations/0001_initial.sql`.
+//
+// The protocol holds each store by `&mut Self`, so these implementations never
+// see overlapping calls and need no internal synchronization.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
@@ -452,16 +466,9 @@ impl DeRecStateStore for InMemoryStateStore {
     }
 }
 
-// ── Actor protocol type alias ────────────────────────────────────────────────
-
-pub type ActorProtocol = derec_library::protocol::DeRecProtocol<
-    InMemoryChannelStore,
-    InMemoryShareStore,
-    InMemorySecretStore,
-    InMemoryUserSecretStore,
-    InMemoryStateStore,
-    crate::transport::CompositeTransport,
->;
+// The `ActorProtocol` alias used to live here, over these in-memory stores. It
+// now lives in `actor.rs` over the SQL ones — it describes what an actor is,
+// not how one storage backend is written, and these types are on their way out.
 
 #[cfg(test)]
 mod tests {

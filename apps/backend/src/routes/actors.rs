@@ -118,7 +118,11 @@ impl PairRoleQuery {
 /// Every actor registered on this server, enriched with live pairing status, in
 /// registration order. This is how a browser context discovers its peers.
 pub async fn list(State(state): State<Arc<AppState>>) -> Response {
-    let actors = enrich_actors(&state, &state.actors.all()).await;
+    let roster = match state.actors.all().await {
+        Ok(roster) => roster,
+        Err(e) => return crate::routes::actor_guard::registry_unavailable(e),
+    };
+    let actors = enrich_actors(&state, &roster).await;
 
     (StatusCode::OK, Json(ListActorsResponse { actors })).into_response()
 }
@@ -128,12 +132,21 @@ pub(crate) async fn enrich_actors(state: &AppState, actors: &[Actor]) -> Vec<Act
     let mut result = Vec::with_capacity(actors.len());
 
     for a in actors {
+        // A registry failure degrades the enrichment rather than failing the
+        // roster: the actor list itself is what the front end polls to render,
+        // and losing the whole page because a status lookup hiccuped is worse
+        // than rendering one row without its channel.
         let channel_id = state
             .helper_channels
             .get(&a.id)
             .and_then(|v| v.value().last().cloned());
 
-        let disabled = if state.disabled_helpers.contains_key(&a.id) {
+        let disabled = if state
+            .disabled_helpers
+            .is_disabled(&a.id)
+            .await
+            .unwrap_or(false)
+        {
             Some(true)
         } else {
             None
@@ -200,7 +213,7 @@ pub async fn create_contact(
     Path(actor_id): Path<Uuid>,
     Query(query): Query<ContactModeQuery>,
 ) -> Response {
-    if let Err(response) = ensure_actor_exists(&state, &actor_id) {
+    if let Err(response) = ensure_actor_exists(&state, &actor_id).await {
         return response;
     }
 
@@ -305,7 +318,7 @@ pub async fn start_pairing(
         Err(resp) => return resp,
     };
 
-    if let Err(response) = ensure_actor_exists(&state, &actor_id) {
+    if let Err(response) = ensure_actor_exists(&state, &actor_id).await {
         return response;
     }
 
@@ -464,12 +477,12 @@ pub struct ConfirmFingerprintBody {
 }
 
 /// Resolve a provisioned actor and a channel id it can answer for.
-fn provisioned_channel(
+async fn provisioned_channel(
     state: &AppState,
     actor_id: &Uuid,
     channel_id: &str,
 ) -> Result<(actix::Addr<crate::actor::ProvisionedActor>, u64), Response> {
-    ensure_actor_exists(state, actor_id)?;
+    ensure_actor_exists(state, actor_id).await?;
 
     let addr = provisioned_addr(state, actor_id).ok_or_else(|| {
         (
@@ -503,7 +516,7 @@ pub async fn get_fingerprint(
     Path(actor_id): Path<Uuid>,
     Query(query): Query<ChannelQueryParam>,
 ) -> Response {
-    let (addr, channel_id) = match provisioned_channel(&state, &actor_id, &query.channel_id) {
+    let (addr, channel_id) = match provisioned_channel(&state, &actor_id, &query.channel_id).await {
         Ok(pair) => pair,
         Err(response) => return response,
     };
@@ -540,7 +553,7 @@ pub async fn confirm_fingerprint(
     Path(actor_id): Path<Uuid>,
     Json(body): Json<ConfirmFingerprintBody>,
 ) -> Response {
-    let (addr, channel_id) = match provisioned_channel(&state, &actor_id, &body.channel_id) {
+    let (addr, channel_id) = match provisioned_channel(&state, &actor_id, &body.channel_id).await {
         Ok(pair) => pair,
         Err(response) => return response,
     };

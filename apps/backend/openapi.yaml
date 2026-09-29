@@ -364,6 +364,27 @@ paths:
                   created: { type: integer }
         "400": { $ref: "#/components/responses/BadRequest" }
 
+  /helpers/{helper_id}:
+    delete:
+      tags: [helpers]
+      summary: Delete a provisioned participant
+      description: >
+        Erases the participant from this node: its actor, every store row keyed
+        by its id, and its registry entry. Irreversible, and the pool is
+        server-wide, so it is removed for every owner on this node.
+
+
+        An owner already paired with it keeps its channel — the node cannot
+        reach into a browser to remove one — and from then on the participant
+        simply stops answering, exactly like one that has gone offline. The
+        owner clears the row by unpairing.
+      parameters:
+        - $ref: "#/components/parameters/HelperId"
+      responses:
+        "204": { description: Deleted }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /helpers/{helper_id}/toggle-status:
     post:
       tags: [helpers]

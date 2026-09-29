@@ -9,7 +9,17 @@ import { defineConfig } from '@playwright/test'
  * it before it will hand back an owner.
  */
 
-const BACKEND_PORT = 5000
+/**
+ * Ports of the suite's own, deliberately not the app's defaults.
+ *
+ * `reuseExistingServer` is on locally, so a backend already listening on the
+ * default 5000 is adopted instead of started — which meant a run silently
+ * executed against a developer's live node and wrote fifty fixture helpers
+ * into its persistent database, while the in-memory setting below was ignored.
+ * Its own port is what makes the harness hermetic.
+ */
+const BACKEND_PORT = 5100
+const BACKEND_GRPC_PORT = 50151
 const WEB_PORT = 5173
 
 /** Vite serves under `base: '/reference-app/'`, so the app is not at the root. */
@@ -72,7 +82,22 @@ export default defineConfig({
       command: 'cargo run',
       cwd: '../backend',
       url: `http://localhost:${BACKEND_PORT}/config`,
-      reuseExistingServer: !process.env.CI,
+      // Never adopted, always started: the whole point of the throwaway
+      // database below is that no run inherits another's rows, and reusing a
+      // process this config did not start inherits whatever it was given.
+      reuseExistingServer: false,
+      env: {
+        DEREC_PORT: String(BACKEND_PORT),
+        DEREC_GRPC_PORT: String(BACKEND_GRPC_PORT),
+        // A throwaway database per run. The backend now persists to
+        // `derec.db` by default, which would carry one run's rows into the
+        // next — these specs all assume a node that has never been set up.
+        // It also avoids a stale file blocking boot after a migration edit.
+        //
+        // Restart survival is proven in `tests/persistence.rs`, over a real
+        // file; nothing here needs state to outlive the process.
+        DEREC_DATABASE_URL: 'sqlite::memory:',
+      },
       // Cold `cargo run` on a clean target/ is slow; a warm one is instant.
       timeout: 300_000,
       stdout: 'pipe',
@@ -82,6 +107,11 @@ export default defineConfig({
       command: `npm run dev -- --port ${WEB_PORT} --strictPort`,
       url: APP_URL,
       reuseExistingServer: !process.env.CI,
+      env: {
+        // The app otherwise calls port 5000 of whatever host served it — see
+        // `apiBase` — which is the default node, not this run's.
+        VITE_API_URL: `http://localhost:${BACKEND_PORT}`,
+      },
       timeout: 120_000,
     },
   ],

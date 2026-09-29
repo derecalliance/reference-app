@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures'
-import { setUpOwner } from './app'
+import { BACKEND_PORT, setUpOwner } from './app'
 
 /**
  * The app served from a LAN address rather than `localhost`, which is how a
@@ -30,7 +30,7 @@ test.describe('LAN access', () => {
     const apiHosts = new Set<string>()
     page.on('request', request => {
       const url = new URL(request.url())
-      if (url.port === '5000') apiHosts.add(url.hostname)
+      if (url.port === String(BACKEND_PORT)) apiHosts.add(url.hostname)
     })
 
     await setUpOwner(page, { name: 'Phone', participants: 3, prePaired: 0, minParticipants: 2 })

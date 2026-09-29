@@ -28,10 +28,12 @@ use crate::{
 /// Used by routes that work on any provisioned actor whatever its role — the
 /// contact and pairing endpoints, which narrow instead on whether the actor has
 /// a backend protocol instance.
-pub fn ensure_actor_exists(state: &AppState, actor_id: &Uuid) -> Result<Actor, Response> {
+pub async fn ensure_actor_exists(state: &AppState, actor_id: &Uuid) -> Result<Actor, Response> {
     state
         .actors
         .get(actor_id)
+        .await
+        .map_err(registry_unavailable)?
         .ok_or_else(|| not_found("actor not found"))
 }
 
@@ -42,8 +44,17 @@ pub fn ensure_actor_exists(state: &AppState, actor_id: &Uuid) -> Result<Actor, R
 /// real actor on a route that cannot act on it, and saying so plainly is more
 /// useful than pretending it does not exist — there is no cross-tenant boundary
 /// left to protect, so nothing is leaked by admitting it.
-pub fn ensure_actor_role(state: &AppState, actor_id: &Uuid, role: Role) -> Result<Actor, Response> {
-    state.actors.get_with_role(actor_id, role).map_err(|e| match e {
+pub async fn ensure_actor_role(
+    state: &AppState,
+    actor_id: &Uuid,
+    role: Role,
+) -> Result<Actor, Response> {
+    state
+        .actors
+        .get_with_role(actor_id, role)
+        .await
+        .map_err(registry_unavailable)?
+        .map_err(|e| match e {
         RoleMismatch::NotFound => not_found(&format!("{} not found", noun(role))),
         RoleMismatch::WrongRole { actual } => bad_request(&format!(
             "actor is {}, not {}",
@@ -68,6 +79,21 @@ fn with_article(role: Role) -> String {
         Role::Helper => "a",
     };
     format!("{article} {}", noun(role))
+}
+
+/// The registry itself failed — the database is unreachable or a row is
+/// unreadable. Distinct from the 404/400 below, which are answers about an
+/// actor; this is an admission that no answer was available.
+///
+/// The detail is logged rather than returned: a caller can do nothing with a
+/// connection error, and it may name a host.
+pub fn registry_unavailable(e: crate::registry::RegistryError) -> Response {
+    tracing::error!(error = %e, "actor registry unavailable");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({ "error": "actor registry unavailable" })),
+    )
+        .into_response()
 }
 
 pub fn not_found(message: &str) -> Response {

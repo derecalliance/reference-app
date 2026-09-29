@@ -56,7 +56,7 @@ impl DeRecTransport for GrpcIngress {
         // `DeRecProtocol::process` takes.
         let bytes = prost::Message::encode_to_vec(&envelope);
 
-        match dispatch_to_inbox(&self.state, actor_id, crate::debug::Carrier::Grpc, bytes) {
+        match dispatch_to_inbox(&self.state, actor_id, crate::debug::Carrier::Grpc, bytes).await {
             // A dropped message is still an accepted call: "offline" is a
             // simulation of an unreachable peer, and the peer's transport
             // should see the same success it sees over HTTP.

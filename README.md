@@ -39,6 +39,61 @@ registers itself as an owner actor against it — a second tab, an incognito
 window or another machine on the network is simply another owner. There is no
 grouping above that: everything the server knows lives in one actor registry.
 
+### In Docker
+
+One image serves the UI and the API on the same origin, and keeps its state.
+
+Nothing is published yet, so build it first. The tag names the SDK it was built
+against — the SDK is compiled in (`derec-library` into the binary,
+`@derec-alliance/web` into the bundled WASM), so a different SDK means a
+different image rather than a different flag:
+
+```
+docker build -f apps/backend/Dockerfile -t derec/reference-app:0.0.4 .
+docker run -d --name derec -p 5000:5000 -v derec-data:/var/lib/derec \
+  derec/reference-app:0.0.4
+```
+
+Then open `http://localhost:5000`. There is no separate front-end server: the
+page is served by the backend and calls back to the same origin, so publishing
+on another host port works without configuration.
+
+It survives a restart. Helpers you provisioned come back with the identities
+and settings they had — including the `replica_id` every replica-group
+membership references — and their channels and shares are still there:
+
+```
+$ docker restart derec
+$ docker logs derec | grep recovered
+INFO derec_backend::recovery: node recovered from the database helpers=3 …
+```
+
+What that costs you, and what it does not:
+
+| Invocation | Survives `docker restart` | Survives `docker rm` + recreate |
+| --- | --- | --- |
+| no `-v` | yes, on an anonymous volume | no |
+| `-v derec-data:/var/lib/derec` | yes | yes |
+| `-e DEREC_DATABASE_URL=sqlite::memory:` | no — a deliberately scratch node | no |
+
+**Prefer a named volume to a bind mount.** SQLite's locking over bind-mounted
+host filesystems is unreliable on macOS and Windows, where the mount crosses
+gRPC-FUSE or virtiofs, and it presents as intermittent `database is locked`
+rather than as anything naming the mount.
+
+Pairing across machines needs the LAN address, exactly as it does outside
+Docker — it is stamped into every transport URI handed to a peer:
+
+```
+docker run -d -p 5000:5000 -v derec-data:/var/lib/derec \
+  -e DEREC_BASE_URL=http://192.168.0.28 derec/reference-app:0.0.4
+```
+
+`examples/docker-compose.example.yaml` is the same thing as a compose file. The
+container runs as a non-root user (uid 10001) and answers a healthcheck on
+`/health`; `docker stop` drains rather than being killed, which matters now that
+there is a database to close cleanly.
+
 ### The SDK
 
 Both halves track SDK **0.0.4**, taken from the registries: `derec-library`
@@ -249,6 +304,8 @@ Variable names are flat and prefixed; the table a key lives in does not appear:
 | --- | --- |
 | `server.base_url` | `DEREC_BASE_URL` |
 | `server.port` | `DEREC_PORT` |
+| `server.database_url` | `DEREC_DATABASE_URL` |
+| `server.static_dir` | `DEREC_STATIC_DIR` |
 | `defaults.participant_count` | `DEREC_PARTICIPANT_COUNT` |
 | `defaults.pre_paired_count` | `DEREC_PRE_PAIRED_COUNT` |
 | `defaults.min_participants` | `DEREC_MIN_PARTICIPANTS` |
@@ -266,7 +323,8 @@ Variable names are flat and prefixed; the table a key lives in does not appear:
 
 `DEREC_CONFIG_PATH` names the config file and is not itself a setting.
 
-`BASE_URL`, `PORT` and `STATIC_DIR` are no longer read. Setting one without its
+`BASE_URL`, `PORT` and `STATIC_DIR` are no longer read (the last is now
+`DEREC_STATIC_DIR`). Setting one without its
 `DEREC_`-prefixed replacement aborts the boot with a message naming it, rather
 than leaving a node quietly running on defaults.
 

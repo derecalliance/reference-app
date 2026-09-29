@@ -1,8 +1,8 @@
 import type { ReplicaChannel } from './ownerPairing'
 import { ReplicaChannelRow } from './ReplicaChannelRow'
+import type { GroupMemberRow } from './owner/groupMembers'
 import type { ReplicaView } from './replicaFlows'
 import type { ReplicaRowSyncNotice } from './replicaSyncNotice'
-import type { StoredReplicaMember } from './stores'
 
 /**
  * The Replicas tab — every replica this owner knows about, in one place.
@@ -80,9 +80,17 @@ export interface ReplicasTabProps {
    * member occupies its replica id whether or not the app remembers it, and the
    * peer holding that id is refused on every attempt to pair again.
    */
-  orphanedMembers: readonly StoredReplicaMember[]
-  /** Evict an orphan by its replica id. */
-  onRemoveOrphan: (member: StoredReplicaMember) => void
+  /**
+   * Members of the group this device holds no channel of its own with.
+   *
+   * Rendered in the same list as the channels, because from the group's point
+   * of view that is what they are: two destinations of one source never pair
+   * with each other, yet both are members. Listing them apart described the
+   * app's bookkeeping rather than the protocol.
+   */
+  memberRows: readonly GroupMemberRow[]
+  /** Evict a member by its replica id. */
+  onRemoveMember: (replicaId: string) => void
 }
 
 export function ReplicasTab({
@@ -100,30 +108,56 @@ export function ReplicasTab({
   onRemoveFromGroup,
   removingReplicaIds,
   onToggleOffline,
-  orphanedMembers,
-  onRemoveOrphan,
+  memberRows,
+  onRemoveMember,
 }: ReplicasTabProps) {
-  const orphans = (
-    <OrphanedMembers
-      members={orphanedMembers}
-      removingReplicaIds={removingReplicaIds}
-      onRemove={onRemoveOrphan}
+  /**
+   * Members with no direct channel, rendered as the ordinary rows they are.
+   *
+   * `viaGroupOnly` is what withholds the actions that need a pairing — there is
+   * no fingerprint to compare with a peer this device never paired with, and
+   * nothing to sync to it. Passing no-op handlers instead left those buttons on
+   * screen doing nothing, and the row claiming a verification that never
+   * happened. Eviction stays, because the library's removal names a member
+   * rather than a channel.
+   */
+  const members = memberRows.map(member => (
+    <ReplicaChannelRow
+      key={member.replicaId}
+      name={member.name}
+      channelId={member.channelId}
+      peerRole={member.peerRole}
+      view={member.view}
+      protocolTimeoutSecs={protocolTimeoutSecs}
+      syncing={false}
+      syncBlocked={syncingChannelId !== null}
+      syncNotice={null}
+      onDismissSyncNotice={onDismissSyncNotice}
+      viaGroupOnly
+      onOpenFingerprint={() => {}}
+      onSyncNow={() => {}}
+      onForget={() => {}}
+      canRemoveFromGroup
+      removingFromGroup={removingReplicaIds.has(member.replicaId)}
+      onRemoveFromGroup={() => onRemoveMember(member.replicaId)}
+      canToggleOffline={false}
+      offline={false}
+      onToggleOffline={() => {}}
     />
-  )
+  ))
 
-  if (channels.length === 0) {
+  // Members count as replicas here, not just channels. A device that belongs to
+  // a group it has no direct channel with — a second destination of one source,
+  // or a device whose rows were forgotten — would otherwise be told it has no
+  // replicas while the protocol still holds its membership and refuses to pair
+  // that id again.
+  if (channels.length === 0 && memberRows.length === 0) {
     return (
-      <>
-        <p className="tab-empty-state">
-          No replicas yet. A replica is another of your own devices that mirrors this whole
-          vault instead of holding a share of it. Add a hosted one under “Replicas” in the
-          side panel, or pair another browser as a replica with the Pair button above.
-        </p>
-        {/* Deliberately rendered even with no channels: an orphan with no row
-            is exactly the case where the tab would otherwise say "no replicas"
-            while the protocol still refuses to let one pair. */}
-        {orphans}
-      </>
+      <p className="tab-empty-state">
+        No replicas yet. A replica is another of your own devices that mirrors this whole
+        vault instead of holding a share of it. Add a hosted one under “Replicas” in the
+        side panel, or pair another browser as a replica with the Pair button above.
+      </p>
     )
   }
 
@@ -177,69 +211,10 @@ export function ReplicasTab({
               />
             )
           })}
+          {members}
         </div>
       </div>
-      {orphans}
     </div>
   )
 }
 
-/**
- * Group members the app cannot otherwise account for.
- *
- * Renders nothing when there are none, which is the normal state — this is a
- * diagnostic, and a heading over an empty list would imply the group is
- * routinely inconsistent when it is not.
- */
-function OrphanedMembers({
-  members,
-  removingReplicaIds,
-  onRemove,
-}: {
-  members: readonly StoredReplicaMember[]
-  removingReplicaIds: ReadonlySet<string>
-  onRemove: (member: StoredReplicaMember) => void
-}) {
-  if (members.length === 0) return null
-
-  return (
-    <div className="replicas-tab-section">
-      <h3 className="sub-heading">Group members with no channel</h3>
-      <p className="tab-section-note">
-        The protocol still counts these as members of the replica group, but nothing on
-        this page corresponds to them — a pairing that was forgotten or never completed.
-        Each one holds its replica id, so the device behind it is refused with{' '}
-        <em>“replica id is already in use by another member of the group”</em> every time it
-        tries to pair again. Removing one here frees the id.
-      </p>
-      <div className="channel-table">
-        {members.map(member => {
-          const removing = removingReplicaIds.has(member.replicaId)
-          return (
-            <div className="channel-block" key={member.replicaId}>
-              <div className="channel-row-top">
-                <span className="participant-dot available" aria-hidden="true" />
-                <span className="channel-row-name" style={{ flex: 'none' }}>
-                  {member.name ?? 'Unnamed device'}
-                </span>
-                {member.role && <span className="role-tag">{member.role}</span>}
-                <span className="channel-id-inline">replica {member.replicaId}</span>
-                <span style={{ flex: 1 }} />
-                <span className="status-tag available">{member.status}</span>
-                <button
-                  className="channel-unpair-btn"
-                  onClick={() => onRemove(member)}
-                  disabled={removing}
-                  aria-busy={removing || undefined}
-                  title="Evict this member so its replica id is free again"
-                >
-                  {removing ? 'Removing…' : 'Remove from group'}
-                </button>
-              </div>
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}

@@ -34,6 +34,26 @@ base_url = "http://localhost"
 # The HTTP listener port. The UI and the API share it.
 port = 5000
 
+# Where state lives.
+#
+#   a bare path         SQLite at that path — "./derec.db" for local runs
+#   anything with ://   passed through untouched (Postgres, or a tuned SQLite)
+#   "sqlite::memory:"   a scratch node that forgets everything on exit
+#
+# Unset, this is "derec.db" beside the process — so a fresh checkout runs with
+# no configuration at all. The image overrides it with
+# /var/lib/derec/derec.db, under the volume that makes a container survive a
+# restart; see examples/docker-compose.example.yaml.
+database_url = "./derec.db"
+
+# Directory of built front-end assets to serve.
+#
+# Empty (the default) serves no UI, which is what you want beside a Vite dev
+# server — Vite is serving the app, and a fallback here would shadow it. The
+# image sets /app/static, so the container serves the UI and the API on one
+# origin.
+# static_dir = ""
+
 [defaults]
 # Participants to provision when setting up. Must be at least 1.
 participant_count = 7

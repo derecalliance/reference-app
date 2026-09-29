@@ -1,6 +1,13 @@
 import type { Locator, Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { type ContactMode, openTab, pairParticipant, protectSecret, setUpOwner } from './app'
+import {
+  BACKEND_URL,
+  type ContactMode,
+  openTab,
+  pairParticipant,
+  protectSecret,
+  setUpOwner,
+} from './app'
 
 /**
  * The transport matrix: three peer configurations covering three **library**
@@ -18,7 +25,6 @@ import { type ContactMode, openTab, pairParticipant, protectSecret, setUpOwner }
  * hang, since a browser genuinely has no other way to reach one.
  */
 
-const BACKEND_URL = 'http://localhost:5000'
 
 interface BackendTransport {
   protocol: 'https' | 'grpc'

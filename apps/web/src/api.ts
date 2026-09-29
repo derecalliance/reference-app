@@ -274,6 +274,44 @@ export async function apiGetDebugState(): Promise<DebugState> {
   return res.json() as Promise<DebugState>
 }
 
+/** One setting's value and where it came from, from `GET /debug/config`. */
+export interface ConfigOrigin {
+  /** Dotted path into the settings tree, e.g. `defaults.participant_count`. */
+  path: string
+  source: 'default' | 'file' | 'env'
+  /** The variable that supplied it. Present only when `source` is `env`. */
+  variable?: string
+}
+
+/**
+ * `GET /debug/config` — what the node is running with, and where each value
+ * came from.
+ *
+ * The same data the backend prints as its boot banner. `settings` is the
+ * resolved tree; `origins` explains each leaf. Read-only by nature: the node
+ * resolves this once at boot from its config file and `DEREC_*` variables, and
+ * has no endpoint to change it.
+ */
+export interface DebugConfig {
+  settings: {
+    server: Record<string, unknown>
+    defaults: Record<string, unknown>
+  }
+  origins: ConfigOrigin[]
+  /** Whether a config file was found at the configured path. */
+  file_found: boolean
+  /** `DEREC_*` variables that matched no setting. Warned about, not fatal. */
+  unknown_env: string[]
+}
+
+export async function apiGetDebugConfig(): Promise<DebugConfig> {
+  const res = await request(`/debug/config`)
+  if (!res.ok) {
+    throw new Error(`Failed to fetch server configuration: ${res.status} ${res.statusText}`)
+  }
+  return res.json() as Promise<DebugConfig>
+}
+
 /** GET /debug/events — what the server did, in order, after `after`. */
 export async function apiGetDebugEvents(after: number): Promise<DebugEvents> {
   const res = await request(`/debug/events?after=${after}`)
@@ -465,6 +503,24 @@ export async function apiToggleParticipantStatus(
     throw new Error(await errorMessage(res, `toggle-status failed: ${res.status}`))
   }
   return res.json() as Promise<{ disabled: boolean }>
+}
+
+/**
+ * Erase a provisioned participant: its actor, its stores and its registry entry.
+ *
+ * The pool is server-wide, so this removes it for every owner on this node, not
+ * just this browser. An owner already paired with it keeps its channel — the
+ * backend cannot reach into another browser's storage — and from there the
+ * participant simply stops answering, like one that has gone offline. Unpairing
+ * is how that channel is cleared.
+ */
+export async function apiDeleteParticipant(participantId: string): Promise<void> {
+  const res = await request(`/helpers/${encodeURIComponent(participantId)}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, `delete failed: ${res.status}`))
+  }
 }
 
 /** Publish this node's contact so peers can pair against it. */

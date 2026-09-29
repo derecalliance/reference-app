@@ -9,6 +9,7 @@ import {
   protectSecret,
   replicaChannelCount,
   replicaChannelRow,
+  replicaMemberRows,
   setUpOwner,
   uniqueReplicaName,
 } from './app'
@@ -205,20 +206,22 @@ test.describe('replica groups', () => {
       .click()
     await expect.poll(() => replicaChannelCount(page), { timeout: 30_000 }).toBe(0)
 
-    // The row is gone, but the member is not — and the tab says so rather than
-    // claiming there are no replicas.
-    const orphans = page
-      .locator('.replicas-tab-section')
-      .filter({ hasText: 'Group members with no channel' })
-    await expect(orphans).toBeVisible({ timeout: 30_000 })
-    await expect(orphans).toContainText('Destination')
+    // The channel row is gone, but the member is not — it is still in the
+    // group, and the tab lists it as the replica it is rather than claiming
+    // there are none. This device's own Source entry is the group, not a peer
+    // in it, so exactly one member is listed.
+    const members = replicaMemberRows(page)
+    await expect(members).toHaveCount(1, { timeout: 30_000 })
+    await expect(members).toContainText(/Replica destination/i)
 
-    // This device's own Source entry is the group, not a peer in it, so exactly
-    // one member is listed.
-    await expect(orphans.locator('.channel-block')).toHaveCount(1)
+    // Nothing on the row pretends to a pairing this device does not have: no
+    // fingerprint to compare, no vault to send, and no local record to forget.
+    await expect(members.getByRole('button', { name: 'Forget' })).toHaveCount(0)
+    await expect(members.getByRole('button', { name: /Sync now/ })).toHaveCount(0)
+    await expect(members.getByRole('button', { name: /fingerprint/i })).toHaveCount(0)
 
-    await orphans.getByRole('button', { name: 'Remove from group' }).click()
-    await expect(orphans).toBeHidden({ timeout: 90_000 })
+    await members.getByRole('button', { name: 'Remove from group' }).click()
+    await expect(members).toHaveCount(0, { timeout: 90_000 })
 
     // Gone from the library's own store, not just from the page — only this
     // device's `Source` entry is left.

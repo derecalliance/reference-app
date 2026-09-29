@@ -17,7 +17,7 @@ const OWN_SECRET: u64 = 0xA1;
 const ALICE_SECRET: u64 = 0x7F;
 const CAROL_SECRET: u64 = 0xC3;
 
-fn config(secret_id: u64) -> ProtocolConfig {
+fn config(secret_id: u64, pool: sqlx::AnyPool, actor_id: uuid::Uuid) -> ProtocolConfig {
     ProtocolConfig {
         secret_id,
         own_transports: vec![Transport {
@@ -31,19 +31,27 @@ fn config(secret_id: u64) -> ProtocolConfig {
         keep_versions_count: 3,
         replica_id: Some(0xAB),
         http_client: reqwest::Client::new(),
+        pool,
+        actor_id,
     }
 }
 
-fn spawn() -> Addr<ProvisionedActor> {
-    let cfg = config(OWN_SECRET);
+async fn spawn() -> Addr<ProvisionedActor> {
+    // The actor's stores and the state share one pool, as they do in
+    // production — provisioning builds every `ProtocolConfig` from
+    // `state.pool`.
+    let state = derec_backend::test_support::app_state().await;
+    // One id for both: the stores are keyed by it, and the actor must be the
+    // same actor its own stores were built for.
+    let actor_id = uuid::Uuid::new_v4();
+    let cfg = config(OWN_SECRET, state.pool.clone(), actor_id);
     let protocol = build_protocol(&cfg).expect("protocol builds");
-    let state = derec_backend::test_support::app_state();
-    ProvisionedActor::new(protocol, cfg, uuid::Uuid::new_v4(), Role::Helper, state).start()
+    ProvisionedActor::new(protocol, cfg, actor_id, Role::Helper, state).start()
 }
 
 #[actix_rt::test]
 async fn an_actor_starts_with_only_its_own_instance() {
-    let addr = spawn();
+    let addr = spawn().await;
 
     let secrets = addr.send(ListInstanceSecretsMsg).await.expect("actor alive");
 
@@ -52,7 +60,7 @@ async fn an_actor_starts_with_only_its_own_instance() {
 
 #[actix_rt::test]
 async fn a_replica_instance_is_added_alongside_the_own_instance() {
-    let addr = spawn();
+    let addr = spawn().await;
 
     addr.send(EnsureReplicaInstanceMsg { owner_secret_id: ALICE_SECRET })
         .await
@@ -76,7 +84,7 @@ async fn ensuring_the_same_owner_twice_is_a_no_op() {
     // *overwrite* the entry and the map would still hold exactly two keys. The
     // `bool` result is what actually distinguishes "created" from "reused", so
     // it is what this test asserts on.
-    let addr = spawn();
+    let addr = spawn().await;
 
     let mut created = Vec::new();
     for _ in 0..2 {
@@ -101,7 +109,7 @@ async fn a_contact_is_minted_from_the_selected_replica_instance() {
     // the own instance on a missing entry), minting before the replica
     // instance exists would succeed anyway. Requiring failure before and
     // success after is what proves the selection is real.
-    let addr = spawn();
+    let addr = spawn().await;
 
     let contact = |replica_for_owner_secret| CreateContactMsg {
         contact_mode: derec_proto::ContactMode::InlineKeys,
@@ -146,7 +154,7 @@ async fn a_minted_contacts_channel_routes_back_to_the_instance_that_minted_it() 
     // Minting from both instances also pins down *which* instance answers: a
     // routing index that lumped every channel under the own instance would
     // still resolve the replica's channel, just to the wrong protocol.
-    let addr = spawn();
+    let addr = spawn().await;
 
     addr.send(EnsureReplicaInstanceMsg { owner_secret_id: ALICE_SECRET })
         .await
@@ -195,7 +203,7 @@ async fn a_minted_contacts_channel_routes_back_to_the_instance_that_minted_it() 
 
 #[actix_rt::test]
 async fn one_actor_replicates_for_two_owners_at_once() {
-    let addr = spawn();
+    let addr = spawn().await;
 
     for owner in [ALICE_SECRET, CAROL_SECRET] {
         addr.send(EnsureReplicaInstanceMsg { owner_secret_id: owner })

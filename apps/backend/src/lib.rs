@@ -9,20 +9,29 @@ use std::sync::Arc;
 
 use axum::{
     Router,
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 pub mod actor;
+pub mod deletion;
 pub mod config;
+/// Behaviour every store implementation must have. Lives in the library, not
+/// in `tests/`, so the SQL stores can run the identical assertions once they
+/// exist — and so it survives the deletion of `stores.rs`.
+pub mod conformance;
+pub mod db;
 pub mod debug;
 pub mod envelope;
 pub mod grpc;
 pub mod instances;
 pub mod models;
 pub mod provisioning;
+pub mod recovery;
+pub mod registry;
 pub mod routing;
 pub mod routes;
+pub mod sql;
 pub mod state;
 pub mod stores;
 pub mod transport;
@@ -39,7 +48,7 @@ pub use state::test_support;
 /// tests that want to exercise a handler through the actual HTTP layer
 /// (query parsing, routing, middleware) rather than by calling it directly.
 pub fn build_router(state: Arc<AppState>) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/health", get(routes::health::handler))
         .route("/config", get(routes::config::get))
         // The debug surface. Unauthenticated by design: this app ships as a
@@ -69,6 +78,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             post(routes::actors::confirm_fingerprint),
         )
         .route("/helpers", post(routes::helpers::add))
+        .route("/helpers/{helper_id}", delete(routes::helpers::delete))
         .route("/helpers/ensure", post(routes::helpers::ensure))
         .route(
             "/helpers/{helper_id}/toggle-status",
@@ -93,6 +103,20 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/derec/{actor_id}", post(routes::derec::deliver_message))
         .route("/derec/{actor_id}/mailbox", get(routes::derec::poll_mailbox))
         .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::permissive())
-        .with_state(state)
+        .layer(CorsLayer::permissive());
+
+    // Serve the built front end from the same origin, when there is one to
+    // serve. Unset — the ordinary `cargo run` plus Vite dev loop, and every
+    // integration test — leaves behaviour byte-identical to having no fallback
+    // at all; the image sets it to `/app/static`.
+    //
+    // A fallback introduces no ambiguity here because every route above is an
+    // explicit path, and there is no SPA rewrite because the app has no
+    // client-side routes: every screen lives at the base path.
+    let router = match state.config.settings.server.static_dir.as_str() {
+        "" => router,
+        dir => router.fallback_service(tower_http::services::ServeDir::new(dir)),
+    };
+
+    router.with_state(state)
 }

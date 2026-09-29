@@ -29,8 +29,8 @@ use uuid::Uuid;
 /// mirroring the constant used in `replica_contact.rs`.
 const ALICE_SECRET: u64 = 0x7F;
 
-fn app() -> (Arc<AppState>, Router) {
-    let state = derec_backend::test_support::app_state();
+async fn app() -> (Arc<AppState>, Router) {
+    let state = derec_backend::test_support::app_state().await;
     let router = derec_backend::build_router(state.clone());
     (state, router)
 }
@@ -102,7 +102,7 @@ async fn post_contact(router: &Router, actor_id: Uuid, query: &str) -> axum::res
 
 #[actix_rt::test]
 async fn a_valid_replica_for_owner_secret_mints_from_the_replica_instance() {
-    let (state, router) = app();
+    let (state, router) = app().await;
     let (actor_id, _own_secret) = create_helper(&router).await;
 
     let response = post_contact(
@@ -136,7 +136,7 @@ async fn a_valid_replica_for_owner_secret_mints_from_the_replica_instance() {
 
 #[actix_rt::test]
 async fn no_replica_for_owner_secret_still_mints_from_the_own_instance() {
-    let (state, router) = app();
+    let (state, router) = app().await;
     let (actor_id, own_secret) = create_helper(&router).await;
 
     let response = post_contact(&router, actor_id, "contact_mode=inline_keys").await;
@@ -167,7 +167,7 @@ async fn no_replica_for_owner_secret_still_mints_from_the_own_instance() {
 
 #[actix_rt::test]
 async fn a_malformed_replica_for_owner_secret_is_rejected() {
-    let (_state, router) = app();
+    let (_state, router) = app().await;
     let (actor_id, _own_secret) = create_helper(&router).await;
 
     let response = post_contact(
@@ -185,7 +185,7 @@ async fn minting_a_contact_pins_its_channel_for_grpc_ingress() {
     // gRPC has no path to carry an actor id, so the first inbound message on a
     // freshly minted contact can only be routed by its channel id — and no
     // channel store has seen that id yet.
-    let (state, router) = app();
+    let (state, router) = app().await;
     let (actor_id, _own_secret) = create_helper(&router).await;
 
     let response = post_contact(&router, actor_id, "contact_mode=inline_keys").await;
@@ -212,7 +212,7 @@ async fn an_empty_replica_for_owner_secret_is_rejected_not_treated_as_absent() {
     // would silently mint an ordinary helper contact instead of a replica
     // one — the pairing quietly becomes the wrong kind. It must be rejected
     // the same way any other malformed value is.
-    let (_state, router) = app();
+    let (_state, router) = app().await;
     let (actor_id, _own_secret) = create_helper(&router).await;
 
     let response = post_contact(
