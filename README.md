@@ -10,19 +10,26 @@ design principles, [`AGENTS.md`](AGENTS.md) if you are an LLM or coding agent
 driving this over HTTP rather than through the UI, and
 [`CHANGELOG.md`](CHANGELOG.md) for what each release contains.
 
-## Quick start
-
-With Docker (Compose v2.24 or newer) and nothing else installed:
+## Getting started
 
 ```
+git clone https://github.com/derecalliance/reference-app.git
+cd reference-app
 ./start.sh
 ```
 
-It builds the image from your checkout, starts the node, waits until it
-answers and prints the address — `http://localhost:5000`, or the next free port
-if 5000 is taken (on macOS the AirPlay Receiver usually is). The first build
-takes several minutes; later runs take seconds. Run it again whenever you like:
-it stops whatever it started before and starts it fresh, keeping your data.
+That is all it takes with [Docker](https://docs.docker.com/get-docker/)
+(Compose v2.24 or newer) — no Node or Rust needed. Then open the address it
+prints and set up your first vault.
+
+### Run it in Docker
+
+`./start.sh` builds the image from your checkout, starts the node, waits until
+it answers and prints the address: `http://localhost:5000`, or the next free
+port if 5000 is taken (on macOS the AirPlay Receiver usually is). The first
+build takes several minutes; later runs take seconds. Run it again whenever you
+like: it stops whatever it started before and starts it fresh, keeping your
+data.
 
 | | |
 | --- | --- |
@@ -39,6 +46,39 @@ and [`examples/compose.postgres.yaml`](examples/compose.postgres.yaml); see
 [In Docker](#in-docker) for the details, and
 [Reaching it from a phone](#reaching-it-from-a-phone-on-the-same-network) for
 the browser settings a phone needs.
+
+### Run it from source
+
+For working on the code. Needs [Rust](https://rustup.rs) 1.88+ and
+[Node.js](https://nodejs.org) 22+, and two terminals:
+
+```
+# terminal 1 — the backend, on http://localhost:5000 (state in apps/backend/derec.db)
+cd apps/backend
+cargo run
+
+# terminal 2 — the front end, with hot reload
+cd apps/web
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173/reference-app/`. The front end finds the backend on
+port 5000 of whatever host served the page, so nothing needs configuring; set
+`VITE_API_URL` only to point it elsewhere. Settings for the backend (ports,
+database, defaults) are covered in [Configuring it](#configuring-it).
+
+### Run the tests
+
+```
+cd apps/backend && cargo test --all-targets        # backend
+cd apps/web && npx tsc -b && npm run lint && npx vitest run   # front end: types, lint, unit
+cd apps/web && npm run test:e2e                    # end to end, in Chrome
+```
+
+The end-to-end suite starts its own backend and dev server on separate ports,
+so it runs alongside a `cargo run` / `npm run dev` session without touching it.
+It drives an installed Google Chrome. See [End-to-end tests](#end-to-end-tests).
 
 ## What's in the app
 
@@ -211,7 +251,7 @@ docker run -d --name derec -p 5000:5000 -p 50051:50051 \
 
 #### With compose
 
-[`./start.sh`](start.sh) is the shortest path (see [Quick start](#quick-start));
+[`./start.sh`](start.sh) is the shortest path (see [Getting started](#getting-started));
 these are the files it runs, and they work on their own:
 
 ```
