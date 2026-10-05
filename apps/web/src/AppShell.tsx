@@ -16,6 +16,7 @@ import {
   ListItemButton,
   ListItemIcon,
   ListItemText,
+  Typography,
   useMediaQuery,
   useTheme,
 } from '@mui/material'
@@ -33,6 +34,9 @@ const ParticipantsPane = lazy(() =>
 const SettingsPane = lazy(() => import('./admin/SettingsPane').then(m => ({ default: m.SettingsPane })))
 
 const DRAWER_WIDTH = 216
+
+/** The width at which the stylesheets switch to the phone layout. */
+const PHONE_QUERY = '@media (max-width: 640px)'
 
 const NAV: ReadonlyArray<{
   section: AppSection
@@ -78,6 +82,7 @@ export function AppShell({ children }: AppShellProps) {
   // rail's 216px squeezes it enough to truncate its tab bar. Collapsing to a
   // hamburger gives that page the full width it had before the shell existed.
   const permanent = useMediaQuery(theme.breakpoints.up('lg'))
+  const currentLabel = NAV.find(item => item.section === section)?.label ?? ''
 
   function select(next: AppSection) {
     setSection(next)
@@ -177,6 +182,8 @@ export function AppShell({ children }: AppShellProps) {
             sx={{
               flexShrink: 0,
               display: 'flex',
+              alignItems: 'center',
+              gap: 0.5,
               borderBottom: 1,
               borderColor: 'divider',
             }}
@@ -184,10 +191,16 @@ export function AppShell({ children }: AppShellProps) {
             <IconButton
               aria-label="Open sections"
               onClick={() => setDrawerOpen(true)}
+              size="small"
               sx={{ m: 0.5 }}
             >
               <MenuIcon />
             </IconButton>
+            {/* Says where the menu has taken you; without it the row is a lone
+                icon and the section on screen is only guessable. */}
+            <Typography variant="body2" color="text.secondary" component="span">
+              {currentLabel}
+            </Typography>
           </Box>
           <Drawer
             variant="temporary"
@@ -204,8 +217,18 @@ export function AppShell({ children }: AppShellProps) {
       )}
 
       {/* The scroll container for whatever section is showing; `main` no longer
-          scrolls, so this does. */}
-      <Box sx={{ flexGrow: 1, minWidth: 0, minHeight: 0, display: 'flex', overflow: 'auto' }}>
+          scrolls, so this does — except on a phone, where the whole document
+          scrolls instead (see `#root` in index.css). */}
+      <Box
+        sx={{
+          flexGrow: 1,
+          minWidth: 0,
+          minHeight: 0,
+          display: 'flex',
+          overflow: 'auto',
+          [PHONE_QUERY]: { overflow: 'visible' },
+        }}
+      >
         {/* The owner's content is passed through untouched — it brings its own
             layout, and the wizard still wants the centering it always had. */}
         {section === 'owner' && children}

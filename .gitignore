@@ -13,9 +13,10 @@ target/
 # depth, so re-including it takes an explicit negation.
 !examples/.env.example
 
-# Local copies of the files in `examples/` — each developer's own, never shared.
+# Local copy of `examples/config.example.toml` — each developer's own, never
+# shared. (`compose.yaml` and `examples/compose.*.yaml` are tracked: they are
+# what `docker compose up` and ./start.sh run.)
 apps/backend/config.toml
-compose.yaml
 
 # React
 

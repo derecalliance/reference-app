@@ -1,0 +1,72 @@
+# DeRec reference app on PostgreSQL.
+#
+# Run it in place, from the repo root:
+#
+#   docker compose -f examples/compose.postgres.yaml up -d
+#
+# or `./start.sh --postgres`. The node waits for the database to report
+# healthy, applies its migrations on first boot, and keeps everything in the
+# `derec-pgdata` volume. Same ports and variables as compose.sqlite.yaml; the
+# comments there explain them.
+#
+# Both examples use the project name `derec`, so they replace each other rather
+# than running side by side on the same ports: switching is `down`, then `up`
+# with the other file (./start.sh does that for you).
+#
+# Paths below are relative to THIS file's directory. Needs Docker Compose v2.24
+# or newer. This is a development tool with no authentication — and the
+# database credentials below are for a local throwaway database; override
+# POSTGRES_PASSWORD (from your shell or the repo-root `.env`) for anything else.
+
+name: derec
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: derec
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-derec}"
+      POSTGRES_DB: derec
+    # Not published: only the node talks to it, over the compose network. To
+    # inspect it, `docker compose -p derec exec postgres psql -U derec`.
+    volumes:
+      - derec-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U derec -d derec"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  node:
+    build:
+      context: ..
+      dockerfile: apps/backend/Dockerfile
+    image: derec/reference-app:0.0.6
+
+    env_file:
+      - path: ../.env
+        required: false
+
+    environment:
+      # Anything with `://` is handed to the driver as-is; the boot banner
+      # prints it with the password redacted.
+      DEREC_DATABASE_URL: "postgres://derec:${POSTGRES_PASSWORD:-derec}@postgres:5432/derec"
+      DEREC_BASE_URL: "http://${LAN_IP:-localhost}"
+      DEREC_PUBLIC_PORT: "${DEREC_HOST_PORT:-5000}"
+      DEREC_PUBLIC_GRPC_PORT: "${DEREC_HOST_GRPC_PORT:-50051}"
+
+    ports:
+      - "${DEREC_HOST_PORT:-5000}:5000"           # HTTP API and UI
+      - "${DEREC_HOST_GRPC_PORT:-50051}:50051"    # gRPC transport
+
+    # A node that cannot reach its database refuses to boot, so it starts only
+    # once Postgres accepts connections rather than racing it.
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+volumes:
+  derec-pgdata:

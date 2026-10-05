@@ -1,18 +1,24 @@
 # Examples
 
-Worked configuration files for the DeRec reference app. None of these is read
-where it sits — each is a template to copy, with every key documented inline.
+Worked configuration files for the DeRec reference app, every key documented
+inline.
 
-| File | Copy it to | For |
+| File | Use it | For |
 | --- | --- | --- |
-| `config.example.toml` | `apps/backend/config.toml` for `cargo run`; mount at `/etc/derec/config.toml` in the image | the TOML config file |
-| `.env.example` | `.env` (repo root for compose; `apps/backend/` for `cargo run`) | environment variables |
-| `docker-compose.example.yaml` | `compose.yaml` (repo root) | running it in Docker |
+| `compose.sqlite.yaml` | in place: `docker compose -f examples/compose.sqlite.yaml up -d` — or `docker compose up` at the repo root, whose `compose.yaml` includes it | running it in Docker on SQLite (the default) |
+| `compose.postgres.yaml` | in place: `docker compose -f examples/compose.postgres.yaml up -d` | running it in Docker on PostgreSQL |
+| `config.example.toml` | copy to `apps/backend/config.toml` for `cargo run`; mount at `/etc/derec/config.toml` in the image | the TOML config file |
+| `.env.example` | copy to `.env` (repo root for compose; `apps/backend/` for `cargo run`) | environment variables |
 
-The paths inside `docker-compose.example.yaml` are relative to the **repo
-root**, so copy it up rather than running it in place — or pass
-`--project-directory .` if you would rather leave it here. It runs on a fresh
-checkout as-is: the `.env` and the config file are both optional.
+The compose files run where they sit: their paths are relative to this
+directory, and both work on a fresh checkout with no `.env` and no config file.
+They share the project name `derec`, so one replaces the other rather than
+running beside it. [`../start.sh`](../start.sh) runs either one, picks free
+ports, and waits until the node is healthy.
+
+A repo-root `.env` is read by `docker compose up` at the root and by
+`./start.sh`. When running an example with `-f` directly, compose looks for
+`.env` next to the file instead, so pass `--env-file .env` to use the root one.
 
 Configuration is layered, lowest first: built-in defaults, then the TOML file,
 then environment variables. Anything settable one way is settable the other,

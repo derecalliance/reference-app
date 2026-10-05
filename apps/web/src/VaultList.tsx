@@ -33,6 +33,12 @@ export interface VaultListProps {
   onRemove: (id: string) => void
 }
 
+/**
+ * The counts are a glance, not the job: on a phone they pushed the Open button
+ * off the right edge, so they give way first and the row keeps its action.
+ */
+const WIDE_SCREEN_CELL = { display: { xs: 'none', sm: 'table-cell' } } as const
+
 /** Every state in words, so none is carried by colour alone. */
 const STATE_LABEL: Record<VaultRunState, string> = {
   starting: 'Starting…',
@@ -111,9 +117,9 @@ export function VaultList({
               <TableRow>
                 <TableCell>Vault</TableCell>
                 <TableCell>Status</TableCell>
-                <TableCell align="right">Paired</TableCell>
-                <TableCell align="right">Bag</TableCell>
-                <TableCell align="right">Replicas</TableCell>
+                <TableCell align="right" sx={WIDE_SCREEN_CELL}>Paired</TableCell>
+                <TableCell align="right" sx={WIDE_SCREEN_CELL}>Bag</TableCell>
+                <TableCell align="right" sx={WIDE_SCREEN_CELL}>Replicas</TableCell>
                 <TableCell />
               </TableRow>
             </TableHead>
@@ -183,9 +189,11 @@ function VaultRow({ entry, label, onOpen, onClaim, onRetry, onRemove }: VaultRow
           </Typography>
         )}
       </TableCell>
-      <TableCell align="right">{entry.pairedCount}</TableCell>
-      <TableCell align="right">{entry.bagVersion === null ? '—' : `v${entry.bagVersion}`}</TableCell>
-      <TableCell align="right">{entry.replicaCount}</TableCell>
+      <TableCell align="right" sx={WIDE_SCREEN_CELL}>{entry.pairedCount}</TableCell>
+      <TableCell align="right" sx={WIDE_SCREEN_CELL}>
+        {entry.bagVersion === null ? '—' : `v${entry.bagVersion}`}
+      </TableCell>
+      <TableCell align="right" sx={WIDE_SCREEN_CELL}>{entry.replicaCount}</TableCell>
       <TableCell align="right">
         {action === 'open' && (
           <Button size="small" onClick={() => onOpen(entry.id)} aria-label={`Open ${label}`}>

@@ -1,0 +1,12 @@
+# `docker compose up` from the repo root: the DeRec reference app on SQLite, at
+# http://localhost:5000. The first run builds the image, which takes a few
+# minutes; later runs start in seconds.
+#
+# The service lives in examples/compose.sqlite.yaml, documented inline; the
+# PostgreSQL variant is examples/compose.postgres.yaml. ./start.sh runs either,
+# picks free ports, and waits until the node is healthy.
+
+name: derec
+
+include:
+  - examples/compose.sqlite.yaml

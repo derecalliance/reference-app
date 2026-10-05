@@ -10,6 +10,36 @@ design principles, [`AGENTS.md`](AGENTS.md) if you are an LLM or coding agent
 driving this over HTTP rather than through the UI, and
 [`CHANGELOG.md`](CHANGELOG.md) for what each release contains.
 
+## Quick start
+
+With Docker (Compose v2.24 or newer) and nothing else installed:
+
+```
+./start.sh
+```
+
+It builds the image from your checkout, starts the node, waits until it
+answers and prints the address — `http://localhost:5000`, or the next free port
+if 5000 is taken (on macOS the AirPlay Receiver usually is). The first build
+takes several minutes; later runs take seconds. Run it again whenever you like:
+it stops whatever it started before and starts it fresh, keeping your data.
+
+| | |
+| --- | --- |
+| `./start.sh --postgres` | PostgreSQL instead of SQLite |
+| `./start.sh --lan` | also reachable from phones and other machines on your network |
+| `./start.sh --fresh` | erase all stored data first — then use **Reset browser data** in the app, in each browser you used |
+| `./start.sh --port 8080` | a fixed port instead of the first free one |
+| `./start.sh --stop` | stop it |
+
+Plain Compose works too: `docker compose up` in the repo root runs the same
+SQLite node on `http://localhost:5000` (set `DEREC_HOST_PORT` to move it). The
+compose files are [`examples/compose.sqlite.yaml`](examples/compose.sqlite.yaml)
+and [`examples/compose.postgres.yaml`](examples/compose.postgres.yaml); see
+[In Docker](#in-docker) for the details, and
+[Reaching it from a phone](#reaching-it-from-a-phone-on-the-same-network) for
+the browser settings a phone needs.
+
 ## What's in the app
 
 The left navigation has four sections:
@@ -181,22 +211,29 @@ docker run -d --name derec -p 5000:5000 -p 50051:50051 \
 
 #### With compose
 
-[`examples/docker-compose.example.yaml`](examples/docker-compose.example.yaml)
-is the same thing as a compose file, and works on a fresh checkout. Its paths
-are relative to the repository root, so copy it there:
+[`./start.sh`](start.sh) is the shortest path (see [Quick start](#quick-start));
+these are the files it runs, and they work on their own:
 
 ```
-cp examples/docker-compose.example.yaml compose.yaml
-docker compose up -d
+docker compose up -d                                       # SQLite, from the repo root
+docker compose -f examples/compose.postgres.yaml up -d     # PostgreSQL
 ```
 
-Two things are optional: a `.env` at the repository root (copy
-[`examples/.env.example`](examples/.env.example)) for `DEREC_*` settings and the
-`LAN_IP` the compose file substitutes into `DEREC_BASE_URL`, and a config file
-mounted at `/etc/derec/config.toml` (copy
-[`examples/config.example.toml`](examples/config.example.toml) to
-`apps/backend/config.toml`). The comments in the compose file show where each
-goes. Both `compose.yaml` and `apps/backend/config.toml` are git-ignored.
+The root [`compose.yaml`](compose.yaml) includes
+[`examples/compose.sqlite.yaml`](examples/compose.sqlite.yaml);
+[`examples/compose.postgres.yaml`](examples/compose.postgres.yaml) adds a
+Postgres service the node waits on. Both build the image on first `up`, keep
+their data in a named volume (`derec-data`, `derec-pgdata`), and share the
+project name `derec`, so one replaces the other. `docker compose -p derec down`
+stops either; add `-v` to erase its data.
+
+Ports and addresses are variables, read from your shell or an optional
+repo-root `.env` (copy [`examples/.env.example`](examples/.env.example)):
+`DEREC_HOST_PORT` and `DEREC_HOST_GRPC_PORT` move the published ports *and* the
+ports the node advertises, together; `LAN_IP` sets the address peers are told.
+For a config file, copy [`examples/config.example.toml`](examples/config.example.toml)
+to `apps/backend/config.toml` and uncomment the mount in the compose file. Only
+`.env` and `apps/backend/config.toml` are git-ignored.
 
 #### State
 
@@ -423,8 +460,10 @@ to change here:
 
 1. Open `chrome://flags` on the phone.
 2. Find **Insecure origins treated as secure**.
-3. Add your address with the port — `http://192.168.0.28:5173` — and set the
-   dropdown to **Enabled**.
+3. Add your address with the port the phone opens — `http://192.168.0.28:5173`
+   for the dev server, or the Docker node's own, e.g. `http://192.168.0.28:5000`
+   (the address `./start.sh --lan` prints) — and set the dropdown to
+   **Enabled**.
 4. Relaunch Chrome when prompted.
 
 Scanning then works: the origin is a secure context, so the APIs above come
@@ -491,7 +530,7 @@ documented inline, nothing to look up:
 | --- | --- | --- |
 | `examples/config.example.toml` | `apps/backend/config.toml` | the TOML file |
 | `examples/.env.example` | `.env` | environment variables |
-| `examples/docker-compose.example.yaml` | `compose.yaml` | running it in Docker |
+| `examples/compose.sqlite.yaml`, `examples/compose.postgres.yaml` | run in place (see [With compose](#with-compose)) | running it in Docker |
 
 **Where the file is read from.** `DEREC_CONFIG_PATH` names it. Unset, the node
 reads its default path — `config.toml` in the working directory under

@@ -2680,6 +2680,10 @@ recovery-pairing-notice {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  /* The actor and route tables have more columns than a phone has width;
+     the section scrolls sideways rather than pushing the page past the edge. */
+  min-width: 0;
+  overflow-x: auto;
 }
 
 .inspect-grid {
@@ -2833,5 +2837,79 @@ recovery-pairing-notice {
   & ul {
     margin: 4px 0 0;
     padding-left: 18px;
+  }
+}
+
+/* ── Phones ────────────────────────────────────────────────────────────────── */
+
+@media (max-width: 640px) {
+  /* The vault's identity, then its address on a line of its own, then the
+     actions as an even grid. Right-aligned and wrapping, the four buttons
+     landed as a ragged 3 + 1 with the primary one stranded on its own. */
+  .owner-info-bar {
+    gap: 12px;
+    padding: 12px 16px;
+  }
+
+  .header-transport {
+    flex: 1 1 100%;
+  }
+
+  .header-uri {
+    flex: 1 1 auto;
+    max-width: none;
+    min-width: 0;
+  }
+
+  .header-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    width: 100%;
+    margin-left: 0;
+
+    button {
+      width: 100%;
+      padding: 8px 10px;
+    }
+  }
+
+  /* The page scrolls, not the panel, and the gutters shrink to the 16px the
+     rest of the phone layout uses. */
+  .tab-panel {
+    overflow: visible;
+    padding: 16px;
+  }
+
+  .channel-row {
+    padding: 10px 4px;
+  }
+
+  .detail-card {
+    padding: 14px;
+  }
+
+  .detail-card.collapsible .card-header.card-toggle {
+    padding: 14px;
+  }
+
+  .card-body {
+    padding: 14px 14px 14px;
+  }
+
+  /* The side panel's sections share its height on a desktop and scroll each on
+     its own. Stacked under the content on a phone there is no height to share,
+     so they were squeezed to whatever was left — the participant list cut its
+     last row to a sliver. Here they take their natural height and the page
+     scrolls. */
+  .side-panel,
+  .side-panel-section {
+    flex: none;
+    overflow: visible;
+  }
+
+  /* A recovery helper's name takes the line it needs and the channel id wraps
+     under it, instead of the name breaking mid-word to make room. */
+  .recovery-helper-row .card-title {
+    flex: 1 1 auto;
   }
 }

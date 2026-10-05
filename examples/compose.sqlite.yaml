@@ -1,0 +1,90 @@
+# DeRec reference app on SQLite — the default, and what `docker compose up` at
+# the repo root runs (the root `compose.yaml` includes this file).
+#
+# Run it in place, from the repo root:
+#
+#   docker compose -f examples/compose.sqlite.yaml up -d
+#
+# or let `./start.sh` do it, which also picks free ports and waits for the node
+# to be healthy. The first run builds the image (Rust and the web bundle, several
+# minutes); later runs reuse it.
+#
+# Paths below are relative to THIS file's directory, so they work however the
+# file is reached. Needs Docker Compose v2.24 or newer (`docker compose
+# version`).
+#
+# This is a development tool with no authentication. Publish it only on a
+# trusted machine or LAN.
+
+name: derec
+
+services:
+  node:
+    # Built from the checkout on first `up`; `--build` rebuilds after a pull.
+    # The tag names the SDK the image is compiled against — a different SDK is a
+    # different image, not a flag.
+    build:
+      context: ..
+      dockerfile: apps/backend/Dockerfile
+    image: derec/reference-app:0.0.6
+
+    # Optional bulk configuration: copy examples/.env.example to `.env` at the
+    # repo root. These variables go INTO the container and outrank the config
+    # file. Absent is fine.
+    env_file:
+      - path: ../.env
+        required: false
+
+    # Highest precedence — wins over `.env` and over the config file.
+    #
+    # Peers post back to DEREC_BASE_URL, so to pair from another device it must
+    # be this machine's LAN address: `LAN_IP=192.168.0.28 docker compose up`.
+    # Unset, it is localhost, which works for browsers on this machine only —
+    # not for other devices, and not for another container, whose localhost is
+    # its own.
+    #
+    # DEREC_HOST_PORT / DEREC_HOST_GRPC_PORT move the published ports, and the
+    # node is told the same numbers so the addresses it hands peers are the ones
+    # they can reach. One variable per port keeps the two from drifting apart.
+    environment:
+      DEREC_BASE_URL: "http://${LAN_IP:-localhost}"
+      DEREC_PUBLIC_PORT: "${DEREC_HOST_PORT:-5000}"
+      DEREC_PUBLIC_GRPC_PORT: "${DEREC_HOST_GRPC_PORT:-50051}"
+
+    # Host side on the left, container side on the right. Change the host side
+    # with the variables above, never the container side alone: that is where
+    # the node listens (port = 5000, grpc_port = 50051).
+    #
+    # On macOS 12+ the AirPlay Receiver already listens on 5000; if `up` fails
+    # with "port is already allocated", set DEREC_HOST_PORT=8080 (or use
+    # ./start.sh, which picks a free one).
+    ports:
+      - "${DEREC_HOST_PORT:-5000}:5000"           # HTTP API and UI
+      - "${DEREC_HOST_GRPC_PORT:-50051}:50051"    # gRPC transport
+
+    volumes:
+      # A NAMED volume, not a bind mount. SQLite's locking over bind-mounted
+      # host filesystems is unreliable on macOS and Windows, where the mount
+      # crosses gRPC-FUSE or virtiofs, and it presents as intermittent
+      # "database is locked" rather than as anything naming the mount.
+      #
+      # This is what keeps data across `docker compose down`; `down -v` (or
+      # `./start.sh --fresh`) erases it.
+      - derec-data:/var/lib/derec
+
+      # Optional config file. The image reads /etc/derec/config.toml with no
+      # variable to set. Create the host file FIRST, then uncomment:
+      #
+      #   cp examples/config.example.toml apps/backend/config.toml
+      #
+      # Mounting a host file that does not exist makes Docker create a
+      # *directory* in its place, and the node then refuses to boot.
+      # - ../apps/backend/config.toml:/etc/derec/config.toml:ro
+
+    # The image's own HEALTHCHECK applies (`derec-backend healthcheck`, which
+    # reads the port from the same configuration the server does).
+
+    restart: unless-stopped
+
+volumes:
+  derec-data:

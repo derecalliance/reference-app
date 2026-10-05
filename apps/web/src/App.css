@@ -67,6 +67,13 @@ main.shell-host {
   justify-content: flex-start;
   padding: 0;
   overflow: hidden;
+
+  /* On a phone the document scrolls (see `#root`), so the host grows with its
+     content instead of clipping it. */
+  @media (max-width: 640px) {
+    flex: 1 0 auto;
+    overflow: visible;
+  }
 }
 
 /* Screens that were centered by `main` before the shell existed — the setup
@@ -82,7 +89,16 @@ main.shell-host {
   justify-content: safe center;
   padding: 40px 24px;
   min-height: 0;
+  /* A flex item will not shrink below its content without this, so the vault
+     list's table set the width of the whole screen and pushed it past a
+     phone's edge instead of scrolling inside its own container. */
+  min-width: 0;
   overflow: auto;
+
+  @media (max-width: 640px) {
+    padding: 24px 16px;
+    overflow: visible;
+  }
 }
 
 
@@ -224,6 +240,10 @@ footer {
   height: 56px;
   border-top: 1px solid var(--border);
   flex-shrink: 0;
+
+  @media (max-width: 640px) {
+    height: 48px;
+  }
 
   a {
     display: flex;

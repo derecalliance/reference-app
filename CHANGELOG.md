@@ -51,6 +51,10 @@ First release. Built against DeRec SDK 0.0.6.
   current address.
 - **Docker image** serving the UI and API from one origin, with a data volume,
   a non-root user, a healthcheck and graceful shutdown on `docker stop`.
+- **One-command start.** `./start.sh` builds and runs the node, picks free
+  ports, waits until it answers and is safe to rerun (`--postgres`, `--lan`,
+  `--fresh`, `--port`, `--stop`); `docker compose up` at the repo root runs the
+  same SQLite node. Compose examples for SQLite and PostgreSQL in `examples/`.
   Separate public ports (`DEREC_PUBLIC_PORT`, `DEREC_PUBLIC_GRPC_PORT`) for
   nodes published on other host ports.
 - **Configuration** from built-in defaults, an optional TOML file and
