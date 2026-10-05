@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -46,6 +49,7 @@ function view(overrides: Partial<ReplicaView> = {}): ReplicaView {
     direction: 'replica_source',
     peerReplicaId: null,
     helperActorId: null,
+    refused: false,
     ...overrides,
   }
 }
@@ -305,5 +309,45 @@ describe('a member known only through the group', () => {
 
     expect(text()).toMatch(/Verified/)
     expect(text()).toMatch(/Forget/)
+  })
+})
+
+describe('what the row says after the fixes for stale wording', () => {
+  it('shows a destination that missed a version as Behind, not current', () => {
+    render({
+      view: view({ status: 'paired', lastSync: { version: 2, syncedAt: Date.now() } }),
+      vaultVersion: 3,
+    })
+    expect(text()).toContain('Behind')
+    expect(text()).toContain('last mirrored v2')
+    expect(text()).toContain('this vault is at v3')
+  })
+
+  it('reads current when the acknowledgement matches the vault version', () => {
+    render({
+      view: view({ status: 'paired', lastSync: { version: 3, syncedAt: Date.now() } }),
+      vaultVersion: 3,
+    })
+    expect(text()).toContain('Verified')
+    expect(text()).toContain('Mirrored v3')
+    expect(text()).not.toContain('Behind')
+  })
+
+  it('records a refused comparison on the row rather than an unanswered prompt', () => {
+    render({ view: view({ refused: true }) })
+    expect(text()).toContain('Codes didn’t match')
+    expect(text()).toContain('You reported that the codes did not match')
+    expect(text()).not.toContain('Not confirmed yet')
+  })
+
+  it('stops calling an adopted vault an offer', () => {
+    render({
+      peerRole: 'replica_source',
+      view: view({ status: 'paired', direction: 'replica_destination' }),
+      holdsPeerVault: true,
+      vaultVersion: 4,
+    })
+    expect(text()).toContain('This vault is Laptop’s, at v4')
+    expect(text()).not.toContain('is offered')
   })
 })

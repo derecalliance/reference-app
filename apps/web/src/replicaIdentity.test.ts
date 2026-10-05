@@ -1,5 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { beforeEach, describe, expect, it } from 'vitest'
-import { getOrCreateReplicaId, resetReplicaId } from './replicaIdentity'
+import { getOrCreateReplicaId, readReplicaId, resetReplicaId } from './replicaIdentity'
 import { clearNamespace } from './stores'
 
 const OWNER = 'owner-1'
@@ -55,5 +58,19 @@ describe('replicaIdentity', () => {
     resetReplicaId('owner-a')
 
     expect(getOrCreateReplicaId('owner-b')).toBe(other)
+  })
+})
+
+describe('readReplicaId', () => {
+  beforeEach(() => localStorage.clear())
+
+  it('reads the stored id and never mints one', () => {
+    // Rendering uses this. A minting read in render wrote an id back into
+    // storage a browser-data reset had just cleared.
+    expect(readReplicaId('v1')).toBeNull()
+    expect(localStorage.length).toBe(0)
+
+    const minted = getOrCreateReplicaId('v1')
+    expect(readReplicaId('v1')).toBe(minted)
   })
 })

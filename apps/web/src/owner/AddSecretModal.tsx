@@ -1,8 +1,15 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { SecretDataField } from './VerifySharesModal'
 import { useState } from 'react'
 import { errorText } from '../errorText'
+import { ModalFrame } from '../ModalFrame'
 import { ModalCloseButton } from './primitives'
+import { ProtectRoundProgress } from './ProtectRoundProgress'
+import { roundProgress } from './roundProgress'
 import { isShareTarget } from '../ownerPairing'
+import { bagBytes, bagSizeProblem, formatBytes, MAX_BAG_SIZE_LABEL } from './secretLimits'
 import type { PairedParticipant, SecretBag } from '../types'
 
 type AddSecretStatus =
@@ -30,15 +37,26 @@ export function AddSecretModal({
   const [form, setForm] = useState({ name: '', data: '' })
   const [status, setStatus] = useState<AddSecretStatus>({ kind: 'idle' })
 
+  // Checked here for immediate feedback, and again by the engine before it
+  // dispatches anything: the shares carry the whole bag, so the limit is on
+  // what the bag would hold with this secret in it.
+  const existingSecrets = secretBag?.currentVersion.secrets ?? []
+  const draft = { name: form.name.trim(), data: form.data.trim() }
+  const sizeProblem = draft.data ? bagSizeProblem([...existingSecrets, draft]) : null
+  const usedBytes = bagBytes(existingSecrets)
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!form.name.trim() || !form.data.trim()) return
+    if (!draft.name || !draft.data || sizeProblem) return
 
     setStatus({ kind: 'sending' })
     try {
-      const version = await onAddSecret(form.name.trim(), form.data.trim())
+      const version = await onAddSecret(draft.name, draft.data)
       if (version === null) {
-        setStatus({ kind: 'error', message: 'The round was not dispatched — no participants were reachable.' })
+        setStatus({
+          kind: 'error',
+          message: 'No round was started, so the bag is unchanged. Check the Console for the reason, then try again.',
+        })
         return
       }
       // Deliberately *not* `bag.version + 1`. Version progression is anchored
@@ -54,164 +72,108 @@ export function AddSecretModal({
   }
 
   const confirming = status.kind === 'confirming' ? status : null
-  const confirmationProgress = confirming
-    ? confirming.participantIds.map(id => {
-        const participant = participants.find(h => h.id === id)
-        const share = participant?.secretShares.find(s => s.version === confirming.version)
-        return {
-          id,
-          name: participant?.name ?? id,
-          confirmed: share?.status === 'confirmed',
-          rejected: share?.status === 'rejected',
-        }
-      })
-    : []
-  const allResolved = confirming !== null && confirmationProgress.every(h => h.confirmed || h.rejected)
-  const confirmedCount = confirmationProgress.filter(h => h.confirmed).length
-  const rejectedCount = confirmationProgress.filter(h => h.rejected).length
-  const thresholdMet = allResolved && confirmedCount >= threshold
+  const progress = confirming
+    ? roundProgress(participants, confirming.participantIds, confirming.version)
+    : null
 
-  const canSubmit = form.name.trim().length > 0 && form.data.trim().length > 0
-  const isBlocking = status.kind === 'sending' || (status.kind === 'confirming' && !allResolved)
+  const canSubmit = draft.name.length > 0 && draft.data.length > 0 && sizeProblem === null
+  const isBlocking = status.kind === 'sending' || (progress !== null && !progress.allResolved)
   const isFirstSecret = !secretBag
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Add secret">
-      <div className="modal">
-        <div className="modal-header">
-          <h2 className="modal-title">{isFirstSecret ? 'Protect Secret' : 'Add Secret'}</h2>
-          {!isBlocking && <ModalCloseButton onClose={onClose} />}
-        </div>
-
-        {confirming ? (
-          <div className="modal-body">
-            <div className="verify-progress-bar-section">
-              <div className="share-progress-bar-track">
-                <div
-                  className="share-progress-bar-fill"
-                  style={{ width: `${confirmationProgress.length > 0 ? Math.round((confirmationProgress.filter(h => h.confirmed || h.rejected).length / confirmationProgress.length) * 100) : 0}%` }}
-                  role="progressbar"
-                  aria-valuenow={confirmationProgress.filter(h => h.confirmed || h.rejected).length}
-                  aria-valuemin={0}
-                  aria-valuemax={confirmationProgress.length}
-                />
-              </div>
-              <p className="share-progress-summary">
-                {confirmedCount} of {confirmationProgress.length} confirmed
-                {rejectedCount > 0 && ` · ${rejectedCount} rejected`}
-                {!allResolved && ` (need ${threshold})`}
-              </p>
-            </div>
-
-            <ul className="share-progress-list" role="list">
-              {confirmationProgress.map(h => (
-                <li
-                  key={h.id}
-                  className={`share-progress-item ${h.confirmed ? 'share-progress-item--confirmed' : ''} ${h.rejected ? 'share-progress-item--failed' : ''}`}
-                >
-                  <span className="verify-progress-icon">
-                    {h.confirmed
-                      ? <span className="verify-progress-icon--done" aria-label="Confirmed">&#10003;</span>
-                      : h.rejected
-                        ? <span className="verify-progress-icon--failed" aria-label="Rejected">&#10007;</span>
-                        : <span className="verify-spinner" role="status" aria-label="Waiting for confirmation" />
-                    }
-                  </span>
-                  <span className="share-progress-item-name">{h.name}</span>
-                  <span className={`share-progress-item-status ${h.confirmed ? 'status--verified' : ''} ${h.rejected ? 'status--failed' : ''}`}>
-                    {h.confirmed ? 'Confirmed' : h.rejected ? 'Rejected' : 'Waiting\u2026'}
-                  </span>
-                </li>
-              ))}
-            </ul>
-
-            {allResolved && !thresholdMet && (
-              <div className="threshold-failure-banner" role="alert">
-                <strong>Secret protection failed.</strong>{' '}
-                Only {confirmedCount} of the required {threshold} helpers confirmed.
-                The secret bag has been rolled back.
-              </div>
-            )}
-
-            {allResolved && thresholdMet && rejectedCount > 0 && (
-              <div className="threshold-warning-banner" role="status">
-                Secret protected successfully, but {rejectedCount} helper{rejectedCount > 1 ? 's' : ''} failed.
-                The secret is recoverable with the {confirmedCount} confirmed helper{confirmedCount > 1 ? 's' : ''}.
-              </div>
-            )}
-
-            <div className="modal-actions">
-              <button
-                type="button"
-                className={allResolved ? 'primary' : 'secondary'}
-                onClick={onClose}
-              >
-                {allResolved ? 'Done' : 'Close'}
-              </button>
-            </div>
-          </div>
-        ) : (
-          <form className="modal-body" onSubmit={handleSubmit}>
-            {isFirstSecret && (
-              <p className="modal-description">
-                This will create the secret bag and distribute it to all paired participants.
-              </p>
-            )}
-
-            <div className="form-field">
-              <label className="form-label" htmlFor="ps-name">Name</label>
-              <input
-                id="ps-name"
-                className="full-input"
-                type="text"
-                placeholder="e.g. Google Password"
-                value={form.name}
-                onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-                disabled={status.kind === 'sending'}
-                autoFocus
-              />
-            </div>
-
-            <div className="form-field">
-              <label className="form-label" htmlFor="ps-data">Secret Data</label>
-              <SecretDataField
-                value={form.data}
-                onChange={data => setForm(f => ({ ...f, data }))}
-                disabled={status.kind === 'sending'}
-              />
-            </div>
-
-            <div className="form-field">
-              <span className="form-label">Participants ({pairedParticipants.length} paired)</span>
-              {pairedParticipants.length === 0 ? (
-                <p className="empty-hint">No participants paired yet.</p>
-              ) : (
-                <ul className="participant-check-list" role="list">
-                  {pairedParticipants.map(h => (
-                    <li key={h.id} className="participant-check-item">
-                      <span className={`participant-dot ${h.connectionStatus}`} aria-hidden="true" />
-                      <span>{h.name}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-
-            {status.kind === 'error' && (
-              <p className="field-error">{status.message}</p>
-            )}
-
-            <div className="modal-actions">
-              <button type="button" className="secondary" onClick={onClose} disabled={status.kind === 'sending'}>
-                Cancel
-              </button>
-              <button type="submit" className="primary" disabled={!canSubmit || status.kind === 'sending'}>
-                {status.kind === 'sending' ? 'Sending…' : isFirstSecret ? 'Protect' : 'Add Secret'}
-              </button>
-            </div>
-          </form>
-        )}
+    <ModalFrame
+      overlayClassName="modal-overlay"
+      className="modal"
+      label="Add secret"
+      // The same rule as the close button: not while the round is being sent or
+      // is still waiting on participants it was sent to.
+      onEscape={isBlocking ? undefined : onClose}
+    >
+      <div className="modal-header">
+        <h2 className="modal-title">Add Secret</h2>
+        {!isBlocking && <ModalCloseButton onClose={onClose} />}
       </div>
-    </div>
+
+      {progress && confirming ? (
+        <ProtectRoundProgress
+          progress={progress}
+          threshold={threshold}
+          version={confirming.version}
+          failureHeading="Secret protection failed."
+          onClose={onClose}
+        />
+      ) : (
+        <form className="modal-body" onSubmit={handleSubmit}>
+          {isFirstSecret && (
+            <p className="modal-description">
+              This will create the secret bag and distribute it to all paired participants.
+            </p>
+          )}
+
+          <div className="form-field">
+            <label className="form-label" htmlFor="ps-name">Name</label>
+            <input
+              id="ps-name"
+              className="full-input"
+              type="text"
+              placeholder="e.g. Google Password"
+              value={form.name}
+              onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+              disabled={status.kind === 'sending'}
+              autoFocus
+            />
+          </div>
+
+          <div className="form-field">
+            <label className="form-label" htmlFor="ps-data">Secret Data</label>
+            <SecretDataField
+              value={form.data}
+              onChange={data => setForm(f => ({ ...f, data }))}
+              disabled={status.kind === 'sending'}
+              describedBy={sizeProblem ? 'ps-data-error' : 'ps-data-help'}
+              invalid={sizeProblem !== null}
+            />
+            {sizeProblem ? (
+              <p className="field-error" id="ps-data-error" role="alert">{sizeProblem}</p>
+            ) : (
+              <p className="empty-hint" id="ps-data-help">
+                Up to {MAX_BAG_SIZE_LABEL} across all of this vault’s secrets
+                {usedBytes > 0 ? ` (${formatBytes(usedBytes)} used)` : ''}. Every helper’s share
+                and every kept version is stored in this browser, whose storage is limited.
+              </p>
+            )}
+          </div>
+
+          <div className="form-field">
+            <span className="form-label">Participants ({pairedParticipants.length} paired)</span>
+            {pairedParticipants.length === 0 ? (
+              <p className="empty-hint">No participants paired yet.</p>
+            ) : (
+              <ul className="participant-check-list" role="list">
+                {pairedParticipants.map(h => (
+                  <li key={h.id} className="participant-check-item">
+                    <span className={`participant-dot ${h.connectionStatus}`} aria-hidden="true" />
+                    <span>{h.name}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          {status.kind === 'error' && (
+            <p className="field-error">{status.message}</p>
+          )}
+
+          <div className="modal-actions">
+            <button type="button" className="secondary" onClick={onClose} disabled={status.kind === 'sending'}>
+              Cancel
+            </button>
+            <button type="submit" className="primary" disabled={!canSubmit || status.kind === 'sending'}>
+              {status.kind === 'sending' ? 'Sending…' : 'Add Secret'}
+            </button>
+          </div>
+        </form>
+      )}
+    </ModalFrame>
   )
 }

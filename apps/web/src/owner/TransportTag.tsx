@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { transportLabel } from '../transportLabel'
 import type { PairedParticipant, Transport } from '../types'
 
@@ -18,14 +21,17 @@ import type { PairedParticipant, Transport } from '../types'
  */
 export function TransportTag({ h }: { h: PairedParticipant }) {
   const label = transportLabel(h.transport, h.transports)
-  const uris = h.transports?.length
-    ? h.transports.map(t => t.uri).join(', ')
-    : h.transport.uri
+  const uris = (h.transports?.length ? h.transports : [h.transport])
+    .map(t => t.uri)
+    .filter(uri => uri !== '')
+    .join(', ')
 
   return (
     <span
       className={`transport-tag transport-tag--${label.toLowerCase().replace('+', '-')}`}
-      title={`Advertises ${uris}`}
+      // Never "Advertises " with nothing after it: a row recorded before its
+      // endpoints were known says so instead.
+      title={uris ? `Advertises ${uris}` : 'Endpoints not known yet'}
     >
       {label}
     </span>

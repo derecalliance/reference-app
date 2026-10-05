@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! Shared fixtures for the multi-endpoint peer tests in `multi_endpoint.rs`.
 //!
 //! Built on the same pattern `tests/helper_auto_confirm.rs` uses — a real
@@ -146,7 +149,7 @@ async fn spawn_helper(
         .register(actor.clone(), test_settings())
         .await
         .expect("the registry is writable");
-    spawn_provisioned(state, &actor, &test_settings());
+    spawn_provisioned(state, &actor, &test_settings()).expect("the helper starts");
 
     let addr = match state
         .actor_inboxes
@@ -155,7 +158,7 @@ async fn spawn_helper(
         .value()
     {
         ActorInbox::Provisioned(addr) => addr.clone(),
-        ActorInbox::Browser(_) => panic!("this actor must be backend-managed"),
+        ActorInbox::Browser => panic!("this actor must be backend-managed"),
     };
 
     (actor.id, addr)
@@ -193,6 +196,7 @@ async fn register_owner(state: &Arc<AppState>) -> Owner {
         http_client: state.http_client.clone(),
         pool: state.pool.clone(),
         actor_id: actor.id,
+        local_node: None,
     };
 
     Owner { id: actor.id, secret_id, protocol: build_protocol(&config).expect("the owner's protocol builds") }
@@ -201,12 +205,8 @@ async fn register_owner(state: &Arc<AppState>) -> Owner {
 /// Drain the owner's mailbox into its protocol, as the front end's poll loop
 /// does. A no-op when the mailbox is empty.
 async fn pump(state: &AppState, owner: &mut Owner) {
-    let Some(receiver) = state.browser_receivers.get(&owner.id).map(|entry| entry.value().clone()) else {
-        return;
-    };
-
-    let mut receiver = receiver.lock().await;
-    while let Ok(bytes) = receiver.try_recv() {
+    let messages = state.mailboxes.drain(&owner.id).await.expect("the mailbox is readable");
+    for bytes in messages {
         owner.protocol.process(&bytes).await.expect("the owner processes the helper's reply");
     }
 }
@@ -270,6 +270,7 @@ pub async fn owner_paired_with(mode: TransportMode) -> Rig {
             contact_mode: derec_proto::ContactMode::NoKeys,
             nonce: None,
             replica_for_owner_secret: None,
+            attempt: 0,
         })
         .await
         .expect("the helper actor is alive")

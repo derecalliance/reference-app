@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 /**
  * Choosing which provisioned participants a device auto-pairs with on setup.
  *

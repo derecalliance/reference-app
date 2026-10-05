@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! `DeRecSecretStore` over SQL.
 //!
 //! Keyed by `(secret_id, channel_id, kind)`. `save` takes no `kind` — it is
@@ -92,6 +95,65 @@ impl SqlSecretStore {
             _ => Ok(None),
         }
     }
+
+    /// Contacts this actor minted at or after `minted_since` (Unix seconds)
+    /// that no peer has paired against yet, across every instance it runs.
+    ///
+    /// Outside the trait because no protocol call needs it; recovery does. A
+    /// minted contact exists only as a pairing secret or pairing contact here —
+    /// `create_contact` writes nothing to the channel store — and the SDK
+    /// deletes that row once the pairing completes. So a surviving row is a
+    /// contact still waiting for its first message, and the instance and
+    /// channel it names are what that message must be routed to.
+    pub async fn unpaired_contacts(
+        &self,
+        minted_since: i64,
+    ) -> Result<Vec<UnpairedContact>, SecretStoreError> {
+        let rows: Vec<(String, String, i64)> = sqlx::query_as(
+            "SELECT secret_id, channel_id, created_at FROM secrets \
+             WHERE actor_id = $1 AND kind IN ($2, $3) AND created_at >= $4",
+        )
+        .bind(&self.actor_id)
+        .bind(kind_text(SecretKind::PairingSecret))
+        .bind(kind_text(SecretKind::PairingContact))
+        .bind(minted_since)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+
+        let mut contacts = Vec::with_capacity(rows.len());
+        for (secret_id, channel_id, created_at) in rows {
+            contacts.push(UnpairedContact {
+                secret_id: super::text_to_id(&secret_id).map_err(backend)?,
+                channel_id: super::text_to_id(&channel_id).map_err(backend)?,
+                minted_at: created_at,
+            });
+        }
+        // A contact can hold both kinds of row on one channel; one route each.
+        contacts.sort_by_key(|c| (c.secret_id, c.channel_id));
+        contacts.dedup_by_key(|c| (c.secret_id, c.channel_id));
+        Ok(contacts)
+    }
+}
+
+/// A contact minted and not yet paired against; see
+/// [`SqlSecretStore::unpaired_contacts`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnpairedContact {
+    /// The instance that minted it.
+    pub secret_id: u64,
+    /// The channel its peer's first message will arrive on.
+    pub channel_id: u64,
+    /// Unix seconds.
+    pub minted_at: i64,
+}
+
+/// The current time in Unix seconds, as the `created_at` column stores it.
+pub fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
 }
 
 impl DeRecSecretStore for SqlSecretStore {
@@ -199,7 +261,7 @@ impl DeRecSecretStore for SqlSecretStore {
         Box::pin(async move {
             let json = serde_json::to_string(&value).map_err(backend)?;
 
-            let mut tx = pool.begin().await.map_err(backend)?;
+            let mut tx = crate::db::begin_write(&pool).await.map_err(backend)?;
 
             sqlx::query(
                 "DELETE FROM secrets \
@@ -213,15 +275,18 @@ impl DeRecSecretStore for SqlSecretStore {
             .await
             .map_err(backend)?;
 
+            // `created_at` is what lets a restart tell a contact still inside
+            // its lifetime from an expired one; see `unpaired_contacts`.
             sqlx::query(
-                "INSERT INTO secrets (secret_id, channel_id, kind, value, actor_id) \
-                 VALUES ($1, $2, $3, $4, $5)",
+                "INSERT INTO secrets (secret_id, channel_id, kind, value, actor_id, created_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6)",
             )
             .bind(&secret)
             .bind(&channel)
             .bind(kind)
             .bind(&json)
             .bind(&actor)
+            .bind(now_secs())
             .execute(&mut *tx)
             .await
             .map_err(backend)?;

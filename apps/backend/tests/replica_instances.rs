@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! One actor holding an own instance plus a replica instance is what removes
 //! the need for a separate replica actor kind.
 //!
@@ -33,6 +36,7 @@ fn config(secret_id: u64, pool: sqlx::AnyPool, actor_id: uuid::Uuid) -> Protocol
         http_client: reqwest::Client::new(),
         pool,
         actor_id,
+        local_node: None,
     }
 }
 
@@ -115,6 +119,7 @@ async fn a_contact_is_minted_from_the_selected_replica_instance() {
         contact_mode: derec_proto::ContactMode::InlineKeys,
         nonce: None,
         replica_for_owner_secret,
+        attempt: 0,
     };
 
     let before = addr
@@ -165,6 +170,7 @@ async fn a_minted_contacts_channel_routes_back_to_the_instance_that_minted_it() 
         contact_mode: derec_proto::ContactMode::InlineKeys,
         nonce: None,
         replica_for_owner_secret,
+        attempt: 0,
     };
 
     let own_contact = addr

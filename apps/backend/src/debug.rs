@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! Server-side observability, for humans and for agents.
 //!
 //! This app is a debugging tool. Everything it knows should be reachable
@@ -56,6 +59,12 @@ pub enum Carrier {
     /// A browser owner's message the backend dialled on its behalf, because a
     /// browser cannot speak gRPC itself.
     GrpcViaRelay,
+    /// A browser owner's message the backend posted over HTTP on its behalf.
+    ///
+    /// Rare — a browser can post HTTP itself — but tagged apart from `Http`
+    /// all the same: from the log alone, a relayed message and this node's
+    /// own traffic must never look the same.
+    HttpViaRelay,
 }
 
 /// What happened.

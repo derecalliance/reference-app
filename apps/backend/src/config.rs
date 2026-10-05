@@ -1,15 +1,31 @@
-//! Operator-supplied defaults for the front end.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
+//! How this node is configured: a TOML file underneath `DEREC_*` environment
+//! variables, underneath nothing but the built-in defaults.
 //!
 //! The app ships as a Docker image, so a developer who wants different starting
 //! values should not have to edit code or retype them in the setup wizard on
-//! every run. The server reads a TOML file once at boot and serves it from
-//! `GET /config`; the wizard prefills from it and the user can still override
-//! any field before setting up.
+//! every run. The server reads the file once at boot, merges the environment
+//! over it, validates the result, and prints where every value came from.
 //!
-//! These are **defaults only**. The backend does not enforce them: protocol
-//! settings travel on each provisioning request, so the values a node actually
-//! runs with are whatever the front end sent.
+//! Two tables, with different weight:
+//!
+//! - `[server]` is how this node runs — addresses, ports, storage. Enforced.
+//! - `[defaults]` is mostly the setup wizard's starting values, served from
+//!   `GET /config`. Those are defaults only: protocol settings travel on each
+//!   provisioning request, so the values a vault actually runs with are
+//!   whatever the front end sent. Three keys are the exception and are
+//!   enforced by this process — `grpc_enabled` and `grpc_port` decide whether
+//!   and where the gRPC listener runs, and `grpc_relay_enabled` decides whether
+//!   the backend dials gRPC on a browser's behalf.
+//!
+//! Precedence, lowest first: built-in defaults < the file < environment
+//! variables. The image's own values (static assets, database path, config
+//! path) are *built-in defaults* compiled into its binary rather than
+//! environment presets, so a mounted file can still change them.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use figment::{
@@ -22,19 +38,85 @@ use serde::{Deserialize, Serialize};
 use crate::models::{AuthenticationMethod, UnpairAck};
 
 /// Where to look for the config file when `DEREC_CONFIG_PATH` is unset.
-const DEFAULT_CONFIG_PATH: &str = "config.toml";
+///
+/// `config.toml` in the working directory for a `cargo run`. The image builds
+/// with `DEREC_BUILTIN_CONFIG_PATH=/etc/derec/config.toml`, so a file mounted
+/// there is read with no variable to set. A compile-time value rather than an
+/// `ENV` in the image: an environment preset would outrank the file, which is
+/// exactly the precedence inversion this module exists to avoid.
+const DEFAULT_CONFIG_PATH: &str = match option_env!("DEREC_BUILTIN_CONFIG_PATH") {
+    Some(path) => path,
+    None => "config.toml",
+};
 
-/// Environment variable naming the config file. A Docker deployment mounts a
-/// file and points this at it.
+/// The built-in `static_dir`. Empty — no UI — for a `cargo run` beside Vite;
+/// the image compiles in `/app/static` via `DEREC_BUILTIN_STATIC_DIR`, for the
+/// same reason as [`DEFAULT_CONFIG_PATH`].
+const DEFAULT_STATIC_DIR: &str = match option_env!("DEREC_BUILTIN_STATIC_DIR") {
+    Some(dir) => dir,
+    None => "",
+};
+
+/// Environment variable naming the config file.
 const CONFIG_PATH_ENV: &str = "DEREC_CONFIG_PATH";
 
 /// Prefix every configuration variable carries.
 const ENV_PREFIX: &str = "DEREC_";
 
-/// `DEREC_*` variables that are not configuration keys.
-const RESERVED_ENV: &[&str] = &[CONFIG_PATH_ENV];
+/// `DEREC_*` variables that are not configuration keys, so they are neither
+/// read as settings nor warned about as unknown.
+///
+/// `DEREC_DATA_DIR` belongs to the image's entrypoint: it names the directory
+/// the entrypoint hands to the runtime user before dropping root. The server
+/// itself never reads it.
+const RESERVED_ENV: &[&str] = &[CONFIG_PATH_ENV, "DEREC_DATA_DIR"];
 
-/// Variable name → dotted path in the config tree.
+/// The name the environment provider reports in figment metadata, which is how
+/// an extraction error is traced back to a variable rather than to the file.
+const ENV_PROVIDER_NAME: &str = "environment";
+
+/// The shape a setting's value must take, so an environment string is parsed
+/// by what the key *is* rather than by what the text looks like.
+///
+/// Guessing from the text is what made `DEREC_STATIC_DIR=2024` arrive as a
+/// number and `DEREC_BASE_URL=true` as a boolean, both then rejected by serde
+/// with an error about types the developer never chose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Text,
+    Bool,
+    /// An unsigned integer no larger than `max`.
+    Uint { max: u64 },
+}
+
+const U8: Kind = Kind::Uint {
+    max: u8::MAX as u64,
+};
+const U16: Kind = Kind::Uint {
+    max: u16::MAX as u64,
+};
+const U32: Kind = Kind::Uint {
+    max: u32::MAX as u64,
+};
+
+/// One setting: the variable that sets it, where it lives in the file, and the
+/// shape its value takes.
+#[derive(Debug)]
+struct EnvKey {
+    variable: &'static str,
+    path: &'static str,
+    kind: Kind,
+}
+
+const fn key(variable: &'static str, path: &'static str, kind: Kind) -> EnvKey {
+    EnvKey {
+        variable,
+        path,
+        kind,
+    }
+}
+
+/// Every setting, in the order the boot banner lists them.
 ///
 /// Full names, not suffixes: [`Source::Env`] carries one of these straight into
 /// the boot banner and into `/debug/config`, and a `&'static str` cannot be
@@ -44,50 +126,90 @@ const RESERVED_ENV: &[&str] = &[CONFIG_PATH_ENV];
 /// compose file reads as `DEREC_PARTICIPANT_COUNT` rather than
 /// `DEREC_DEFAULTS__PARTICIPANT_COUNT`. Keys are unique across both tables,
 /// which `the_env_namespace_has_no_collisions` enforces.
-const ENV_KEYS: &[(&str, &str)] = &[
-    ("DEREC_BASE_URL", "server.base_url"),
-    ("DEREC_PORT", "server.port"),
-    ("DEREC_DATABASE_URL", "server.database_url"),
-    ("DEREC_STATIC_DIR", "server.static_dir"),
-    ("DEREC_PARTICIPANT_COUNT", "defaults.participant_count"),
-    ("DEREC_PRE_PAIRED_COUNT", "defaults.pre_paired_count"),
-    ("DEREC_MIN_PARTICIPANTS", "defaults.min_participants"),
-    (
+const ENV_KEYS: &[EnvKey] = &[
+    key("DEREC_BASE_URL", "server.base_url", Kind::Text),
+    key("DEREC_PORT", "server.port", U16),
+    key("DEREC_DATABASE_URL", "server.database_url", Kind::Text),
+    key("DEREC_STATIC_DIR", "server.static_dir", Kind::Text),
+    key("DEREC_PUBLIC_PORT", "server.public_port", U16),
+    key("DEREC_PUBLIC_GRPC_PORT", "server.public_grpc_port", U16),
+    key(
+        "DEREC_RELAY_ALLOWED_HOSTS",
+        "server.relay_allowed_hosts",
+        Kind::Text,
+    ),
+    key("DEREC_PARTICIPANT_COUNT", "defaults.participant_count", U8),
+    key("DEREC_PRE_PAIRED_COUNT", "defaults.pre_paired_count", U8),
+    key("DEREC_MIN_PARTICIPANTS", "defaults.min_participants", U8),
+    key(
         "DEREC_RECOMMENDED_PARTICIPANTS",
         "defaults.recommended_participants",
+        U8,
     ),
-    (
+    key(
         "DEREC_PROTOCOL_TIMEOUT_SECS",
         "defaults.protocol_timeout_secs",
+        U32,
     ),
-    (
+    key(
         "DEREC_AUTHENTICATION_METHOD",
         "defaults.authentication_method",
+        Kind::Text,
     ),
-    ("DEREC_UNPAIR_ACK", "defaults.unpair_ack"),
-    (
+    key("DEREC_UNPAIR_ACK", "defaults.unpair_ack", Kind::Text),
+    key(
         "DEREC_AUTO_ACCEPT_UNPAIR_REQUESTS",
         "defaults.auto_accept_unpair_requests",
+        Kind::Bool,
     ),
-    ("DEREC_GRPC_ENABLED", "defaults.grpc_enabled"),
-    ("DEREC_GRPC_PORT", "defaults.grpc_port"),
-    ("DEREC_GRPC_RELAY_ENABLED", "defaults.grpc_relay_enabled"),
-    (
+    key(
+        "DEREC_AUTO_ACCEPT_STORE_SHARE_REQUESTS",
+        "defaults.auto_accept_store_share_requests",
+        Kind::Bool,
+    ),
+    key(
+        "DEREC_AUTO_ACCEPT_VERIFY_SHARE_REQUESTS",
+        "defaults.auto_accept_verify_share_requests",
+        Kind::Bool,
+    ),
+    key("DEREC_GRPC_ENABLED", "defaults.grpc_enabled", Kind::Bool),
+    key("DEREC_GRPC_PORT", "defaults.grpc_port", U16),
+    key(
+        "DEREC_GRPC_RELAY_ENABLED",
+        "defaults.grpc_relay_enabled",
+        Kind::Bool,
+    ),
+    key(
         "DEREC_HELPER_TRANSPORTS_HTTP",
         "defaults.helper_transports.http",
+        U8,
     ),
-    (
+    key(
         "DEREC_HELPER_TRANSPORTS_GRPC",
         "defaults.helper_transports.grpc",
+        U8,
     ),
-    (
+    key(
         "DEREC_HELPER_TRANSPORTS_BOTH",
         "defaults.helper_transports.both",
+        U8,
     ),
 ];
 
+/// The three keys of the transport breakdown, named together by every check
+/// that involves its sum.
+const HELPER_TRANSPORTS: [&str; 3] = [
+    "defaults.helper_transports.http",
+    "defaults.helper_transports.grpc",
+    "defaults.helper_transports.both",
+];
+
 /// Unprefixed names this app used to read, and what replaced them.
-const LEGACY_ENV: &[(&str, &str)] = &[("BASE_URL", "DEREC_BASE_URL"), ("PORT", "DEREC_PORT")];
+const LEGACY_ENV: &[(&str, &str)] = &[
+    ("BASE_URL", "DEREC_BASE_URL"),
+    ("PORT", "DEREC_PORT"),
+    ("STATIC_DIR", "DEREC_STATIC_DIR"),
+];
 
 /// Legacy variables that are set while their replacement is not.
 ///
@@ -119,6 +241,9 @@ struct RawServer {
     port: Option<u16>,
     database_url: Option<String>,
     static_dir: Option<String>,
+    public_port: Option<u16>,
+    public_grpc_port: Option<u16>,
+    relay_allowed_hosts: Option<String>,
 }
 
 /// How this node runs.
@@ -129,6 +254,14 @@ pub struct ServerSettings {
     pub base_url: String,
     /// The HTTP listener port.
     pub port: u16,
+    /// The HTTP port peers are told to dial — appended to `base_url` in every
+    /// advertised URI. The listener port unless set: they differ whenever
+    /// something in between remaps it, such as `docker run -p 8080:5000`,
+    /// where peers must dial 8080 while the server listens on 5000.
+    pub public_port: u16,
+    /// The gRPC port peers are told to dial; `defaults.grpc_port` unless set,
+    /// for the same reason as `public_port`.
+    pub public_grpc_port: u16,
     /// Where state lives. See [`crate::db::resolve_url`] for the accepted
     /// spellings — a bare path means SQLite, anything with a scheme is passed
     /// through, and `sqlite::memory:` asks for a node that forgets on exit.
@@ -137,8 +270,13 @@ pub struct ServerSettings {
     ///
     /// Empty serves no UI, which is what a `cargo run` beside a Vite dev server
     /// wants — Vite is serving the app, and a fallback here would shadow it.
-    /// The image sets `/app/static`.
+    /// The image's built-in default is `/app/static`.
     pub static_dir: String,
+    /// Other nodes `POST /derec/relay` may dial, as written: a comma-separated
+    /// list of `host` or `host:port` entries, or `*` for any. Empty — the
+    /// default — lets the relay reach only this node. Read it through
+    /// [`ServerSettings::relay_allowlist`].
+    pub relay_allowed_hosts: String,
 }
 
 impl Default for ServerSettings {
@@ -146,37 +284,310 @@ impl Default for ServerSettings {
         Self {
             base_url: "http://localhost".to_owned(),
             port: 5000,
+            public_port: 5000,
+            public_grpc_port: Defaults::default().grpc_port,
             database_url: crate::db::DEFAULT_DATABASE_URL.to_owned(),
-            // Unset by default: the ordinary development loop is `cargo run`
-            // plus `npm run dev`, where Vite serves the UI.
-            static_dir: String::new(),
+            static_dir: DEFAULT_STATIC_DIR.to_owned(),
+            relay_allowed_hosts: String::new(),
         }
     }
 }
 
 impl ServerSettings {
-    fn resolve(raw: RawServer) -> Self {
+    /// `grpc_port` is the resolved listener from `[defaults]`, which an unset
+    /// `public_grpc_port` follows.
+    fn resolve(raw: RawServer, grpc_port: u16) -> Self {
         let base = Self::default();
+        let port = raw.port.unwrap_or(base.port);
         Self {
-            base_url: raw.base_url.unwrap_or(base.base_url),
-            port: raw.port.unwrap_or(base.port),
+            base_url: raw
+                .base_url
+                .map(|url| normalize_base_url(&url))
+                .unwrap_or(base.base_url),
+            port,
+            public_port: raw.public_port.unwrap_or(port),
+            public_grpc_port: raw.public_grpc_port.unwrap_or(grpc_port),
             database_url: raw.database_url.unwrap_or(base.database_url),
             static_dir: raw.static_dir.unwrap_or(base.static_dir),
+            relay_allowed_hosts: raw
+                .relay_allowed_hosts
+                .map(|hosts| hosts.trim().to_owned())
+                .unwrap_or(base.relay_allowed_hosts),
         }
     }
 
-    fn validate(&self) -> Result<(), String> {
+    /// The relay's allowlist for other nodes, parsed.
+    ///
+    /// Infallible on a validated configuration; a value that does not parse —
+    /// reachable only by building `ServerSettings` by hand — allows nothing,
+    /// the safe reading of an allowlist.
+    pub fn relay_allowlist(&self) -> RelayAllowlist {
+        RelayAllowlist::parse(&self.relay_allowed_hosts).unwrap_or_default()
+    }
+
+    fn validate(&self) -> Result<(), Violation> {
         if self.port == 0 {
-            return Err("port must be greater than 0".to_owned());
+            return Err(Violation::new(
+                "port must be greater than 0",
+                &["server.port"],
+            ));
         }
-        if self.base_url.is_empty() {
-            return Err("base_url must not be empty".to_owned());
+        if self.public_port == 0 {
+            return Err(Violation::new(
+                "public_port must be greater than 0",
+                &["server.public_port"],
+            ));
         }
+        if self.public_grpc_port == 0 {
+            return Err(Violation::new(
+                "public_grpc_port must be greater than 0",
+                &["server.public_grpc_port"],
+            ));
+        }
+        validate_base_url(&self.base_url)
+            .map_err(|message| Violation::new(message, &["server.base_url"]))?;
         if self.database_url.trim().is_empty() {
-            return Err("database_url must not be empty".to_owned());
+            return Err(Violation::new(
+                "database_url must not be empty",
+                &["server.database_url"],
+            ));
         }
+        RelayAllowlist::parse(&self.relay_allowed_hosts)
+            .map_err(|message| Violation::new(message, &["server.relay_allowed_hosts"]))?;
         Ok(())
     }
+}
+
+/// Which other nodes the relay may dial on a browser owner's behalf.
+///
+/// The relay exists so a browser can reach a gRPC peer it cannot dial itself.
+/// Without a limit it would be a general-purpose proxy on a node that is, by
+/// design, unauthenticated — so other nodes are refused unless the operator
+/// names them. `Any` is there for a trusted LAN where interop peers come and
+/// go faster than a list can be kept; it is an explicit `*`, never a default,
+/// and boot warns while it is on.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum RelayAllowlist {
+    /// Only the listed hosts. Empty — the default — allows no other node.
+    #[default]
+    None,
+    Hosts(Vec<AllowedHost>),
+    Any,
+}
+
+/// One `host` or `host:port` entry. Hosts are compared lowercased; an IPv6
+/// literal is written in brackets, as in a URL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AllowedHost {
+    pub host: String,
+    /// `None` allows every port on the host.
+    pub port: Option<u16>,
+}
+
+impl RelayAllowlist {
+    /// Parse the setting: entries separated by commas or whitespace.
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        let entries: Vec<&str> = raw
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|entry| !entry.is_empty())
+            .collect();
+        if entries.is_empty() {
+            return Ok(Self::None);
+        }
+        if entries.contains(&"*") {
+            if entries.len() > 1 {
+                return Err(format!(
+                    "relay_allowed_hosts mixes \"*\" with specific hosts (got {raw:?}); \
+                     use \"*\" alone to allow any host, or list the hosts"
+                ));
+            }
+            return Ok(Self::Any);
+        }
+        entries
+            .into_iter()
+            .map(AllowedHost::parse)
+            .collect::<Result<Vec<_>, _>>()
+            .map(Self::Hosts)
+    }
+
+    /// Whether `host` (lowercased, IPv6 in brackets) on `port` may be dialled.
+    pub fn allows(&self, host: &str, port: u16) -> bool {
+        match self {
+            Self::None => false,
+            Self::Any => true,
+            Self::Hosts(hosts) => hosts
+                .iter()
+                .any(|allowed| allowed.host == host && allowed.port.is_none_or(|p| p == port)),
+        }
+    }
+}
+
+impl AllowedHost {
+    fn parse(entry: &str) -> Result<Self, String> {
+        let refuse = || {
+            format!(
+                "relay_allowed_hosts entries are a host or host:port, like 192.168.0.30 or \
+                 node-b:50051 — no scheme, path or user name (got {entry:?})"
+            )
+        };
+        if entry.contains("://") || entry.contains('/') || entry.contains('@') {
+            return Err(refuse());
+        }
+        // Parsed as a URL authority so an entry means exactly what the same
+        // text means in the endpoint being checked against it.
+        let url = reqwest::Url::parse(&format!("grpc://{entry}")).map_err(|_| refuse())?;
+        let host = url.host_str().filter(|h| !h.is_empty()).ok_or_else(refuse)?;
+        let port = url.port();
+        // `host:` parses with no port; it is a typo, not "any port".
+        if port.is_none() && entry.trim_end_matches(']').ends_with(':') {
+            return Err(refuse());
+        }
+        Ok(Self {
+            host: host.to_ascii_lowercase(),
+            port,
+        })
+    }
+}
+
+/// Settle the harmless spelling differences in a `base_url`, so every URI
+/// built from it is in the one form the rest of the node compares against.
+///
+/// - A trailing slash is dropped; left in, it would advertise
+///   `http://host/:5000/derec/…`.
+/// - The scheme and host are lowercased. Both are case-insensitive, so
+///   `HTTP://LOCALHOST` is a fine thing to type — but it used to pass boot
+///   validation (the URL parser lowercases internally) and then be stamped
+///   verbatim into every transport URI, where the SDK's scheme match refused
+///   `HTTP://…` and provisioning failed with a 500.
+///
+/// Anything that is not `scheme://rest` is returned trimmed and otherwise
+/// untouched, for [`validate_base_url`] to refuse with its own message.
+fn normalize_base_url(raw: &str) -> String {
+    let trimmed = raw.trim().trim_end_matches('/');
+    match trimmed.split_once("://") {
+        // The whole remainder is the authority: a path is refused by
+        // validation, so there is nothing case-sensitive here to preserve.
+        Some((scheme, authority)) => format!(
+            "{}://{}",
+            scheme.to_ascii_lowercase(),
+            authority.to_ascii_lowercase()
+        ),
+        None => trimmed.to_owned(),
+    }
+}
+
+/// Check that `base_url` is something a port can be appended to.
+///
+/// Every advertised URI is `{base_url}:{public_port}/derec/<id>`, so anything
+/// beyond a scheme and a host produces an address nothing can dial — and the
+/// failure would only surface later, as a peer that pairs and then never
+/// answers. Each rejection names the setting that does what was attempted.
+fn validate_base_url(base_url: &str) -> Result<(), String> {
+    if base_url.is_empty() {
+        return Err("base_url must not be empty".to_owned());
+    }
+    // Checked on the text before the URL parser sees it, because the parser
+    // forgives exactly the spellings that matter here: it drops a default
+    // port (`http://host:80` reads back with no port, yet the text with
+    // `:{public_port}` appended is `http://host:80:5000`), drops an empty one
+    // (`http://host:`), drops an empty user name (`http://@host`), and repairs
+    // `http:/host` into `http://host` — all of which then boot and advertise
+    // an address nothing can dial.
+    let Some((_, authority)) = base_url.split_once("://") else {
+        return Err(format!(
+            "base_url must be a scheme and host, like http://192.168.0.28 (got {base_url:?})"
+        ));
+    };
+    if authority.contains(['/', '?', '#']) {
+        return Err(format!(
+            "base_url must be a scheme and host only, with no path (got {base_url:?})"
+        ));
+    }
+    if authority.contains('@') {
+        return Err(format!(
+            "base_url must not include a user name or password (got {base_url:?})"
+        ));
+    }
+    // A bracketed IPv6 literal carries colons of its own; only one after the
+    // closing bracket introduces a port.
+    let after_host = match authority.strip_prefix('[') {
+        Some(rest) => rest.split_once(']').map_or("", |(_, after)| after),
+        None => authority,
+    };
+    if after_host.contains(':') {
+        return Err(format!(
+            "base_url must not include a port, not even an empty or default one (got \
+             {base_url:?}); set the port peers dial with public_port (DEREC_PUBLIC_PORT)"
+        ));
+    }
+    let url = reqwest::Url::parse(base_url).map_err(|_| {
+        format!("base_url must be a scheme and host, like http://192.168.0.28 (got {base_url:?})")
+    })?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(format!(
+            "base_url must start with http:// or https:// (got {base_url:?})"
+        ));
+    }
+    if url.host_str().is_none_or(str::is_empty) {
+        return Err(format!("base_url has no host (got {base_url:?})"));
+    }
+    // Every advertised URI is built from this, so credentials here would be
+    // handed to every peer — and are never what a node's address needs.
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(format!(
+            "base_url must not include a user name or password (got {base_url:?})"
+        ));
+    }
+    if url.port().is_some() {
+        return Err(format!(
+            "base_url must not include a port (got {base_url:?}); set the port peers \
+             dial with public_port (DEREC_PUBLIC_PORT)"
+        ));
+    }
+    if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+        return Err(format!(
+            "base_url must be a scheme and host only, with no path (got {base_url:?})"
+        ));
+    }
+    Ok(())
+}
+
+/// What to say at boot about a loopback `base_url`, or `None` when it is not
+/// loopback.
+///
+/// `base_url` is stamped into every address this node hands a peer, and a
+/// peer dials it from where *it* runs. Loopback therefore reaches this node
+/// only from the same network namespace: another process on this machine,
+/// yes — two natively run nodes on one host can pair over loopback on
+/// different ports — but not another device, and, in a container, not even
+/// another container on the same host, whose loopback is its own. The old
+/// warning ("reachable only from this machine") was wrong in exactly that
+/// case, which is the one two-node Docker setups hit.
+pub fn loopback_base_url_warning(base_url: &str, in_container: bool) -> Option<String> {
+    let host = reqwest::Url::parse(base_url).ok()?.host_str()?.to_ascii_lowercase();
+    let loopback = host == "localhost" || host == "[::1]" || host.starts_with("127.");
+    if !loopback {
+        return None;
+    }
+    Some(if in_container {
+        format!(
+            "DEREC_BASE_URL is loopback ({base_url}) and this node runs in a container, where \
+             loopback is the container itself. A browser on the host still reaches it through \
+             the published port, but any other container — a second node included — and any \
+             other device dials its own loopback and reaches nothing. To pair across nodes, \
+             set DEREC_BASE_URL to an address every peer can reach: the host's LAN IP (e.g. \
+             DEREC_BASE_URL=http://192.168.0.28, with DEREC_PUBLIC_PORT / \
+             DEREC_PUBLIC_GRPC_PORT set to the published ports), or this container's name on \
+             a Docker network the peers share."
+        )
+    } else {
+        format!(
+            "DEREC_BASE_URL is loopback ({base_url}). Browsers and other nodes on this machine \
+             reach it, but another device, or a node in a container, dials its own loopback \
+             and reaches nothing. Set DEREC_BASE_URL to this host's LAN address (e.g. \
+             DEREC_BASE_URL=http://192.168.0.28) before pairing from anywhere else."
+        )
+    })
 }
 
 /// Everything the node was configured with.
@@ -237,6 +648,8 @@ pub struct Loaded {
     pub file_found: bool,
     /// `DEREC_*` variables that match no known key. Warned about, not fatal.
     pub unknown_env: Vec<String>,
+    /// Known variables that were set to an empty value and so ignored.
+    pub empty_env: Vec<&'static str>,
 }
 
 // Hand-written rather than derived: a derived `Default` would leave `origins`
@@ -249,13 +662,14 @@ impl Default for Loaded {
             settings: Settings::default(),
             origins: ENV_KEYS
                 .iter()
-                .map(|(_, path)| Origin {
-                    path,
+                .map(|key| Origin {
+                    path: key.path,
                     source: Source::Default,
                 })
                 .collect(),
             file_found: false,
             unknown_env: Vec::new(),
+            empty_env: Vec::new(),
         }
     }
 }
@@ -279,13 +693,16 @@ struct RawDefaults {
     authentication_method: Option<AuthenticationMethod>,
     unpair_ack: Option<UnpairAck>,
     auto_accept_unpair_requests: Option<bool>,
+    auto_accept_store_share_requests: Option<bool>,
+    auto_accept_verify_share_requests: Option<bool>,
     grpc_enabled: Option<bool>,
     grpc_port: Option<u16>,
     helper_transports: Option<crate::models::TransportBreakdown>,
     grpc_relay_enabled: Option<bool>,
 }
 
-/// Starting values for the front-end setup wizard.
+/// Starting values for the front-end setup wizard, plus the three gRPC keys
+/// this process enforces itself (see the module docs).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Defaults {
@@ -305,13 +722,18 @@ pub struct Defaults {
     pub unpair_ack: UnpairAck,
     /// Whether incoming unpair requests are accepted without a prompt.
     pub auto_accept_unpair_requests: bool,
-    /// Whether to run the gRPC ingress listener at all.
+    /// Whether a browser helper stores an incoming share without a prompt.
+    pub auto_accept_store_share_requests: bool,
+    /// Whether a browser helper answers a verification request without a prompt.
+    pub auto_accept_verify_share_requests: bool,
+    /// Whether to run the gRPC ingress listener at all. Enforced by the node.
     pub grpc_enabled: bool,
-    /// Port for the gRPC listener.
+    /// Port for the gRPC listener. Enforced by the node.
     pub grpc_port: u16,
     /// Prefills the wizard's transport breakdown. Sums to `participant_count`.
     pub helper_transports: crate::models::TransportBreakdown,
-    /// Whether the backend dials gRPC on a browser owner's behalf.
+    /// Whether the backend dials gRPC on a browser owner's behalf. Enforced by
+    /// the node.
     pub grpc_relay_enabled: bool,
 }
 
@@ -326,6 +748,8 @@ impl Default for Defaults {
             authentication_method: AuthenticationMethod::default(),
             unpair_ack: UnpairAck::default(),
             auto_accept_unpair_requests: true,
+            auto_accept_store_share_requests: false,
+            auto_accept_verify_share_requests: false,
             grpc_enabled: true,
             grpc_port: 50051,
             helper_transports: crate::models::TransportBreakdown {
@@ -338,22 +762,101 @@ impl Default for Defaults {
     }
 }
 
+/// Why configuration could not be loaded. Every variant's message names the
+/// file or variable at fault and, where there is one, the usual fix — a boot
+/// abort is read by someone who wants to change one line and try again.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
-    #[error("could not read {path}: {source}")]
+    #[error(
+        "{variable} names {path}, but there is no such file. Check the path and the volume \
+         mount (e.g. -v \"$PWD/config.toml:{path}:ro\"), or unset {variable} to run on \
+         environment variables and built-in defaults alone"
+    )]
+    Missing {
+        path: PathBuf,
+        variable: &'static str,
+    },
+    #[error("could not read config file {path}: {source}{hint}")]
     Read {
         path: PathBuf,
         #[source]
         source: std::io::Error,
+        /// Empty, or a sentence starting with `; ` that says what usually
+        /// causes this.
+        hint: String,
     },
-    #[error("could not parse {path}: {source}")]
+    #[error("could not parse config file {path}: {source}")]
     Parse {
         path: PathBuf,
         #[source]
         source: toml::de::Error,
     },
-    #[error("{path} is not a usable configuration: {reason}")]
-    Invalid { path: PathBuf, reason: String },
+    /// One line per problem, each naming the file or variable that supplied
+    /// the offending value.
+    #[error("invalid configuration:\n{}", .problems.join("\n"))]
+    Invalid { problems: Vec<String> },
+}
+
+/// A rule the merged configuration breaks, and the settings involved.
+///
+/// The keys are dotted paths, so the error can say where each involved value
+/// came from: a conflict between a file value and an environment override
+/// reads very differently from a typo in one place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Violation {
+    message: String,
+    keys: Vec<&'static str>,
+}
+
+impl Violation {
+    fn new(message: impl Into<String>, keys: &[&'static str]) -> Self {
+        Self {
+            message: message.into(),
+            keys: keys.to_vec(),
+        }
+    }
+
+    /// Render for a boot abort: the rule, then each involved setting with its
+    /// value and the layer that supplied it.
+    fn describe(&self, origins: &[Origin], values: &[(String, String)], file: &Path) -> String {
+        let mut out = format!("  - {}", self.message);
+        for key in &self.keys {
+            let value = values
+                .iter()
+                .find(|(path, _)| path.as_str() == *key)
+                .map_or("?", |(_, value)| value.as_str());
+            let source = origins
+                .iter()
+                .find(|origin| origin.path == *key)
+                .map_or(Source::Default, |origin| origin.source.clone());
+            let _ = write!(
+                out,
+                "\n      {} = {}  ({})",
+                leaf_of(key),
+                value,
+                describe_source(&source, file)
+            );
+        }
+        // The usual cause of a participant conflict is a value pinned in one
+        // layer that no longer fits a count changed in another — exactly what
+        // leaving it unset would have adapted automatically.
+        if self.keys.len() > 1 && self.keys.contains(&"defaults.participant_count") {
+            out.push_str(
+                "\n      Settings left unset adapt to participant_count; remove any you did not \
+                 mean to pin.",
+            );
+        }
+        out
+    }
+}
+
+/// Where a value came from, in words.
+fn describe_source(source: &Source, file: &Path) -> String {
+    match source {
+        Source::Default => "built-in default".to_owned(),
+        Source::File => format!("file {}", file.display()),
+        Source::Env(variable) => format!("env {variable}"),
+    }
 }
 
 impl Defaults {
@@ -396,6 +899,12 @@ impl Defaults {
             auto_accept_unpair_requests: raw
                 .auto_accept_unpair_requests
                 .unwrap_or(base.auto_accept_unpair_requests),
+            auto_accept_store_share_requests: raw
+                .auto_accept_store_share_requests
+                .unwrap_or(base.auto_accept_store_share_requests),
+            auto_accept_verify_share_requests: raw
+                .auto_accept_verify_share_requests
+                .unwrap_or(base.auto_accept_verify_share_requests),
             grpc_enabled: raw.grpc_enabled.unwrap_or(base.grpc_enabled),
             grpc_port: raw.grpc_port.unwrap_or(base.grpc_port),
             helper_transports: raw.helper_transports.unwrap_or(
@@ -413,112 +922,210 @@ impl Defaults {
 
     /// Rejects combinations the wizard could never produce, so a mistake
     /// surfaces at boot rather than as a confusing UI state much later.
-    fn validate(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), Violation> {
+        const COUNT: &str = "defaults.participant_count";
+        const MIN: &str = "defaults.min_participants";
+        const RECOMMENDED: &str = "defaults.recommended_participants";
+
         if self.participant_count == 0 {
-            return Err("participant_count must be at least 1".to_owned());
+            return Err(Violation::new(
+                "participant_count must be at least 1",
+                &[COUNT],
+            ));
         }
         if self.min_participants == 0 {
-            return Err("min_participants must be at least 1".to_owned());
+            return Err(Violation::new("min_participants must be at least 1", &[MIN]));
         }
         if self.protocol_timeout_secs == 0 {
-            return Err("protocol_timeout_secs must be greater than 0".to_owned());
+            return Err(Violation::new(
+                "protocol_timeout_secs must be greater than 0",
+                &["defaults.protocol_timeout_secs"],
+            ));
         }
         if self.min_participants > self.participant_count {
-            return Err(format!(
-                "min_participants ({}) exceeds participant_count ({})",
-                self.min_participants, self.participant_count
+            return Err(Violation::new(
+                format!(
+                    "min_participants ({}) exceeds participant_count ({})",
+                    self.min_participants, self.participant_count
+                ),
+                &[MIN, COUNT],
             ));
         }
         if self.recommended_participants < self.min_participants {
-            return Err(format!(
-                "recommended_participants ({}) is below min_participants ({})",
-                self.recommended_participants, self.min_participants
+            return Err(Violation::new(
+                format!(
+                    "recommended_participants ({}) is below min_participants ({})",
+                    self.recommended_participants, self.min_participants
+                ),
+                &[RECOMMENDED, MIN],
             ));
         }
         if self.recommended_participants > self.participant_count {
-            return Err(format!(
-                "recommended_participants ({}) exceeds participant_count ({})",
-                self.recommended_participants, self.participant_count
+            return Err(Violation::new(
+                format!(
+                    "recommended_participants ({}) exceeds participant_count ({})",
+                    self.recommended_participants, self.participant_count
+                ),
+                &[RECOMMENDED, COUNT],
             ));
         }
         if self.pre_paired_count > self.participant_count {
-            return Err(format!(
-                "pre_paired_count ({}) exceeds participant_count ({})",
-                self.pre_paired_count, self.participant_count
+            return Err(Violation::new(
+                format!(
+                    "pre_paired_count ({}) exceeds participant_count ({})",
+                    self.pre_paired_count, self.participant_count
+                ),
+                &["defaults.pre_paired_count", COUNT],
             ));
         }
         if self.helper_transports.total() != self.participant_count as usize {
-            return Err(format!(
-                "helper_transports sums to {} but participant_count is {}",
-                self.helper_transports.total(),
-                self.participant_count
+            let mut keys = HELPER_TRANSPORTS.to_vec();
+            keys.push(COUNT);
+            return Err(Violation::new(
+                format!(
+                    "helper_transports sums to {} but participant_count is {}",
+                    self.helper_transports.total(),
+                    self.participant_count
+                ),
+                &keys,
             ));
         }
         if !self.grpc_enabled
             && (self.helper_transports.grpc > 0 || self.helper_transports.both > 0)
         {
-            return Err(
-                "helper_transports asks for gRPC helpers but grpc_enabled is false".to_owned(),
-            );
+            return Err(Violation::new(
+                "helper_transports asks for gRPC helpers but grpc_enabled is false",
+                &[
+                    "defaults.grpc_enabled",
+                    "defaults.helper_transports.grpc",
+                    "defaults.helper_transports.both",
+                ],
+            ));
         }
         if self.grpc_port == 0 {
-            return Err("grpc_port must be greater than 0".to_owned());
+            return Err(Violation::new(
+                "grpc_port must be greater than 0",
+                &["defaults.grpc_port"],
+            ));
         }
         Ok(())
     }
+}
 
+/// Parse one environment value by the shape its key takes.
+///
+/// Surrounding whitespace is dropped first: a value out of a compose file or a
+/// `.env` with a stray space is a typo, not a request for a database named
+/// `" ./derec.db"`.
+fn coerce(key: &EnvKey, raw: &str) -> Result<Value, String> {
+    let value = raw.trim();
+    match key.kind {
+        Kind::Text => Ok(Value::from(value)),
+        Kind::Bool => parse_bool(value).map(Value::from).ok_or_else(|| {
+            format!(
+                "{}={raw:?} is not a boolean; use true or false",
+                key.variable
+            )
+        }),
+        Kind::Uint { max } => value
+            .parse::<u64>()
+            .ok()
+            .filter(|n| *n <= max)
+            .map(Value::from)
+            .ok_or_else(|| {
+                format!(
+                    "{}={raw:?} is not a whole number between 0 and {max}",
+                    key.variable
+                )
+            }),
+    }
+}
+
+/// The spellings of a boolean an environment variable may use, in any case.
+fn parse_bool(value: &str) -> Option<bool> {
+    match value.to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Some(true),
+        "false" | "0" | "no" | "off" => Some(false),
+        _ => None,
+    }
 }
 
 /// Reads `DEREC_*` into the config tree.
 ///
 /// A hand-written provider rather than figment's `Env`: this one owns the
-/// flat-name-to-dotted-path mapping, and it can separate variables that match a
-/// known key from ones that do not, which is what makes "unknown warns" possible.
+/// flat-name-to-dotted-path mapping, parses each value by its key's type, and
+/// separates variables that match a known key from ones that do not, which is
+/// what makes "unknown warns" possible.
 #[derive(Clone)]
 struct EnvProvider {
-    values: Vec<(&'static str, String)>,
+    values: Vec<(&'static str, Value)>,
     unknown: Vec<String>,
+    /// Known variables set to an empty value. Ignored rather than read as an
+    /// empty setting: compose interpolates an undefined `${VAR}` to the empty
+    /// string, and that means "I did not set this", not "set it to nothing".
+    empty: Vec<&'static str>,
+    /// Values that could not be parsed, already worded for the operator.
+    errors: Vec<String>,
 }
 
 impl EnvProvider {
     fn from_env() -> Self {
         let mut values = Vec::new();
         let mut unknown = Vec::new();
+        let mut empty = Vec::new();
+        let mut errors = Vec::new();
 
-        for (name, raw) in std::env::vars() {
-            if !name.starts_with(ENV_PREFIX) || RESERVED_ENV.contains(&name.as_str()) {
+        // `vars_os`, not `vars`: the latter panics on the first non-UTF-8
+        // value anywhere in the environment, including ones that are not ours.
+        for (name, raw) in std::env::vars_os() {
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if !name.starts_with(ENV_PREFIX) || RESERVED_ENV.contains(&name) {
                 continue;
             }
-            match ENV_KEYS.iter().find(|(var, _)| *var == name) {
-                Some((_, path)) => values.push((*path, raw)),
-                None => unknown.push(name),
+            let Some(key) = ENV_KEYS.iter().find(|key| key.variable == name) else {
+                unknown.push(name.to_owned());
+                continue;
+            };
+            let Some(raw) = raw.to_str() else {
+                errors.push(format!("{name} is not valid UTF-8"));
+                continue;
+            };
+            if raw.trim().is_empty() {
+                empty.push(key.variable);
+                continue;
+            }
+            match coerce(key, raw) {
+                Ok(value) => values.push((key.path, value)),
+                Err(message) => errors.push(message),
             }
         }
 
         values.sort_by_key(|(path, _)| *path);
         unknown.sort();
-        Self { values, unknown }
+        empty.sort_unstable();
+        errors.sort();
+        Self {
+            values,
+            unknown,
+            empty,
+            errors,
+        }
+    }
+
+    /// Whether the environment set `path`.
+    fn supplies(&self, path: &str) -> bool {
+        self.values.iter().any(|(p, _)| *p == path)
     }
 
     /// The variable that maps to `path`, if any.
     fn variable_for(path: &str) -> Option<&'static str> {
         ENV_KEYS
             .iter()
-            .find(|(_, p)| *p == path)
-            .map(|(name, _)| *name)
+            .find(|key| key.path == path)
+            .map(|key| key.variable)
     }
-}
-
-/// Environment values arrive as strings; give figment the right shape so serde
-/// does not have to coerce `"false"` into a `bool`.
-fn coerce(raw: &str) -> Value {
-    if let Ok(b) = raw.parse::<bool>() {
-        return Value::from(b);
-    }
-    if let Ok(n) = raw.parse::<u64>() {
-        return Value::from(n);
-    }
-    Value::from(raw)
 }
 
 /// Insert `value` at a dotted path, creating intermediate dictionaries.
@@ -543,15 +1150,47 @@ fn insert_path(root: &mut Dict, path: &str, value: Value) {
 
 impl Provider for EnvProvider {
     fn metadata(&self) -> Metadata {
-        Metadata::named("environment")
+        Metadata::named(ENV_PROVIDER_NAME)
     }
 
     fn data(&self) -> Result<Map<Profile, Dict>, figment::Error> {
         let mut root = Dict::new();
-        for (path, raw) in &self.values {
-            insert_path(&mut root, path, coerce(raw));
+        for (path, value) in &self.values {
+            insert_path(&mut root, path, value.clone());
         }
         Ok(Profile::Default.collect(root))
+    }
+}
+
+/// Word one figment extraction error for the operator.
+///
+/// Figment's own `Display` prefixes the key with its profile
+/// (`default.server.port`) and names the provider generically ("TOML source
+/// string"), neither of which is a thing the operator wrote. This names the
+/// plain key and the actual variable or file.
+fn describe_extract_error(error: &figment::Error, file: &Path) -> String {
+    let key = error.path.join(".");
+    // An unknown key can only have come from the file — the environment
+    // provider maps known variables and nothing else — whatever metadata the
+    // enclosing table happens to carry after the merge.
+    let unknown_key = matches!(error.kind, figment::error::Kind::UnknownField(..));
+    let from_env = !unknown_key
+        && error
+            .metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.name == ENV_PROVIDER_NAME);
+
+    let source = if from_env {
+        EnvProvider::variable_for(&key)
+            .map_or_else(|| "the environment".to_owned(), |v| format!("env {v}"))
+    } else {
+        format!("file {}", file.display())
+    };
+
+    if key.is_empty() {
+        format!("  - {} ({source})", error.kind)
+    } else {
+        format!("  - {key}: {} ({source})", error.kind)
     }
 }
 
@@ -576,64 +1215,128 @@ impl Settings {
         })?;
 
         let env = EnvProvider::from_env();
-        let unknown_env = env.unknown.clone();
+        if !env.errors.is_empty() {
+            // Reported on their own: merging without the values that failed to
+            // parse would go on to validate a configuration nobody wrote.
+            return Err(ConfigError::Invalid {
+                problems: env.errors.iter().map(|e| format!("  - {e}")).collect(),
+            });
+        }
 
         let from_file = Figment::from(Toml::string(&body));
-        let from_env = Figment::from(env.clone());
-        let merged = Figment::from(Toml::string(&body)).merge(env);
+        let merged = Figment::from(Toml::string(&body)).merge(env.clone());
 
-        let raw: RawConfig = merged.extract().map_err(|e| ConfigError::Invalid {
-            path: path.to_path_buf(),
-            reason: e.to_string(),
+        let raw: RawConfig = merged.extract().map_err(|error| ConfigError::Invalid {
+            problems: error
+                .into_iter()
+                .map(|e| describe_extract_error(&e, path))
+                .collect(),
         })?;
 
+        let defaults = Defaults::resolve(raw.defaults);
         let settings = Settings {
-            server: ServerSettings::resolve(raw.server),
-            defaults: Defaults::resolve(raw.defaults),
+            server: ServerSettings::resolve(raw.server, defaults.grpc_port),
+            defaults,
         };
 
-        settings
-            .server
-            .validate()
-            .and_then(|()| settings.defaults.validate())
-            .map_err(|reason| ConfigError::Invalid {
-                path: path.to_path_buf(),
-                reason,
-            })?;
-
-        let origins = ENV_KEYS
+        // Before validation, so a rejection can say which layer supplied each
+        // value it names.
+        let origins: Vec<Origin> = ENV_KEYS
             .iter()
-            .map(|(_, config_path)| {
-                let source = if from_env.find_value(config_path).is_ok() {
-                    EnvProvider::variable_for(config_path)
-                        .map(Source::Env)
-                        .unwrap_or(Source::Default)
-                } else if from_file.find_value(config_path).is_ok() {
+            .map(|key| {
+                let source = if env.supplies(key.path) {
+                    Source::Env(key.variable)
+                } else if from_file.find_value(key.path).is_ok() {
                     Source::File
                 } else {
                     Source::Default
                 };
                 Origin {
-                    path: config_path,
+                    path: key.path,
                     source,
                 }
             })
             .collect();
 
+        let violations = settings.validate();
+        if !violations.is_empty() {
+            let values = values_by_path(&settings);
+            return Err(ConfigError::Invalid {
+                problems: violations
+                    .iter()
+                    .map(|v| v.describe(&origins, &values, path))
+                    .collect(),
+            });
+        }
+
         Ok(Loaded {
             settings,
             origins,
             file_found,
-            unknown_env,
+            unknown_env: env.unknown,
+            empty_env: env.empty,
         })
+    }
+
+    /// Every rule the merged result breaks — one per table at most, plus the
+    /// checks that span both.
+    fn validate(&self) -> Vec<Violation> {
+        let mut violations = Vec::new();
+        if let Err(v) = self.server.validate() {
+            violations.push(v);
+        }
+        if let Err(v) = self.defaults.validate() {
+            violations.push(v);
+        }
+        // Caught here rather than as a bind failure: the second listener would
+        // fail with "address in use" against *this* process, which reads like
+        // some other program holding the port.
+        if self.defaults.grpc_enabled && self.server.port == self.defaults.grpc_port {
+            violations.push(Violation::new(
+                format!(
+                    "port and grpc_port are both {}; the HTTP and gRPC listeners need \
+                     different ports (or set grpc_enabled = false)",
+                    self.server.port
+                ),
+                &["server.port", "defaults.grpc_port"],
+            ));
+        }
+        violations
     }
 }
 
-/// The path the server will read, honouring `DEREC_CONFIG_PATH`.
-pub fn configured_path() -> PathBuf {
-    std::env::var_os(CONFIG_PATH_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH))
+/// Which config file to read, and whether its absence is an error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigFile {
+    pub path: PathBuf,
+    /// Named by `DEREC_CONFIG_PATH`. An explicit path that does not exist is a
+    /// mistake worth stopping for — a typo or a mount that did not happen —
+    /// while a missing file at the built-in path is the ordinary unconfigured
+    /// run.
+    pub explicit: bool,
+}
+
+impl ConfigFile {
+    /// The file the server will read, honouring `DEREC_CONFIG_PATH`.
+    ///
+    /// An empty or whitespace-only value counts as unset, matching every other
+    /// variable: compose turns an undefined `${VAR}` into the empty string, and
+    /// an empty path is not one anybody means.
+    pub fn from_env() -> Self {
+        let named = std::env::var_os(CONFIG_PATH_ENV)
+            .map(PathBuf::from)
+            .filter(|path| !path.as_os_str().to_string_lossy().trim().is_empty());
+        match named {
+            Some(path) => Self {
+                path,
+                explicit: true,
+            },
+            None => Self {
+                path: PathBuf::from(DEFAULT_CONFIG_PATH),
+                explicit: false,
+            },
+        }
+    }
 }
 
 /// Render the resolved configuration for the boot log.
@@ -644,8 +1347,6 @@ pub fn configured_path() -> PathBuf {
 /// so two runs of the same configuration produce identical text and can be
 /// diffed.
 pub fn report(loaded: &Loaded, path: &Path) -> String {
-    use std::fmt::Write as _;
-
     let mut out = String::from("configuration\n");
 
     let _ = writeln!(
@@ -668,17 +1369,20 @@ pub fn report(loaded: &Loaded, path: &Path) -> String {
     for name in &loaded.unknown_env {
         let _ = writeln!(out, "  env    {name} is not a known setting; ignored");
     }
+    for name in &loaded.empty_env {
+        let _ = writeln!(out, "  env    {name} is set but empty; ignored");
+    }
 
     let values = values_by_path(&loaded.settings);
     let width = ENV_KEYS
         .iter()
-        .map(|(_, path)| leaf_of(path).len())
+        .map(|key| leaf_of(key.path).len())
         .max()
         .unwrap_or(0);
 
     let mut table = String::new();
-    for (_, config_path) in ENV_KEYS {
-        let table_name = config_path.split('.').next().unwrap_or("");
+    for key in ENV_KEYS {
+        let table_name = key.path.split('.').next().unwrap_or("");
         if !table.contains(&format!("[{table_name}]")) {
             let _ = write!(table, "\n  [{table_name}]\n");
         }
@@ -686,7 +1390,7 @@ pub fn report(loaded: &Loaded, path: &Path) -> String {
         let origin = loaded
             .origins
             .iter()
-            .find(|o| o.path == *config_path)
+            .find(|o| o.path == key.path)
             .map(|o| match o.source {
                 Source::Default => "default".to_owned(),
                 Source::File => "file".to_owned(),
@@ -696,14 +1400,14 @@ pub fn report(loaded: &Loaded, path: &Path) -> String {
 
         let value = values
             .iter()
-            .find(|(p, _)| p == config_path)
+            .find(|(p, _)| p == key.path)
             .map(|(_, v)| v.clone())
             .unwrap_or_default();
 
         let _ = writeln!(
             table,
             "  {:<width$}  {:<24}  {}",
-            leaf_of(config_path),
+            leaf_of(key.path),
             value,
             origin,
             width = width
@@ -731,10 +1435,10 @@ fn values_by_path(settings: &Settings) -> Vec<(String, String)> {
         return out;
     };
 
-    for (_, path) in ENV_KEYS {
+    for key in ENV_KEYS {
         let mut cursor = &root;
         let mut found = true;
-        for segment in path.split('.') {
+        for segment in key.path.split('.') {
             match cursor.get(segment) {
                 Some(next) => cursor = next,
                 None => {
@@ -745,34 +1449,69 @@ fn values_by_path(settings: &Settings) -> Vec<(String, String)> {
         }
         if found {
             let text = match cursor {
+                // The banner and boot errors reach logs; a Postgres URL
+                // carries its password.
+                serde_json::Value::String(s) if key.path == "server.database_url" => {
+                    crate::db::redact_url(s)
+                }
                 serde_json::Value::String(s) => s.clone(),
                 other => other.to_string(),
             };
-            out.push(((*path).to_owned(), text));
+            out.push((key.path.to_owned(), text));
         }
     }
     out
 }
 
-/// Read configuration from `path`, merged with the environment.
+/// Read configuration from `file`, merged with the environment.
 ///
-/// A missing file is not an error — that is the ordinary `docker run` case, and
-/// the environment plus built-in defaults are a complete configuration. Every
-/// other read failure is returned: a developer who mounted a file that cannot be
-/// read wants to hear about it at boot rather than silently get stock values.
-pub fn load(path: &Path) -> Result<Loaded, ConfigError> {
+/// A missing file at the built-in path is not an error — that is the ordinary
+/// `docker run` case, and the environment plus built-in defaults are a complete
+/// configuration. A missing file that `DEREC_CONFIG_PATH` named *is*, and so is
+/// every other read failure: a developer who mounted a file wants to hear that
+/// it was not used at boot rather than silently get stock values.
+pub fn load(file: &ConfigFile) -> Result<Loaded, ConfigError> {
+    let path = &file.path;
     let contents = match std::fs::read_to_string(path) {
         Ok(c) => Some(c),
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => None,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            if file.explicit {
+                return Err(ConfigError::Missing {
+                    path: path.clone(),
+                    variable: CONFIG_PATH_ENV,
+                });
+            }
+            None
+        }
         Err(source) => {
             return Err(ConfigError::Read {
-                path: path.to_path_buf(),
+                path: path.clone(),
+                hint: read_hint(path, &source),
                 source,
             });
         }
     };
 
     Settings::merge(path, contents)
+}
+
+/// What usually causes a config file that exists to be unreadable.
+fn read_hint(path: &Path, error: &std::io::Error) -> String {
+    if path.is_dir() {
+        // The single most common Docker mistake with this app: bind-mounting a
+        // host file that does not exist makes Docker create a *directory* in
+        // its place, on the host and in the container.
+        "; it is a directory, not a file. Docker creates an empty directory when a \
+         bind-mounted file does not exist on the host: create the file on the host (or \
+         drop the mount), remove the stray directory, and recreate the container"
+            .to_owned()
+    } else if error.kind() == std::io::ErrorKind::PermissionDenied {
+        "; make it readable by the user the server runs as (uid 10001 in the image), \
+         e.g. chmod a+r on the host"
+            .to_owned()
+    } else {
+        String::new()
+    }
 }
 
 #[cfg(test)]
@@ -822,6 +1561,32 @@ mod tests {
         })
     }
 
+    fn error_from(contents: &str, vars: &[(&str, &str)]) -> String {
+        with_env(vars, || {
+            Settings::merge(Path::new("test.toml"), Some(contents.to_owned()))
+                .expect_err("settings must be rejected")
+                .to_string()
+        })
+    }
+
+    fn example_path() -> PathBuf {
+        // It lives in the repo-wide `examples/` directory, beside the compose
+        // and `.env` examples, rather than in this package — the three are read
+        // together and a developer should not have to hunt two directories for
+        // them. Hence the climb out of `apps/backend`.
+        PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/config.example.toml"
+        ))
+    }
+
+    fn explicit(path: impl Into<PathBuf>) -> ConfigFile {
+        ConfigFile {
+            path: path.into(),
+            explicit: true,
+        }
+    }
+
     /// The `[defaults]` half on its own, for the tests that predate `[server]`.
     ///
     /// They all state bare keys, which the two-table file shape now nests, so
@@ -861,6 +1626,8 @@ mod tests {
             authentication_method = "user"
             unpair_ack = "not_required"
             auto_accept_unpair_requests = false
+            auto_accept_store_share_requests = true
+            auto_accept_verify_share_requests = true
             grpc_enabled = true
             grpc_port = 60051
             helper_transports = { http = 5, grpc = 4, both = 0 }
@@ -880,6 +1647,8 @@ mod tests {
                 authentication_method: AuthenticationMethod::User,
                 unpair_ack: UnpairAck::NotRequired,
                 auto_accept_unpair_requests: false,
+                auto_accept_store_share_requests: true,
+                auto_accept_verify_share_requests: true,
                 grpc_enabled: true,
                 grpc_port: 60051,
                 helper_transports: crate::models::TransportBreakdown {
@@ -1003,15 +1772,59 @@ mod tests {
         // Otherwise a deployment with no config file would be in a state the
         // server refuses to accept from a file.
         assert_eq!(Defaults::default().validate(), Ok(()));
+        assert!(Settings::default().validate().is_empty());
     }
 
     #[test]
-    fn a_missing_file_is_not_an_error() {
-        let missing = Path::new("definitely-not-a-real-config-file.toml");
+    fn a_missing_file_at_the_default_path_is_not_an_error() {
+        let missing = ConfigFile {
+            path: PathBuf::from("definitely-not-a-real-config-file.toml"),
+            explicit: false,
+        };
 
-        let loaded = with_env(&[], || load(missing)).expect("a missing file is not an error");
+        let loaded = with_env(&[], || load(&missing)).expect("a missing file is not an error");
 
         assert!(!loaded.file_found);
+    }
+
+    #[test]
+    fn a_missing_file_named_by_the_variable_aborts_with_the_path() {
+        // A typo in DEREC_CONFIG_PATH, or a mount that did not happen, used to
+        // boot on stock values while the developer believed their file was in
+        // effect.
+        let err = with_env(&[], || load(&explicit("/nope/derec/config.toml")))
+            .expect_err("an explicitly named missing file is an error");
+
+        let message = err.to_string();
+        assert!(matches!(err, ConfigError::Missing { .. }), "{message}");
+        assert!(message.contains("/nope/derec/config.toml"), "{message}");
+        assert!(message.contains("DEREC_CONFIG_PATH"), "{message}");
+    }
+
+    #[test]
+    fn a_directory_where_the_file_should_be_is_explained() {
+        // What Docker leaves behind when a bind-mounted file is missing on
+        // the host.
+        let dir = std::env::temp_dir();
+        let err = with_env(&[], || load(&explicit(dir.clone()))).expect_err("a directory");
+
+        assert!(err.to_string().contains("is a directory"), "{err}");
+    }
+
+    #[test]
+    fn the_config_path_variable_decides_whether_a_file_is_required() {
+        let named = with_env(&[("DEREC_CONFIG_PATH", "/etc/derec/mine.toml")], ConfigFile::from_env);
+        assert_eq!(named, explicit("/etc/derec/mine.toml"));
+
+        // Empty means unset — what compose produces for an undefined `${VAR}`.
+        let empty = with_env(&[("DEREC_CONFIG_PATH", "  ")], ConfigFile::from_env);
+        assert_eq!(
+            empty,
+            ConfigFile {
+                path: PathBuf::from(DEFAULT_CONFIG_PATH),
+                explicit: false,
+            }
+        );
     }
 
     #[test]
@@ -1019,19 +1832,30 @@ mod tests {
         // The example is documentation a developer will copy verbatim; if it
         // drifts out of sync with the schema, `deny_unknown_fields` turns that
         // into a boot failure for them rather than a test failure for us.
-        //
-        // It lives in the repo-wide `examples/` directory, beside the compose
-        // and `.env` examples, rather than in this package — the three are read
-        // together and a developer should not have to hunt two directories for
-        // them. Hence the climb out of `apps/backend`.
-        let example = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../examples/config.example.toml"
-        );
-
-        let loaded = with_env(&[], || load(Path::new(example))).expect("the example must load");
+        let loaded = with_env(&[], || load(&explicit(example_path()))).expect("the example must load");
 
         assert!(loaded.file_found);
+    }
+
+    #[test]
+    fn the_shipped_example_survives_a_single_count_override() {
+        // The example used to pin every participant threshold and the
+        // transport breakdown, so the one-line override the docs suggest —
+        // DEREC_PARTICIPANT_COUNT — refused to boot against values the
+        // developer had copied, not chosen.
+        for count in ["1", "4", "12"] {
+            let loaded = with_env(&[("DEREC_PARTICIPANT_COUNT", count)], || {
+                load(&explicit(example_path()))
+            })
+            .unwrap_or_else(|e| panic!("example + DEREC_PARTICIPANT_COUNT={count}: {e}"));
+
+            let expected: u8 = count.parse().expect("test literal");
+            assert_eq!(loaded.settings.defaults.participant_count, expected);
+            assert_eq!(
+                loaded.settings.defaults.helper_transports.total(),
+                expected as usize
+            );
+        }
     }
 
     #[test]
@@ -1052,6 +1876,34 @@ mod tests {
     }
 
     #[test]
+    fn the_file_can_set_every_server_key() {
+        // The image used to preset DEREC_BASE_URL, DEREC_PORT, DEREC_STATIC_DIR
+        // and DEREC_DATABASE_URL as environment, which outranks the file — so a
+        // mounted file could not change any of them. Its values are built-in
+        // defaults now; this pins that the file layer reaches all four.
+        let loaded = settings_from(
+            "[server]\nbase_url = \"http://10.0.0.5\"\nport = 6000\n\
+             database_url = \"/data/x.db\"\nstatic_dir = \"/srv/ui\"\n",
+            &[],
+        );
+
+        let server = &loaded.settings.server;
+        assert_eq!(server.base_url, "http://10.0.0.5");
+        assert_eq!(server.port, 6000);
+        assert_eq!(server.database_url, "/data/x.db");
+        assert_eq!(server.static_dir, "/srv/ui");
+        for path in [
+            "server.base_url",
+            "server.port",
+            "server.database_url",
+            "server.static_dir",
+        ] {
+            let origin = loaded.origins.iter().find(|o| o.path == path).expect("origin");
+            assert_eq!(origin.source, Source::File, "{path}");
+        }
+    }
+
+    #[test]
     fn an_absent_setting_falls_through_to_the_built_in_default() {
         let loaded = settings_from("", &[]);
 
@@ -1061,6 +1913,7 @@ mod tests {
         );
         assert_eq!(loaded.settings.server.port, 5000);
         assert_eq!(loaded.settings.server.base_url, "http://localhost");
+        assert_eq!(loaded.settings.server.static_dir, DEFAULT_STATIC_DIR);
     }
 
     #[test]
@@ -1079,23 +1932,45 @@ mod tests {
     fn validation_runs_on_the_merged_result_not_on_either_layer() {
         // Each layer is fine alone: the file sums 7/0/0 against its own count of
         // 7, and the env just says 3. Together they contradict.
-        let err = with_env(&[("DEREC_PARTICIPANT_COUNT", "3")], || {
-            Settings::merge(
-                Path::new("test.toml"),
-                Some(
-                    "[defaults]\nparticipant_count = 7\n\
-                     [defaults.helper_transports]\nhttp = 7\ngrpc = 0\nboth = 0\n"
-                        .to_owned(),
-                ),
-            )
-            .unwrap_err()
-        });
+        let message = error_from(
+            "[defaults]\nparticipant_count = 7\n\
+             [defaults.helper_transports]\nhttp = 7\ngrpc = 0\nboth = 0\n",
+            &[("DEREC_PARTICIPANT_COUNT", "3")],
+        );
 
-        let message = err.to_string();
         assert!(
             message.contains("helper_transports"),
             "expected the sum check to fail, got: {message}"
         );
+    }
+
+    #[test]
+    fn a_cross_layer_conflict_names_the_layer_of_each_value() {
+        // "helper_transports sums to 7 but participant_count is 3" alone sends
+        // the developer to the file looking for a 3 that is not there.
+        let message = error_from(
+            "[defaults.helper_transports]\nhttp = 7\n",
+            &[("DEREC_PARTICIPANT_COUNT", "3")],
+        );
+
+        assert!(message.contains("env DEREC_PARTICIPANT_COUNT"), "{message}");
+        assert!(message.contains("file test.toml"), "{message}");
+        assert!(message.contains("adapt to participant_count"), "{message}");
+    }
+
+    #[test]
+    fn same_port_for_http_and_grpc_is_refused_at_boot() {
+        let message = error_from("", &[("DEREC_PORT", "50051")]);
+
+        assert!(message.contains("grpc_port"), "{message}");
+        assert!(message.contains("env DEREC_PORT"), "{message}");
+
+        // Not a conflict when there is no gRPC listener.
+        let loaded = settings_from(
+            "",
+            &[("DEREC_PORT", "50051"), ("DEREC_GRPC_ENABLED", "false")],
+        );
+        assert_eq!(loaded.settings.server.port, 50051);
     }
 
     #[test]
@@ -1104,6 +1979,172 @@ mod tests {
 
         assert_eq!(loaded.settings.server.base_url, "http://10.0.0.5");
         assert_eq!(loaded.settings.server.port, 6000);
+    }
+
+    #[test]
+    fn public_ports_follow_the_listeners_unless_set() {
+        // Unset: peers dial the ports the server listens on, as before.
+        let loaded = settings_from("[server]\nport = 6000\n[defaults]\ngrpc_port = 60051\n", &[]);
+        assert_eq!(loaded.settings.server.public_port, 6000);
+        assert_eq!(loaded.settings.server.public_grpc_port, 60051);
+
+        // Set: `docker run -p 8080:5000 -p 8081:50051` advertises what is
+        // published, not what the container listens on.
+        let loaded = settings_from(
+            "",
+            &[("DEREC_PUBLIC_PORT", "8080"), ("DEREC_PUBLIC_GRPC_PORT", "8081")],
+        );
+        assert_eq!(loaded.settings.server.port, 5000);
+        assert_eq!(loaded.settings.server.public_port, 8080);
+        assert_eq!(loaded.settings.server.public_grpc_port, 8081);
+    }
+
+    #[test]
+    fn a_trailing_slash_on_base_url_is_dropped() {
+        // Left in, every advertised URI would read `http://host/:5000/derec/…`.
+        let loaded = settings_from("[server]\nbase_url = \"http://192.168.1.20/\"\n", &[]);
+        assert_eq!(loaded.settings.server.base_url, "http://192.168.1.20");
+    }
+
+    #[test]
+    fn the_scheme_and_host_of_base_url_are_lowercased() {
+        // `HTTP://LOCALHOST` used to boot and then fail every provisioning
+        // call: the SDK matched transport URIs on a lowercase scheme.
+        let loaded = settings_from("", &[("DEREC_BASE_URL", "HTTP://LocalHost/")]);
+        assert_eq!(loaded.settings.server.base_url, "http://localhost");
+
+        let loaded = settings_from("", &[("DEREC_BASE_URL", "Https://[::1]")]);
+        assert_eq!(loaded.settings.server.base_url, "https://[::1]");
+    }
+
+    #[test]
+    fn a_base_url_with_credentials_is_refused_at_boot() {
+        for bad in ["http://user@host", "http://user:secret@host"] {
+            let message = error_from("", &[("DEREC_BASE_URL", bad)]);
+            assert!(
+                message.contains("user name or password"),
+                "{bad:?} should be refused for its credentials, got: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn normalizing_leaves_what_validation_must_refuse_for_it_to_refuse() {
+        assert_eq!(normalize_base_url("  192.168.1.20/ "), "192.168.1.20");
+        assert_eq!(normalize_base_url("FTP://Host"), "ftp://host");
+    }
+
+    #[test]
+    fn a_base_url_that_cannot_take_a_port_is_refused_at_boot() {
+        // Each of these used to boot and advertise an address nothing can dial,
+        // e.g. `http://host:8080:5000/derec/…`.
+        for (bad, hint) in [
+            ("http://192.168.1.20:8080", "public_port"),
+            ("http://host/path", "no path"),
+            ("192.168.1.20", "scheme and host"),
+            ("ftp://host", "http:// or https://"),
+            // The URL parser drops a default or empty port and an empty user
+            // name, and repairs a missing slash, so each of these used to pass
+            // and advertise e.g. `http://host:80:5600/derec/…`.
+            ("http://host:80", "public_port"),
+            ("https://host:443", "public_port"),
+            ("http://host:", "public_port"),
+            ("http://[::1]:80", "public_port"),
+            ("http://@host", "user name or password"),
+            ("http://:@host", "user name or password"),
+            ("http:/host", "scheme and host"),
+            ("http:host", "scheme and host"),
+            ("http://host?x=1", "no path"),
+            ("http://host#frag", "no path"),
+            ("http:///host", "no path"),
+        ] {
+            let message = error_from("", &[("DEREC_BASE_URL", bad)]);
+            assert!(
+                message.contains(hint),
+                "{bad:?} should be refused naming {hint:?}, got: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_loopback_base_url_warning_says_what_cannot_reach_it() {
+        assert_eq!(loopback_base_url_warning("http://192.168.0.28:5000", false), None);
+        assert_eq!(loopback_base_url_warning("http://node-a:5000", true), None);
+
+        for base in ["http://localhost:5000", "http://127.0.0.1:5000", "http://[::1]:5000"] {
+            let native = loopback_base_url_warning(base, false).expect("loopback warns");
+            assert!(native.contains("another device"), "{native}");
+            assert!(native.contains("in a container"), "{native}");
+
+            // In a container the claim "reachable from this machine" is false
+            // for every other container — the two-node Docker case.
+            let docker = loopback_base_url_warning(base, true).expect("loopback warns");
+            assert!(docker.contains("any other container"), "{docker}");
+            assert!(docker.contains("DEREC_PUBLIC_PORT"), "{docker}");
+            assert!(!docker.contains("only from this machine"), "{docker}");
+        }
+    }
+
+    #[test]
+    fn a_bracketed_ipv6_base_url_without_a_port_is_accepted() {
+        // Its own colons are not a port.
+        let loaded = settings_from("", &[("DEREC_BASE_URL", "http://[fe80::1]")]);
+        assert_eq!(loaded.settings.server.base_url, "http://[fe80::1]");
+    }
+
+    // ── Relay allowlist ──────────────────────────────────────────────────────
+
+    #[test]
+    fn the_relay_allowlist_is_empty_by_default_and_allows_no_other_node() {
+        let loaded = settings_from("", &[]);
+        let allowlist = loaded.settings.server.relay_allowlist();
+
+        assert_eq!(allowlist, RelayAllowlist::None);
+        assert!(!allowlist.allows("192.168.0.30", 50051));
+    }
+
+    #[test]
+    fn the_relay_allowlist_takes_hosts_and_host_ports_from_file_or_env() {
+        let loaded = settings_from(
+            "[server]\nrelay_allowed_hosts = \"node-b:50051, 192.168.0.30\"\n",
+            &[],
+        );
+        let allowlist = loaded.settings.server.relay_allowlist();
+        assert!(allowlist.allows("node-b", 50051));
+        assert!(!allowlist.allows("node-b", 50052), "the port was pinned");
+        assert!(allowlist.allows("192.168.0.30", 1), "no port means any port");
+        assert!(!allowlist.allows("192.168.0.31", 50051));
+
+        let loaded = settings_from("", &[("DEREC_RELAY_ALLOWED_HOSTS", "NODE-B [::1]:9")]);
+        let allowlist = loaded.settings.server.relay_allowlist();
+        assert!(allowlist.allows("node-b", 7), "hosts compare lowercased");
+        assert!(allowlist.allows("[::1]", 9));
+        let origin = loaded
+            .origins
+            .iter()
+            .find(|o| o.path == "server.relay_allowed_hosts")
+            .expect("origin recorded");
+        assert_eq!(origin.source, Source::Env("DEREC_RELAY_ALLOWED_HOSTS"));
+    }
+
+    #[test]
+    fn a_star_allows_any_host_but_only_on_its_own() {
+        let loaded = settings_from("", &[("DEREC_RELAY_ALLOWED_HOSTS", "*")]);
+        assert_eq!(loaded.settings.server.relay_allowlist(), RelayAllowlist::Any);
+
+        let message = error_from("", &[("DEREC_RELAY_ALLOWED_HOSTS", "*, node-b")]);
+        assert!(message.contains("relay_allowed_hosts"), "{message}");
+    }
+
+    #[test]
+    fn a_relay_allowlist_entry_that_is_not_a_host_is_refused_at_boot() {
+        for bad in ["grpc://node-b:50051", "node-b/x", "user@node-b", "node-b:", "node-b:99999"] {
+            let message = error_from("", &[("DEREC_RELAY_ALLOWED_HOSTS", bad)]);
+            assert!(
+                message.contains("relay_allowed_hosts") && message.contains("env DEREC_RELAY_ALLOWED_HOSTS"),
+                "{bad:?}: {message}"
+            );
+        }
     }
 
     #[test]
@@ -1128,21 +2169,99 @@ mod tests {
     }
 
     #[test]
+    fn text_settings_keep_values_that_look_like_numbers_or_booleans() {
+        // Coercion used to guess from the text, so these arrived as a number
+        // and a boolean and were rejected as the wrong type.
+        let loaded = settings_from(
+            "",
+            &[("DEREC_STATIC_DIR", "2024"), ("DEREC_DATABASE_URL", "123")],
+        );
+        assert_eq!(loaded.settings.server.static_dir, "2024");
+        assert_eq!(loaded.settings.server.database_url, "123");
+
+        // `true` is still not a URL, but the refusal is about the URL, not a
+        // type the developer never chose.
+        let message = error_from("", &[("DEREC_BASE_URL", "true")]);
+        assert!(message.contains("base_url must be a scheme and host"), "{message}");
+        assert!(message.contains("env DEREC_BASE_URL"), "{message}");
+        assert!(!message.contains("invalid type"), "{message}");
+    }
+
+    #[test]
+    fn environment_values_are_trimmed_and_booleans_are_case_insensitive() {
+        let loaded = settings_from(
+            "",
+            &[
+                ("DEREC_PORT", " 6000 "),
+                ("DEREC_GRPC_ENABLED", "FALSE"),
+                ("DEREC_GRPC_RELAY_ENABLED", "No"),
+                ("DEREC_AUTO_ACCEPT_STORE_SHARE_REQUESTS", "1"),
+                ("DEREC_BASE_URL", " http://10.0.0.5 "),
+            ],
+        );
+
+        assert_eq!(loaded.settings.server.port, 6000);
+        assert!(!loaded.settings.defaults.grpc_enabled);
+        assert!(!loaded.settings.defaults.grpc_relay_enabled);
+        assert!(loaded.settings.defaults.auto_accept_store_share_requests);
+        assert_eq!(loaded.settings.server.base_url, "http://10.0.0.5");
+    }
+
+    #[test]
+    fn an_unparsable_environment_value_names_the_variable_not_the_figment_key() {
+        for (variable, value) in [
+            ("DEREC_PORT", "abc"),
+            ("DEREC_PORT", "70000"),
+            ("DEREC_PARTICIPANT_COUNT", "300"),
+            ("DEREC_GRPC_ENABLED", "maybe"),
+        ] {
+            let message = error_from("", &[(variable, value)]);
+            assert!(message.contains(variable), "{variable}={value}: {message}");
+            assert!(!message.contains("default."), "{variable}={value}: {message}");
+            assert!(!message.contains("config.toml"), "{variable}={value}: {message}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_enum_value_from_the_environment_names_the_variable() {
+        let message = error_from("", &[("DEREC_UNPAIR_ACK", "sometimes")]);
+
+        assert!(message.contains("env DEREC_UNPAIR_ACK"), "{message}");
+        assert!(message.contains("unpair_ack"), "{message}");
+        assert!(!message.contains("default."), "{message}");
+    }
+
+    #[test]
+    fn a_wrong_type_in_the_file_names_the_file_and_the_plain_key() {
+        let message = error_from("[server]\nport = \"five thousand\"\n", &[]);
+
+        assert!(message.contains("server.port"), "{message}");
+        assert!(message.contains("file test.toml"), "{message}");
+        assert!(!message.contains("default."), "{message}");
+    }
+
+    #[test]
+    fn an_empty_environment_value_counts_as_unset() {
+        // What compose produces for `DEREC_PORT: ${PORT}` with PORT undefined.
+        let loaded = settings_from("[server]\nport = 6000\n", &[("DEREC_PORT", "")]);
+
+        assert_eq!(loaded.settings.server.port, 6000);
+        assert_eq!(loaded.empty_env, vec!["DEREC_PORT"]);
+        let banner = report(&loaded, Path::new("config.toml"));
+        assert!(banner.contains("DEREC_PORT is set but empty"), "{banner}");
+    }
+
+    #[test]
     fn a_misspelled_file_key_is_rejected_rather_than_ignored() {
         // `deny_unknown_fields` exists so a typo fails loudly. Silently ignoring
         // it would leave the developer staring at a value they thought they set.
-        let err = with_env(&[], || {
-            Settings::merge(
-                Path::new("test.toml"),
-                Some("[defaults]\nprotocol_timeout_sec = 45\n".to_owned()),
-            )
-            .unwrap_err()
-        });
+        let message = error_from("[defaults]\nprotocol_timeout_sec = 45\n", &[]);
 
         assert!(
-            err.to_string().contains("protocol_timeout_sec"),
-            "the error must name the offending key, got: {err}"
+            message.contains("protocol_timeout_sec"),
+            "the error must name the offending key, got: {message}"
         );
+        assert!(message.contains("file test.toml"), "{message}");
     }
 
     #[test]
@@ -1157,8 +2276,14 @@ mod tests {
     }
 
     #[test]
-    fn config_path_is_not_treated_as_a_config_key() {
-        let loaded = settings_from("", &[("DEREC_CONFIG_PATH", "/etc/derec/config.toml")]);
+    fn reserved_variables_are_not_treated_as_config_keys() {
+        let loaded = settings_from(
+            "",
+            &[
+                ("DEREC_CONFIG_PATH", "/etc/derec/config.toml"),
+                ("DEREC_DATA_DIR", "/data"),
+            ],
+        );
 
         assert!(loaded.unknown_env.is_empty(), "got {:?}", loaded.unknown_env);
     }
@@ -1168,16 +2293,18 @@ mod tests {
         let mut names = HashSet::new();
         let mut paths = HashSet::new();
 
-        for (name, path) in ENV_KEYS {
-            assert!(names.insert(*name), "duplicate variable name: {name}");
-            assert!(paths.insert(*path), "duplicate config path: {path}");
+        for key in ENV_KEYS {
+            assert!(names.insert(key.variable), "duplicate variable name: {}", key.variable);
+            assert!(paths.insert(key.path), "duplicate config path: {}", key.path);
             assert!(
-                name.starts_with(ENV_PREFIX),
-                "{name} is missing the {ENV_PREFIX} prefix"
+                key.variable.starts_with(ENV_PREFIX),
+                "{} is missing the {ENV_PREFIX} prefix",
+                key.variable
             );
             assert!(
-                !RESERVED_ENV.contains(name),
-                "{name} is both a config key and reserved"
+                !RESERVED_ENV.contains(&key.variable),
+                "{} is both a config key and reserved",
+                key.variable
             );
         }
     }
@@ -1230,8 +2357,8 @@ mod tests {
         let loaded = settings_from("", &[]);
         let reported: HashSet<&str> = loaded.origins.iter().map(|o| o.path).collect();
 
-        for (_, path) in ENV_KEYS {
-            assert!(reported.contains(path), "{path} has no origin");
+        for key in ENV_KEYS {
+            assert!(reported.contains(key.path), "{} has no origin", key.path);
         }
         assert_eq!(reported.len(), ENV_KEYS.len());
     }
@@ -1239,8 +2366,11 @@ mod tests {
     #[test]
     fn legacy_unprefixed_names_are_detected() {
         let found = with_env(&[("BASE_URL", "http://10.0.0.5")], legacy_env_in_use);
-
         assert_eq!(found, vec![("BASE_URL", "DEREC_BASE_URL")]);
+
+        // Documented as aborting boot, and used to be silently ignored.
+        let found = with_env(&[("STATIC_DIR", "/app/static")], legacy_env_in_use);
+        assert_eq!(found, vec![("STATIC_DIR", "DEREC_STATIC_DIR")]);
     }
 
     #[test]
@@ -1322,6 +2452,18 @@ mod tests {
         // whole diagnostic: "I set it and nothing happened" looks like this.
         assert!(banner.contains("protocol_timeout_secs"), "{banner}");
         assert!(banner.contains("default"), "{banner}");
+    }
+
+    #[test]
+    fn the_banner_never_prints_a_database_password() {
+        let loaded = settings_from(
+            "",
+            &[("DEREC_DATABASE_URL", "postgres://derec:hunter2@db:5432/derec")],
+        );
+
+        let banner = report(&loaded, Path::new("config.toml"));
+        assert!(!banner.contains("hunter2"), "{banner}");
+        assert!(banner.contains("postgres://derec:***@db:5432/derec"), "{banner}");
     }
 
     #[test]

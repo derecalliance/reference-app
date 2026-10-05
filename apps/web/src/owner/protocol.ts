@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { DeRecProtocol, DeRecProtocolBuilder, type DeRecEvent } from '@derec-alliance/web'
 
 import { relayMessage, sendMessage } from '../derecApi'
@@ -27,6 +30,26 @@ import {
  * the real result. Must stay well below the configured protocol timeout.
  */
 export const TICK_INTERVAL_MS = 15_000
+
+/**
+ * How long a publishing round waits on a helper or replica that has not
+ * answered before closing without it — the library's own default, set
+ * explicitly so the app's backstop below is derived from the real number
+ * rather than a remembered one.
+ */
+export const SHARING_ROUND_SECS = 60
+
+/**
+ * How long the app waits on a protect round before stepping in itself.
+ *
+ * The library always closes a round: within `SHARING_ROUND_SECS` of the last
+ * helper going quiet, noticed on the next tick, and later still when the
+ * replica leg has to time out as well. The app's watchdog used to fire on the
+ * general protocol timeout, which could be shorter — so it reported a round
+ * as failed and erased its progress, and the library then committed it anyway.
+ * Twice the round budget plus two ticks keeps it strictly behind the library.
+ */
+export const PROTECT_ROUND_BACKSTOP_MS = 2 * SHARING_ROUND_SECS * 1000 + 2 * TICK_INTERVAL_MS
 
 /**
  * How long a `Pending` channel may wait for out-of-band confirmation.
@@ -67,6 +90,12 @@ interface BuildProtocolOptions {
   unpairAck: 'required' | 'not_required'
   replicaId: bigint
   /**
+   * The owner actor this instance acts for — the vault's own id — sent with
+   * every relayed message so the node can attribute it. Omitted, the relay
+   * still works, unattributed.
+   */
+  relayActorId?: string
+  /**
    * When `true`, every outbound request from this instance stamps
    * `replyTo = ownTransport`, overriding the channel's stored peer endpoint
    * for that exchange. Needed only by a replica destination that has just
@@ -90,7 +119,9 @@ export function buildProtocolInstance(opts: BuildProtocolOptions): ProtocolInsta
     .withSecretStore(makeSecretStore(opts.namespace))
     .withUserSecretStore(makeUserSecretStore(opts.namespace))
     .withStateStore(makeStateStore(opts.namespace))
-    .withTransport(makeTransport(sendMessage, relayMessage))
+    .withTransport(
+      makeTransport(sendMessage, (uri, message) => relayMessage(uri, message, opts.relayActorId)),
+    )
     // A list, even though this app serves exactly one endpoint: the singular
     // setter is deprecated, and the whole list is what gets advertised in
     // `supportedTransports` at pairing.
@@ -118,6 +149,7 @@ export function buildProtocolInstance(opts: BuildProtocolOptions): ProtocolInsta
       // publishing round is not reported complete until the replica leg
       // resolves too.
       inbound_message_secs: opts.timeoutSecs,
+      sharing_round_secs: SHARING_ROUND_SECS,
       // Cleanup is driven from this page's own tick instead — see
       // `PENDING_CHANNEL_TTL_SECS`.
       expired_channels: { enabled: false, timeout_in_secs: PENDING_CHANNEL_TTL_SECS },

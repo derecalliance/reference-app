@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 /**
  * Coercing the library's binary fields into real `Uint8Array`s.
  *
@@ -41,4 +44,15 @@ export function toBytes(value: ByteSource): Uint8Array {
     `expected bytes, got ${value === null ? 'null' : typeof value} — ` +
       'the library returned a shape this app cannot read as binary',
   )
+}
+
+/**
+ * Lower-case hex, as the app writes user-secret ids everywhere it mints them.
+ *
+ * Restored and adopted secrets arrive as bytes; writing them as hex too keeps
+ * one id spelling across the app, so the same secret shows the same id on the
+ * source and on a replica that adopted it.
+ */
+export function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')
 }

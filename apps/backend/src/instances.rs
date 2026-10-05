@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! Protocol instances held by one provisioned actor, keyed by the `secret_id`
 //! each is bound to.
 //!

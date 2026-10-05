@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import type { ReplicaChannel } from './ownerPairing'
 import { ReplicaChannelRow } from './ReplicaChannelRow'
 import type { GroupMemberRow } from './owner/groupMembers'
@@ -31,6 +34,8 @@ export interface ReplicasTabProps {
   protocolTimeoutSecs: number
   /** The channel whose "Sync now" is in flight, or `null`. */
   syncingChannelId: string | null
+  /** Destination channels still fetching their source's copy. */
+  catchingUpChannelIds: readonly string[]
   /** The sync message to show on a given row, or `null`. */
   syncNoticeFor: (view: ReplicaView) => ReplicaRowSyncNotice | null
   onDismissSyncNotice: () => void
@@ -91,6 +96,20 @@ export interface ReplicasTabProps {
   memberRows: readonly GroupMemberRow[]
   /** Evict a member by its replica id. */
   onRemoveMember: (replicaId: string) => void
+  /**
+   * The version this vault holds, or `null` before its first protect round —
+   * what a source row's acknowledgement is compared against to say "behind".
+   */
+  vaultVersion: number | null
+  /**
+   * The replica id of the source this vault's current version names, if it
+   * carries a replica group. A destination row whose peer *is* that source is
+   * one whose vault this device already holds — its offer has been taken.
+   *
+   * Matched by member rather than by channel: the group's channel id is not
+   * stable across admissions, while the source's replica id is.
+   */
+  groupSourceReplicaId: string | null
 }
 
 export function ReplicasTab({
@@ -98,6 +117,7 @@ export function ReplicasTab({
   viewByChannelId,
   protocolTimeoutSecs,
   syncingChannelId,
+  catchingUpChannelIds,
   syncNoticeFor,
   onDismissSyncNotice,
   onOpenFingerprint,
@@ -110,6 +130,8 @@ export function ReplicasTab({
   onToggleOffline,
   memberRows,
   onRemoveMember,
+  vaultVersion,
+  groupSourceReplicaId,
 }: ReplicasTabProps) {
   /**
    * Members with no direct channel, rendered as the ordinary rows they are.
@@ -187,6 +209,7 @@ export function ReplicasTab({
                 view={view}
                 protocolTimeoutSecs={protocolTimeoutSecs}
                 syncing={syncingChannelId === channel.channelId}
+                catchingUp={catchingUpChannelIds.includes(channel.channelId)}
                 // A protect round is global, so one in flight anywhere blocks
                 // every row's request.
                 syncBlocked={syncingChannelId !== null}
@@ -208,6 +231,12 @@ export function ReplicasTab({
                 canToggleOffline={view?.helperActorId != null}
                 offline={view?.offline === true}
                 onToggleOffline={() => view && onToggleOffline(view)}
+                vaultVersion={vaultVersion}
+                holdsPeerVault={
+                  view?.direction === 'replica_destination' &&
+                  groupSourceReplicaId !== null &&
+                  view.peerReplicaId === groupSourceReplicaId
+                }
               />
             )
           })}

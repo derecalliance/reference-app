@@ -1,4 +1,7 @@
-import { useState, type ComponentType, type ReactNode } from 'react'
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
+import { lazy, Suspense, useEffect, useState, type ComponentType, type ReactNode } from 'react'
 import GroupsIcon from '@mui/icons-material/Groups'
 import MenuIcon from '@mui/icons-material/Menu'
 import PersonIcon from '@mui/icons-material/Person'
@@ -6,6 +9,7 @@ import SettingsIcon from '@mui/icons-material/Settings'
 import TroubleshootIcon from '@mui/icons-material/Troubleshoot'
 import {
   Box,
+  CircularProgress,
   Drawer,
   IconButton,
   List,
@@ -17,9 +21,16 @@ import {
 } from '@mui/material'
 
 import { loadSection, persistSection, type AppSection } from './adminSection'
-import { InspectTab } from './admin/InspectTab'
-import { ParticipantsPane } from './admin/ParticipantsPane'
-import { SettingsPane } from './admin/SettingsPane'
+import { parseHash } from './routing'
+
+// The operator sections load on first visit. Most sessions live in the Owner
+// section, and these — with the tables and forms only they use — kept the
+// first load a single oversized script.
+const InspectTab = lazy(() => import('./admin/InspectTab').then(m => ({ default: m.InspectTab })))
+const ParticipantsPane = lazy(() =>
+  import('./admin/ParticipantsPane').then(m => ({ default: m.ParticipantsPane })),
+)
+const SettingsPane = lazy(() => import('./admin/SettingsPane').then(m => ({ default: m.SettingsPane })))
 
 const DRAWER_WIDTH = 216
 
@@ -53,9 +64,9 @@ export interface AppShellProps {
  * browser context, while the operator surface is about the node — and they used
  * to be nested, with the participant pool living inside the owner page.
  *
- * Sections are state rather than routes. The app has no client-side routing,
- * which is why the backend's static fallback carries no SPA rewrite; adding a
- * URL here would mean changing the server to serve it.
+ * Sections are state rather than routes. Only the Owner section's own screens
+ * — the vault list, the wizard, one vault — are addressed, by hash routes (see
+ * `routing.ts`), which need no server-side rewrite.
  */
 export function AppShell({ children }: AppShellProps) {
   const [section, setSection] = useState<AppSection>(loadSection)
@@ -73,6 +84,20 @@ export function AppShell({ children }: AppShellProps) {
     persistSection(next)
     setDrawerOpen(false)
   }
+
+  // A route to a vault or the wizard is an Owner-section route. Following one —
+  // a banner click, a pasted link — from another section must bring the Owner
+  // section up, or the vault would change with nothing on screen to show it.
+  useEffect(() => {
+    const onRoute = () => {
+      if (parseHash(window.location.hash).kind !== 'list') {
+        setSection('owner')
+        persistSection('owner')
+      }
+    }
+    window.addEventListener('hashchange', onRoute)
+    return () => window.removeEventListener('hashchange', onRoute)
+  }, [])
 
   const nav = (
     <List component="nav" aria-label="App sections" sx={{ pt: { xs: 1, lg: 2 } }}>
@@ -103,7 +128,11 @@ export function AppShell({ children }: AppShellProps) {
   // globally. Without it they inherit centered prose and run to the window edge.
   const adminFrame = (pane: ReactNode) => (
     <Box sx={{ textAlign: 'left', p: { xs: 2, lg: 3 }, width: '100%', minWidth: 0 }}>
-      {pane}
+      <Suspense
+        fallback={<CircularProgress size={24} aria-label="Loading section" />}
+      >
+        {pane}
+      </Suspense>
     </Box>
   )
 

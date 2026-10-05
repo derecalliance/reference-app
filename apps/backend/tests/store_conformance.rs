@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! The conformance suite against the stores that already work.
 //!
 //! This is the proving run. If these pass, the suite is known to describe real

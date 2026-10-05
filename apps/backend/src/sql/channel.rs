@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! `DeRecChannelStore` over SQL.
 //!
 //! Helper channels and replica-group members share the `channels` table,
@@ -43,6 +46,80 @@ impl SqlChannelStore {
             pool,
             actor_id: actor_id.into(),
         }
+    }
+
+    /// Every helper-channel record this actor holds, across all its instances,
+    /// with the `secret_id` of the instance holding each.
+    ///
+    /// Outside the trait, because the trait is per instance and this is per
+    /// actor: the roster and boot recovery want "which channels does this actor
+    /// hold" without borrowing — or even knowing — each protocol instance. The
+    /// rows are the instances' own, so this is the same answer each instance
+    /// would give, read without contending with in-flight protocol calls.
+    ///
+    /// Ordered by `(created_at, channel_id)`, oldest first, so every caller
+    /// sees the same sequence before and after a restart.
+    pub async fn helper_records_all_instances(
+        &self,
+    ) -> Result<Vec<(u64, HelperChannel)>, ChannelStoreError> {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT secret_id, record FROM channels WHERE actor_id = $1 AND kind = $2",
+        )
+        .bind(&self.actor_id)
+        .bind(KIND_HELPER)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for (secret, json) in rows {
+            let secret_id = text_to_id(&secret).map_err(backend)?;
+            match serde_json::from_str::<ChannelRecord>(&json).map_err(backend)? {
+                ChannelRecord::Helper(h) => out.push((secret_id, h)),
+                ChannelRecord::Replica(_) => {
+                    return Err(ChannelStoreError::Backend(
+                        "replica record stored under kind 'helper'".into(),
+                    ));
+                }
+            }
+        }
+        out.sort_by_key(|(_, h)| (h.created_at, h.channel_id.0));
+        Ok(out)
+    }
+
+    /// Whether this actor holds `channel_id` on any instance, as a helper
+    /// channel or as a replica-group member — narrowed to one instance when
+    /// `secret_id` is given.
+    ///
+    /// For routes that act on a named channel: asking first lets an unknown
+    /// channel be answered as one (`404`) instead of surfacing as whatever the
+    /// protocol call happens to fail with.
+    pub async fn holds_channel(
+        &self,
+        channel_id: u64,
+        secret_id: Option<u64>,
+    ) -> Result<bool, ChannelStoreError> {
+        let row: Option<(String,)> = match secret_id {
+            Some(secret_id) => sqlx::query_as(
+                "SELECT channel_id FROM channels \
+                 WHERE actor_id = $1 AND channel_id = $2 AND secret_id = $3",
+            )
+            .bind(&self.actor_id)
+            .bind(id_to_text(channel_id))
+            .bind(id_to_text(secret_id))
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(backend)?,
+            None => sqlx::query_as(
+                "SELECT channel_id FROM channels WHERE actor_id = $1 AND channel_id = $2",
+            )
+            .bind(&self.actor_id)
+            .bind(id_to_text(channel_id))
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(backend)?,
+        };
+        Ok(row.is_some())
     }
 }
 
@@ -117,7 +194,7 @@ impl DeRecChannelStore for SqlChannelStore {
             // Delete-then-insert rather than an upsert: it is the one shape
             // both engines accept unmodified, and it matches the in-memory
             // store's `HashMap::insert` — replace in place, never duplicate.
-            let mut tx = pool.begin().await.map_err(backend)?;
+            let mut tx = crate::db::begin_write(&pool).await.map_err(backend)?;
 
             sqlx::query(
                 "DELETE FROM channels \
@@ -276,7 +353,7 @@ impl DeRecChannelStore for SqlChannelStore {
 
         Box::pin(async move {
             // Both directions, so `linked_channels` can start from either end.
-            let mut tx = pool.begin().await.map_err(backend)?;
+            let mut tx = crate::db::begin_write(&pool).await.map_err(backend)?;
 
             for (from, to) in [(&a, &b), (&b, &a)] {
                 sqlx::query(

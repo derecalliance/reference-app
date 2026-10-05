@@ -1,8 +1,10 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 use std::sync::{Arc, RwLock};
 
 use actix::Addr;
 use dashmap::DashMap;
-use tokio::sync::{Mutex, mpsc};
 use uuid::Uuid;
 
 use crate::actor::ProvisionedActor;
@@ -11,8 +13,10 @@ use crate::models::{Actor, Role, TransportBreakdown, TransportMode, TransportPro
 
 /// Unified inbox for all actors, regardless of whether they run in-process or in a browser.
 pub enum ActorInbox {
-    /// Messages are buffered in an mpsc channel and drained by HTTP polling.
-    Browser(mpsc::UnboundedSender<Vec<u8>>),
+    /// Messages are queued in the database ([`crate::registry::mailbox`]) and
+    /// drained by the tab's HTTP polling. Nothing live to hold here — the
+    /// variant only records that this actor's protocol runs in a browser.
+    Browser,
     /// Messages are delivered directly to the Actix actor's mailbox.
     Provisioned(Addr<ProvisionedActor>),
 }
@@ -195,13 +199,21 @@ pub struct AppState {
 
     // ── Live delivery handles, not data ─────────────────────────────────────
     //
-    // These two stay in memory because they cannot be anything else: an
-    // `actix::Addr` and an `mpsc` sender are runtime handles with no
-    // serialised form. They are rebuilt when actors are respawned, which is
-    // why a restart currently leaves persisted actors without an inbox.
+    // This stays in memory because it cannot be anything else: an
+    // `actix::Addr` is a runtime handle with no serialised form. It is rebuilt
+    // when actors are respawned — see `recovery`.
     pub actor_inboxes: Arc<DashMap<Uuid, ActorInbox>>,
-    /// Receiver halves for browser actor inboxes; drained by the poll_mailbox handler.
-    pub browser_receivers: Arc<DashMap<Uuid, Arc<Mutex<mpsc::UnboundedReceiver<Vec<u8>>>>>>,
+    /// Messages waiting for browser-run actors, drained by `poll_mailbox`.
+    /// Persisted, so they survive a restart and a tab reclaiming its actor.
+    pub mailboxes: Arc<crate::registry::mailbox::Mailboxes>,
+    /// When each browser-managed actor last drained its mailbox, in Unix
+    /// milliseconds. Served as `last_polled_at` on `GET /actors`, so a peer
+    /// can tell a tab that is open from one that was closed hours ago.
+    ///
+    /// In memory on purpose, and so it resets on restart: it describes this
+    /// process's view of a live tab, and a value carried across a restart
+    /// would claim a tab was polling a node that was not running.
+    pub mailbox_polls: Arc<DashMap<Uuid, u64>>,
     /// Operator-supplied starting values for the front end. Read once at boot
     /// and never mutated — the backend serves them, the front end owns them.
     pub defaults: Arc<Defaults>,
@@ -209,7 +221,14 @@ pub struct AppState {
     /// Served by `GET /debug/config`. All built-in defaults under
     /// `test_support`, which builds state without a configuration pass.
     pub config: Arc<crate::config::Loaded>,
+    /// Scheme, host and *public* HTTP port — the prefix of every HTTP URI this
+    /// node advertises. Not necessarily where it listens; see
+    /// `ServerSettings::public_port`.
     pub base_url: Arc<str>,
+    /// The gRPC port advertised to peers. `defaults.grpc_port` unless the
+    /// node is published on a different one; see
+    /// `ServerSettings::public_grpc_port`.
+    pub public_grpc_port: u16,
     pub http_client: reqwest::Client,
     /// The database every actor's stores read and write. A handle, like
     /// `http_client` beside it.
@@ -221,6 +240,10 @@ pub struct AppState {
     /// actually travelled over. Read by the Inspect tab and by agents over
     /// HTTP; see [`crate::debug`].
     pub events: Arc<crate::debug::EventLog>,
+    /// Every address this node advertised before its current one, so a
+    /// message still sent to an old one is delivered here rather than
+    /// dialled. Loaded and extended by recovery; see [`crate::addresses`].
+    pub addresses: Arc<crate::addresses::NodeAddresses>,
 }
 
 impl AppState {
@@ -239,7 +262,9 @@ impl AppState {
                 crate::registry::flags::ParticipantContacts::new(pool.clone()),
             ),
             actor_inboxes: Arc::new(DashMap::new()),
-            browser_receivers: Arc::new(DashMap::new()),
+            mailboxes: Arc::new(crate::registry::mailbox::Mailboxes::new(pool.clone())),
+            mailbox_polls: Arc::new(DashMap::new()),
+            public_grpc_port: defaults.grpc_port,
             defaults: Arc::new(defaults),
             config: Arc::new(crate::config::Loaded::default()),
             base_url: base_url.into(),
@@ -248,6 +273,7 @@ impl AppState {
             arbiter,
             channel_router: Arc::new(crate::routing::ChannelRouter::new()),
             events: Arc::new(crate::debug::EventLog::new()),
+            addresses: Arc::new(crate::addresses::NodeAddresses::new()),
         }
     }
 
@@ -261,9 +287,23 @@ impl AppState {
         self
     }
 
+    /// Whether `actor_id`'s protocol runs in a browser on this node — so it
+    /// has a mailbox to poll and no backend instance to drive.
+    pub fn is_browser_managed(&self, actor_id: &Uuid) -> bool {
+        self.actor_inboxes
+            .get(actor_id)
+            .is_some_and(|inbox| matches!(inbox.value(), ActorInbox::Browser))
+    }
+
+    /// Advertise `port` for gRPC instead of the listener's own.
+    pub fn with_public_grpc_port(mut self, port: u16) -> Self {
+        self.public_grpc_port = port;
+        self
+    }
+
     /// Host and port peers dial for gRPC, derived from `base_url`'s host and
-    /// the configured gRPC port so a LAN `BASE_URL` produces a LAN gRPC
-    /// endpoint rather than an unreachable `localhost` one.
+    /// the public gRPC port so a LAN `base_url` produces a LAN gRPC endpoint
+    /// rather than an unreachable `localhost` one.
     ///
     /// Handles a bracketed IPv6 literal (`[::1]:5000`) as one unit: naively
     /// splitting the authority on `:` would cut a `[::1]` host apart at its
@@ -276,7 +316,7 @@ impl AppState {
             .and_then(|rest| rest.split('/').next())
             .map(host_from_authority)
             .unwrap_or_else(|| "localhost".to_owned());
-        format!("{host}:{}", self.defaults.grpc_port)
+        format!("{host}:{}", self.public_grpc_port)
     }
 }
 

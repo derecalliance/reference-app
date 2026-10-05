@@ -1,18 +1,28 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
+import { ModalFrame } from '../ModalFrame'
 import { useEffect, useRef, useState } from 'react'
 import { useProtocolTimeoutMs } from '../ProtocolConfig'
 import { errorText } from '../errorText'
 import { EyeIcon, EyeOffIcon } from './icons'
 import { ModalCloseButton } from './primitives'
 import type { PairedParticipant } from '../types'
+import { verifyProgress, type VerifyDispatch, type VerifyRowState } from './verification'
 
 export function SecretDataField({
   value,
   onChange,
   disabled,
+  describedBy,
+  invalid,
 }: {
   value: string
   onChange: (v: string) => void
   disabled?: boolean
+  /** Id of the helper or error text that describes the field. */
+  describedBy?: string
+  invalid?: boolean
 }) {
   const [visible, setVisible] = useState(false)
 
@@ -28,6 +38,8 @@ export function SecretDataField({
         spellCheck={false}
         autoComplete="off"
         disabled={disabled}
+        aria-describedby={describedBy}
+        aria-invalid={invalid || undefined}
       />
       <button
         type="button"
@@ -41,14 +53,23 @@ export function SecretDataField({
   )
 }
 
-//
-// Two-step modal:
-//   Step 1 — select participants (checkbox list, all pre-selected)
-//   Step 2 — progress (spinner → checkmark as ShareVerified events arrive)
-//
-// Progress updates automatically: `secret` is a prop that refreshes from owner
-// state whenever a ShareVerified event is applied, so no callbacks or refs needed.
+const ROW_DISPLAY: Record<VerifyRowState, { label: string; itemClass: string; statusClass: string }> = {
+  verified: { label: 'Verified', itemClass: 'share-progress-item--confirmed', statusClass: 'status--verified' },
+  failed: { label: 'Challenge not sent', itemClass: 'share-progress-item--failed', statusClass: 'status--failed' },
+  'timed-out': { label: 'Verification timed out', itemClass: 'share-progress-item--failed', statusClass: 'status--failed' },
+  waiting: { label: 'Waiting…', itemClass: '', statusClass: '' },
+}
 
+/**
+ * Progress of one verification round, spinner → checkmark as `ShareVerified`
+ * events arrive.
+ *
+ * `version` is the version this dialog challenged, fixed for its lifetime, and
+ * `verifiedParticipantIds` must be *that* version's — the caller looks it up by
+ * number. Following "the current version" instead left the dialog waiting
+ * forever whenever a publish landed mid-verification: the answers arrived for
+ * the version challenged, the dialog was reading the new one.
+ */
 export function VerifySharesModal({
   version,
   verifiedParticipantIds,
@@ -57,16 +78,16 @@ export function VerifySharesModal({
   onVerify,
 }: {
   version: number
-  /** Live-updated list of participant IDs that have passed verification for this version. */
-  verifiedParticipantIds: string[]
+  /** Live-updated list of participant IDs that have passed verification for `version`. */
+  verifiedParticipantIds: readonly string[]
   confirmedParticipants: PairedParticipant[]
   onClose: () => void
-  onVerify: (version: number) => Promise<void>
+  onVerify: (version: number) => Promise<VerifyDispatch>
 }) {
   const timeoutMs = useProtocolTimeoutMs()
-  const [sent, setSent] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [timedOut, setTimedOut] = useState<Set<string>>(new Set())
+  const [failedChannelIds, setFailedChannelIds] = useState<ReadonlySet<string>>(new Set())
+  const [deadlinePassed, setDeadlinePassed] = useState(false)
   // State-based guards don't protect against React 18 StrictMode's double-
   // invoke of effects: the state update scheduled in the first setup hasn't
   // been flushed before the second setup runs, so a `sent` flag still reads
@@ -79,114 +100,94 @@ export function VerifySharesModal({
   useEffect(() => {
     if (hasStartedRef.current) return
     hasStartedRef.current = true
-    setSent(true)
-    onVerify(version).catch(err => {
-      setError(errorText(err))
-    })
+    onVerify(version)
+      .then(dispatch => setFailedChannelIds(new Set(dispatch.failedChannelIds)))
+      .catch(err => {
+        // Nothing went out, so nothing will answer: resolve every row now
+        // rather than spinning until the deadline.
+        setError(errorText(err))
+        setFailedChannelIds(new Set(confirmedParticipants.map(h => h.channelId)))
+      })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Only the deadline is timed. Who it catches is read at render time from
+  // the live verified list — see `verifyProgress`.
   useEffect(() => {
-    if (!sent) return
-    const timer = setTimeout(() => {
-      const pending = confirmedParticipants.filter(
-        h => !verifiedParticipantIds.includes(h.id),
-      )
-      if (pending.length > 0) {
-        setTimedOut(new Set(pending.map(h => h.channelId)))
-      }
-    }, timeoutMs)
+    const timer = setTimeout(() => setDeadlinePassed(true), timeoutMs)
     return () => clearTimeout(timer)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sent])
+  }, [timeoutMs])
 
-  const totalCount = confirmedParticipants.length
-  const verifiedCount = confirmedParticipants.filter(
-    h => verifiedParticipantIds.includes(h.id),
-  ).length
-  const failedCount = confirmedParticipants.filter(
-    h => timedOut.has(h.channelId),
-  ).length
-  const resolvedCount = verifiedCount + failedCount
-  const allDone = totalCount > 0 && resolvedCount === totalCount
-  const pct = totalCount > 0
-    ? Math.round((resolvedCount / totalCount) * 100)
-    : 0
+  const { rows, verifiedCount, failedCount, allDone, percent } = verifyProgress({
+    participants: confirmedParticipants,
+    verifiedParticipantIds,
+    failedChannelIds,
+    deadlinePassed,
+  })
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="verify-progress-title">
-      <div className="modal verify-modal--progress">
-        <div className="modal-header">
-          <h2 className="modal-title" id="verify-progress-title">Verifying Shares</h2>
-          <ModalCloseButton onClose={onClose} />
+    <ModalFrame
+      overlayClassName="modal-overlay"
+      className="modal verify-modal--progress"
+      labelledBy="verify-progress-title"
+      onEscape={onClose}
+    >
+      <div className="modal-header">
+        <h2 className="modal-title" id="verify-progress-title">Verifying Shares · v{version}</h2>
+        <ModalCloseButton onClose={onClose} />
+      </div>
+      <div className="modal-body">
+        {error && <p className="field-error" role="alert">{error}</p>}
+        <div className="verify-progress-bar-section">
+          <div className="share-progress-bar-track">
+            <div
+              className="share-progress-bar-fill"
+              style={{ width: `${percent}%` }}
+              role="progressbar"
+              aria-valuenow={percent}
+              aria-valuemin={0}
+              aria-valuemax={100}
+            />
+          </div>
+          <p className="share-progress-summary">
+            {verifiedCount} of {rows.length} verified
+            {failedCount > 0 && ` · ${failedCount} failed`}
+          </p>
         </div>
-        <div className="modal-body">
-          {error && <p className="field-error">{error}</p>}
-          <div className="verify-progress-bar-section">
-            <div className="share-progress-bar-track">
-              <div
-                className="share-progress-bar-fill"
-                style={{ width: `${pct}%` }}
-                role="progressbar"
-                aria-valuenow={pct}
-                aria-valuemin={0}
-                aria-valuemax={100}
-              />
-            </div>
-            <p className="share-progress-summary">
-              {verifiedCount} of {totalCount} verified
-              {failedCount > 0 && ` · ${failedCount} failed`}
-            </p>
-          </div>
 
-          <ul className="share-progress-list" role="list">
-            {confirmedParticipants.map(h => {
-              const isVerified = verifiedParticipantIds.includes(h.id)
-              const isTimedOut = timedOut.has(h.channelId)
+        <ul className="share-progress-list" role="list">
+          {rows.map(row => {
+            const display = ROW_DISPLAY[row.state]
+            return (
+              <li key={row.id} className={`share-progress-item ${display.itemClass}`}>
+                <span className="verify-progress-icon">
+                  {row.state === 'verified' ? (
+                    <span className="verify-progress-icon--done" aria-label="Verified">✓</span>
+                  ) : row.state === 'waiting' ? (
+                    <span className="verify-spinner" role="status" aria-label="Waiting for response" />
+                  ) : (
+                    <span className="verify-progress-icon--failed" aria-label={display.label}>✗</span>
+                  )}
+                </span>
+                <span className="share-progress-item-name">{row.name}</span>
+                <span className={`share-progress-item-status ${display.statusClass}`}>
+                  {display.label}
+                </span>
+              </li>
+            )
+          })}
+        </ul>
 
-              let icon: React.ReactNode
-              let statusText: string
-              let statusClass = ''
-
-              if (isVerified) {
-                icon = <span className="verify-progress-icon--done" aria-label="Verified">✓</span>
-                statusText = 'Verified'
-                statusClass = 'status--verified'
-              } else if (isTimedOut) {
-                icon = <span className="verify-progress-icon--failed" aria-label="Timed out">✗</span>
-                statusText = 'Verification timed out'
-                statusClass = 'status--failed'
-              } else {
-                icon = <span className="verify-spinner" role="status" aria-label="Waiting for response" />
-                statusText = 'Waiting…'
-              }
-
-              return (
-                <li
-                  key={h.id}
-                  className={`share-progress-item ${isVerified ? 'share-progress-item--confirmed' : ''} ${isTimedOut ? 'share-progress-item--failed' : ''}`}
-                >
-                  <span className="verify-progress-icon">{icon}</span>
-                  <span className="share-progress-item-name">{h.name}</span>
-                  <span className={`share-progress-item-status ${statusClass}`}>
-                    {statusText}
-                  </span>
-                </li>
-              )
-            })}
-          </ul>
-
-          <div className="modal-actions">
-            <button
-              type="button"
-              className={allDone ? 'primary' : 'secondary'}
-              onClick={onClose}
-            >
-              {allDone ? 'Done' : 'Close'}
-            </button>
-          </div>
+        <div className="modal-actions">
+          <button
+            type="button"
+            className={allDone ? 'primary' : 'secondary'}
+            onClick={onClose}
+          >
+            {allDone ? 'Done' : 'Close'}
+          </button>
         </div>
       </div>
-    </div>
+    </ModalFrame>
   )
 }

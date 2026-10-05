@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { describe, expect, it } from 'vitest'
 import type { ContactMessage } from '@derec-alliance/web'
 import type { ContactMessageDto } from './api'
@@ -10,7 +13,6 @@ function contact(overrides: Partial<ContactMessage> = {}): ContactMessage {
   return {
     channel_id: 18446744073709551615n,
     nonce: 7n,
-    transport_protocol: HTTPS,
     supported_transports: [HTTPS],
     contact_mode: 0,
     ...overrides,
@@ -38,14 +40,10 @@ describe('contactMessageToDto', () => {
     ])
   })
 
-  it('mirrors the first entry into the deprecated singular field', () => {
-    // A DTO whose singular field disagreed with the list would hand a
-    // pre-0.0.3 reader a different endpoint than a current one.
-    const result = contactMessageToDto(
-      contact({ transport_protocol: undefined, supported_transports: [GRPC, HTTPS] }),
-    )
+  it('no longer writes the singular endpoint the SDK removed', () => {
+    const result = contactMessageToDto(contact({ supported_transports: [GRPC, HTTPS] }))
 
-    expect(result.transport_protocol).toEqual({ uri: GRPC.uri, protocol: 'grpc' })
+    expect(result.transport_protocol).toBeUndefined()
   })
 
   it('keeps u64 ids as decimal strings', () => {
@@ -66,17 +64,15 @@ describe('dtoToContactMessage', () => {
     )
 
     expect(result.supported_transports).toEqual([HTTPS, GRPC])
-    expect(result.transport_protocol).toEqual(HTTPS)
   })
 
-  it('falls back to the singular field for a peer predating the list', () => {
+  it('falls back to the singular field in a payload from an older build', () => {
     const legacy = dto()
     delete legacy.supported_transports
 
     const result = dtoToContactMessage(legacy)
 
     expect(result.supported_transports).toEqual([HTTPS])
-    expect(result.transport_protocol).toEqual(HTTPS)
   })
 
   it('reads an unrecognised protocol name as HTTPS, as protobuf does', () => {
@@ -88,7 +84,7 @@ describe('dtoToContactMessage', () => {
   })
 
   it('round-trips a multi-endpoint contact unchanged', () => {
-    const original = contact({ transport_protocol: HTTPS, supported_transports: [HTTPS, GRPC] })
+    const original = contact({ supported_transports: [HTTPS, GRPC] })
 
     const result = dtoToContactMessage(contactMessageToDto(original))
 

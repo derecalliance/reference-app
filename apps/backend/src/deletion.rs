@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! Erasing a provisioned participant.
 //!
 //! Provisioning spreads a participant across three places: rows in every store
@@ -57,20 +60,21 @@ pub async fn delete_participant(state: &Arc<AppState>, actor_id: Uuid) -> Result
         match inbox {
             ActorInbox::Provisioned(addr) => addr.do_send(crate::actor::ShutdownMsg),
             // A browser-managed participant is driven by a page, not by us.
-            // Dropping the sender is all there is to stop.
-            ActorInbox::Browser(_) => {}
+            // Its queued mail is a `mailbox` row, erased with the rest below.
+            ActorInbox::Browser => {}
         }
     }
-    state.browser_receivers.remove(&actor_id);
 
     // 2. Drop the routing handles. gRPC ingress resolves by channel id, so a
     //    stale route would hand messages to an actor that no longer exists.
+    //
+    //    Every claim this actor holds goes — pins for contacts it minted and
+    //    never saw paired included, which the channel index never listed —
+    //    and only this actor's. When the other end of one of its channels is
+    //    also on this node, that actor keeps its route: it is the survivor,
+    //    and the channel id alone does not say whose a route is.
     let channel_ids = state.helper_channels.remove(&actor_id).map(|(_, v)| v).unwrap_or_default();
-    for channel_id in &channel_ids {
-        if let Ok(id) = channel_id.parse::<u64>() {
-            state.channel_router.remove(id);
-        }
-    }
+    let routes = state.channel_router.remove_actor(actor_id);
 
     // 3. Erase the data, then stop listing the participant.
     let id = actor_id.to_string();
@@ -89,6 +93,7 @@ pub async fn delete_participant(state: &Arc<AppState>, actor_id: Uuid) -> Result
     info!(
         actor_id = %actor_id,
         channels = channel_ids.len(),
+        routes,
         "participant deleted"
     );
     if !channel_ids.is_empty() {

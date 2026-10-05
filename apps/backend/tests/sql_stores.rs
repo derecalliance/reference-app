@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! The conformance suite against the SQL stores, on every engine available.
 //!
 //! SQLite always — it is compiled into the binary, so it needs no service.

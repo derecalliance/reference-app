@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { defineConfig } from '@playwright/test'
 
 /**
@@ -17,10 +20,20 @@ import { defineConfig } from '@playwright/test'
  * executed against a developer's live node and wrote fifty fixture helpers
  * into its persistent database, while the in-memory setting below was ignored.
  * Its own port is what makes the harness hermetic.
+ *
+ * The web server needs the same treatment, for a reason that runs the other
+ * way. On the dev server's 5173 the suite shares an origin — and so
+ * `localStorage` — with any app tab the developer has open: when a run stopped
+ * and replaced their dev server, that tab reconnected to the suite's Vite,
+ * reloaded against the throwaway backend, and wrote its fixture helpers into
+ * the developer's own vaults, where they outlived the run as "actor not found"
+ * rows. A port nobody browses keeps the run out of their storage, and never
+ * adopting an existing server keeps their dev server — pointed at 5000 — out
+ * of the run.
  */
 const BACKEND_PORT = 5100
 const BACKEND_GRPC_PORT = 50151
-const WEB_PORT = 5173
+const WEB_PORT = 5180
 
 /** Vite serves under `base: '/reference-app/'`, so the app is not at the root. */
 const APP_URL = `http://localhost:${WEB_PORT}/reference-app/`
@@ -106,7 +119,8 @@ export default defineConfig({
     {
       command: `npm run dev -- --port ${WEB_PORT} --strictPort`,
       url: APP_URL,
-      reuseExistingServer: !process.env.CI,
+      // Never adopted, as with the backend: see `WEB_PORT`.
+      reuseExistingServer: false,
       env: {
         // The app otherwise calls port 5000 of whatever host served it — see
         // `apiBase` — which is the default node, not this run's.

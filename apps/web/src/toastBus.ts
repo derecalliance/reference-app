@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { randomId } from './randomId'
 
 // Framework-agnostic toast/error bus.
@@ -10,11 +13,19 @@ import { randomId } from './randomId'
 
 export type ToastLevel = 'error' | 'info'
 
+/** The vault a toast is about, when that vault is not the one on screen. */
+export interface ToastOrigin {
+  vaultId: string
+  vaultName: string
+}
+
 export interface Toast {
   id: string
   level: ToastLevel
   /** Short, user-facing text. Full detail goes to console.error. */
   message: string
+  /** Set for a vault off screen: the toast names it and clicking it opens it. */
+  origin?: ToastOrigin
 }
 
 type Listener = (toast: Toast) => void
@@ -28,8 +39,8 @@ export function subscribeToasts(listener: Listener): () => void {
   }
 }
 
-function emit(level: ToastLevel, message: string): void {
-  const toast: Toast = { id: randomId(), level, message }
+function emit(level: ToastLevel, message: string, origin?: ToastOrigin): void {
+  const toast: Toast = { id: randomId(), level, message, origin }
   for (const l of listeners) l(toast)
 }
 
@@ -64,21 +75,23 @@ function truncate(s: string, max = 140): string {
  *                 process incoming message").
  * @param err      The caught value (Error, WASM `{code,message}`, string, …).
  * @param context  Extra structured data for the console only.
+ * @param origin   The vault it came from, when that vault is off screen.
  */
 export function reportError(
   summary: string,
   err?: unknown,
   context?: Record<string, unknown>,
+  origin?: ToastOrigin,
 ): void {
   const detail = err === undefined ? '' : normalizeError(err)
   console.error(
     `[derec] ${summary}${detail ? ` — ${detail}` : ''}`,
-    { error: err, ...(context ?? {}) },
+    { error: err, ...(context ?? {}), ...(origin ? { vaultId: origin.vaultId } : {}) },
   )
-  emit('error', detail ? `${summary}: ${truncate(detail)}` : summary)
+  emit('error', detail ? `${summary}: ${truncate(detail)}` : summary, origin)
 }
 
-/** Optional: a non-error, informational toast. */
-export function reportInfo(message: string): void {
-  emit('info', message)
+/** A non-error, informational toast — a banner, when it carries an origin. */
+export function reportInfo(message: string, origin?: ToastOrigin): void {
+  emit('info', message, origin)
 }

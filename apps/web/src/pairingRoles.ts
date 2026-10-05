@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { SenderKind } from '@derec-alliance/web'
 
 /**
@@ -78,7 +81,7 @@ export function replicaRoleForSenderKind(
  * `ActionRequired` reports the **sender's** kind, not the local one — the
  * opposite of `PairingCompleted`. The library resolves the responder's side by
  * taking the counterparty of what the initiator declared
- * (`handlers/pairing.rs`: `let kind = peer_kind.counterparty()`), so this is
+ * (`handlers/pairing/pair.rs`: `let kind = peer_kind.counterparty()`), so this is
  * that same step expressed in the app's role vocabulary: look the peer's role
  * up with `replicaRoleForSenderKind`, then flip it with `complementRole`. Both
  * are reused rather than re-derived, so the UI cannot disagree with the library

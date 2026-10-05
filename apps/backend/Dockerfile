@@ -1,9 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 # The DeRec reference app: front end and backend in one image.
 #
 # Build from the REPO ROOT, not from this directory — the web build needs
 # `apps/web` and the backend needs the vendored protos:
 #
-#   docker build -f apps/backend/Dockerfile -t derec/reference-app:0.0.4 .
+#   docker build -f apps/backend/Dockerfile -t derec/reference-app:0.0.6 .
+#
+# CI also passes `--build-arg REVISION=$(git rev-parse HEAD)` for the OCI
+# labels below; a local build leaves it as "unknown".
 #
 # The tag names the SDK the image was built against. The SDK is compiled in —
 # `derec-library` into the binary, `@derec-alliance/web` into the bundled WASM —
@@ -31,7 +37,11 @@ RUN npm ci
 
 COPY apps/web/ ./
 ENV VITE_API_SAME_ORIGIN=1
-RUN npm run build -- --base=/
+# `404.html` is the GitHub Pages redirect shim and hard-codes the
+# `/reference-app/` base; served from here it would bounce a mistyped URL to a
+# path that does not exist.
+RUN npm run build -- --base=/ \
+    && rm -f dist/404.html
 
 # ── Backend builder ─────────────────────────────────────────────────────────
 #
@@ -64,6 +74,17 @@ RUN mkdir -p src \
     && rm -rf src
 
 COPY apps/backend/ ./
+
+# The image's own defaults, compiled in as *built-in defaults* rather than set
+# as runtime `ENV`. Precedence is built-in < config file < environment, so an
+# `ENV` preset would outrank a mounted config file and make these keys
+# impossible to set from one. Declared after the dependency warm-up so changing
+# one does not throw that layer away. The boot banner reports them as
+# `default`.
+ENV DEREC_BUILTIN_CONFIG_PATH=/etc/derec/config.toml \
+    DEREC_BUILTIN_STATIC_DIR=/app/static \
+    DEREC_BUILTIN_DATABASE_URL=/var/lib/derec/derec.db
+
 # Cargo skips a rebuild when mtimes look unchanged; the sources were just
 # copied over the stubs, so touch them to be certain the real build runs.
 RUN touch src/main.rs src/lib.rs && cargo build --release
@@ -80,11 +101,24 @@ RUN touch src/main.rs src/lib.rs && cargo build --release
 # use the CLI — SQLite is linked into the binary — but a developer who wants to
 # know why a channel is in the state it is in should be able to open the
 # database and look. Nothing else depends on it, so it can go if image size
-# ever becomes the binding constraint. `curl` is for the healthcheck.
+# ever becomes the binding constraint. There is no `curl`: the healthcheck is
+# the binary itself (`derec-backend healthcheck`), which reads the port the
+# same way the server does.
 FROM debian:bookworm-slim AS runtime
 
+# Overridable at build time; see the build command at the top.
+ARG VERSION=0.0.6
+ARG REVISION=unknown
+
+LABEL org.opencontainers.image.title="DeRec reference app" \
+      org.opencontainers.image.description="Reference DeRec Owner and Helper for interoperability testing: web UI and backend in one image. A development tool with no authentication." \
+      org.opencontainers.image.source="https://github.com/derecalliance/reference-app" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${REVISION}"
+
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl sqlite3 \
+    && apt-get install -y --no-install-recommends ca-certificates sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root. The uid is fixed so a bind-mounted host directory can be chowned to
@@ -99,8 +133,13 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 # The data directory, owned by the runtime user. A fresh named or anonymous
 # volume inherits this ownership, so that case needs nothing further; a
 # bind-mounted host directory keeps host ownership, which the entrypoint
-# reconciles.
-RUN mkdir -p /var/lib/derec && chown derec:derec /var/lib/derec
+# reconciles. `/etc/derec` is where the built-in config path points; it is
+# created empty so the mount point exists either way.
+RUN mkdir -p /var/lib/derec /etc/derec && chown derec:derec /var/lib/derec
+
+# Relative paths in a mounted config (`database_url = "./mine.db"`) land in the
+# volume rather than in `/`, which the runtime user cannot write.
+WORKDIR /var/lib/derec
 
 # Declared so an unconfigured `docker run` already survives a restart: Docker
 # gives it an anonymous volume. A *named* volume is what a developer adds to
@@ -113,20 +152,23 @@ RUN mkdir -p /var/lib/derec && chown derec:derec /var/lib/derec
 # rather than as anything naming the mount.
 VOLUME /var/lib/derec
 
-# The API and the UI share an origin; gRPC is its own listener.
+# The API and the UI share an origin; gRPC is its own listener. These are the
+# default ports; a config file or DEREC_PORT / DEREC_GRPC_PORT can move them.
 EXPOSE 5000 50051
 
-# Every one of these is settable from outside. `DEREC_CONFIG_PATH` is
-# deliberately unset: the loader treats "no file" as the ordinary `docker run`
-# case, while a file that cannot be read or parsed aborts the boot.
-ENV DEREC_PORT=5000 \
-    DEREC_BASE_URL=http://localhost \
-    DEREC_STATIC_DIR=/app/static \
-    DEREC_DATABASE_URL=/var/lib/derec/derec.db
-
-# `/health` is the existing route; nothing was added for this.
+# No `ENV DEREC_*` presets: every setting is at its built-in default until a
+# mounted file (/etc/derec/config.toml, read with no variable needed) or an
+# environment variable says otherwise.
+#
+# The probe is the binary, not `curl http://localhost:${DEREC_PORT}`: that
+# only knew the port when it came from that one variable, so a port set in the
+# config file, or left unset, was probed at the wrong address.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-    CMD curl -fsS http://localhost:${DEREC_PORT}/health || exit 1
+    CMD ["derec-backend", "healthcheck"]
 
+# No `USER`: the entrypoint starts as root only to fix the data directory's
+# ownership, then drops to `derec` (uid 10001) for the server itself. A side
+# effect is that `docker exec` lands as root; use `docker exec -u derec ...` to
+# act as the server does, so files you create stay writable by it.
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["derec-backend"]

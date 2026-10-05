@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! A helper promotes its own side of a fingerprint-gated pairing.
 //!
 //! Every replica pairing and every `NoKeys` pairing completes `Pending` on both
@@ -97,7 +100,7 @@ async fn spawn_actor(
         .register(actor.clone(), test_settings())
         .await
         .expect("the registry is writable");
-    spawn_provisioned(state, &actor, &test_settings());
+    spawn_provisioned(state, &actor, &test_settings()).expect("the actor starts");
 
     let addr = match state
         .actor_inboxes
@@ -106,7 +109,7 @@ async fn spawn_actor(
         .value()
     {
         ActorInbox::Provisioned(addr) => addr.clone(),
-        ActorInbox::Browser(_) => panic!("this actor must be backend-managed"),
+        ActorInbox::Browser => panic!("this actor must be backend-managed"),
     };
 
     (actor.id, addr)
@@ -167,6 +170,7 @@ async fn build_owner(state: &Arc<AppState>, name: &str, reachable: bool) -> Owne
         http_client: state.http_client.clone(),
         pool: state.pool.clone(),
         actor_id: actor.id,
+        local_node: None,
     };
 
     Owner {
@@ -179,16 +183,12 @@ async fn build_owner(state: &Arc<AppState>, name: &str, reachable: bool) -> Owne
 /// Drain the owner's mailbox into its protocol, as the front end's poll loop
 /// does. A no-op when the mailbox is empty.
 async fn pump(state: &AppState, owner: &mut Owner) {
-    let Some(receiver) = state
-        .browser_receivers
-        .get(&owner.id)
-        .map(|entry| entry.value().clone())
-    else {
-        return;
-    };
-
-    let mut receiver = receiver.lock().await;
-    while let Ok(bytes) = receiver.try_recv() {
+    let messages = state
+        .mailboxes
+        .drain(&owner.id)
+        .await
+        .expect("the mailbox is readable");
+    for bytes in messages {
         owner
             .protocol
             .process(&bytes)
@@ -323,6 +323,7 @@ async fn a_replica_mode_pairing_is_confirmed_on_the_helpers_replica_instance() {
             contact_mode: derec_proto::ContactMode::InlineKeys,
             nonce: None,
             replica_for_owner_secret: Some(owner.secret_id),
+            attempt: 0,
         })
         .await
         .expect("the helper actor is alive")
@@ -406,6 +407,7 @@ async fn a_replica_mode_channels_fingerprint_is_served_by_its_owning_instance() 
             contact_mode: derec_proto::ContactMode::InlineKeys,
             nonce: None,
             replica_for_owner_secret: Some(owner.secret_id),
+            attempt: 0,
         })
         .await
         .expect("the helper actor is alive")
@@ -483,6 +485,7 @@ async fn a_no_keys_pairing_is_confirmed_by_the_helper_but_not_by_the_owner() {
             contact_mode: derec_proto::ContactMode::NoKeys,
             nonce: None,
             replica_for_owner_secret: None,
+            attempt: 0,
         })
         .await
         .expect("the helper actor is alive")
@@ -564,6 +567,7 @@ async fn the_tick_backstop_confirms_a_channel_the_event_path_missed() {
             contact_mode: derec_proto::ContactMode::InlineKeys,
             nonce: None,
             replica_for_owner_secret: Some(owner.secret_id),
+            attempt: 0,
         })
         .await
         .expect("the helper actor is alive")

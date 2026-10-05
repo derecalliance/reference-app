@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! `DeRecStateStore` over SQL.
 //!
 //! `StateItem` has no serde of its own, so it round-trips through the SDK's
@@ -74,7 +77,7 @@ impl DeRecStateStore for SqlStateStore {
             let kind_col = kind_text(key.kind());
             let payload = serde_json::to_string(&StateItemRecord::from(&item)).map_err(backend)?;
 
-            let mut tx = pool.begin().await.map_err(backend)?;
+            let mut tx = crate::db::begin_write(&pool).await.map_err(backend)?;
 
             sqlx::query(
                 "DELETE FROM state_items \

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { useCallback, useEffect, useState } from 'react'
 import {
   Alert,
@@ -58,6 +61,11 @@ export interface ReplicaFingerprintDialogProps {
   protocolTimeoutSecs: number
   /** Persist a confirmation for one or both sides of this replica. */
   onConfirm: (patch: Partial<ReplicaRecord>) => void
+  /**
+   * The person says the codes do not match. Recorded on this device only —
+   * the protocol has no message for a refusal, so the peer is never told.
+   */
+  onRefuse: () => void
   onClose: () => void
 }
 
@@ -91,6 +99,25 @@ function messageOf(err: unknown, fallback: string): string {
   return text === 'unknown error' ? fallback : text
 }
 
+/**
+ * What happens next once this device has confirmed, from its side of the
+ * mirror.
+ *
+ * The library publishes the mirror itself the moment `verify_fingerprint`
+ * promotes the channel on a source, so nothing here asks for "Sync now". A
+ * helper confirms itself server-side and takes that copy at once; a browser
+ * destination that has not confirmed yet drops it, and fetches the copy itself
+ * when it does — which is what its row's "Syncing…" is.
+ */
+function afterConfirmText(direction: ReplicaPairingRole, name: string, peerIsHelper: boolean): string {
+  if (direction !== 'replica_source') {
+    return `Confirmed on this device. ${name} still has to confirm on theirs before their vault can be offered here.`
+  }
+  return peerIsHelper
+    ? `Confirmed on this device. ${name} confirms itself as a helper, so the mirror goes out now — their row shows the version once they acknowledge it.`
+    : `Confirmed on this device. The mirror goes out now; if ${name} has not confirmed yet, their device fetches the copy itself once they do. Their row shows the version once they acknowledge it.`
+}
+
 /** What confirming this channel unlocks, from this device's side of the mirror. */
 function mirrorDirectionText(direction: ReplicaPairingRole, peerIsHelper: boolean): string {
   if (direction !== 'replica_source') {
@@ -120,9 +147,14 @@ export function ReplicaFingerprintDialog({
   protocol,
   protocolTimeoutSecs,
   onConfirm,
+  onRefuse,
   onClose,
 }: ReplicaFingerprintDialogProps) {
   const { channelId } = replica
+  // Opened on a channel this device already confirmed — "View fingerprint".
+  // Captured once: a confirmation made *in* this dialog lands in `local-only`,
+  // which has its own wording, rather than flipping the dialog into this mode.
+  const [alreadyConfirmed] = useState(() => replica.status === 'paired')
 
   // This is where the user spends time comparing codes, so it is where the
   // deadline belongs. `null` on a channel that is already confirmed — nothing
@@ -189,7 +221,8 @@ export function ReplicaFingerprintDialog({
 
     // Only ever *add* a confirmation — writing `peer: 'none'` would clobber one
     // earned on an earlier attempt.
-    onConfirm({ local: true })
+    // A refusal recorded earlier was a misreading, by the person's own account.
+    onConfirm({ local: true, refused: false })
 
     // The peer's confirmation happens on the peer, against its own protocol
     // instance. Nothing here can observe it, and nothing here may assert it on
@@ -201,22 +234,35 @@ export function ReplicaFingerprintDialog({
   const verifying = attempt.kind === 'verifying'
   // Nothing this device can still contribute: its side is verified, and the
   // peer's is either recorded or unobservable from here.
-  const settled = attempt.kind === 'local-only'
+  const settled = attempt.kind === 'local-only' || alreadyConfirmed
   // The code has to be on screen before anyone can claim to have compared it.
   const canConfirm = !!channelId && !loading && !verifying && !settled && ownCode !== null
 
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm" aria-labelledby="replica-fp-title">
-      <DialogTitle id="replica-fp-title">Confirm “{replica.name}”</DialogTitle>
+      <DialogTitle id="replica-fp-title">
+        {alreadyConfirmed ? `Fingerprint for “${replica.name}”` : `Confirm “${replica.name}”`}
+      </DialogTitle>
 
       <DialogContent>
         <Stack spacing={2.5} sx={{ pt: 1 }}>
-          <DialogContentText>
-            {replica.helperActorId
-              ? `${replica.name} is a helper paired in replica mode: it derives and confirms this code automatically, with no screen on its end to check it against — `
-              : `Check that ${replica.name} is showing this same code. Confirm only if the two are identical — `}
-            {mirrorDirectionText(replica.direction, replica.helperActorId != null)}
-          </DialogContentText>
+          {alreadyConfirmed ? (
+            // A confirmed channel has nothing left to decide: re-offering
+            // "Codes match / Doesn't match" and saying nothing mirrors "until
+            // you confirm" contradicted the row that opened this.
+            <DialogContentText>
+              This device already confirmed this code. It is shown again so it can be
+              compared with {replica.name}’s screen at any time — there is nothing left to
+              decide here.
+            </DialogContentText>
+          ) : (
+            <DialogContentText>
+              {replica.helperActorId
+                ? `${replica.name} is a helper paired in replica mode: it derives and confirms this code automatically, with no screen on its end to check it against — `
+                : `Check that ${replica.name} is showing this same code. Confirm only if the two are identical — `}
+              {mirrorDirectionText(replica.direction, replica.helperActorId != null)}
+            </DialogContentText>
+          )}
 
           <ReplicaExpiryNotice expiry={expiry} variant="dialog" />
 
@@ -255,23 +301,7 @@ export function ReplicaFingerprintDialog({
 
           {attempt.kind === 'local-only' && (
             <Alert severity="info">
-              {replica.direction !== 'replica_source' ? (
-                <>
-                  Confirmed on this device. {replica.name} still has to confirm on theirs
-                  before their vault can be offered here.
-                </>
-              ) : (
-                // Naming the required step, not offering it as a fallback: this
-                // device cannot see the peer's confirmation, so it will not
-                // mirror on its own and the user has to press the button.
-                <>
-                  Confirmed on this device. This device cannot see {replica.name}’s
-                  confirmation, so it will not mirror automatically —{' '}
-                  {replica.helperActorId
-                    ? `${replica.name} confirms itself automatically as a helper, so press “Sync now” on their row to send the mirror.`
-                    : 'once they have confirmed, press “Sync now” on their row.'}
-                </>
-              )}
+              {afterConfirmText(replica.direction, replica.name, replica.helperActorId != null)}
             </Alert>
           )}
 
@@ -285,14 +315,21 @@ export function ReplicaFingerprintDialog({
             re-run an idempotent verify and appear to do nothing. */}
         {settled ? (
           <Button variant="contained" onClick={onClose} autoFocus>
-            Done
+            {alreadyConfirmed ? 'Close' : 'Done'}
           </Button>
         ) : (
           <>
             {/* Refusing is the other half of the comparison, so it is a stated
-                choice rather than a dismissal. It writes nothing: the channel
-                stays `Pending` and expires on its own. */}
-            <Button onClick={onClose} disabled={verifying}>
+                choice rather than a dismissal: it is recorded on this device,
+                and the row says so. The channel stays `Pending` and expires on
+                its own — the protocol has no way to tell the peer. */}
+            <Button
+              onClick={() => {
+                onRefuse()
+                onClose()
+              }}
+              disabled={verifying}
+            >
               Doesn’t match
             </Button>
             <Button

@@ -1,9 +1,12 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * Copyright (c) 2026 DeRec Alliance. All rights reserved. */
+
 header {
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 0 24px;
-  height: 56px;
+  min-height: 56px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 
@@ -18,7 +21,26 @@ header {
     flex: 1;
   }
 
-  .leave-btn {
+  /* Narrow screens: the actions sit in a menu (see `AppHeader`), the gutter
+     shrinks, and the switcher gives up width before anything overflows. */
+  &.header--compact {
+    gap: 8px;
+    padding: 0 16px;
+
+    .header-spacer {
+      flex: 1 1 0;
+      min-width: 0;
+    }
+
+    select.vault-switcher {
+      flex: 0 1 auto;
+      min-width: 0;
+      max-width: 50vw;
+    }
+
+    img {
+      flex-shrink: 0;
+    }
   }
 }
 
@@ -82,6 +104,33 @@ button.secondary.reset-btn:hover:not(:disabled) {
   color: var(--danger);
 }
 
+/* Other vaults waiting on the owner. The words carry it; the colour only draws the eye. */
+button.secondary.attention-btn {
+  border-color: var(--warning);
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
+/* The header's vault switcher, matched to the secondary buttons beside it. */
+select.vault-switcher {
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  padding: 7px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-h);
+  cursor: pointer;
+  max-width: 260px;
+  text-overflow: ellipsis;
+
+  &:hover {
+    border-color: var(--accent);
+    background: var(--accent-bg);
+  }
+}
+
 button.danger {
   background: var(--danger);
   color: var(--status-contrast);
@@ -117,6 +166,14 @@ button {
   align-items: center;
   justify-content: center;
   z-index: 1000;
+}
+
+/* Every hand-styled modal's scrim takes focus when nothing inside asks for it
+   (see `ModalFrame`). That is focus parking, not a control, so no ring. */
+.app-dialog-overlay:focus,
+.modal-overlay:focus,
+.cmodal-overlay:focus {
+  outline: none;
 }
 
 .app-dialog {

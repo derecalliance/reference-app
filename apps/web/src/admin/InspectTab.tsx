@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { copyText } from '../clipboard'
 import { useCallback, useEffect, useState } from 'react'
 import { errorText } from '../errorText'
@@ -95,8 +98,12 @@ export function InspectTab() {
             {state.base_url.includes('localhost') && (
               <span className="inspect-note">
                 {' '}
-                — loopback. Peers on another device cannot reach this; set
-                <code> BASE_URL</code> to a LAN address before pairing off-machine.
+                — loopback. Peers on another device cannot reach this; set{' '}
+                <code>DEREC_BASE_URL</code> to a LAN address before pairing
+                off-machine. If the container publishes its ports on different
+                host ports, also set <code>DEREC_PUBLIC_PORT</code> (and{' '}
+                <code>DEREC_PUBLIC_GRPC_PORT</code> for gRPC) to the published
+                ones.
               </span>
             )}
           </dd>

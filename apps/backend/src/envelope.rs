@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! Cleartext metadata from a `DeRecMessage` envelope.
 //!
 //! The envelope is not encrypted; only its `message` payload is. That makes

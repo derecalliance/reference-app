@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import type { ReplicaPairingRole } from '../pairingRoles'
 import { pairingRoleLabel } from '../pairingRoleOptions'
 import type { ReplicaView } from '../replicaFlows'
@@ -89,6 +92,8 @@ export function groupMemberRows(
         // No provisioned helper to name: the group roster carries replica ids,
         // not actor ids.
         helperActorId: null,
+        // There was no comparison to refuse.
+        refused: false,
       },
     }]
   })

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! The server-wide actor list.
 //!
 //! One flat registry: the app runs as a single local node that developers point
@@ -14,16 +17,33 @@ use crate::state::{EnsuredParticipants, RoleMismatch};
 
 pub struct SqlActorRegistry {
     pool: sqlx::AnyPool,
-    /// Serialises `ensure_participants_by_mode` within this process.
+    /// Serialises every insert — `register` and `ensure_participants_by_mode`
+    /// — within this process.
     ///
     /// The count-and-create must be atomic so two browser contexts setting up
     /// at the same moment cannot each fill an empty pool — the guarantee the
     /// old `RwLock` gave. A transaction alone does not provide it portably: on
     /// Postgres two concurrent transactions can both count zero before either
-    /// inserts. This restores exactly the previous guarantee — one process —
-    /// and claims no more. When node separation lands, this needs a
-    /// database-level lock instead, and that is the moment to add one.
+    /// inserts. The same is true of `seq`, assigned as `MAX(seq) + 1`: two
+    /// concurrent Postgres transactions can read the same maximum. Holding this
+    /// across both kinds of insert restores exactly the previous guarantee —
+    /// one process — and claims no more; across processes the unique index on
+    /// `seq` (migration 0002) turns a collision into a refused insert rather
+    /// than two actors sharing a position. When node separation lands, this
+    /// needs a database-level lock instead, and that is the moment to add one.
     ensure_lock: tokio::sync::Mutex<()>,
+}
+
+/// A helper could not be registered: another helper already has its name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NameTaken;
+
+/// Whether two display names would read as the same helper in a roster.
+///
+/// Trimmed and case-insensitive: `Alex` and ` alex ` side by side are no
+/// easier to tell apart than two `Alex` rows.
+pub fn names_match(a: &str, b: &str) -> bool {
+    a.trim().to_lowercase() == b.trim().to_lowercase()
 }
 
 /// The protocol settings an actor runs with, kept so a restart rebuilds the
@@ -124,10 +144,85 @@ impl SqlActorRegistry {
         actor: Actor,
         settings: ActorSettings,
     ) -> Result<(), RegistryError> {
-        let mut tx = self.pool.begin().await.map_err(RegistryError::new)?;
+        // See the field's doc: `seq` is read-then-written.
+        let _guard = self.ensure_lock.lock().await;
+        let mut tx = crate::db::begin_write(&self.pool).await.map_err(RegistryError::new)?;
         insert_actor(&mut tx, &actor, &settings).await?;
         tx.commit().await.map_err(RegistryError::new)?;
         Ok(())
+    }
+
+    /// Add a helper, unless another helper already has its name.
+    ///
+    /// The check and the insert share [`Self::ensure_lock`] and one
+    /// transaction, so two requests naming the same new helper at the same
+    /// moment cannot both pass the check. Only helpers are compared: owners
+    /// are named by their own browser tabs, and a helper sharing a name with
+    /// one is not ambiguous in the pool.
+    ///
+    /// The inner `Result` is the refusal; the outer one is the database
+    /// failing.
+    pub async fn register_helper(
+        &self,
+        actor: Actor,
+        settings: ActorSettings,
+    ) -> Result<Result<(), NameTaken>, RegistryError> {
+        let _guard = self.ensure_lock.lock().await;
+        let mut tx = crate::db::begin_write(&self.pool)
+            .await
+            .map_err(RegistryError::new)?;
+
+        let taken = fetch_all_in(&mut tx)
+            .await?
+            .iter()
+            .any(|a| a.role == Role::Helper && names_match(&a.name, &actor.name));
+        if taken {
+            return Ok(Err(NameTaken));
+        }
+
+        insert_actor(&mut tx, &actor, &settings).await?;
+        tx.commit().await.map_err(RegistryError::new)?;
+        Ok(Ok(()))
+    }
+
+    /// Replace the endpoints an actor advertises.
+    ///
+    /// The row is the source a respawned actor builds its own transports from,
+    /// so this is what makes a changed address stick across restarts.
+    pub async fn set_transports(
+        &self,
+        actor_id: &Uuid,
+        transports: &[Transport],
+    ) -> Result<(), RegistryError> {
+        let json = serde_json::to_string(transports).map_err(RegistryError::new)?;
+        sqlx::query("UPDATE actors SET transports = $1 WHERE actor_id = $2")
+            .bind(json)
+            .bind(actor_id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(RegistryError::new)?;
+        Ok(())
+    }
+
+    /// Give an owner a new display name.
+    ///
+    /// Restricted to owners in the statement itself rather than by a lookup
+    /// first, so a concurrent delete or a helper id can never be renamed in
+    /// the gap between the two. Answers whether a row matched: `false` means
+    /// no such actor, or one that is not an owner.
+    ///
+    /// Helpers are not renamed here. A provisioned helper's name is sent to
+    /// peers as `communication_info["name"]` by its running protocol instance,
+    /// so renaming the row alone would make the two disagree.
+    pub async fn rename_owner(&self, actor_id: &Uuid, name: &str) -> Result<bool, RegistryError> {
+        let result = sqlx::query("UPDATE actors SET name = $1 WHERE actor_id = $2 AND role = $3")
+            .bind(name)
+            .bind(actor_id.to_string())
+            .bind(role_text(Role::Owner))
+            .execute(&self.pool)
+            .await
+            .map_err(RegistryError::new)?;
+        Ok(result.rows_affected() > 0)
     }
 
     /// Stop listing this actor.
@@ -224,18 +319,23 @@ impl SqlActorRegistry {
     /// - `taken` is this call's creation order, across every mode combined.
     /// - `pool_index` is that helper's position in the whole shared pool at the
     ///   moment it is added, so it keeps climbing across separate calls.
+    ///
+    /// `mint` is also handed the pool as it stands — including helpers this
+    /// call already created — so it can choose a name no helper has. It sees
+    /// the pool under the same lock the insert happens under, which is what
+    /// makes that choice stick.
     pub async fn ensure_participants_by_mode<F>(
         &self,
         want: TransportBreakdown,
         mut mint: F,
     ) -> Result<EnsuredParticipants, RegistryError>
     where
-        F: FnMut(usize, usize, TransportMode) -> (Actor, ActorSettings),
+        F: FnMut(usize, usize, TransportMode, &[Actor]) -> (Actor, ActorSettings),
     {
         // Held across the whole count-and-create; see the field's doc.
         let _guard = self.ensure_lock.lock().await;
 
-        let mut tx = self.pool.begin().await.map_err(RegistryError::new)?;
+        let mut tx = crate::db::begin_write(&self.pool).await.map_err(RegistryError::new)?;
 
         let mut helpers: Vec<Actor> = fetch_all_in(&mut tx)
             .await?
@@ -250,7 +350,7 @@ impl SqlActorRegistry {
             let have = helpers.iter().filter(|a| mode_of(a) == mode).count();
             for _ in have..target {
                 let pool_index = helpers.len();
-                let (actor, settings) = mint(taken, pool_index, mode);
+                let (actor, settings) = mint(taken, pool_index, mode, &helpers);
                 insert_actor(&mut tx, &actor, &settings).await?;
                 helpers.push(actor.clone());
                 created.push(actor);
@@ -270,8 +370,9 @@ impl SqlActorRegistry {
 /// Insert one actor, assigning the next `seq` inside the caller's transaction.
 ///
 /// `MAX(seq) + 1` rather than `AUTOINCREMENT`/`SERIAL`, neither of which is
-/// portable across both engines. Safe because every writer goes through a
-/// transaction and `ensure` additionally serialises itself.
+/// portable across both engines. Safe because every writer holds
+/// `ensure_lock` and a write transaction, and the unique index on `seq`
+/// refuses what slips past both.
 async fn insert_actor(
     tx: &mut sqlx::Transaction<'_, sqlx::Any>,
     actor: &Actor,
@@ -321,7 +422,7 @@ async fn fetch_all_in(
 }
 
 /// Which mode an actor's advertised endpoints correspond to.
-fn mode_of(actor: &Actor) -> TransportMode {
+pub(crate) fn mode_of(actor: &Actor) -> TransportMode {
     let has_grpc = actor
         .transports
         .iter()

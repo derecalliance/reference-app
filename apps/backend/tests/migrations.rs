@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! The migration set has to apply cleanly to an empty database and be safe to
 //! run again on a database that already has it — which is what every restart
 //! does.
@@ -83,4 +86,32 @@ async fn an_unreachable_database_is_an_error_rather_than_a_panic() {
     let result = db::connect("sqlite:///nonexistent-directory-here/derec.db?mode=rwc").await;
 
     assert!(result.is_err(), "expected an error, got a pool");
+}
+
+#[tokio::test]
+async fn two_actors_cannot_share_a_registration_position() {
+    // `seq` is the roster order. Two rows at one position would render in an
+    // arbitrary order, so the schema refuses the second rather than storing it.
+    let pool = db::connect("sqlite::memory:").await.expect("connects");
+
+    insert_at_position_one(&pool, "a")
+        .await
+        .expect("the first actor takes position 1");
+    assert!(
+        insert_at_position_one(&pool, "b").await.is_err(),
+        "a second actor at the same position must be refused"
+    );
+}
+
+async fn insert_at_position_one(pool: &sqlx::AnyPool, actor_id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO actors \
+         (actor_id, seq, role, name, secret_id, transports, \
+          replica_id, timeout_secs, unpair_ack, created_at) \
+         VALUES ($1, 1, 'owner', 'n', '1', '[]', '1', 300, 'required', 1)",
+    )
+    .bind(actor_id.to_owned())
+    .execute(pool)
+    .await
+    .map(|_| ())
 }

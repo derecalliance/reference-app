@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,7 +31,10 @@ const TICK_INTERVAL: Duration = Duration::from_secs(15);
 /// fingerprint out of band — every `NoKeys` pairing and every replica pairing
 /// waits in `Pending` for exactly that. Five minutes is far too short for an
 /// interop session where the operator is reading codes between two browsers.
-const PENDING_CHANNEL_TTL_SECS: u64 = 3600;
+///
+/// Also how long a contact's gRPC route is kept waiting for its first message;
+/// see `routing::PIN_TTL`.
+pub const PENDING_CHANNEL_TTL_SECS: u64 = 3600;
 
 /// How long to wait before retrying an auto-confirmation whose instance was
 /// borrowed by an in-flight call, and how many times.
@@ -41,6 +47,25 @@ const PENDING_CHANNEL_TTL_SECS: u64 = 3600;
 /// instead, and only gives up loudly.
 const AUTO_CONFIRM_RETRY: Duration = Duration::from_millis(250);
 const AUTO_CONFIRM_ATTEMPTS: u8 = 8;
+
+/// How many confirmation attempts on one channel may *fail* before the tick
+/// backstop stops retrying it.
+///
+/// A borrowed instance is retried by [`AUTO_CONFIRM_ATTEMPTS`]; this bounds the
+/// other case, where the attempt runs and the SDK refuses — a channel whose
+/// shared key never arrived, say. Retrying that every tick until the hour-long
+/// expiry sweep logged the same ERROR 240 times and changed nothing. After this
+/// many the channel is left to the sweep, said once.
+const AUTO_CONFIRM_MAX_FAILURES: u8 = 3;
+
+/// The most replica instances one actor may hold, on top of its own.
+///
+/// Each is created on demand by `POST /actors/{id}/contact
+/// ?replica_for_owner_secret=…`, an unauthenticated call naming an arbitrary
+/// secret — so without a bound, a loop over secret ids grows an actor's
+/// instance map, and every tick's work, without limit. An interop session
+/// mirrors a handful of owners at most.
+pub const MAX_REPLICA_INSTANCES: usize = 16;
 
 use crate::models::{Role, UnpairAck};
 use crate::sql::{
@@ -102,6 +127,11 @@ pub struct ProtocolConfig {
     /// instance — built from a clone of this config with `secret_id` changed —
     /// keeps the actor it belongs to.
     pub actor_id: Uuid,
+    /// The node this actor runs on, so a send to one of its own actors — under
+    /// its current address or one it advertised before — is delivered
+    /// in-process instead of dialled. `None` for an instance built outside a
+    /// node, as test fixtures standing in for a browser are.
+    pub local_node: Option<Arc<AppState>>,
 }
 
 /// The settings half of the builder chain, shared by fresh construction and
@@ -176,10 +206,7 @@ pub fn build_protocol(config: &ProtocolConfig) -> Result<ActorProtocol, derec_li
         .with_secret_store(SqlSecretStore::new(config.pool.clone(), actor))
         .with_user_secret_store(SqlUserSecretStore::new(config.pool.clone(), actor))
         .with_state_store(SqlStateStore::new(config.pool.clone(), actor))
-        .with_transport(CompositeTransport::new(
-            HttpTransport::new(config.http_client.clone()),
-            GrpcTransport::new(),
-        ))
+        .with_transport(transport_for(config))
         // The singular setter is deprecated; the whole list is what gets
         // advertised in `supportedTransports` at pairing.
         .with_own_transports(
@@ -191,6 +218,20 @@ pub fn build_protocol(config: &ProtocolConfig) -> Result<ActorProtocol, derec_li
         );
 
     configure_builder(builder, config).build()
+}
+
+/// The transport an instance built from `config` sends with.
+fn transport_for(config: &ProtocolConfig) -> CompositeTransport {
+    let transport = CompositeTransport::new(
+        HttpTransport::new(config.http_client.clone()),
+        // Stamped with this actor, so when the peer is another actor on
+        // this node the shared gRPC ingress can tell the two ends apart.
+        GrpcTransport::for_actor(config.actor_id),
+    );
+    match &config.local_node {
+        Some(node) => transport.delivering_locally_on(Arc::clone(node)),
+        None => transport,
+    }
 }
 
 /// Build a fresh instance from `config`, moving `old`'s stores into it.
@@ -214,6 +255,9 @@ pub fn build_protocol(config: &ProtocolConfig) -> Result<ActorProtocol, derec_li
 /// Everything the builder validates (`threshold`, the own-transport URI and its
 /// plaintext policy) comes from `config` alone, never from the stores, so the
 /// outcome is the same either way.
+// The large `Err` is the point: it hands the caller's instance back by value.
+// This runs once per reconfigure, so boxing it would buy nothing measurable.
+#[allow(clippy::result_large_err)]
 fn rebuild_with_stores(
     config: &ProtocolConfig,
     old: ActorProtocol,
@@ -352,6 +396,10 @@ pub struct ProvisionedActor {
     actor_id: Uuid,
     role: Role,
     state: Arc<AppState>,
+    /// Failed auto-confirmations per `(secret_id, channel_id)`; see
+    /// [`AUTO_CONFIRM_MAX_FAILURES`]. Cleared once a channel confirms or turns
+    /// out not to need it. In memory on purpose: a restart is a fresh chance.
+    auto_confirm_failures: HashMap<(u64, u64), u8>,
 }
 
 impl ProvisionedActor {
@@ -369,7 +417,66 @@ impl ProvisionedActor {
             actor_id,
             role,
             state,
+            auto_confirm_failures: HashMap::new(),
         }
+    }
+
+    /// Put back what a restart took away: the replica instances this actor
+    /// ran, and the routes of contacts it minted that nobody has paired
+    /// against yet (`(channel_id, secret_id)`).
+    ///
+    /// Channels already in a store need nothing here — the boot tick
+    /// reconciles every instance, replica ones included. What it cannot see is
+    /// a replica instance that does not exist, and a contact, which lives only
+    /// in the secret store until its peer's first message; both are why a
+    /// message arriving after a restart used to be dropped as "no instance
+    /// owns this channel".
+    pub fn with_restored(
+        mut self,
+        replicas: Vec<(u64, ActorProtocol)>,
+        contact_pins: Vec<(u64, u64)>,
+    ) -> Self {
+        for (secret_id, protocol) in replicas {
+            if secret_id != self.instances.own_secret_id() {
+                self.instances.insert(secret_id, protocol);
+            }
+        }
+        for (channel_id, secret_id) in contact_pins {
+            if self.instances.contains(secret_id) {
+                self.instances.pin_channel(channel_id, secret_id);
+            }
+        }
+        self
+    }
+
+    /// Bring both channel indexes in line with one instance's store.
+    ///
+    /// The per-instance map routes *within* this actor; the server-wide
+    /// router routes gRPC ingress *to* it. Both are derived, never persisted,
+    /// so both are re-read from the store here — which is what lets a node
+    /// that restarted route gRPC for channels paired before it went down.
+    fn reconcile_instance(&mut self, secret_id: u64, channel_ids: &[u64]) {
+        self.instances.reconcile(secret_id, channel_ids);
+        for &channel_id in channel_ids {
+            self.state.channel_router.bind(channel_id, self.actor_id);
+        }
+    }
+
+    /// Whether the backstop has stopped retrying this channel.
+    fn auto_confirm_exhausted(&self, secret_id: u64, channel_id: u64) -> bool {
+        self.auto_confirm_failures
+            .get(&(secret_id, channel_id))
+            .is_some_and(|failures| *failures >= AUTO_CONFIRM_MAX_FAILURES)
+    }
+
+    /// Count one failed confirmation, returning the new total.
+    fn record_auto_confirm_failure(&mut self, secret_id: u64, channel_id: u64) -> u8 {
+        let failures = self
+            .auto_confirm_failures
+            .entry((secret_id, channel_id))
+            .or_insert(0);
+        *failures = failures.saturating_add(1);
+        *failures
     }
 
     /// The instance bound to this actor's own secret — the one that serves every
@@ -553,6 +660,40 @@ impl ProvisionedActor {
                     );
                 }
 
+                // The `UpdateChannelInfo` lifecycle. This actor starts one
+                // only to announce a changed address (see
+                // `AnnounceTransportsMsg`), and peers may start one to announce
+                // theirs; the store is already updated by the time these fire,
+                // so logging is all that is left to do.
+                DeRecEvent::ChannelInfoUpdated { channel_id } => {
+                    info!(
+                        actor_id = %self.actor_id,
+                        channel_id = channel_id.0,
+                        "channel info updated with the peer"
+                    );
+                }
+                DeRecEvent::ChannelInfoUpdateRejected {
+                    channel_id,
+                    status,
+                    memo,
+                } => {
+                    warn!(
+                        actor_id = %self.actor_id,
+                        channel_id = channel_id.0,
+                        status = status,
+                        memo = %memo,
+                        "peer refused a channel info update; it keeps what it had"
+                    );
+                }
+                DeRecEvent::UpdateChannelInfoFailed { channel_id, error } => {
+                    warn!(
+                        actor_id = %self.actor_id,
+                        channel_id = channel_id.0,
+                        error = %error,
+                        "channel info update could not be exchanged with the peer"
+                    );
+                }
+
                 DeRecEvent::Unpaired { channel_id } => {
                     let cid = channel_id.0.to_string();
                     // Drop the channel from the per-actor index so the roster
@@ -562,7 +703,9 @@ impl ProvisionedActor {
                     {
                         entry.retain(|c| c != &cid);
                     }
-                    self.state.channel_router.remove(channel_id.0);
+                    // Only this actor's route: when the peer is also on this
+                    // node, it unpairs (or not) on its own schedule.
+                    self.state.channel_router.remove(channel_id.0, self.actor_id);
                     info!(
                         actor_id = %self.actor_id,
                         channel_id = channel_id.0,
@@ -625,9 +768,13 @@ impl Actor for ProvisionedActor {
 /// brings it back, its tick finds nothing to advance and writes nothing. The
 /// caller removes it from `actor_inboxes` in the same breath, so nothing can
 /// reach it either way.
+///
+/// Public so an integration test can end an actor the way deletion does —
+/// standing in for the process that ran it stopping — before exercising
+/// recovery over the same database.
 #[derive(Message)]
 #[rtype(result = "()")]
-pub(crate) struct ShutdownMsg;
+pub struct ShutdownMsg;
 
 impl Handler<ShutdownMsg> for ProvisionedActor {
     type Result = ();
@@ -646,9 +793,15 @@ impl Handler<ShutdownMsg> for ProvisionedActor {
 
 /// Advance time-driven state: sharing-round and unpair timeouts, plus the
 /// `Pending`-channel sweep the library's automatic cleanup was disabled for.
+///
+/// Public so recovery can run one to completion at boot: the tick is what
+/// re-derives an actor's gRPC routes from its stores, and doing it there —
+/// before either listener serves — means no request can find the instance
+/// borrowed by it. Scheduling one at actor start instead raced the first
+/// requests after a restart.
 #[derive(Message)]
 #[rtype(result = "()")]
-struct TickMsg;
+pub struct TickMsg;
 
 impl Handler<TickMsg> for ProvisionedActor {
     type Result = ResponseActFuture<Self, ()>;
@@ -695,7 +848,7 @@ impl Handler<TickMsg> for ProvisionedActor {
                 for (secret_id, protocol, events, swept, channel_ids, pending) in done {
                     actor.instances.restore(secret_id, protocol);
                     if let Some(channel_ids) = channel_ids {
-                        actor.instances.reconcile(secret_id, &channel_ids);
+                        actor.reconcile_instance(secret_id, &channel_ids);
                     }
 
                     // The backstop. `PairingCompleted` is the fast path, but a
@@ -706,7 +859,20 @@ impl Handler<TickMsg> for ProvisionedActor {
                     // sits `Pending` until the hour-long expiry sweep drops it.
                     // Re-notifying is free on the happy path — the handler reads
                     // the recorded status and short-circuits on `NotPending`.
+                    //
+                    // Failure counts for channels no longer pending — confirmed,
+                    // or swept — are forgotten first, so the map tracks only
+                    // live ones.
+                    actor
+                        .auto_confirm_failures
+                        .retain(|(s, c), _| *s != secret_id || pending.contains(c));
+
                     for channel_id in pending {
+                        // Given up on — see `AUTO_CONFIRM_MAX_FAILURES`. The
+                        // expiry sweep is what clears it now.
+                        if actor.auto_confirm_exhausted(secret_id, channel_id) {
+                            continue;
+                        }
                         ctx.notify(AutoConfirmFingerprintMsg {
                             secret_id,
                             channel_id,
@@ -756,6 +922,47 @@ impl Handler<TickMsg> for ProvisionedActor {
 #[rtype(result = "()")]
 pub struct IncomingMessage(pub Vec<u8>);
 
+/// An [`IncomingMessage`] that found its instance borrowed, scheduled again.
+///
+/// Self-addressed only, like [`AutoConfirmFingerprintMsg`]: nothing outside
+/// the actor can make it wait for an instance.
+#[derive(Message)]
+#[rtype(result = "()")]
+struct RetryIncomingMessage {
+    bytes: Vec<u8>,
+    /// How many times this message has already found the instance borrowed.
+    attempt: u8,
+}
+
+/// How many times an inbound message waits for a borrowed instance before it
+/// is dropped.
+///
+/// It used to be dropped on the first try ("instance busy; dropping
+/// message"), and the peer never learned why: it saw its delivery accepted and
+/// then silence. That was observed dropping an `UpdateChannelInfo` while a
+/// restored helper was still busy with its boot tick. The same contention the
+/// contact path waits out ([`CONTACT_BORROW_RETRIES`]) is waited out here.
+///
+/// The budget is longer than the contact path's, deliberately. An instance
+/// processing an inbound message may be making an outbound delivery of its
+/// own, which can take up to the HTTP client's request timeout (15 s, see
+/// `OUTBOUND_REQUEST_TIMEOUT` in `main.rs`); giving up any sooner would drop
+/// messages behind one slow peer. With [`incoming_retry_delay`] doubling from
+/// 25 ms to a 1 s ceiling, twenty attempts wait just over 15 s in total.
+const INCOMING_BORROW_RETRIES: u8 = 20;
+
+/// How long to wait before attempt `attempt + 1` of a borrowed-instance retry.
+///
+/// Doubling from 25 ms, so the common millisecond overlap is retried almost at
+/// once, capped at one second so a long wait polls rather than sleeps blind.
+fn incoming_retry_delay(attempt: u8) -> Duration {
+    const FIRST: Duration = Duration::from_millis(25);
+    const CEILING: Duration = Duration::from_secs(1);
+    FIRST
+        .checked_mul(1u32 << attempt.min(6))
+        .map_or(CEILING, |delay| delay.min(CEILING))
+}
+
 /// Create an out-of-band contact, selecting the instance bound to
 /// `replica_for_owner_secret` when set, or the own instance otherwise. This
 /// does not instantiate a protocol for a secret this actor has not seen
@@ -769,7 +976,35 @@ pub struct CreateContactMsg {
     /// When set, mint from the instance bound to this owner's secret rather than
     /// from the own instance — a replica-mode pairing.
     pub replica_for_owner_secret: Option<u64>,
+    /// How many times this message has already found the instance borrowed.
+    ///
+    /// Callers leave it at zero; the handler re-sends with it incremented. See
+    /// [`CONTACT_BORROW_RETRIES`].
+    pub attempt: u8,
 }
+
+/// How many times [`CreateContactMsg`] waits for a borrowed instance.
+///
+/// An instance is borrowed only for the duration of one in-flight call — a
+/// message being processed, or the periodic tick advancing protocol time — and
+/// both release in milliseconds. Failing instead of waiting turned a routine
+/// overlap into a 500, which the front end surfaced as a pairing that could not
+/// be started at all.
+///
+/// The tick already takes the tolerant view of the same contention ("One
+/// borrowed by an in-flight call advances time itself; skipping it is safe
+/// because the next interval picks it up"); this makes contact minting agree.
+///
+/// Bounded rather than unbounded so a genuinely missing instance — a secret this
+/// actor has no instance for — still fails, and fails quickly.
+const CONTACT_BORROW_RETRIES: u8 = 10;
+
+/// How long to wait before asking again for a borrowed instance.
+///
+/// Ten attempts at 20ms is a 200ms ceiling: comfortably longer than any single
+/// protocol call this contends with, and short enough that a real failure does
+/// not look like a hang.
+const CONTACT_BORROW_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(20);
 
 #[derive(Message)]
 #[rtype(result = "Result<Vec<DeRecEvent>, derec_library::Error>")]
@@ -1015,17 +1250,113 @@ pub struct PendingChannelIdsMsg;
 /// tell a fresh instance from a no-op rebuild that would silently discard the
 /// shares an existing replica instance already holds.
 #[derive(Message)]
-#[rtype(result = "Result<bool, derec_library::Error>")]
+#[rtype(result = "Result<bool, EnsureReplicaError>")]
 pub struct EnsureReplicaInstanceMsg {
     pub owner_secret_id: u64,
 }
 
+/// Why [`EnsureReplicaInstanceMsg`] could not provide an instance.
+#[derive(Debug, thiserror::Error)]
+pub enum EnsureReplicaError {
+    /// The actor already mirrors [`MAX_REPLICA_INSTANCES`] owners. A caller
+    /// error rather than a fault: the request named one secret too many.
+    #[error("this actor already mirrors {max} owners, the most it will hold")]
+    LimitReached { max: usize },
+    /// The secret named is this actor's own, which is not a replica of
+    /// anything — minting from it would be an ordinary contact in disguise.
+    #[error("the secret named is this actor's own, not another owner's")]
+    OwnSecret,
+    #[error(transparent)]
+    Build(#[from] derec_library::Error),
+}
+
+/// Tell every peer on this actor's helper channels where it can be reached
+/// now, via the protocol's `UpdateChannelInfo` flow.
+///
+/// Sent once at boot, by recovery, to a helper whose stored address was
+/// rewritten because the node's own address changed. The respawned instances
+/// were already built advertising the new endpoints, so what is announced is
+/// exactly what `own_transports` holds — but a peer paired before the change
+/// still dials the old address until it is told. This is the telling.
+///
+/// Every instance is covered: the own one and each replica one. Within each,
+/// the flow reaches the `Paired` helper channels (see [`announce_on`]);
+/// replica *group members* are not covered by `UpdateChannelInfo` at all,
+/// which the boot log says.
+///
+/// Construct with `AnnounceTransportsMsg::default()`; the field counts the
+/// handler's own retries while an instance is borrowed.
+#[derive(Message, Default)]
+#[rtype(result = "AnnounceReport")]
+pub struct AnnounceTransportsMsg {
+    attempt: u8,
+}
+
+/// What one [`AnnounceTransportsMsg`] achieved.
+///
+/// `announced` counts requests *dispatched*; each peer's acknowledgement
+/// arrives later as `ChannelInfoUpdated` and is logged when it does.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct AnnounceReport {
+    /// Peers the announcement was sent to.
+    pub announced: usize,
+    /// Peers it could not be sent to; each is logged with the reason. They
+    /// still hold the old address.
+    pub failed: usize,
+    /// Instances that could not run the flow at all — borrowed through every
+    /// retry, or refused by the SDK. Their peers were not told.
+    pub instances_skipped: usize,
+}
+
+impl AnnounceReport {
+    /// Add `other`'s counts to these.
+    pub fn absorb(&mut self, other: AnnounceReport) {
+        self.announced += other.announced;
+        self.failed += other.failed;
+        self.instances_skipped += other.instances_skipped;
+    }
+}
+
+/// How many times [`AnnounceTransportsMsg`] waits for a borrowed instance, and
+/// how long between tries. Ten attempts at 100 ms: at boot the only contention
+/// is the recovery tick and the first inbound traffic, both short.
+const ANNOUNCE_BORROW_RETRIES: u8 = 10;
+const ANNOUNCE_BORROW_RETRY_DELAY: Duration = Duration::from_millis(100);
+
 impl Handler<IncomingMessage> for ProvisionedActor {
     type Result = ResponseActFuture<Self, ()>;
 
-    fn handle(&mut self, msg: IncomingMessage, _ctx: &mut Context<Self>) -> Self::Result {
-        let bytes = msg.0;
+    fn handle(&mut self, msg: IncomingMessage, ctx: &mut Context<Self>) -> Self::Result {
+        self.process_incoming(msg.0, 0, ctx)
+    }
+}
 
+impl Handler<RetryIncomingMessage> for ProvisionedActor {
+    type Result = ResponseActFuture<Self, ()>;
+
+    fn handle(&mut self, msg: RetryIncomingMessage, ctx: &mut Context<Self>) -> Self::Result {
+        self.process_incoming(msg.bytes, msg.attempt, ctx)
+    }
+}
+
+impl ProvisionedActor {
+    /// Route inbound bytes to the instance that owns their channel and process
+    /// them there.
+    ///
+    /// `attempt` counts how many times these bytes already found that
+    /// instance borrowed. A borrowed instance is transient — one in-flight
+    /// call holds it — so the bytes are rescheduled rather than dropped, and
+    /// only given up on, loudly, once [`INCOMING_BORROW_RETRIES`] is spent.
+    ///
+    /// A retried message may be overtaken by one that arrives while it waits
+    /// and finds the instance free. The protocol does not depend on delivery
+    /// order between separate exchanges, and dropping was strictly worse.
+    fn process_incoming(
+        &mut self,
+        bytes: Vec<u8>,
+        attempt: u8,
+        ctx: &mut Context<Self>,
+    ) -> ResponseActFuture<Self, ()> {
         let meta = match crate::envelope::decode(&bytes) {
             Ok(meta) => meta,
             Err(e) => {
@@ -1062,16 +1393,35 @@ impl Handler<IncomingMessage> for ProvisionedActor {
             return Box::pin(actix::fut::ready(()));
         };
         let Some(mut protocol) = self.instances.take(owner) else {
-            error!(
-                actor_id = %self.actor_id,
-                channel_id = meta.channel_id,
-                sequence = meta.sequence,
-                trace_id = meta.trace_id,
-                secret_id = owner,
-                "instance busy; dropping message"
-            );
+            if attempt < INCOMING_BORROW_RETRIES {
+                ctx.notify_later(
+                    RetryIncomingMessage {
+                        bytes,
+                        attempt: attempt + 1,
+                    },
+                    incoming_retry_delay(attempt),
+                );
+            } else {
+                error!(
+                    actor_id = %self.actor_id,
+                    channel_id = meta.channel_id,
+                    sequence = meta.sequence,
+                    trace_id = meta.trace_id,
+                    secret_id = owner,
+                    attempts = attempt,
+                    "instance stayed busy through every retry; dropping message"
+                );
+            }
             return Box::pin(actix::fut::ready(()));
         };
+        if attempt > 0 {
+            info!(
+                actor_id = %self.actor_id,
+                channel_id = meta.channel_id,
+                attempts = attempt,
+                "inbound message delivered after waiting for a busy instance"
+            );
+        }
         let secret_id = owner;
 
         Box::pin(
@@ -1084,7 +1434,7 @@ impl Handler<IncomingMessage> for ProvisionedActor {
             .map(move |(protocol, result, channel_ids), actor, ctx| {
                 actor.instances.restore(secret_id, protocol);
                 if let Some(channel_ids) = channel_ids {
-                    actor.instances.reconcile(secret_id, &channel_ids);
+                    actor.reconcile_instance(secret_id, &channel_ids);
                 }
                 match result {
                     Ok(events) => actor.handle_events(secret_id, &events, ctx),
@@ -1208,15 +1558,49 @@ impl Handler<LinkChannelsMsg> for ProvisionedActor {
 impl Handler<CreateContactMsg> for ProvisionedActor {
     type Result = ResponseActFuture<Self, Result<derec_proto::ContactMessage, derec_library::Error>>;
 
-    fn handle(&mut self, msg: CreateContactMsg, _ctx: &mut Context<Self>) -> Self::Result {
+    fn handle(&mut self, msg: CreateContactMsg, ctx: &mut Context<Self>) -> Self::Result {
         let secret_id = msg
             .replica_for_owner_secret
             .unwrap_or_else(|| self.instances.own_secret_id());
 
         let Some(mut protocol) = self.instances.take(secret_id) else {
-            return Box::pin(actix::fut::ready(Err(derec_library::Error::Invariant(
-                "no instance for the requested secret, or it is borrowed",
-            ))));
+            // Either there is no such instance, or one exists and is borrowed by
+            // an in-flight call. `take` cannot tell them apart, and the second is
+            // transient — so wait and ask again rather than failing a request
+            // that would have succeeded a moment later.
+            if !self.instances.contains(secret_id) || msg.attempt >= CONTACT_BORROW_RETRIES {
+                if msg.attempt > 0 {
+                    warn!(
+                        actor_id = %self.actor_id,
+                        secret_id,
+                        attempts = msg.attempt,
+                        "contact minting gave up waiting for the instance"
+                    );
+                }
+                return Box::pin(actix::fut::ready(Err(derec_library::Error::Invariant(
+                    "no instance for the requested secret, or it is borrowed",
+                ))));
+            }
+
+            // Re-send to self rather than looping here: `take` needs `&mut self`,
+            // which is only available in a handler, and holding the actor across
+            // the wait would block the very call we are waiting for.
+            let addr = ctx.address();
+            let next = CreateContactMsg {
+                contact_mode: msg.contact_mode,
+                nonce: msg.nonce,
+                replica_for_owner_secret: msg.replica_for_owner_secret,
+                attempt: msg.attempt + 1,
+            };
+            return Box::pin(
+                async move {
+                    tokio::time::sleep(CONTACT_BORROW_RETRY_DELAY).await;
+                    addr.send(next).await.unwrap_or(Err(derec_library::Error::Invariant(
+                        "actor stopped while waiting to mint a contact",
+                    )))
+                }
+                .into_actor(self),
+            );
         };
         let contact_mode = msg.contact_mode;
         let nonce = msg.nonce;
@@ -1231,7 +1615,7 @@ impl Handler<CreateContactMsg> for ProvisionedActor {
             .map(move |(protocol, result, channel_ids), actor, _ctx| {
                 actor.instances.restore(secret_id, protocol);
                 if let Some(channel_ids) = channel_ids {
-                    actor.instances.reconcile(secret_id, &channel_ids);
+                    actor.reconcile_instance(secret_id, &channel_ids);
                 }
                 // `create_contact` persists to the secret store only — never
                 // to the channel store — so `channel_ids_of` above cannot see
@@ -1272,7 +1656,7 @@ impl Handler<StartFlowMsg> for ProvisionedActor {
             .map(move |(protocol, result, channel_ids), actor, ctx| {
                 actor.restore_own(protocol);
                 if let Some(channel_ids) = channel_ids {
-                    actor.instances.reconcile(secret_id, &channel_ids);
+                    actor.reconcile_instance(secret_id, &channel_ids);
                 }
                 if let Ok(events) = &result {
                     actor.handle_events(secret_id, events, ctx);
@@ -1414,7 +1798,9 @@ impl Handler<AutoConfirmFingerprintMsg> for ProvisionedActor {
                 actor.instances.restore(secret_id, protocol);
 
                 match outcome {
-                    AutoConfirmOutcome::NotPending => {}
+                    AutoConfirmOutcome::NotPending => {
+                        actor.auto_confirm_failures.remove(&(secret_id, channel_id));
+                    }
                     AutoConfirmOutcome::NoRecord => {
                         warn!(
                             actor_id = %actor_id,
@@ -1424,6 +1810,7 @@ impl Handler<AutoConfirmFingerprintMsg> for ProvisionedActor {
                         );
                     }
                     AutoConfirmOutcome::Confirmed => {
+                        actor.auto_confirm_failures.remove(&(secret_id, channel_id));
                         info!(
                             actor_id = %actor_id,
                             secret_id = secret_id,
@@ -1432,26 +1819,51 @@ impl Handler<AutoConfirmFingerprintMsg> for ProvisionedActor {
                         );
                     }
                     AutoConfirmOutcome::Rejected => {
-                        error!(
-                            actor_id = %actor_id,
-                            secret_id = secret_id,
-                            channel_id = channel_id,
-                            "auto-confirmation rejected a locally derived fingerprint; \
-                             channel left pending"
-                        );
+                        // Counted like a failure: retrying cannot change a
+                        // comparison of the instance's key against itself.
+                        let failures = actor.record_auto_confirm_failure(secret_id, channel_id);
+                        if failures <= AUTO_CONFIRM_MAX_FAILURES {
+                            error!(
+                                actor_id = %actor_id,
+                                secret_id = secret_id,
+                                channel_id = channel_id,
+                                attempts = failures,
+                                "auto-confirmation rejected a locally derived fingerprint; \
+                                 channel left pending"
+                            );
+                        }
                     }
                     AutoConfirmOutcome::Failed(e) => {
-                        error!(
-                            actor_id = %actor_id,
-                            secret_id = secret_id,
-                            channel_id = channel_id,
-                            error = %e,
-                            // Deliberately not "channel left pending":
-                            // `verify_fingerprint` writes the promotion before
-                            // it publishes to the newly usable peer, so a
-                            // failure here may mean either.
-                            "auto-confirmation failed"
-                        );
+                        let failures = actor.record_auto_confirm_failure(secret_id, channel_id);
+                        if failures >= AUTO_CONFIRM_MAX_FAILURES {
+                            // Said once, then silence: the tick skips this
+                            // channel from here on and the expiry sweep
+                            // removes it if nothing else does.
+                            if failures == AUTO_CONFIRM_MAX_FAILURES {
+                                error!(
+                                    actor_id = %actor_id,
+                                    secret_id = secret_id,
+                                    channel_id = channel_id,
+                                    error = %e,
+                                    attempts = failures,
+                                    "auto-confirmation keeps failing; giving up on this \
+                                     channel, which stays pending until the expiry sweep"
+                                );
+                            }
+                        } else {
+                            warn!(
+                                actor_id = %actor_id,
+                                secret_id = secret_id,
+                                channel_id = channel_id,
+                                error = %e,
+                                attempt = failures,
+                                // Deliberately not "channel left pending":
+                                // `verify_fingerprint` writes the promotion
+                                // before it publishes to the newly usable
+                                // peer, so a failure here may mean either.
+                                "auto-confirmation failed; the tick will retry"
+                            );
+                        }
                     }
                 }
             }),
@@ -1591,11 +2003,27 @@ impl Handler<PendingChannelIdsMsg> for ProvisionedActor {
 }
 
 impl Handler<EnsureReplicaInstanceMsg> for ProvisionedActor {
-    type Result = Result<bool, derec_library::Error>;
+    type Result = Result<bool, EnsureReplicaError>;
 
     fn handle(&mut self, msg: EnsureReplicaInstanceMsg, _ctx: &mut Context<Self>) -> Self::Result {
+        if msg.owner_secret_id == self.instances.own_secret_id() {
+            return Err(EnsureReplicaError::OwnSecret);
+        }
         if self.instances.contains(msg.owner_secret_id) {
             return Ok(false);
+        }
+        // `secret_ids` includes the own instance, which does not count.
+        let replicas = self.instances.secret_ids().len().saturating_sub(1);
+        if replicas >= MAX_REPLICA_INSTANCES {
+            warn!(
+                actor_id = %self.actor_id,
+                owner_secret_id = msg.owner_secret_id,
+                limit = MAX_REPLICA_INSTANCES,
+                "refused a replica instance: this actor is at its limit"
+            );
+            return Err(EnsureReplicaError::LimitReached {
+                max: MAX_REPLICA_INSTANCES,
+            });
         }
 
         let mut config = self.config.clone();
@@ -1611,6 +2039,146 @@ impl Handler<EnsureReplicaInstanceMsg> for ProvisionedActor {
         );
         Ok(true)
     }
+}
+
+impl Handler<AnnounceTransportsMsg> for ProvisionedActor {
+    type Result = ResponseActFuture<Self, AnnounceReport>;
+
+    fn handle(&mut self, msg: AnnounceTransportsMsg, ctx: &mut Context<Self>) -> Self::Result {
+        let secret_ids = self.instances.secret_ids();
+        let mut borrowed: Vec<(u64, ActorProtocol)> = Vec::with_capacity(secret_ids.len());
+        for secret_id in &secret_ids {
+            if let Some(protocol) = self.instances.take(*secret_id) {
+                borrowed.push((*secret_id, protocol));
+            }
+        }
+        let busy = secret_ids.len() - borrowed.len();
+
+        // Wait for every instance rather than announce piecemeal: a peer left
+        // out here is never told, while a short wait costs nothing at boot.
+        // Re-sent through the address rather than `notify_later`, because the
+        // report has to travel back to the original sender.
+        if busy > 0 && msg.attempt < ANNOUNCE_BORROW_RETRIES {
+            for (secret_id, protocol) in borrowed {
+                self.instances.restore(secret_id, protocol);
+            }
+            let addr = ctx.address();
+            let next = AnnounceTransportsMsg {
+                attempt: msg.attempt + 1,
+            };
+            return Box::pin(
+                async move {
+                    tokio::time::sleep(ANNOUNCE_BORROW_RETRY_DELAY).await;
+                    addr.send(next).await.unwrap_or_default()
+                }
+                .into_actor(self),
+            );
+        }
+        if busy > 0 {
+            warn!(
+                actor_id = %self.actor_id,
+                instances = busy,
+                "instances stayed busy; their peers are not told this helper's new address"
+            );
+        }
+
+        let own_transports: Vec<derec_proto::TransportProtocol> = self
+            .config
+            .own_transports
+            .iter()
+            .map(crate::models::Transport::to_proto)
+            .collect();
+        let actor_id = self.actor_id;
+
+        Box::pin(
+            async move {
+                let mut done = Vec::with_capacity(borrowed.len());
+                for (secret_id, mut protocol) in borrowed {
+                    let result = announce_on(&mut protocol, secret_id, &own_transports).await;
+                    done.push((secret_id, protocol, result));
+                }
+                done
+            }
+            .into_actor(self)
+            .map(move |done, actor, ctx| {
+                let mut report = AnnounceReport {
+                    instances_skipped: busy,
+                    ..AnnounceReport::default()
+                };
+                for (secret_id, protocol, result) in done {
+                    actor.instances.restore(secret_id, protocol);
+                    match result {
+                        Ok(events) => {
+                            report.absorb(count_announcement(&events));
+                            actor.handle_events(secret_id, &events, ctx);
+                        }
+                        Err(e) => {
+                            warn!(
+                                actor_id = %actor_id,
+                                secret_id,
+                                error = %e,
+                                "could not announce the new address on this instance; \
+                                 its peers still hold the old one"
+                            );
+                            report.instances_skipped += 1;
+                        }
+                    }
+                }
+                report
+            }),
+        )
+    }
+}
+
+/// Run the announcement on one instance, to its `Paired` helper channels.
+///
+/// Named explicitly rather than `Target::All`, which also resolves channels
+/// still mid-handshake: one of those has no shared key yet, and the SDK fails
+/// the whole start on a missing key — so a single half-paired channel would
+/// have cost every other peer on the instance its announcement. A `Pending`
+/// peer is left out too; it has not confirmed this channel, would drop the
+/// update unread, and learns the address when it pairs.
+async fn announce_on(
+    protocol: &mut ActorProtocol,
+    secret_id: u64,
+    own_transports: &[derec_proto::TransportProtocol],
+) -> Result<Vec<DeRecEvent>, derec_library::Error> {
+    let paired = HelperFilter {
+        status: vec![ChannelStatus::Paired],
+        ..Default::default()
+    };
+    let channel_ids: Vec<ChannelId> = protocol
+        .channel_store
+        .helpers(secret_id, paired)
+        .await
+        .map_err(derec_library::Error::from)?
+        .iter()
+        .map(|c| c.channel_id)
+        .collect();
+    if channel_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    protocol
+        .start(DeRecFlow::UpdateChannelInfo {
+            target: derec_library::protocol::types::Target::Many(channel_ids),
+            communication_info: None,
+            own_transports: own_transports.to_vec(),
+        })
+        .await
+}
+
+/// Tally the events one `UpdateChannelInfo` start produced.
+fn count_announcement(events: &[DeRecEvent]) -> AnnounceReport {
+    let mut report = AnnounceReport::default();
+    for event in events {
+        match event {
+            DeRecEvent::UpdateChannelInfoStarted { .. } => report.announced += 1,
+            DeRecEvent::UpdateChannelInfoFailed { .. } => report.failed += 1,
+            _ => {}
+        }
+    }
+    report
 }
 
 #[cfg(test)]
@@ -1649,7 +2217,21 @@ mod tests {
             http_client: reqwest::Client::new(),
             pool,
             actor_id: uuid::Uuid::new_v4(),
+            local_node: None,
         }
+    }
+
+    /// The retry budget for an inbound message must outlast one outbound
+    /// delivery at the HTTP client's 15 s timeout, or a message behind one
+    /// slow peer is dropped anyway — while still giving up in bounded time.
+    #[test]
+    fn a_busy_instance_is_waited_for_just_past_one_outbound_timeout() {
+        let total: Duration = (0..INCOMING_BORROW_RETRIES).map(incoming_retry_delay).sum();
+
+        assert!(total > Duration::from_secs(15), "{total:?}");
+        assert!(total < Duration::from_secs(20), "{total:?}");
+        assert_eq!(incoming_retry_delay(0), Duration::from_millis(25));
+        assert_eq!(incoming_retry_delay(u8::MAX), Duration::from_secs(1));
     }
 
     /// A rejected rebuild must not cost the caller its instance.

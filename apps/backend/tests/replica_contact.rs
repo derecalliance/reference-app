@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! A helper mints a replica-mode contact from an instance bound to the named
 //! owner's secret — the route-level half of "any helper can be a replica".
 
@@ -29,6 +32,7 @@ fn config(secret_id: u64, pool: sqlx::AnyPool, actor_id: uuid::Uuid) -> Protocol
         http_client: reqwest::Client::new(),
         pool,
         actor_id,
+        local_node: None,
     }
 }
 
@@ -61,6 +65,7 @@ async fn a_replica_mode_contact_is_minted_from_the_owners_instance() {
             contact_mode: derec_proto::ContactMode::InlineKeys,
             nonce: None,
             replica_for_owner_secret: Some(ALICE_SECRET),
+            attempt: 0,
         })
         .await
         .expect("actor alive")
@@ -86,6 +91,7 @@ async fn an_ordinary_contact_still_mints_from_the_own_instance() {
             contact_mode: derec_proto::ContactMode::InlineKeys,
             nonce: None,
             replica_for_owner_secret: None,
+            attempt: 0,
         })
         .await
         .expect("actor alive")

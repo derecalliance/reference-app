@@ -1,0 +1,158 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
+//! An actor's transport delivers to this node's own actors in-process, under
+//! any address the node has had, and dials everything else as before.
+//!
+//! Nothing listens anywhere in these tests: a delivery that succeeds can only
+//! have been made locally.
+
+use std::sync::Arc;
+
+use derec_backend::addresses::Listener;
+use derec_backend::config::Defaults;
+use derec_backend::state::AppState;
+use derec_backend::transport::{CompositeTransport, GrpcTransport, HttpTransport};
+use derec_library::protocol::DeRecTransport as _;
+use prost::Message as _;
+use uuid::Uuid;
+
+async fn node() -> Arc<AppState> {
+    let state = Arc::new(AppState::new(
+        "http://192.168.0.28:5600",
+        Defaults {
+            grpc_port: 50651,
+            ..Defaults::default()
+        },
+        reqwest::Client::new(),
+        actix_rt::Arbiter::current(),
+        derec_backend::db::connect("sqlite::memory:")
+            .await
+            .expect("an in-memory database always connects"),
+    ));
+    // What the node advertised before a republish; nothing listens there now.
+    for (listener, address) in [
+        (Listener::Http, "http://localhost:8080"),
+        (Listener::Grpc, "localhost:9090"),
+    ] {
+        state
+            .addresses
+            .remember(&state.pool, listener, address)
+            .await
+            .expect("the database is writable");
+    }
+    state
+}
+
+/// The transport an actor `sender` on `node` sends with.
+fn transport_of(node: &Arc<AppState>, sender: Uuid) -> CompositeTransport {
+    CompositeTransport::new(
+        HttpTransport::new(reqwest::Client::new()),
+        GrpcTransport::for_actor(sender),
+    )
+    .delivering_locally_on(Arc::clone(node))
+}
+
+fn endpoint(uri: &str, protocol: derec_proto::Protocol) -> derec_proto::TransportProtocol {
+    derec_proto::TransportProtocol {
+        uri: uri.to_owned(),
+        protocol: protocol as i32,
+    }
+}
+
+fn envelope(channel_id: u64) -> Vec<u8> {
+    derec_proto::DeRecMessage {
+        channel_id,
+        ..Default::default()
+    }
+    .encode_to_vec()
+}
+
+fn browser_actor(state: &AppState) -> Uuid {
+    let id = Uuid::new_v4();
+    derec_backend::provisioning::register_browser_actor(state, id);
+    id
+}
+
+#[actix_rt::test]
+async fn an_old_http_address_of_a_same_node_actor_is_delivered_without_a_dial() {
+    let state = node().await;
+    let owner = browser_actor(&state);
+
+    transport_of(&state, Uuid::new_v4())
+        .send(
+            &[endpoint(
+                &format!("http://localhost:8080/derec/{owner}"),
+                derec_proto::Protocol::Https,
+            )],
+            envelope(5),
+        )
+        .await
+        .expect("delivered locally, although nothing listens on 8080");
+
+    assert_eq!(state.mailboxes.drain(&owner).await.expect("readable"), vec![envelope(5)]);
+}
+
+#[actix_rt::test]
+async fn an_old_grpc_address_routes_by_channel_and_never_back_to_the_sender() {
+    // Both ends of a pairing on this node hold the channel; the sender's own
+    // claim is excluded exactly as the gRPC listener excludes it.
+    let state = node().await;
+    let (sender, recipient) = (browser_actor(&state), browser_actor(&state));
+    state.channel_router.pin(77, sender);
+    state.channel_router.pin(77, recipient);
+
+    transport_of(&state, sender)
+        .send(
+            &[endpoint("grpc://localhost:9090", derec_proto::Protocol::Grpc)],
+            envelope(77),
+        )
+        .await
+        .expect("delivered locally");
+
+    assert_eq!(state.mailboxes.drain(&recipient).await.expect("readable").len(), 1);
+    assert!(state.mailboxes.drain(&sender).await.expect("readable").is_empty());
+}
+
+#[actix_rt::test]
+async fn another_node_is_still_dialled() {
+    // Port 1 refuses: the send fails, which it could not if it had been
+    // short-circuited into this node.
+    let state = node().await;
+    let owner = browser_actor(&state);
+
+    let outcome = transport_of(&state, Uuid::new_v4())
+        .send(
+            &[endpoint(
+                &format!("http://127.0.0.1:1/derec/{owner}"),
+                derec_proto::Protocol::Https,
+            )],
+            envelope(5),
+        )
+        .await;
+
+    assert!(outcome.is_err());
+    assert!(state.mailboxes.drain(&owner).await.expect("readable").is_empty());
+}
+
+#[actix_rt::test]
+async fn a_full_mailbox_here_fails_over_to_the_next_endpoint_rather_than_dialling_itself() {
+    let state = node().await;
+    let (full, spare) = (browser_actor(&state), browser_actor(&state));
+    for _ in 0..derec_backend::registry::mailbox::MAX_QUEUED_MESSAGES {
+        state.mailboxes.enqueue(&full, &[1]).await.expect("room");
+    }
+
+    transport_of(&state, Uuid::new_v4())
+        .send(
+            &[
+                endpoint(&format!("http://localhost:8080/derec/{full}"), derec_proto::Protocol::Https),
+                endpoint(&format!("http://localhost:8080/derec/{spare}"), derec_proto::Protocol::Https),
+            ],
+            envelope(5),
+        )
+        .await
+        .expect("the second endpoint takes it");
+
+    assert_eq!(state.mailboxes.drain(&spare).await.expect("readable").len(), 1);
+}

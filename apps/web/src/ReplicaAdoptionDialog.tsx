@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { useState } from 'react'
 import { errorText } from './errorText'
 import {
@@ -129,34 +132,34 @@ export function ReplicaAdoptionDialog({
   return (
     <Dialog
       open={open}
-      // Answered, not dismissed. A source replacing this device's vault is not
-      // something to notice later: there is no backdrop-click or Escape exit,
-      // so the choice is Reject or Erase and adopt. Rejecting is one click and
-      // discards the offer — the source re-offers on its next sync — which is
-      // what makes refusing to auto-close defensible rather than a trap.
-      onClose={(_event, reason) => {
-        if (reason === 'backdropClick' || reason === 'escapeKeyDown') return
-        handleCancel()
-      }}
-      disableEscapeKeyDown
+      // Escape and a backdrop click resolve to Reject, exactly as the button
+      // does — the safe answer, and the one the README documents. Rejecting
+      // erases nothing and the source re-offers on its next sync, so an
+      // accidental dismissal costs one more prompt, never the vault.
+      // `handleCancel` itself refuses while an adoption is in flight.
+      onClose={() => handleCancel()}
       fullWidth
       maxWidth="sm"
       aria-labelledby="replica-adopt-title"
     >
-      <DialogTitle id="replica-adopt-title">Replace this device’s vault?</DialogTitle>
+      <DialogTitle id="replica-adopt-title">Replace this vault?</DialogTitle>
 
       <DialogContent>
         <Stack spacing={2.5} sx={{ pt: 1 }}>
           <Alert severity="warning">
-            <AlertTitle>This erases everything this device holds</AlertTitle>
-            Every secret, helper channel and share stored here is deleted and replaced
-            with {sourceLabel}’s vault. It cannot be undone from this app.
+            {/* Scoped to this vault: adoption clears only this vault's own
+                namespace (`vault:<id>`), so other vaults saved in this browser
+                are untouched — saying "everything" would overstate it. */}
+            <AlertTitle>This erases everything this vault holds</AlertTitle>
+            Every secret, helper channel and share this vault stores on this device is
+            deleted and replaced with {sourceLabel}’s vault. Other vaults in this browser
+            are not affected. It cannot be undone from this app.
           </Alert>
 
           <DialogContentText>
             {sourceLabel} sent this device a mirrored copy of their vault. Adopting it
-            makes this device a replica of that vault: it takes on {sourceLabel}’s
-            secrets and helper roster, and stops holding anything of its own.
+            makes this vault a replica of theirs: it takes on {sourceLabel}’s secrets and
+            helper roster, and stops holding anything of its own.
           </DialogContentText>
 
           <Divider />
@@ -196,10 +199,9 @@ export function ReplicaAdoptionDialog({
       </DialogContent>
 
       <DialogActions>
-        {/* Cancel is the default action: autofocused and filled. Escape and a
-            backdrop click resolve here too. */}
-        {/* The safe answer, and the default: filled and autofocused, so the
-            destructive one is never the thing a stray keypress reaches. */}
+        {/* The safe answer, and the default: filled and autofocused, and what
+            Escape and a backdrop click resolve to — so the destructive one is
+            never the thing a stray keypress reaches. */}
         <Button variant="contained" onClick={handleCancel} disabled={adopting} autoFocus>
           {state.kind === 'failed' ? 'Close' : 'Reject'}
         </Button>

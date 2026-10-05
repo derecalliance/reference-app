@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 /**
  * Replica pairing and fingerprint confirmation.
  *
@@ -25,9 +28,8 @@ import {
   type BEActorWithStatus,
 } from './api'
 import { dtoToContactMessage, protocolName } from './contactDto'
-import { resolveRosterActor } from './peerIdentity'
-import { toBytes } from './bytes'
-import { toBase64Url } from './derecApi'
+import { resolveRosterEntries } from './peerIdentity'
+import { bytesToHex, toBytes } from './bytes'
 import type { BagVersion, PairedParticipant, SecretBag } from './types'
 
 /** One row of the actor roster, as the backend reports it. */
@@ -298,8 +300,8 @@ export type { ReplicaPairingRole }
 
 export interface PairReplicaOptions {
   protocol: ReplicaProtocol
-  /** This device's own owner actor id — the key its replica bookkeeping lives under. */
-  ownerId: string
+  /** This vault's actor id — the key its replica bookkeeping lives under. */
+  vaultId: string
   /** Backend actor id of the helper to pair with. */
   replicaId: string
   /** Display name, forwarded to the peer as communication info. */
@@ -357,7 +359,7 @@ export async function pairReplica(opts: PairReplicaOptions): Promise<bigint> {
   const started = events.find(e => e.type === 'PairingStarted')
   if (!started) throw new Error('replica pairing dispatched no PairingStarted event')
 
-  recordPendingReplicaPairing(opts.ownerId, started.channel_id, opts.replicaId)
+  recordPendingReplicaPairing(opts.vaultId, started.channel_id, opts.replicaId)
   return BigInt(started.channel_id)
 }
 
@@ -454,6 +456,16 @@ export interface ReplicaRecord {
    * for a destination that has already had one.
    */
   firstSyncStarted?: boolean
+  /**
+   * The person comparing codes on this device said they do **not** match.
+   *
+   * Recorded rather than treated as a dismissal: the protocol has no message
+   * for "I refuse this channel", so the peer never learns of it and a peer that
+   * confirmed keeps waiting. The one place the refusal can live is here, where
+   * the row reads it back and says so instead of looking like an unanswered
+   * prompt. Cleared by a later "Codes match" — a person may have misread.
+   */
+  refused?: boolean
 }
 
 /**
@@ -558,14 +570,14 @@ const EMPTY_STATE: ReplicaState = {
 
 const EMPTY_RECORD: ReplicaRecord = { local: false, peer: 'none' }
 
-function stateKey(ownerId: string): string {
-  return `${REPLICA_STATE_KEY_PREFIX}${ownerId}`
+function stateKey(vaultId: string): string {
+  return `${REPLICA_STATE_KEY_PREFIX}${vaultId}`
 }
 
 /**
- * Drop this owner's replica bookkeeping.
+ * Drop this vault's replica bookkeeping.
  *
- * `derec:replica-state:<ownerId>` sits outside every `derec:<ns>:` partition,
+ * `derec:replica-state:<vaultId>` sits outside every `derec:<ns>:` partition,
  * so `clearNamespace` does not reach it — which is what adoption needs, because
  * the confirmations and `syncs` recorded here are keyed by channel ids the
  * library drops when the vault is replaced. Left behind, a destination that had
@@ -576,17 +588,17 @@ function stateKey(ownerId: string): string {
  * different key and must survive adoption, or the device would silently become
  * a different peer.
  */
-export function clearReplicaState(ownerId: string): void {
+export function clearReplicaState(vaultId: string): void {
   try {
-    localStorage.removeItem(stateKey(ownerId))
+    localStorage.removeItem(stateKey(vaultId))
   } catch {
     // Storage unavailable — nothing to clear.
   }
 }
 
-export function loadReplicaState(ownerId: string): ReplicaState {
+export function loadReplicaState(vaultId: string): ReplicaState {
   try {
-    const raw = localStorage.getItem(stateKey(ownerId))
+    const raw = localStorage.getItem(stateKey(vaultId))
     if (!raw) return EMPTY_STATE
     const parsed = JSON.parse(raw) as Partial<ReplicaState>
     return {
@@ -603,9 +615,9 @@ export function loadReplicaState(ownerId: string): ReplicaState {
   }
 }
 
-function saveReplicaState(ownerId: string, state: ReplicaState): ReplicaState {
+function saveReplicaState(vaultId: string, state: ReplicaState): ReplicaState {
   try {
-    localStorage.setItem(stateKey(ownerId), JSON.stringify(state))
+    localStorage.setItem(stateKey(vaultId), JSON.stringify(state))
   } catch {
     // Storage unavailable — the returned value still drives this tab's UI.
   }
@@ -614,13 +626,13 @@ function saveReplicaState(ownerId: string, state: ReplicaState): ReplicaState {
 
 /** Merge a patch into one replica's record and persist. Returns the new state. */
 export function recordConfirmation(
-  ownerId: string,
+  vaultId: string,
   replicaId: string,
   patch: Partial<ReplicaRecord>,
 ): ReplicaState {
-  const current = loadReplicaState(ownerId)
+  const current = loadReplicaState(vaultId)
   const existing = current.replicas[replicaId] ?? EMPTY_RECORD
-  return saveReplicaState(ownerId, {
+  return saveReplicaState(vaultId, {
     ...current,
     replicas: { ...current.replicas, [replicaId]: { ...existing, ...patch } },
   })
@@ -637,17 +649,17 @@ export function recordConfirmation(
  * that existed before the trigger.
  */
 export function markReplicaFirstSyncStarted(
-  ownerId: string,
+  vaultId: string,
   replicaIds: readonly string[],
 ): ReplicaState {
-  const current = loadReplicaState(ownerId)
+  const current = loadReplicaState(vaultId)
   if (replicaIds.length === 0) return current
 
   const replicas = { ...current.replicas }
   for (const replicaId of replicaIds) {
     replicas[replicaId] = { ...(replicas[replicaId] ?? EMPTY_RECORD), firstSyncStarted: true }
   }
-  return saveReplicaState(ownerId, { ...current, replicas })
+  return saveReplicaState(vaultId, { ...current, replicas })
 }
 
 /**
@@ -655,12 +667,12 @@ export function markReplicaFirstSyncStarted(
  * `PairingCompleted` can be attributed without guessing.
  */
 export function recordPendingReplicaPairing(
-  ownerId: string,
+  vaultId: string,
   transientChannelId: string,
   replicaId: string,
 ): ReplicaState {
-  const current = loadReplicaState(ownerId)
-  return saveReplicaState(ownerId, {
+  const current = loadReplicaState(vaultId)
+  return saveReplicaState(vaultId, {
     ...current,
     pendingPairings: { ...current.pendingPairings, [transientChannelId]: replicaId },
   })
@@ -673,11 +685,11 @@ export function recordPendingReplicaPairing(
  * existed) and the backend roster remains the only source for it.
  */
 export function resolveReplicaPairing(
-  ownerId: string,
+  vaultId: string,
   transientChannelId: string,
   channelId: string,
 ): ReplicaState {
-  const current = loadReplicaState(ownerId)
+  const current = loadReplicaState(vaultId)
   const replicaId = current.pendingPairings[transientChannelId]
   if (!replicaId) return current
 
@@ -685,7 +697,7 @@ export function resolveReplicaPairing(
     Object.entries(current.pendingPairings).filter(([id]) => id !== transientChannelId),
   )
   const existing = current.replicas[replicaId] ?? EMPTY_RECORD
-  return saveReplicaState(ownerId, {
+  return saveReplicaState(vaultId, {
     ...current,
     replicas: { ...current.replicas, [replicaId]: { ...existing, channelId } },
     pendingPairings,
@@ -714,16 +726,16 @@ export function resolveReplicaPairing(
  * channel does not have.
  */
 export function recordReplicaChannel(
-  ownerId: string,
+  vaultId: string,
   record: ReplicaChannelRecord,
 ): ReplicaState {
-  const current = loadReplicaState(ownerId)
+  const current = loadReplicaState(vaultId)
   const existing = current.channels[record.channelId]
   const peerName = record.peerName ?? existing?.peerName
   const establishedAt = existing?.establishedAt ?? record.establishedAt
   const peerReplicaId = record.peerReplicaId ?? existing?.peerReplicaId
 
-  return saveReplicaState(ownerId, {
+  return saveReplicaState(vaultId, {
     ...current,
     channels: {
       ...current.channels,
@@ -750,15 +762,15 @@ export function recordReplicaChannel(
  * Keyed by the peer's replica id, so a member whose channel moved during an
  * admission handover is still found.
  */
-export function forgetReplicaMember(ownerId: string, peerReplicaId: string): ReplicaState {
-  const current = loadReplicaState(ownerId)
+export function forgetReplicaMember(vaultId: string, peerReplicaId: string): ReplicaState {
+  const current = loadReplicaState(vaultId)
 
   const doomed = Object.values(current.channels)
     .filter(c => c.peerReplicaId === peerReplicaId)
     .map(c => c.channelId)
   if (doomed.length === 0) return current
 
-  return saveReplicaState(ownerId, pruneChannels(current, doomed))
+  return saveReplicaState(vaultId, pruneChannels(current, doomed))
 }
 
 /**
@@ -774,9 +786,9 @@ export function forgetReplicaMember(ownerId: string, peerReplicaId: string): Rep
  * point — it is the way out of a row the library will not act on, which
  * otherwise stays on screen forever offering actions that all fail.
  */
-export function forgetReplicaChannel(ownerId: string, channelId: string): ReplicaState {
-  const current = loadReplicaState(ownerId)
-  return saveReplicaState(ownerId, pruneChannels(current, [channelId]))
+export function forgetReplicaChannel(vaultId: string, channelId: string): ReplicaState {
+  const current = loadReplicaState(vaultId)
+  return saveReplicaState(vaultId, pruneChannels(current, [channelId]))
 }
 
 /** Remove every trace of `doomed` channel ids from a replica state. */
@@ -818,15 +830,15 @@ function pruneChannels(current: ReplicaState, doomed: readonly string[]): Replic
  * role on it.
  */
 export function recordPeerReplicaId(
-  ownerId: string,
+  vaultId: string,
   channelId: string,
   peerReplicaId: string,
 ): ReplicaState {
-  const current = loadReplicaState(ownerId)
+  const current = loadReplicaState(vaultId)
   const existing = current.channels[channelId]
   if (!existing) return current
 
-  return saveReplicaState(ownerId, {
+  return saveReplicaState(vaultId, {
     ...current,
     channels: {
       ...current.channels,
@@ -858,18 +870,48 @@ export function mergeReplicaSync(
 }
 
 /**
+ * The channel a `ReplicaSecretAcked` belongs to, for bookkeeping.
+ *
+ * The event's `channel_id` is the group's one shared channel, so in a group
+ * with two or more destinations every ack arrives under the same id — and was
+ * recorded against whichever row happened to own it, putting one member's
+ * "Mirrored vN" on another member's row. `from_replica_id` names the member
+ * that answered; the channel record carrying that replica id is the row it
+ * belongs to. Falls back to the event's channel when no record names the
+ * member, which is the single-destination case where the two coincide.
+ */
+export function resolveAckChannelId(
+  state: ReplicaState,
+  fromReplicaId: string,
+  eventChannelId: string,
+): string {
+  const byMember = Object.values(state.channels).find(c => c.peerReplicaId === fromReplicaId)
+  return byMember?.channelId ?? eventChannelId
+}
+
+/**
+ * The channels whose peer is the member `replicaId` — what a `ReplicaRemoved`
+ * takes off this device's list.
+ */
+export function channelsOfMember(state: ReplicaState, replicaId: string): string[] {
+  return Object.values(state.channels)
+    .filter(c => c.peerReplicaId === replicaId)
+    .map(c => c.channelId)
+}
+
+/**
  * Record a destination's acknowledgement of a mirrored secret version.
  *
  * Keyed by the acking channel — see `ReplicaState.syncs`. Returns the new
  * state so the caller can render from it without a second read.
  */
 export function recordReplicaSync(
-  ownerId: string,
+  vaultId: string,
   channelId: string,
   sync: ReplicaSyncRecord,
 ): ReplicaState {
-  const current = loadReplicaState(ownerId)
-  return saveReplicaState(ownerId, {
+  const current = loadReplicaState(vaultId)
+  return saveReplicaState(vaultId, {
     ...current,
     syncs: {
       ...current.syncs,
@@ -882,10 +924,10 @@ export function recordReplicaSync(
 //
 // The counterpart to the sync bookkeeping above: this is what a *destination*
 // holds after `ReplicaSecretReceived` arrives, before the user has decided
-// whether to adopt it. Deliberately kept in component state rather than
-// persisted — adoption (wiping this device's vault and calling
-// `protocol.restore`) is a separate, explicitly user-gated step, and nothing
-// here performs it or prepares to perform it automatically on reload.
+// whether to adopt it. The staged offer survives a reload (`replicaOfferStore`)
+// so the owner is asked again rather than silently never — but adoption
+// (wiping this device's vault and calling `protocol.restore`) stays a separate,
+// explicitly user-gated step, and nothing performs it automatically on reload.
 
 /** A mirrored secret received from a replica source, staged for the user's
  *  adoption decision but not yet acted on in any way. */
@@ -955,12 +997,23 @@ export type RestoreFailureCode =
   | 'STORAGE'
   | 'UNKNOWN'
 
-const RESTORE_FAILURE_CODES: readonly RestoreFailureCode[] = [
-  'ALREADY_RESTORED',
-  'CONFLICT',
-  'INVARIANT',
-  'STORAGE',
-]
+/**
+ * The SDK's `code` for each failure this app distinguishes. The app's own
+ * codes are persisted with a blocked adoption, so they stay as they were; the
+ * SDK's changed at 0.0.6 (lower snake case, `restore_conflict`, `store_error`),
+ * and both spellings are read so a rejection from either is still classified.
+ */
+const SDK_RESTORE_CODES: Readonly<Record<string, Exclude<RestoreFailureCode, 'UNKNOWN'>>> = {
+  already_restored: 'ALREADY_RESTORED',
+  restore_conflict: 'CONFLICT',
+  invariant: 'INVARIANT',
+  store_error: 'STORAGE',
+  // Before SDK 0.0.6.
+  ALREADY_RESTORED: 'ALREADY_RESTORED',
+  CONFLICT: 'CONFLICT',
+  INVARIANT: 'INVARIANT',
+  STORAGE: 'STORAGE',
+}
 
 /**
  * The two codes `restore` rejects with *before* it mutates any store:
@@ -1029,7 +1082,7 @@ function readChannelIds(record: Record<string, unknown> | null): string[] {
 export function describeRestoreFailure(err: unknown): RestoreFailure {
   const record = asRecord(err)
   const rawCode = record?.['code']
-  const code = RESTORE_FAILURE_CODES.find(c => c === rawCode) ?? 'UNKNOWN'
+  const code = (typeof rawCode === 'string' && SDK_RESTORE_CODES[rawCode]) || 'UNKNOWN'
   const message = readMessage(err, record, code !== 'UNKNOWN')
   const channelIds = readChannelIds(record)
 
@@ -1345,10 +1398,32 @@ export function adoptedVaultState(
   actors: readonly RosterActor[],
   threshold: number,
 ): AdoptedVaultState {
-  const actorByUri = new Map(actors.map(a => [a.transport.uri, a]))
+  // The helpers and the replica source are re-identified together, so no two
+  // of them can claim one actor — see `resolveRosterEntries`.
+  const group = adoption.secret.replicas
+  const sourceMember = group?.members?.find(m => m.role === 'Source')
+  const helperMatches = resolveRosterEntries(
+    [
+      ...adoption.secret.helpers.map(h => ({
+        channelId: h.channel_id,
+        transports: h.transports,
+        name: h.communication_info?.['name'],
+      })),
+      ...(group?.channel_id && sourceMember
+        ? [
+            {
+              channelId: group.channel_id,
+              transports: sourceMember.transports ?? [],
+              name: sourceMember.communication_info?.['name'],
+            },
+          ]
+        : []),
+    ],
+    actors,
+  )
 
-  const participants: PairedParticipant[] = adoption.secret.helpers.map(h => {
-    const { actor, transportUri } = resolveRosterActor(h.transports, actorByUri)
+  const participants: PairedParticipant[] = adoption.secret.helpers.map((h, i) => {
+    const { actor, transportUri } = helperMatches[i]
     // The matched entry's own discriminant, not an assumption: a `grpc` or
     // `both` helper's first-recognised endpoint may be a `grpc://` one.
     const transportProtocol = protocolName(
@@ -1356,9 +1431,12 @@ export function adoptedVaultState(
     )
     return {
       id: actor?.id ?? `peer-${h.channel_id}`,
-      name: actor?.name || h.communication_info['name'] || 'Unknown',
+      name: actor?.name || h.communication_info?.['name'] || 'Unknown',
       channelId: h.channel_id,
       transport: { protocol: transportProtocol, uri: transportUri },
+      // Every endpoint the peer offered, so a helper reachable both ways is
+      // shown as such rather than by the one endpoint matched above.
+      transports: h.transports.map(t => ({ protocol: protocolName(t.protocol), uri: t.uri })),
       connectionStatus: 'paired' as const,
       // Every peer in the owner's snapshot held a share for that owner.
       peerRole: 'helper' as const,
@@ -1373,7 +1451,7 @@ export function adoptedVaultState(
     verifiedParticipantIds: [],
     failedParticipantIds: [],
     secrets: adoption.secret.secrets.map(s => ({
-      id: toBase64Url(toBytes(s.id)),
+      id: bytesToHex(toBytes(s.id)),
       name: s.name,
       // Payloads are text in this app; decode lossily so a binary surprise
       // renders as replacement characters instead of throwing.
@@ -1383,12 +1461,22 @@ export function adoptedVaultState(
     // longer surfaces the raw wire bytes.
     rawBytes: '',
     helpers: participants.map(p => ({ id: p.id, name: p.name, channelId: p.channelId })),
+    // Straight from the secret the source sent, so the version shows the group
+    // it actually carried.
+    replicas: adoption.secret.replicas
+      ? {
+          channelId: adoption.secret.replicas.channel_id,
+          members: (adoption.secret.replicas.members ?? []).map(m => ({
+            replicaId: m.replica_id,
+            role: m.role ?? null,
+            name: m.communication_info?.['name'] || null,
+          })),
+        }
+      : null,
   }
 
   // The group this device now belongs to. One row for the channel the members
   // share, naming the source — which from a destination's side is the peer.
-  const group = adoption.secret.replicas
-  const sourceMember = group?.members?.find(m => m.role === 'Source')
   if (group?.channel_id && sourceMember) {
     // Nothing on a wire payload is assumed present. The declared types say
     // these fields are always there; a member arriving without them threw
@@ -1397,7 +1485,7 @@ export function adoptedVaultState(
     // worst case is a row labelled "Replica source".
     const transports = sourceMember.transports ?? []
     const info = sourceMember.communication_info ?? {}
-    const { actor, transportUri } = resolveRosterActor(transports, actorByUri)
+    const { actor, transportUri } = helperMatches[adoption.secret.helpers.length]
     participants.push({
       id: actor?.id ?? `peer-${group.channel_id}`,
       name: actor?.name || info['name'] || 'Replica source',
@@ -1489,6 +1577,20 @@ export function replicaSyncTargets(views: readonly ReplicaView[]): ReplicaSyncTa
  */
 export function canRequestReplicaSync(view: ReplicaView): boolean {
   return replicaSyncTargets([view]).length > 0
+}
+
+/**
+ * Whether a source row's destination has acknowledged an older version than
+ * this vault holds — it missed a round, most often while offline.
+ *
+ * Only for a confirmed `replica_source` row with an acknowledgement on file: a
+ * row that never acked says so in its own words, and a destination row has no
+ * acks to lag.
+ */
+export function isReplicaBehind(view: ReplicaView | null, vaultVersion: number | null): boolean {
+  if (!view || view.direction !== 'replica_source' || view.status !== 'paired') return false
+  if (vaultVersion === null || view.lastSync === null) return false
+  return view.lastSync.version < vaultVersion
 }
 
 // ── Sync as soon as a destination becomes eligible ───────────────────────────
@@ -1790,6 +1892,23 @@ export interface ReplicaView {
    * endpoints will accept.
    */
   helperActorId: string | null
+  /**
+   * This device's person reported the codes do not match — see
+   * [`ReplicaRecord.refused`]. Never true once this device has confirmed.
+   */
+  refused: boolean
+}
+
+/**
+ * Whether this device has itself compared and confirmed the fingerprint of the
+ * replica channel `channelId`.
+ *
+ * Read from the same record the channel's row derives its status from — see
+ * `localChannelView` — so an offer is released exactly when its row turns
+ * confirmed.
+ */
+export function isReplicaChannelConfirmedLocally(state: ReplicaState, channelId: string): boolean {
+  return state.replicas[replicaChannelRowId(channelId)]?.local === true
 }
 
 /**
@@ -1865,6 +1984,7 @@ function localChannelView(
     direction: channel.role,
     peerReplicaId: channel.peerReplicaId ?? null,
     helperActorId: helper?.id ?? null,
+    refused: record.refused === true && !record.local,
   }
 }
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! The node's registries, on every engine available.
 //!
 //! Follows `tests/sql_stores.rs`: SQLite always, Postgres when
@@ -171,7 +174,7 @@ async fn ensure_creates_only_the_shortfall() {
         let want = TransportBreakdown { http: 3, grpc: 0, both: 0 };
 
         let first = registry
-            .ensure_participants_by_mode(want, |taken, _pool_index, _mode| {
+            .ensure_participants_by_mode(want, |taken, _pool_index, _mode, _pool| {
                 (actor(&format!("h{taken}"), Role::Helper), settings())
             })
             .await
@@ -180,7 +183,7 @@ async fn ensure_creates_only_the_shortfall() {
         assert_eq!(first.participants.len(), 3);
 
         let second = registry
-            .ensure_participants_by_mode(want, |taken, _pool_index, _mode| {
+            .ensure_participants_by_mode(want, |taken, _pool_index, _mode, _pool| {
                 (actor(&format!("x{taken}"), Role::Helper), settings())
             })
             .await
@@ -202,7 +205,7 @@ async fn asking_for_fewer_removes_nothing() {
         registry
             .ensure_participants_by_mode(
                 TransportBreakdown { http: 3, grpc: 0, both: 0 },
-                |taken, _p, _m| (actor(&format!("h{taken}"), Role::Helper), settings()),
+                |taken, _p, _m, _pool| (actor(&format!("h{taken}"), Role::Helper), settings()),
             )
             .await
             .expect("ensure");
@@ -210,7 +213,7 @@ async fn asking_for_fewer_removes_nothing() {
         let fewer = registry
             .ensure_participants_by_mode(
                 TransportBreakdown { http: 1, grpc: 0, both: 0 },
-                |taken, _p, _m| (actor(&format!("y{taken}"), Role::Helper), settings()),
+                |taken, _p, _m, _pool| (actor(&format!("y{taken}"), Role::Helper), settings()),
             )
             .await
             .expect("ensure");
@@ -235,7 +238,7 @@ async fn an_owner_is_not_counted_as_a_participant() {
         let ensured = registry
             .ensure_participants_by_mode(
                 TransportBreakdown { http: 2, grpc: 0, both: 0 },
-                |taken, _p, _m| (actor(&format!("h{taken}"), Role::Helper), settings()),
+                |taken, _p, _m, _pool| (actor(&format!("h{taken}"), Role::Helper), settings()),
             )
             .await
             .expect("ensure");

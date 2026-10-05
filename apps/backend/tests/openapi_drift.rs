@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! The OpenAPI spec is hand-written, so it can drift from the router.
 //!
 //! One failure mode actually happens: someone adds an endpoint and forgets the

@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
+import { ModalFrame } from '../ModalFrame'
 import { connectionStatusLabel } from './connectionStatus'
 import { PairInitiatorModal } from './PairInitiatorModal'
 import { ProvisionedLinkModal } from './ProvisionedLinkModal'
@@ -6,6 +10,9 @@ import { useState } from 'react'
 import { type ProvisionedChannel } from '../api'
 import { type ContactModeKey, DEFAULT_CONTACT_MODE } from '../contactModes'
 import { errorText } from '../errorText'
+import { canDrivePeerViaBackend } from '../ownerPairing'
+import { pairingErrorText, unreachableReason } from '../pairingReach'
+import { heldShareCount } from './heldShares'
 import { ChevronIcon } from './icons'
 import { ModalCloseButton, SharedKeyRow } from './primitives'
 import { participantPairingRoleOptions } from '../pairingRoleOptions'
@@ -29,6 +36,9 @@ function SidePanelParticipantItem({
   pairingCompletedSignal,
   unconfirmed,
   onConfirmFingerprint,
+  unpairing,
+  removedFromNode,
+  grpcRelayEnabled,
 }: {
   participant: PairedParticipant
   onTogglePair: (id: string) => void
@@ -54,6 +64,16 @@ function SidePanelParticipantItem({
   /** The handshake completed but the library still holds the channel `Pending`. */
   unconfirmed: boolean
   onConfirmFingerprint: () => void
+  /** An unpair for this row's channel is on the wire, awaiting its answer. */
+  unpairing: boolean
+  /**
+   * The node no longer has this helper's actor, but this vault still holds a
+   * channel to it. The channel is protocol state and stays listed; everything
+   * that drives the actor through the node would fail with "actor not found".
+   */
+  removedFromNode: boolean
+  /** Whether the node relays gRPC for browsers — see `unreachableReason`. */
+  grpcRelayEnabled: boolean
 }) {
   const [expanded, setExpanded] = useState(false)
   const [shareContactOpen, setShareContactOpen] = useState(false)
@@ -64,6 +84,14 @@ function SidePanelParticipantItem({
   const [contactMode, setContactMode] = useState<ContactModeKey>(DEFAULT_CONTACT_MODE)
   const isPaired = participant.connectionStatus === 'paired'
   const isOffline = !!participant.offline
+  // Unpairing is the owner's to start; where the participant is the owner the
+  // library refuses it (`role_mismatch`), so it is not offered.
+  const canUnpair = participant.peerRole !== 'owner'
+  const unreachable = unreachableReason(
+    participant.transport,
+    participant.transports,
+    grpcRelayEnabled,
+  )
 
   /**
    * Pair with this participant, this device initiating.
@@ -85,7 +113,7 @@ function SidePanelParticipantItem({
       const channelId = await startParticipantPairing(contact, 'owner')
       onPairingRequestSent(channelId, participant.id)
     } catch (err) {
-      setPairError(errorText(err))
+      setPairError(pairingErrorText(err))
     } finally {
       setIsPairing(false)
     }
@@ -100,7 +128,20 @@ function SidePanelParticipantItem({
       >
         <span className={`participant-dot ${isOffline ? 'offline' : participant.connectionStatus}`} aria-hidden="true" />
         <span className="side-participant-name">{participant.name}</span>
-        {isOffline ? (
+        {unpairing ? (
+          // The unpair takes a round trip — seconds — and the row reading
+          // "Paired" meanwhile looked like the click had been lost.
+          <span className="status-tag available" aria-live="polite">
+            Unpairing…
+          </span>
+        ) : removedFromNode ? (
+          <span
+            className="status-tag offline"
+            title="The node no longer has this helper. The channel stays until it is unpaired."
+          >
+            Removed from node
+          </span>
+        ) : isOffline ? (
           <span className="status-tag offline">Offline</span>
         ) : unconfirmed ? (
           // Deliberately *not* "Paired": the handshake completed, but the
@@ -129,7 +170,7 @@ function SidePanelParticipantItem({
           )}
           <div className="side-detail-row">
             <span className="side-detail-label">Shares</span>
-            <span className="side-detail-value">{participant.secretShares.length}</span>
+            <span className="side-detail-value">{heldShareCount(participant.secretShares)}</span>
           </div>
           {/* Mode is baked into the contact, so it has to be chosen before
               pairing starts — not after. Hidden once paired, when it no longer
@@ -143,14 +184,27 @@ function SidePanelParticipantItem({
             />
           )}
           {pairError && <p className="field-error">{pairError}</p>}
+          {!isPaired && !isOffline && !removedFromNode && unreachable && (
+            <p className="side-detail-note" role="note">
+              {unreachable}
+            </p>
+          )}
+          {removedFromNode && (
+            <p className="side-detail-note">
+              This helper was deleted from the node. The channel is still this vault’s
+              protocol state — unpair it to drop it.
+            </p>
+          )}
           <div className="side-participant-actions">
-            <button
-              className="secondary side-action-btn"
-              onClick={() => setShareContactOpen(true)}
-            >
-              Share Contact
-            </button>
-            {isPaired && !participant.browserManaged && participant.channelId && (
+            {!removedFromNode && (
+              <button
+                className="secondary side-action-btn"
+                onClick={() => setShareContactOpen(true)}
+              >
+                Share Contact
+              </button>
+            )}
+            {isPaired && !removedFromNode && canDrivePeerViaBackend(participant) && participant.channelId && (
               <button
                 className="pair-action-btn"
                 onClick={() => setLinkOpen(true)}
@@ -167,14 +221,29 @@ function SidePanelParticipantItem({
               </button>
             )}
             {isPaired ? (
-              <button className="pair-action-btn unpair" onClick={() => onTogglePair(participant.id)}>
-                Unpair
-              </button>
-            ) : !isOffline ? (
+              canUnpair ? (
+                <button
+                  className="pair-action-btn unpair"
+                  onClick={() => onTogglePair(participant.id)}
+                  disabled={unpairing}
+                  aria-busy={unpairing || undefined}
+                >
+                  {unpairing ? 'Unpairing…' : 'Unpair'}
+                </button>
+              ) : (
+                <span
+                  className="side-detail-note"
+                  title="You are the helper on this channel. Only the owner can unpair it."
+                >
+                  Only {participant.name} (the owner) can unpair
+                </span>
+              )
+            ) : !isOffline && !removedFromNode ? (
               <>
                 <button
                   className="pair-action-btn pair"
-                  disabled={isPairing}
+                  disabled={isPairing || unreachable !== null}
+                  title={unreachable ?? undefined}
                   onClick={handlePair}
                 >
                   {isPairing ? 'Pairing…' : 'Pair'}
@@ -186,7 +255,8 @@ function SidePanelParticipantItem({
                 {startPairingAsInitiator && (
                   <button
                     className="secondary side-action-btn"
-                    disabled={isPairing}
+                    disabled={isPairing || unreachable !== null}
+                    title={unreachable ?? undefined}
                     onClick={() => setPairAsInitiatorOpen(true)}
                   >
                     Let them initiate
@@ -272,49 +342,52 @@ function AddParticipantModal({
   }
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Add participant">
-      <div className="modal" style={{ maxWidth: 400 }}>
-        <div className="modal-header">
-          <h2 className="modal-title">Add Participant</h2>
-          <ModalCloseButton onClose={onClose} />
-        </div>
-        <form onSubmit={handleSubmit}>
-          <div className="modal-body">
-            <div className="form-field">
-              <label className="form-label" htmlFor="add-participant-name">Name</label>
+    <ModalFrame
+      overlayClassName="modal-overlay"
+      className="modal modal--form"
+      label="Add participant"
+      onEscape={onClose}
+    >
+      <div className="modal-header">
+        <h2 className="modal-title">Add Participant</h2>
+        <ModalCloseButton onClose={onClose} />
+      </div>
+      <form onSubmit={handleSubmit}>
+        <div className="modal-body">
+          <div className="form-field">
+            <label className="form-label" htmlFor="add-participant-name">Name</label>
+            <input
+              id="add-participant-name"
+              className="form-input"
+              type="text"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              autoFocus
+              disabled={submitting}
+            />
+          </div>
+          <div className="form-field">
+            <label className="participant-check-label">
               <input
-                id="add-participant-name"
-                className="form-input"
-                type="text"
-                value={name}
-                onChange={e => setName(e.target.value)}
-                autoFocus
+                type="checkbox"
+                className="participant-checkbox"
+                checked={autoPair}
+                onChange={e => setAutoPair(e.target.checked)}
                 disabled={submitting}
               />
-            </div>
-            <div className="form-field">
-              <label className="participant-check-label">
-                <input
-                  type="checkbox"
-                  className="participant-checkbox"
-                  checked={autoPair}
-                  onChange={e => setAutoPair(e.target.checked)}
-                  disabled={submitting}
-                />
-                <span>Auto-pair after adding</span>
-              </label>
-            </div>
-            {error && <p className="field-error">{error}</p>}
+              <span>Auto-pair after adding</span>
+            </label>
           </div>
-          <div className="modal-actions">
-            <button type="button" className="secondary" onClick={onClose} disabled={submitting}>Cancel</button>
-            <button type="submit" className="primary" disabled={!name.trim() || submitting}>
-              {submitting ? 'Adding…' : 'Add Participant'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+          {error && <p className="field-error">{error}</p>}
+        </div>
+        <div className="modal-actions">
+          <button type="button" className="secondary" onClick={onClose} disabled={submitting}>Cancel</button>
+          <button type="submit" className="primary" disabled={!name.trim() || submitting}>
+            {submitting ? 'Adding…' : 'Add Participant'}
+          </button>
+        </div>
+      </form>
+    </ModalFrame>
   )
 }
 
@@ -332,6 +405,9 @@ export function OwnerParticipantPanel({
   pairingCompletedSignal,
   unconfirmedChannelIds,
   onConfirmFingerprint,
+  unpairingChannelIds,
+  removedFromNodeIds,
+  grpcRelayEnabled = true,
 }: {
   participants: PairedParticipant[]
   /**
@@ -364,8 +440,23 @@ export function OwnerParticipantPanel({
   unconfirmedChannelIds: ReadonlySet<string>
   /** Reopen the fingerprint comparison for a channel. */
   onConfirmFingerprint: (channelId: string) => void
+  /** Channels whose unpair is in flight. */
+  unpairingChannelIds: ReadonlySet<string>
+  /**
+   * Participant ids the node's roster no longer lists. Their rows stay — a
+   * paired channel is protocol state — but are marked, and not counted as on
+   * this node.
+   */
+  removedFromNodeIds: ReadonlySet<string>
+  /**
+   * Whether the node relays gRPC for browsers (`GET /config`). Without it a
+   * gRPC-only participant cannot be reached from here, and Pair is disabled
+   * with the reason. Defaults to on: a node that predates the field relays.
+   */
+  grpcRelayEnabled?: boolean
 }) {
   const [addParticipantOpen, setAddParticipantOpen] = useState(false)
+  const onNodeCount = participants.filter(p => !removedFromNodeIds.has(p.id)).length
 
   return (
     <aside className="side-panel" aria-label="Actors">
@@ -375,7 +466,7 @@ export function OwnerParticipantPanel({
           <div>
             <h3 className="panel-heading">Pair with a participant</h3>
             <p className="panel-subtitle">
-              {participants.length} on this node — provision and manage them in
+              {onNodeCount} on this node — provision and manage them in
               Participants
             </p>
           </div>
@@ -399,6 +490,9 @@ export function OwnerParticipantPanel({
                 pairingCompletedSignal={pairingCompletedSignal}
                 unconfirmed={!!h.channelId && unconfirmedChannelIds.has(h.channelId)}
                 onConfirmFingerprint={() => h.channelId && onConfirmFingerprint(h.channelId)}
+                unpairing={!!h.channelId && unpairingChannelIds.has(h.channelId)}
+                removedFromNode={removedFromNodeIds.has(h.id)}
+                grpcRelayEnabled={grpcRelayEnabled}
               />
             )
           })}

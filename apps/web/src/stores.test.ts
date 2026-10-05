@@ -1,5 +1,23 @@
-import { beforeEach, describe, expect, it } from 'vitest'
-import { listReplicaMembers, makeChannelStore, makeStateStore, makeTransport } from './stores'
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { DeliveryError } from './derecApi'
+import {
+  StorageQuotaError,
+  describeStorageFailure,
+  explainDeliveryFailure,
+  forgetHelperChannel,
+  hasStorageHeadroom,
+  listHelperChannels,
+  listReplicaMembers,
+  makeChannelStore,
+  makeSecretStore,
+  makeShareStore,
+  makeStateStore,
+  makeTransport,
+  readHelperChannelInfo,
+} from './stores'
 
 const NS = 'test-ns'
 const SECRET = '42'
@@ -513,5 +531,181 @@ describe('listReplicaMembers', () => {
     expect(listReplicaMembers(NS, SECRET)).toEqual([
       { replicaId: '7', channelId: null, role: null, status: 'Paired', name: null },
     ])
+  })
+})
+
+describe('readHelperChannelInfo', () => {
+  beforeEach(() => localStorage.clear())
+
+  it('reads back the name and endpoints a peer last announced', async () => {
+    // What `UpdateChannelInfo` leaves behind on the receiving side: the event
+    // names only the channel, so the new values are read from the record.
+    await makeChannelStore(NS).save(
+      SECRET,
+      '100',
+      HELPER,
+      encode({
+        Helper: {
+          channel_id: 100,
+          status: 'Paired',
+          communication_info: { name: ' Alice-3 ' },
+          transports: [
+            { uri: 'grpc://192.168.0.28:50051', protocol: 1 },
+            { uri: 'http://192.168.0.28:5300/derec/v1', protocol: 0 },
+          ],
+        },
+      }),
+    )
+
+    expect(readHelperChannelInfo(NS, SECRET, '100')).toEqual({
+      name: 'Alice-3',
+      transports: [
+        { uri: 'grpc://192.168.0.28:50051', protocol: 'grpc' },
+        { uri: 'http://192.168.0.28:5300/derec/v1', protocol: 'https' },
+      ],
+    })
+  })
+
+  it('is null for a channel it does not hold, and tolerates a record with no info', async () => {
+    expect(readHelperChannelInfo(NS, SECRET, '404')).toBeNull()
+
+    await makeChannelStore(NS).save(SECRET, '100', HELPER, helperRecord('100'))
+    expect(readHelperChannelInfo(NS, SECRET, '100')).toEqual({ name: null, transports: [] })
+  })
+})
+
+describe('transport retries', () => {
+  const message = new TextEncoder().encode('bytes')
+  const https = (uri: string) => ({ protocol: 'https', uri })
+
+  it('sends again to an endpoint that could not be reached, then succeeds', async () => {
+    let attempts = 0
+    const transport = makeTransport(
+      async () => {
+        attempts++
+        if (attempts < 3) throw new DeliveryError('node restarting', true)
+      },
+      async () => {},
+      { retryDelaysMs: [0, 0] },
+    )
+
+    await transport.send([https('https://a.example')], message)
+
+    expect(attempts).toBe(3)
+  })
+
+  it('does not resend what the endpoint refused', async () => {
+    let attempts = 0
+    const transport = makeTransport(
+      async () => {
+        attempts++
+        throw new DeliveryError('unknown actor (HTTP 404)', false)
+      },
+      async () => {},
+      { retryDelaysMs: [0, 0] },
+    )
+
+    await expect(transport.send([https('https://a.example')], message)).rejects.toThrow(/not delivered/)
+    expect(attempts).toBe(1)
+  })
+
+  it('puts the node’s own reason back into the library’s bare transport error', async () => {
+    const transport = makeTransport(
+      async () => {
+        throw new DeliveryError('Could not deliver a message to https://x.example: gRPC is disabled on this node', false)
+      },
+      async () => {},
+      { retryDelaysMs: [] },
+    )
+    await expect(transport.send([https('https://x.example')], message)).rejects.toThrow()
+
+    expect(explainDeliveryFailure('transport.send promise rejected', ['https://x.example'])).toMatch(
+      /gRPC is disabled on this node/,
+    )
+    // Not a send to that peer, and not a transport error: left as it was.
+    expect(explainDeliveryFailure('transport.send promise rejected', ['https://other.example'])).toBe(
+      'transport.send promise rejected',
+    )
+    expect(explainDeliveryFailure('peer refused')).toBe('peer refused')
+  })
+
+  it('gives up after a bounded number of attempts', async () => {
+    let attempts = 0
+    const transport = makeTransport(
+      async () => {
+        attempts++
+        throw new DeliveryError('down', true)
+      },
+      async () => {},
+      { retryDelaysMs: [0, 0] },
+    )
+
+    await expect(transport.send([https('https://a.example')], message)).rejects.toThrow(/not delivered/)
+    expect(attempts).toBe(3)
+  })
+})
+
+describe('helper channel housekeeping', () => {
+  beforeEach(() => localStorage.clear())
+
+  function seed(channelId: string, status: string, peerRole = 'Helper') {
+    const record = `{"Helper":{"channel_id":${channelId},"transports":[],"peer_role":"${peerRole}","status":"${status}","created_at":1700000000}}`
+    localStorage.setItem(
+      `derec:${NS}:${SECRET}:channel:helper:${channelId}`,
+      btoa(record).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
+    )
+    const idx = `derec:${NS}:${SECRET}:channel-idx:helper`
+    localStorage.setItem(idx, JSON.stringify([...JSON.parse(localStorage.getItem(idx) ?? '[]'), channelId]))
+  }
+
+  it('lists each channel with its status, role and age, keeping u64 ids exact', () => {
+    seed('18446744073709551615', 'Paired')
+    seed('7', 'Pending', 'Owner')
+
+    expect(listHelperChannels(NS, SECRET)).toEqual([
+      { channelId: '18446744073709551615', status: 'Paired', peerRole: 'Helper', createdAtSecs: 1700000000 },
+      { channelId: '7', status: 'Pending', peerRole: 'Owner', createdAtSecs: 1700000000 },
+    ])
+  })
+
+  it('forgets one channel and everything filed under it, and nothing else', async () => {
+    seed('7', 'Paired')
+    seed('8', 'Paired')
+    const shares = makeShareStore(NS)
+    await shares.save(SECRET, '7', { secretId: SECRET, version: 1, bytes: new Uint8Array([1]) })
+    await shares.save(SECRET, '8', { secretId: SECRET, version: 1, bytes: new Uint8Array([2]) })
+    await makeSecretStore(NS).save(SECRET, '7', 0, new Uint8Array([9]))
+    await makeChannelStore(NS).linkChannel(SECRET, '7', '8')
+
+    forgetHelperChannel(NS, SECRET, '7')
+
+    expect(listHelperChannels(NS, SECRET).map(c => c.channelId)).toEqual(['8'])
+    expect(await makeSecretStore(NS).load(SECRET, '7', 0)).toBeNull()
+    expect(await shares.load(SECRET, '7', [])).toEqual([])
+    expect(await shares.load(SECRET, '8', [])).toHaveLength(1)
+    expect(await makeChannelStore(NS).linkedChannels(SECRET, '8')).toEqual(['8'])
+  })
+})
+
+describe('storage quota', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it('turns a refused write into a legible error, and explains a later generic store error', async () => {
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('quota', 'QuotaExceededError')
+    })
+
+    await expect(
+      makeShareStore(NS).save(SECRET, '7', { secretId: SECRET, version: 1, bytes: new Uint8Array([1]) }),
+    ).rejects.toBeInstanceOf(StorageQuotaError)
+
+    expect(describeStorageFailure('store_error: share store backend error')).toMatch(/storage for the app is full/)
+    expect(describeStorageFailure('peer refused')).toBe('peer refused')
+    expect(hasStorageHeadroom(10)).toBe(false)
+  })
+
+  it('reports headroom when there is room', () => {
+    expect(hasStorageHeadroom(1000)).toBe(true)
+    expect(localStorage.getItem('derec:storage-headroom-probe')).toBeNull()
   })
 })

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! The debug surface: one state snapshot and one event log, over plain HTTP.
 //!
 //! Both exist because this app is a debugging tool, and the thing reading it is
@@ -35,6 +38,10 @@ pub struct StateSnapshot {
     /// "pairing worked and then nothing arrived".
     pub base_url: String,
     pub grpc: GrpcStatus,
+    /// Every address this node has advertised, current included. A message
+    /// to any of them is delivered here without a dial; see
+    /// [`crate::addresses`].
+    pub advertised_addresses: AdvertisedAddresses,
     pub actors: Vec<ActorSnapshot>,
     /// Every channel the gRPC router can resolve, and which tier holds it.
     pub routes: Vec<Route>,
@@ -53,6 +60,14 @@ pub struct GrpcStatus {
     /// so a LAN `BASE_URL` yields a LAN gRPC endpoint.
     pub authority: String,
     pub relay_enabled: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AdvertisedAddresses {
+    /// Base URLs, `http://host:port`.
+    pub http: Vec<String>,
+    /// Authorities, `host:port`.
+    pub grpc: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -90,12 +105,19 @@ pub struct ActorSnapshot {
 /// `test_support` both are the built-in defaults. Reporting the loaded one keeps
 /// this an honest account of the configuration pass rather than of whatever
 /// state was later constructed.
+///
+/// The database URL is redacted: a Postgres URL carries its password, and this
+/// endpoint is unauthenticated.
 pub async fn config(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let mut settings = state.config.settings.clone();
+    settings.server.database_url = crate::db::redact_url(&settings.server.database_url);
+
     Json(serde_json::json!({
-        "settings": state.config.settings,
+        "settings": settings,
         "origins": state.config.origins,
         "file_found": state.config.file_found,
         "unknown_env": state.config.unknown_env,
+        "empty_env": state.config.empty_env,
     }))
 }
 
@@ -108,7 +130,7 @@ pub async fn state(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // roster with a readable event log is more useful to someone diagnosing a
     // database problem than a 500 with nothing in it.
     for actor in state.actors.all().await.unwrap_or_default() {
-        let browser_managed = state.browser_receivers.contains_key(&actor.id);
+        let browser_managed = state.is_browser_managed(&actor.id);
 
         // A browser actor runs its protocol in the page, so there is no
         // instance here to ask. Asking anyway would just time out.
@@ -152,6 +174,10 @@ pub async fn state(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             port: state.defaults.grpc_port,
             authority: state.grpc_authority(),
             relay_enabled: state.defaults.grpc_relay_enabled,
+        },
+        advertised_addresses: AdvertisedAddresses {
+            http: state.addresses.list(crate::addresses::Listener::Http),
+            grpc: state.addresses.list(crate::addresses::Listener::Grpc),
         },
         actors,
         routes: state.channel_router.routes(),

@@ -1,4 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { navigate } from './routing'
 import { subscribeToasts, type Toast } from './toastBus'
 import './Toast.css'
 
@@ -14,6 +18,9 @@ interface VisibleToast extends Toast {
  * Subscribes to the global toast bus and renders a small notification stack.
  * Identical messages are de-duplicated (count badge) so repeated failures
  * (e.g. a flapping mailbox poll) don't spam the UI.
+ *
+ * A toast with an origin is a banner for a vault not on screen: it names the
+ * vault and is a button that opens it.
  */
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<VisibleToast[]>([])
@@ -34,7 +41,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
     const unsub = subscribeToasts(toast => {
       setToasts(prev => {
-        const dupe = prev.find(t => t.message === toast.message && t.level === toast.level)
+        const dupe = prev.find(
+          t =>
+            t.message === toast.message &&
+            t.level === toast.level &&
+            t.origin?.vaultId === toast.origin?.vaultId,
+        )
         if (dupe) {
           arm(dupe.id)
           return prev.map(t => (t.id === dupe.id ? { ...t, count: t.count + 1 } : t))
@@ -52,6 +64,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       pending.clear()
     }
   }, [])
+
+  function open(toast: VisibleToast) {
+    if (!toast.origin) return
+    navigate({ kind: 'vault', id: toast.origin.vaultId })
+    dismiss(toast.id)
+  }
 
   function dismiss(id: string) {
     const t = timers.current.get(id)
@@ -72,10 +90,20 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             className={`toast toast--${t.level}`}
             role={t.level === 'error' ? 'alert' : 'status'}
           >
-            <span className="toast-message">
-              {t.message}
-              {t.count > 1 && <span className="toast-count"> ×{t.count}</span>}
-            </span>
+            {t.origin ? (
+              <button
+                type="button"
+                className="toast-message toast-link"
+                title={`Open ${t.origin.vaultName}`}
+                onClick={() => open(t)}
+              >
+                <ToastText toast={t} />
+              </button>
+            ) : (
+              <span className="toast-message">
+                <ToastText toast={t} />
+              </span>
+            )}
             <button
               type="button"
               className="toast-close"
@@ -87,6 +115,16 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           </div>
         ))}
       </div>
+    </>
+  )
+}
+
+function ToastText({ toast }: { toast: VisibleToast }) {
+  return (
+    <>
+      {toast.origin && <strong>{toast.origin.vaultName}: </strong>}
+      {toast.message}
+      {toast.count > 1 && <span className="toast-count"> ×{toast.count}</span>}
     </>
   )
 }

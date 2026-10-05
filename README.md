@@ -3,60 +3,202 @@
 A minimal reference implementation of the [DeRec protocol](https://github.com/derecalliance/protocol/blob/main/protocol.md), providing both an Owner and a Helper for interoperability testing.
 
 - `apps/web` — React + Vite static frontend. Executes DeRec flows (pairing, sharing, verification, recovery, replicas) client-side and polls the backend for messages.
-- `apps/backend` — Rust + Axum thin backend. Actor registry and message relay only; no protocol logic lives here.
+- `apps/backend` — Rust + Axum thin backend. Actor registry, message relay and hosted helpers only; no protocol logic lives here.
 
-See `CLAUDE.md` for the full architecture and design principles, and
-[`AGENTS.md`](AGENTS.md) if you are an LLM or coding agent driving this over
-HTTP rather than through the UI.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the architecture and
+design principles, [`AGENTS.md`](AGENTS.md) if you are an LLM or coding agent
+driving this over HTTP rather than through the UI, and
+[`CHANGELOG.md`](CHANGELOG.md) for what each release contains.
+
+## What's in the app
+
+The left navigation has four sections:
+
+| | |
+| --- | --- |
+| **Owner** | Your vaults (see below). Inside a vault: **Channels** (pair with helpers or other vaults, by paste or QR), **Replicas**, **Secrets** (**Add Secret**, protect, verify, **View Payload**, **Remove Secret**), **Shares** held for others, and **Recovery**. |
+| **Participants** | The node's shared pool of provisioned helpers: provision up to a target, take one offline to simulate an unreachable peer (or bring it back), delete one. |
+| **Settings** | What the node is configured with and where each value came from, plus this browser's overrides of the protocol defaults — pool size and transport mix, unpair acknowledgement, and whether incoming **unpair**, **share storage** and **verification** requests are auto-accepted or prompt. Overrides live in this browser and travel on each provisioning request. |
+| **Inspect** | The server's own view of itself (see [Debugging it](#debugging-it)). |
+
+**View Payload** shows a published version of the secret bag as it is
+distributed — including its replica group, when there is one. **Remove Secret**
+publishes a new version without the secret; it does not reach back into earlier
+versions, which still contain it and which helpers keep their shares of —
+recovering an earlier version brings the secret back.
+
+### Vaults
+
+A vault is one owner identity: an owner actor on the server, plus the keys,
+channels, secrets and shares this browser holds for it. A browser can hold
+several, and **one tab runs every vault it holds at once** — a vault that is not
+on screen keeps polling and answering its counterparties, and its pending
+decisions are flagged in the header and the list.
+
+| Route | Screen |
+| --- | --- |
+| `#/` | The vault list: every vault saved in this browser, its status, paired helpers, bag version and replicas. |
+| `#/new` | **Set up a new vault** — registers a new owner actor. |
+| `#/new/claim` | **Claim an existing actor** — a testing shortcut that takes over an existing owner actor's mailbox instead of registering a new one. |
+| `#/vault/{id}` | One vault, by its owner actor's id. |
+
+In the header: a **vault switcher** to jump between vaults, **All vaults** back
+to the list (the vault keeps running), **Leave**, and **Reset browser data**.
+Leave offers two things: **Stop running here** (the vault stays saved and
+another tab can open it) or **Remove from browser** (erases its keys, channels
+and shares from this browser). Reset browser data erases every vault in this
+browser, across all its tabs. None of these touch the actors on the server.
+
+**One tab per vault.** Two tabs driving one vault would split its mailbox, so
+each vault is held with an exclusive Web Lock that is released when its tab
+closes. A vault open elsewhere is listed as *Open in another tab* with a
+**Claim** action that works once the other tab has let it go.
 
 ## Debugging it
 
 This is a developer's tool, so it is built to be inspected. There is no
 authentication anywhere — exposing the internals is the point, and it is not
-meant to be reachable from outside your machine.
+meant to be reachable from outside a trusted network (see
+[Security](#security-trusted-networks-only)).
 
 Three places show you what is happening, all reading the same data:
 
 | | |
 | --- | --- |
-| **Inspect tab** | The server's own view of itself: actors and the endpoints they advertise, which tier of the channel router holds each channel, how many protocol instances each actor runs. Refreshes live. |
+| **Inspect section** | The server's own view of itself: actors and the endpoints they advertise, which tier of the channel router holds each channel, how many protocol instances each actor runs. Refreshes live. |
 | **Console panel** | What happened, in order — this page's own protocol events *and* the backend's message deliveries, tagged with the transport that actually carried each one. Copy or download the whole log as JSON. |
-| **HTTP** | `GET /debug/state` and `GET /debug/events` return exactly what those two render. The full API is described in [`apps/backend/openapi.yaml`](apps/backend/openapi.yaml); a test keeps it in step with the router. |
+| **HTTP** | `GET /debug/state` and `GET /debug/events` return exactly what those two render; `GET /debug/config` returns the resolved configuration. The full API is described in [`apps/backend/openapi.yaml`](apps/backend/openapi.yaml); a test keeps it in step with the router. |
 
 The transport badge on each channel row is worth knowing about: `HTTPS`,
 `GRPC` or `GRPC+HTTPS` tells you what that peer advertises. A trailing `~`
 means the badge was derived from a single known address rather than the peer's
 full advertised list, so it may be incomplete.
 
-If a message is not arriving, `routes` in the Inspect tab usually explains it.
-A channel in the `pinned` tier means a contact was minted and the handshake
+If a message is not arriving, `routes` in the Inspect section usually explains
+it. A channel in the `pinned` tier means a contact was minted and the handshake
 never completed; `bound` means it did.
 
 ## Running it
 
-The backend serves a single local node. Every browser context that opens the app
-registers itself as an owner actor against it — a second tab, an incognito
-window or another machine on the network is simply another owner. There is no
-grouping above that: everything the server knows lives in one actor registry.
+The backend serves a single local node. Every vault set up in any browser that
+opens the app registers its own owner actor against it — another tab, an
+incognito window or another machine on the network simply adds more owners.
+There is no grouping above that: everything the server knows lives in one actor
+registry.
+
+### Security: trusted networks only
+
+> **Run this only on your own machine or a LAN you trust. Never expose it on a
+> public network.**
+>
+> It is a developer tool and has none of the protections a service would: no
+> authentication, permissive CORS, and it listens on all interfaces. Anyone who
+> can reach its port can read every actor through `GET /actors` — including
+> channel shared keys — and can delete or disable the shared helpers everyone
+> else is paired with. The node prints the same warning at boot.
 
 ### In Docker
 
 One image serves the UI and the API on the same origin, and keeps its state.
 
-Nothing is published yet, so build it first. The tag names the SDK it was built
-against — the SDK is compiled in (`derec-library` into the binary,
-`@derec-alliance/web` into the bundled WASM), so a different SDK means a
-different image rather than a different flag:
+Nothing is published yet, so build it first, from the repository root. The tag
+names the SDK it was built against — the SDK is compiled in (`derec-library`
+into the binary, `@derec-alliance/web` into the bundled WASM), so a different
+SDK means a different image rather than a different flag:
 
 ```
-docker build -f apps/backend/Dockerfile -t derec/reference-app:0.0.4 .
-docker run -d --name derec -p 5000:5000 -v derec-data:/var/lib/derec \
-  derec/reference-app:0.0.4
+docker build -f apps/backend/Dockerfile -t derec/reference-app:0.0.6 .
+docker run -d --name derec -p 5000:5000 -p 50051:50051 \
+  -v derec-data:/var/lib/derec derec/reference-app:0.0.6
 ```
 
 Then open `http://localhost:5000`. There is no separate front-end server: the
-page is served by the backend and calls back to the same origin, so publishing
-on another host port works without configuration.
+page is served by the backend and calls back to the same origin.
+
+Publish **both** ports. 5000 carries the UI, the API and HTTP protocol traffic;
+50051 is the gRPC listener. Helpers in `grpc` or `both` mode advertise
+`grpc://<host>:<public gRPC port>`, so leaving 50051 unpublished leaves those
+helpers advertising an address no peer outside the container can reach.
+
+Publishing on other host ports takes one more setting per port. The page itself
+works anywhere, but the node also stamps an address into every transport URI it
+hands a peer, and a peer must be told the port *it* can reach — the published
+one, not the one the container listens on:
+
+```
+docker run -d --name derec -p 8080:5000 -p 8081:50051 \
+  -v derec-data:/var/lib/derec \
+  -e DEREC_PUBLIC_PORT=8080 -e DEREC_PUBLIC_GRPC_PORT=8081 \
+  derec/reference-app:0.0.6
+```
+
+Without them, peers are told `:5000` and `:50051`, and pairing fails once the
+first reply is sent to a port nothing on the host answers. The settings can be
+changed later: on boot, actors created under an old address are re-advertised
+at the current one. Provisioned helpers then announce the new address to the
+peers they are paired with (the protocol's `UpdateChannelInfo`), once the node
+is serving; the boot log summarises who was told. A browser-run owner must
+announce its own address from its tab, replica-group members are not covered
+by the announcement, and a peer on another node that could not be told keeps
+the old address until it pairs again.
+
+The node also remembers every address it has advertised (in its database, so
+the record survives the very restart that changes the port). A message sent to
+an old one — by a helper here to a browser owner still registered under the old
+port, or by a browser through the relay — is recognised as meant for this node
+and delivered in-process rather than dialled, so a republished container keeps
+working for everyone on it even though the old port is gone. `GET /debug/state`
+lists the remembered addresses under `advertised_addresses`.
+
+Pairing across machines needs the LAN address, exactly as it does outside
+Docker — it is stamped into every transport URI handed to a peer. **So does
+pairing across containers**, including two nodes on one host: inside a
+container, `localhost` is that container, so a second node told
+`http://localhost:…` dials itself and reaches nothing. Give each node the
+host's LAN address and its own published ports (`DEREC_PUBLIC_PORT`,
+`DEREC_PUBLIC_GRPC_PORT`), or put both on one Docker network and use the
+container names. Two nodes run natively with `cargo run` on one machine can
+use loopback, on different ports — only containers and other devices cannot.
+The boot log warns about a loopback `DEREC_BASE_URL`, and says which of these
+applies when it detects a container.
+
+```
+docker run -d --name derec -p 5000:5000 -p 50051:50051 \
+  -v derec-data:/var/lib/derec \
+  -e DEREC_BASE_URL=http://192.168.0.28 derec/reference-app:0.0.6
+```
+
+To configure it with a file, mount one at `/etc/derec/config.toml` — the image
+reads that path by default, so no other setting is needed (see
+[Configuring it](#configuring-it)):
+
+```
+docker run -d --name derec -p 5000:5000 -p 50051:50051 \
+  -v derec-data:/var/lib/derec \
+  -v ./my-config.toml:/etc/derec/config.toml:ro \
+  derec/reference-app:0.0.6
+```
+
+#### With compose
+
+[`examples/docker-compose.example.yaml`](examples/docker-compose.example.yaml)
+is the same thing as a compose file, and works on a fresh checkout. Its paths
+are relative to the repository root, so copy it there:
+
+```
+cp examples/docker-compose.example.yaml compose.yaml
+docker compose up -d
+```
+
+Two things are optional: a `.env` at the repository root (copy
+[`examples/.env.example`](examples/.env.example)) for `DEREC_*` settings and the
+`LAN_IP` the compose file substitutes into `DEREC_BASE_URL`, and a config file
+mounted at `/etc/derec/config.toml` (copy
+[`examples/config.example.toml`](examples/config.example.toml) to
+`apps/backend/config.toml`). The comments in the compose file show where each
+goes. Both `compose.yaml` and `apps/backend/config.toml` are git-ignored.
+
+#### State
 
 It survives a restart. Helpers you provisioned come back with the identities
 and settings they had — including the `replica_id` every replica-group
@@ -74,37 +216,62 @@ What that costs you, and what it does not:
 | --- | --- | --- |
 | no `-v` | yes, on an anonymous volume | no |
 | `-v derec-data:/var/lib/derec` | yes | yes |
-| `-e DEREC_DATABASE_URL=sqlite::memory:` | no — a deliberately scratch node | no |
+| `-e DEREC_DATABASE_URL=sqlite::memory:` | no — scratch sessions only, see below | no |
+
+**`sqlite::memory:` is for scratch sessions only.** Everything is lost when the
+process stops — and can be lost mid-run too: an in-memory database lives in its
+one underlying connection, so if that connection is ever replaced the node is
+left with an empty database. A browser still holding channel state for actors
+the node no longer has will then fail in ways that look like protocol bugs. The
+node prints a warning at boot when it is configured this way.
 
 **Prefer a named volume to a bind mount.** SQLite's locking over bind-mounted
 host filesystems is unreliable on macOS and Windows, where the mount crosses
 gRPC-FUSE or virtiofs, and it presents as intermittent `database is locked`
 rather than as anything naming the mount.
 
-Pairing across machines needs the LAN address, exactly as it does outside
-Docker — it is stamped into every transport URI handed to a peer:
+To look inside the database, use the `sqlite3` shipped in the image, as the
+uid that owns the data:
 
 ```
-docker run -d -p 5000:5000 -v derec-data:/var/lib/derec \
-  -e DEREC_BASE_URL=http://192.168.0.28 derec/reference-app:0.0.4
+docker exec -it -u 10001 derec sqlite3 /var/lib/derec/derec.db
 ```
 
-`examples/docker-compose.example.yaml` is the same thing as a compose file. The
-container runs as a non-root user (uid 10001) and answers a healthcheck on
-`/health`; `docker stop` drains rather than being killed, which matters now that
-there is a database to close cleanly.
+#### Failing fast
+
+The container runs as a non-root user (uid 10001). Its healthcheck is
+`derec-backend healthcheck`, which resolves the port exactly as the server does
+— file, environment, default — and asks `/health`, so it stays right however the
+port was set. `docker stop` gives in-flight requests up to 5 seconds and then
+exits cleanly, inside Docker's 10-second limit, so the database closes cleanly.
+Calls to peers time out (5 s to connect, 15 s per HTTP request, 10 s per gRPC
+call), so one unreachable peer cannot hold a helper up. A node that cannot run correctly refuses to start rather than
+coming up half-working; `docker logs` names the problem:
+
+- **Invalid configuration** — an unreadable or unparsable file, a misspelled
+  key, a value that fails validation — aborts the boot with a message naming the
+  setting and where it came from (file or variable).
+- **A read-only or unwritable data directory** aborts the boot rather than
+  failing on the first write.
+- **A port already in use** (HTTP or gRPC) aborts the boot with a message naming
+  the port.
 
 ### The SDK
 
-Both halves track SDK **0.0.4**, taken from the registries: `derec-library`
-and `derec-proto` from crates.io, `@derec-alliance/web` from npm. No sibling
-checkout is required for anything, including the end-to-end tests.
+Both halves are built against SDK **0.0.6**, and the app's version is the same
+number.
+
+Both are taken from the registries: `derec-library` and `derec-proto` from
+crates.io, `@derec-alliance/web` from npm. No sibling checkout is needed for
+anything, including the Docker build and the end-to-end tests.
 
 The backend generates its own gRPC transport service, because the published
-`derec-proto` ships message types only. The 15 `.proto` files that needs are
+`derec-proto` ships message types only. The `.proto` files that needs are
 vendored in `apps/backend/proto/`, and `tests/proto_drift.rs` checks them
-against the pinned release — so bumping the SDK means re-copying them, and the
-test tells you when you forgot.
+against the pinned release — so bumping the SDK means re-copying them from the
+`derec-proto` crate, and the test tells you when you forgot. It reads the
+release from the cargo registry cache (run a build first), and skips when the
+pinned version is not there.
 
 ### Plaintext endpoints in local development
 
@@ -112,10 +279,19 @@ The protocol refuses plaintext endpoints by default — `http://` and, since
 0.0.3, `grpc://`. Loopback is exempt for the endpoint a node configures for
 *itself*, but **not** for one a peer supplies — and every peer here is
 `http://localhost:5000/derec/...`, so pairing fails without opting in. Both
-apps do, and both derive it rather than hardcoding it:
+halves do, and both derive it rather than hardcoding it. The web app:
 
 ```ts
 .withUnsafeConnection(!ownTransportUri.startsWith('https://'))
+```
+
+The backend, for each provisioned actor, opts in when any transport it
+advertises is `http://` or `grpc://`:
+
+```rust
+.with_unsafe_connection(config.own_transports.iter().any(|t| {
+    t.uri.starts_with("http://") || t.uri.starts_with("grpc://")
+}))
 ```
 
 Served over https, the guardrail comes back on by itself. It is a guardrail
@@ -136,26 +312,53 @@ npm run test:e2e:headed   # watch a real browser
 npm run test:e2e:report   # open the last HTML report
 ```
 
-An already-running backend or dev server is reused rather than restarted, so a
-normal `npm run dev` session does not conflict with a test run.
+The suite runs on ports of its own — the backend on 5100 (gRPC on 50151) with
+an in-memory database, Vite on 5180 — and never adopts a server it did not
+start, so a normal `npm run dev` session keeps running alongside a test run.
+Neither side can reach the other: the run never touches your node on 5000, and
+an app tab you have open on 5173 never ends up served by the suite (which
+shares no `localStorage` with it, being a different origin).
 
 Two constraints shape how these tests are written:
 
-- **One owner per browser context.** The app scopes an owner to `localStorage`
-  plus a Web Lock, so a second owner — a replica device, the other side of a
-  pairing — needs its own `BrowserContext`, not just another page.
-  `newOwnerContext()` in `e2e/app.ts` is the helper for that.
+- **A separate device needs a separate browser context.** Vaults live in
+  `localStorage`, which every page of a context shares, and each is held by one
+  tab through a Web Lock. Several vaults in one tab is a supported case
+  (`multi-vault.spec.ts`), but the other side of a pairing that should behave
+  like another device — a replica device, a browser-to-browser peer — needs its
+  own `BrowserContext`. `newOwnerContext()` in `e2e/app.ts` is the helper for
+  that.
 - **The backend is shared state.** One actor registry and one helper pool
   serve every test, so the suite runs single-worker and serially. A test should
   treat the helper pool as something that may already exist.
 
-The specs cover the setup wizard, all three contact modes (including the
-`NoKeys` fingerprint gate and its refusal path), replica groups (pairing,
-mirroring, sync check, eviction), the secret lifecycle (protect, verify,
-discover), recovery (reconstruction and `restore`), unpairing, and — in
-`grpc.spec.ts` — the transport matrix described below: an http-only helper, a
-grpc-only helper reached through the relay, a helper offering both, and the
-relay-off failure.
+What the specs cover:
+
+| Spec | Covers |
+| --- | --- |
+| `smoke` | the app loads, the setup wizard, pre-pairing, independent owners in separate contexts |
+| `multi-vault` | several vaults in one tab kept apart; an off-screen vault flagging a decision |
+| `pairing` | all three contact modes, including the `NoKeys` fingerprint gate and its refusal path |
+| `browser-pairing` | two browsers pairing with `NoKeys` and confirming on both sides |
+| `share-contact` | the Share Contact modal's layout and superseded contacts |
+| `qr-scan` | pairing by camera, with a faked decoder, and releasing the camera |
+| `sharing` | the secret lifecycle: protect, verify, discover, a second secret, **Remove Secret** |
+| `recovery` | reconstruction, every version found, `restore`, unpairing |
+| `replicas` | replica groups against provisioned helpers: fingerprint gate, a three-member group, mirroring, sync check, forget, eviction |
+| `browser-replica` | two browsers pairing as replicas in both directions, the mirrored copy arriving only after both confirm, the adoption dialog appearing, and the replica group in View Payload |
+| `grpc` | the transport matrix described below |
+| `participants` | the Participants section: provisioning, deleting, pre-pairing limits |
+| `settings` | the Settings section's protocol defaults and their reset |
+| `wasm-concurrency` | overlapping calls into the WASM SDK, across and within protocol instances |
+| `browser-check` | the run is really Google Chrome |
+| `lan`, `lan-secure` | opt-in, see below |
+
+`lan.spec.ts` and `lan-secure.spec.ts` need the machine's network address and
+are skipped unless `LAN_HOST` is set:
+
+```
+LAN_HOST=192.168.0.28 npm run test:e2e -- lan
+```
 
 They run in **Google Chrome**, not Playwright's bundled Chromium — the config
 pins `channel: 'chrome'`, and `browser-check.spec.ts` fails the run if anything
@@ -188,20 +391,32 @@ your own address (`ipconfig getifaddr en0` on macOS; Vite also prints it as
 
 The front end needs no configuration: with `VITE_API_URL` unset it assumes the
 backend is on port 5000 of **whatever host served the page**, so the phone talks
-to the laptop rather than to itself.
+to the laptop rather than to itself. (With the Docker image this is simpler
+still: the page and the API share an origin, so open
+`http://192.168.0.28:5000` once `DEREC_BASE_URL` is set.)
 
 `DEREC_BASE_URL` is the one that must be set. It is not merely where the backend
 listens — it is stamped into every transport URI handed to a peer, and that peer
 posts to it. Left at `localhost`, pairing appears to work and then the peer
 sends protocol messages to its *own* loopback. The backend logs a warning at
-startup when it detects this.
+startup when it detects this — worded for a container when it runs in one,
+since there even another container on the same host cannot reach loopback.
+
+`base_url` is a scheme and a host, nothing else. A port — even the scheme's
+default (`http://host:80`) or an empty one (`http://host:`) — a user name (even
+an empty `http://@host`), a path, a query, or a missing slash (`http:/host`)
+aborts the boot with a message naming the setting to use instead: each of them
+used to boot and advertise an address like `http://host:80:5000/derec/…` that
+nothing can dial.
 
 #### Making the LAN origin a secure context
 
 `http://` on a LAN address is not a [secure context], and browsers withhold a
 lot there — `getUserMedia`, `BarcodeDetector`, and `crypto.randomUUID` among
 them. The camera is the visible casualty; `randomUUID` is why plain LAN http
-broke the setup wizard outright until the app stopped depending on it.
+broke the setup wizard outright until the app stopped depending on it. Web
+Locks is withheld too; without it the app still runs, but no longer stops two
+tabs from opening the same vault.
 
 On Android, tell Chrome to treat the origin as secure. No certificates, nothing
 to change here:
@@ -212,7 +427,7 @@ to change here:
    dropdown to **Enabled**.
 4. Relaunch Chrome when prompted.
 
-Scanning then works: the origin is a secure context, so all four APIs above come
+Scanning then works: the origin is a secure context, so the APIs above come
 back. `e2e/lan-secure.spec.ts` verifies exactly this using Chrome's
 `--unsafely-treat-insecure-origin-as-secure`, which is the desktop equivalent of
 that flag — including that the **Scan QR** button appears.
@@ -260,8 +475,14 @@ by `replicas.spec.ts`.
 
 ### Configuring it
 
-Two ways in, one merged result: a TOML file and environment variables, with the
-environment winning. Anything settable one way is settable the other.
+Three layers, one merged result. Each overrides the one before it:
+
+1. **built-in defaults**
+2. **a TOML config file**
+3. **environment variables** (`DEREC_*`)
+
+Anything settable in the file is settable from the environment, and the other
+way round.
 
 Worked examples of all of it live in [`examples/`](examples/) — every key
 documented inline, nothing to look up:
@@ -272,27 +493,52 @@ documented inline, nothing to look up:
 | `examples/.env.example` | `.env` | environment variables |
 | `examples/docker-compose.example.yaml` | `compose.yaml` | running it in Docker |
 
-Copy `examples/config.example.toml` to `config.toml` beside the binary, or
-mount it anywhere and point `DEREC_CONFIG_PATH` at it:
+**Where the file is read from.** `DEREC_CONFIG_PATH` names it. Unset, the node
+reads its default path — `config.toml` in the working directory under
+`cargo run` (so `apps/backend/config.toml` when run from `apps/backend`), or
+`/etc/derec/config.toml` in the image — and no file there is fine: the node
+runs on the defaults and the environment. Set `DEREC_CONFIG_PATH` to a file that
+does not exist and the boot fails: you named a file, so its absence is a
+mistake rather than a choice.
 
-```
-docker run -v ./my-config.toml:/etc/derec/config.toml \
-           -e DEREC_CONFIG_PATH=/etc/derec/config.toml ...
-```
+**How variables are read.** A variable set to an empty value (`DEREC_PORT=`)
+counts as unset — compose turns an undefined `${VAR}` into an empty string —
+and the banner lists it as ignored. Values are trimmed, numbers are range
+checked, text settings keep numeric-looking values (`DEREC_STATIC_DIR=2024`),
+and booleans accept `true`/`false`, `1`/`0`, `yes`/`no` and `on`/`off` in any
+case. `port` and `grpc_port` must differ while gRPC is enabled.
 
-Every key is optional — omit one and its built-in default applies. The
-`[defaults]` table is defaults only: the wizard stays editable, and the settings
-a node actually runs with are whatever the front end sends when it provisions
-actors. A file that cannot be read, parsed or validated aborts the boot rather
-than silently falling back. No file at all is fine and uses the built-in values.
+Every key is optional — omit one and its built-in default applies. A file that
+cannot be read, parsed or validated aborts the boot rather than silently
+falling back.
 
-Precedence, highest first:
+What the two tables mean:
+
+- **`[server]`** is how this process runs — listener and public ports, the
+  address it advertises, its database, the UI it serves. The backend applies
+  these directly.
+- **`[defaults]`** is mostly *defaults for the front end*: served from
+  `GET /config`, prefilled into the setup wizard and the Settings section, and
+  still editable there. The protocol settings a node actually runs with are
+  whatever the front end sends when it provisions actors. The exception is the
+  transport keys — `grpc_enabled`, `grpc_port` and `grpc_relay_enabled` — which
+  the backend **enforces**: they decide whether the gRPC listener runs and on
+  which port, whether gRPC helpers can be provisioned at all, and whether
+  `/derec/relay` answers.
+
+The image does not preset any `DEREC_*` variable; its container-appropriate
+values — data in `/var/lib/derec`, the UI served from `/app/static`, the config
+file at `/etc/derec/config.toml` — are its built-in defaults, so the boot
+banner reports them as `default` and any of them can be overridden from the
+file or the environment.
+
+How the environment is assembled, highest first:
 
 | | Source | Beats |
 | --- | --- | --- |
 | 4 | `environment:` or `-e` on the container | everything |
 | 3 | `env_file:` in compose — injects real variables | the file and the defaults |
-| 2 | a `.env` beside the process — fills only variables **not already set** | the config file |
+| 2 | a `.env` in the working directory — fills only variables **not already set** | the config file |
 | 1 | the TOML config file | the built-in defaults |
 
 Tiers 3 and 4 look the same to the app — both are just the environment by the
@@ -306,6 +552,9 @@ Variable names are flat and prefixed; the table a key lives in does not appear:
 | `server.port` | `DEREC_PORT` |
 | `server.database_url` | `DEREC_DATABASE_URL` |
 | `server.static_dir` | `DEREC_STATIC_DIR` |
+| `server.public_port` | `DEREC_PUBLIC_PORT` |
+| `server.public_grpc_port` | `DEREC_PUBLIC_GRPC_PORT` |
+| `server.relay_allowed_hosts` | `DEREC_RELAY_ALLOWED_HOSTS` |
 | `defaults.participant_count` | `DEREC_PARTICIPANT_COUNT` |
 | `defaults.pre_paired_count` | `DEREC_PRE_PAIRED_COUNT` |
 | `defaults.min_participants` | `DEREC_MIN_PARTICIPANTS` |
@@ -314,6 +563,8 @@ Variable names are flat and prefixed; the table a key lives in does not appear:
 | `defaults.authentication_method` | `DEREC_AUTHENTICATION_METHOD` |
 | `defaults.unpair_ack` | `DEREC_UNPAIR_ACK` |
 | `defaults.auto_accept_unpair_requests` | `DEREC_AUTO_ACCEPT_UNPAIR_REQUESTS` |
+| `defaults.auto_accept_store_share_requests` | `DEREC_AUTO_ACCEPT_STORE_SHARE_REQUESTS` |
+| `defaults.auto_accept_verify_share_requests` | `DEREC_AUTO_ACCEPT_VERIFY_SHARE_REQUESTS` |
 | `defaults.grpc_enabled` | `DEREC_GRPC_ENABLED` |
 | `defaults.grpc_port` | `DEREC_GRPC_PORT` |
 | `defaults.grpc_relay_enabled` | `DEREC_GRPC_RELAY_ENABLED` |
@@ -323,8 +574,14 @@ Variable names are flat and prefixed; the table a key lives in does not appear:
 
 `DEREC_CONFIG_PATH` names the config file and is not itself a setting.
 
-`BASE_URL`, `PORT` and `STATIC_DIR` are no longer read (the last is now
-`DEREC_STATIC_DIR`). Setting one without its
+`public_port` and `public_grpc_port` default to the listener ports (`port` and
+`grpc_port`); set them only when something in between remaps the ports, as
+`docker run -p 8080:5000` does. `base_url` is a scheme and host only — no port
+and no path; a value with either aborts the boot and names the setting to use
+instead.
+
+`BASE_URL`, `PORT` and `STATIC_DIR` are no longer read (they are now
+`DEREC_BASE_URL`, `DEREC_PORT` and `DEREC_STATIC_DIR`). Setting one without its
 `DEREC_`-prefixed replacement aborts the boot with a message naming it, rather
 than leaving a node quietly running on defaults.
 
@@ -360,7 +617,8 @@ configuration
 
 Every setting is listed, not only the overridden ones — if you set something
 and nothing happened, seeing that key marked `default` is the answer. The same
-data is available as JSON from `GET /debug/config`.
+data is available as JSON from `GET /debug/config`, and in the Settings
+section.
 
 ## Transports
 
@@ -374,25 +632,62 @@ that only offers gRPC, not to give the browser a second way to talk.
 `grpc_enabled` (default `true`) and `grpc_port` (default `50051`) control the
 backend's own gRPC server. It is separate from the HTTP listener `DEREC_BASE_URL`
 points at, and provisioned helpers can only advertise a `grpc://` endpoint
-while it is running — turn `grpc_enabled` off to run HTTP-only.
+while it is running — turn `grpc_enabled` off to run HTTP-only. A gRPC helper
+advertises `grpc://<base_url host>:<public_grpc_port>`.
+
+### Message size
+
+One limit everywhere: a DeRec message may be at most **4 MiB** — what the gRPC
+listener accepts — whether it arrives over gRPC, is posted to
+`POST /derec/{actor_id}`, or is relayed. The relay's JSON body carries the
+message base64url-encoded, a third larger, so that route accepts a body of up
+to about 5.4 MiB to fit a full 4 MiB message. Other JSON routes keep Axum's
+2 MiB.
+
+A browser owner's mailbox holds at most 1000 messages or 16 MiB of message
+bytes — counted as posted, not as the base64 the table stores — so four
+maximum-size messages fit. Past either cap a new message is refused (HTTP
+`503`, gRPC `RESOURCE_EXHAUSTED`) and nothing already queued is dropped.
 
 ### Three helper modes, not three transports
 
-A provisioned helper advertises `http`, `grpc`, or `both`; the setup wizard's
-transport counters (**gRPC only** / **Both transports**, with **HTTP** left to
-absorb the rest) set the shared pool's target composition the same way its
-participant count does — a target, not an order to create, since the pool is
-shared across every owner. What differs across the three is which endpoint(s)
-a peer offers, not which protocol carries the messages an owner actually
-sends: every provisioned actor answers over whichever protocol a peer's
-contact reaches it on regardless of its own advertised mode.
+A provisioned helper advertises `http`, `grpc`, or `both`; the transport
+counters in the Settings section (**gRPC only** / **Both transports**, with
+**HTTP** left to absorb the rest) set the shared pool's target composition the
+same way its participant count does — a target, not an order to create, since
+the pool is shared across every owner. What differs across the three is which
+endpoint(s) a peer offers, not which protocol carries the messages an owner
+actually sends: every provisioned actor answers over whichever protocol a
+peer's contact reaches it on regardless of its own advertised mode.
 
 ### The relay
 
 A browser cannot dial gRPC directly, so `POST /derec/relay` asks the backend
 to dial an endpoint on the owner's behalf — the backend already terminates
 transport for every actor here, so this is a small extension of that rather
-than a new role. `grpc_relay_enabled` (default `true`) gates it. This is also
+than a new role. `grpc_relay_enabled` (default `true`) gates it.
+
+Without a limit the relay would be an open proxy on an unauthenticated node,
+so it delivers to:
+
+- **this node**, under any address it answers to now (its `base_url` host or
+  loopback, on the listen or public port) or has advertised before — delivered
+  in-process, never dialled, so a browser still holding a helper's address
+  from before the node's address changed keeps working even when the old port
+  is gone;
+- an endpoint some actor on this node currently advertises;
+- **another node**, only if its host or `host:port` is listed in
+  `server.relay_allowed_hosts` (`DEREC_RELAY_ALLOWED_HOSTS`), comma-separated —
+  e.g. `DEREC_RELAY_ALLOWED_HOSTS=192.168.0.30:50051,node-b` — or `*` for any
+  host. Empty by default. `*` exists for a trusted LAN where interop peers come
+  and go faster than a list can be kept; boot warns while it is set.
+
+So a browser owner on node A reaching a gRPC-only helper on node B needs B's
+address in A's `relay_allowed_hosts`; without it the relay answers `403` with a
+message naming that setting. Every refusal is recorded in `GET /debug/events`
+with its reason, attributed to the requesting owner when the request carries
+its `actor_id`. With gRPC disabled on this node, a relay to this node's own
+gRPC address is `409` saying so. This is also
 the point where a message can cross from one transport to the other: pairing
 with a grpc-only helper sends the request out over gRPC through the relay, and
 the helper's reply comes back over HTTP to the owner's mailbox, same as any
@@ -412,19 +707,19 @@ A replica is a second device belonging to the same owner, kept in sync so it can
 
 ### Setting one up
 
-A replica is a pairing mode, not a kind of actor, so any helper can back one. **+ Add** in the Replicas section provisions a helper under the name you type and pairs it in replica mode from this device's `ReplicaSource` side — no second browser context involved. That is the primary path, and the one the e2e suite exercises.
+A replica is a pairing mode, not a kind of actor, so any helper can back one. **+ Add** in the Replicas tab provisions a helper under the name you type and pairs it in replica mode from this vault's `ReplicaSource` side — no second browser context involved. That is the primary path, and the one `replicas.spec.ts` exercises.
 
-A replica backed by a *real second device* still works, and is what the feature ultimately models. Because the app supports one user per browser context, that route needs a **second** browser context — an incognito/private window, a different browser profile, or a different browser entirely. This is a limitation of the frontend, not of the protocol. Open the app in that second context and run **Set up** to register it as its own owner actor on the same backend, then pair it from the primary device's `ReplicaSource` side.
+A replica backed by a *real second device* works too, and is what the feature ultimately models. To model a separate device, put the destination vault in **another browser context** — an incognito/private window, a different browser profile, a different browser or another machine — rather than beside the source in the same browser, whose storage every vault there shares. Set up a vault there, then pair it from the primary vault's `ReplicaSource` side. `browser-replica.spec.ts` covers this, in both directions.
 
 ### Fingerprint confirmation (required before syncing)
 
-After the pairing handshake, the replica channel sits in `Pending` — it cannot receive anything yet. Each side independently derives the same `XXXX-XXXX-XXXX-XXXX` code from the shared key. A helper-backed replica confirms its own side automatically — it is an unattended fixture with no operator to read a code back to — so all that is left is confirming this device's side in the dialog that appears. With a second browser context there is no such shortcut: compare the two codes out of band (read them to each other, screenshot, etc.), then confirm on each side separately.
+After the pairing handshake, the replica channel sits in `Pending` — it cannot receive anything yet. Each side independently derives the same `XXXX-XXXX-XXXX-XXXX` code from the shared key. A helper-backed replica confirms its own side automatically — it is an unattended fixture with no operator to read a code back to — so all that is left is confirming this device's side in the dialog that appears. Between two browsers there is no such shortcut: compare the two codes out of band (read them to each other, screenshot, etc.), then confirm on each side separately.
 
-Only once **both** sides have confirmed does the channel move to `Paired`. This gate is enforced by the protocol library itself — it selects share targets from its own `Paired` channel table — not by app code, so there is no client-side bypass.
+Only once **both** sides have confirmed does the channel move to `Paired`. This gate is enforced by the protocol library itself — it selects share targets from its own `Paired` channel table — not by app code, so there is no client-side bypass. A mirrored copy pushed before the destination has confirmed is ignored; the destination pulls it once it confirms.
 
-### Adoption (destructive — erases the destination's vault)
+### Adoption (destructive — erases the destination vault)
 
-The app holds one vault per user. The first time a `ReplicaDestination` receives the source's mirrored secret, adopting it **wipes that device's existing vault** and replaces it with the source owner's — secrets, helper roster, everything. The destination keeps adopting the *source's* secret id (its own replica id is untouched, as noted above), and afterwards enables auto reply-to so helpers — whose stored endpoint still points at the source — route their responses to the new device instead.
+The first time a `ReplicaDestination` receives the source's mirrored secret, adopting it **wipes that vault's existing contents** and replaces them with the source owner's — secrets, helper roster, everything. The destination keeps adopting the *source's* secret id (its own replica id is untouched, as noted above), and afterwards enables auto reply-to so helpers — whose stored endpoint still points at the source — route their responses to the new device instead.
 
 Because this is destructive, adoption sits behind a confirmation dialog whose default action is **Cancel** (autofocused, and what Escape/backdrop-click resolve to). Confirming requires a deliberate click on a separate, clearly-marked destructive action. Cancelling discards the offered payload and destroys nothing — the source's next sync re-offers it.
 
@@ -432,13 +727,29 @@ Because this is destructive, adoption sits behind a confirmation dialog whose de
 
 Exercised end to end and covered by `apps/web/e2e/replicas.spec.ts`: pairing
 behind the fingerprint gate, a three-member group, mirroring with per-member
-acknowledgement, sync check, and eviction.
+acknowledgement, sync check, and eviction. Those tests pair the group's
+`Destination`s with **provisioned helpers** — a helper paired in replica mode
+follows the identical protocol path an owner's second device would.
 
-That coverage pairs the group's `Destination`s with **provisioned helpers** —
-backend fixtures — rather than a second browser context: a replica is a
-pairing mode, not a kind of actor, so a helper paired in replica mode follows
-the identical protocol path an owner's second device would, and an unattended
-fixture auto-confirms its own fingerprint, leaving this device to confirm only
-its own. The browser-to-browser variant is still only manually verified, and
-adoption (the destructive step above) has no automated coverage at all: it is
-gated on a human confirming a dialog that erases the device's vault.
+`apps/web/e2e/browser-replica.spec.ts` covers the browser-to-browser variant:
+pairing as replicas in both directions with both sides confirming the
+fingerprint, the copy arriving only once both have confirmed, the adoption
+dialog being offered, and the replica group showing in View Payload. Confirming
+adoption itself — the destructive step above — is not automated.
+
+---
+
+## Contributing
+
+Contributions are welcome. Development setup, testing and the contribution
+workflow are documented in `CONTRIBUTING.md`; the people behind the project are
+listed in `AUTHORS.md`.
+
+---
+
+## License
+
+Licensed under the Apache License, Version 2.0, the same license as the
+[DeRec SDK](https://github.com/derecalliance/lib-derec).
+
+See the `LICENSE` file for details.

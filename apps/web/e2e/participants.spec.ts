@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { test, expect } from './fixtures'
 import { expectOwnerDashboard, openApp, poolSize, uniqueReplicaName } from './app'
 
@@ -29,7 +32,9 @@ async function provision(page: import('@playwright/test').Page): Promise<string>
   await page.getByRole('button', { name: 'Provision', exact: true }).click()
 
   const table = page.getByRole('table', { name: 'Provisioned participants' })
-  await expect(table.getByRole('cell', { name })).toBeVisible({ timeout: 30_000 })
+  // Exact: the row's action buttons carry the participant's name in their
+  // labels too, so a substring match would also find the actions cell.
+  await expect(table.getByRole('cell', { name, exact: true })).toBeVisible({ timeout: 30_000 })
   return name
 }
 
@@ -39,7 +44,7 @@ test('the pane is reachable without an owner and provisions a participant', asyn
   const name = await provision(page)
 
   await expect(
-    page.getByRole('table', { name: 'Provisioned participants' }).getByRole('cell', { name }),
+    page.getByRole('table', { name: 'Provisioned participants' }).getByRole('cell', { name, exact: true }),
   ).toBeVisible()
 })
 
@@ -58,14 +63,14 @@ test('deleting a participant removes it from the node', async ({ page, pageError
   await expect(dialog).toContainText(`Delete ${name}?`)
   await dialog.getByRole('button', { name: 'Delete' }).click()
 
-  await expect(table.getByRole('cell', { name })).toHaveCount(0, { timeout: 30_000 })
+  await expect(table.getByRole('cell', { name, exact: true })).toHaveCount(0, { timeout: 30_000 })
 
   // It must be gone from the node, not merely from this render — a reload
   // re-reads the roster from the backend.
   await page.reload()
   await page.getByRole('button', { name: 'Participants' }).click()
   await expect(
-    page.getByRole('table', { name: 'Provisioned participants' }).getByRole('cell', { name }),
+    page.getByRole('table', { name: 'Provisioned participants' }).getByRole('cell', { name, exact: true }),
   ).toHaveCount(0)
 
   expect(pageErrors).toEqual([])
@@ -83,7 +88,7 @@ test('cancelling the confirmation keeps the participant', async ({ page }) => {
   await page.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click()
 
   await expect(page.getByRole('dialog')).toHaveCount(0)
-  await expect(table.getByRole('cell', { name })).toBeVisible()
+  await expect(table.getByRole('cell', { name, exact: true })).toBeVisible()
 })
 
 /**
@@ -98,7 +103,7 @@ test('setting up an owner does not provision participants', async ({ page }) => 
   await openApp(page)
   const before = await poolSize(page)
 
-  await page.getByRole('button', { name: 'Set up a new owner' }).click()
+  await page.getByRole('button', { name: 'Set up a new vault' }).click()
   await page.getByPlaceholder('e.g. Alice').fill('Alice')
   await page.getByRole('button', { name: /^Next/ }).click()
   await expect(page.getByRole('heading', { name: 'Your settings' })).toBeVisible()
@@ -113,9 +118,11 @@ test('pre-pairing cannot exceed the participants that are online', async ({ page
   const online = await poolSize(page)
 
   await page.getByRole('button', { name: 'Owner' }).click()
-  await page.getByRole('button', { name: 'Set up a new owner' }).click()
+  await page.getByRole('button', { name: 'Set up a new vault' }).click()
   await page.getByPlaceholder('e.g. Alice').fill('Alice')
   await page.getByRole('button', { name: /^Next/ }).click()
+  // Inert until the node has answered; the ceiling is unknown before then.
+  await expect(page.getByRole('button', { name: 'Set up', exact: true })).toBeEnabled()
 
   // Raise it as far as the control allows; it must stop at what exists rather
   // than at whatever total the node is configured for.

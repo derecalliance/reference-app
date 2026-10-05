@@ -1,6 +1,10 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { pairingRoleLabel } from './pairingRoleOptions'
 import {
   canRequestReplicaSync,
+  isReplicaBehind,
   type ReplicaExpiry,
   type ReplicaPairingRole,
   type ReplicaView,
@@ -45,6 +49,11 @@ export interface ReplicaChannelRowProps {
   protocolTimeoutSecs: number
   /** This row's own sync is running. */
   syncing: boolean
+  /**
+   * This device, as the destination, is still fetching the peer's copy over
+   * this channel — asking again until it lands. See `ReplicaCatchUp`.
+   */
+  catchingUp?: boolean
   /** Some row's sync is running — a protect round is global, so all are blocked. */
   syncBlocked: boolean
   /** The sync result this row should show, or `null`. */
@@ -95,16 +104,39 @@ export interface ReplicaChannelRowProps {
    * removal names a member, not a channel.
    */
   viaGroupOnly?: boolean
+  /**
+   * The version this vault currently holds, or `null` before its first protect
+   * round. What a source row's last acknowledgement is measured against: a
+   * destination that missed a round while offline acked an older version, and
+   * without the comparison its row read as current.
+   */
+  vaultVersion?: number | null
+  /**
+   * This device, as the destination on this row, already holds the peer's
+   * vault — it adopted it, or has since been receiving its updates. Once that
+   * is true the "offered" wording describes a decision already made.
+   */
+  holdsPeerVault?: boolean
 }
 
 /** The status word for a replica channel, with expiry outranking everything. */
-function statusLabel(view: ReplicaView | null, expiry: ReplicaExpiry | null): {
+function statusLabel(
+  view: ReplicaView | null,
+  expiry: ReplicaExpiry | null,
+  catchingUp: boolean,
+  behind: boolean,
+): {
   text: string
   className: string
 } {
   // An expired channel has been dropped by the protocol; "pending confirmation"
   // would describe something that is no longer waiting for anything.
   if (expiry?.state === 'expired') return { text: 'Expired', className: 'expired' }
+  // A refusal outranks the pending prompt: nothing is waiting for an answer —
+  // the answer was no.
+  if (view?.refused) return { text: 'Codes didn’t match', className: 'expired' }
+  if (catchingUp) return { text: 'Syncing…', className: 'syncing' }
+  if (behind) return { text: 'Behind', className: 'available' }
   if (view?.status === 'paired') return { text: 'Verified', className: 'paired' }
   return { text: 'Pending confirmation', className: 'available' }
 }
@@ -133,17 +165,33 @@ function expiryText(expiry: ReplicaExpiry): string {
 }
 
 /** What this row mirrors, and in which direction. */
-function mirrorSummary(view: ReplicaView | null): string {
+function mirrorSummary(
+  view: ReplicaView | null,
+  name: string,
+  catchingUp: boolean,
+  vaultVersion: number | null,
+  holdsPeerVault: boolean,
+): string {
   if (!view) return 'Waiting for this device to project the channel.'
   if (view.direction === 'replica_destination') {
+    if (catchingUp) {
+      return `Getting ${name}’s copy of the vault — this device keeps asking until ${name} answers, which can take until they confirm the code on their screen. Nothing is erased until you accept it.`
+    }
+    // After adoption the offer is history: this vault *is* the peer's now,
+    // and further versions apply without a prompt.
+    if (holdsPeerVault) {
+      return `This vault is ${name}’s${vaultVersion === null ? '' : `, at v${vaultVersion}`}. Versions ${name} publishes are applied here automatically.`
+    }
     return 'This device is offered the peer’s vault. Nothing is erased until you accept an offer.'
   }
   if (!view.lastSync) {
-    return 'Nothing mirrored yet — it goes out on the next protect round.'
+    return 'Nothing acknowledged yet — the vault goes out on the next protect round.'
   }
-  return `Mirrored v${view.lastSync.version}, acknowledged ${new Date(
-    view.lastSync.syncedAt,
-  ).toLocaleString()}.`
+  const acked = `acknowledged ${new Date(view.lastSync.syncedAt).toLocaleString()}`
+  if (isReplicaBehind(view, vaultVersion)) {
+    return `Behind: last mirrored v${view.lastSync.version} (${acked}), but this vault is at v${vaultVersion}. Use “Sync now” to send the current version.`
+  }
+  return `Mirrored v${view.lastSync.version}, ${acked}.`
 }
 
 export function ReplicaChannelRow({
@@ -153,6 +201,7 @@ export function ReplicaChannelRow({
   view,
   protocolTimeoutSecs,
   syncing,
+  catchingUp = false,
   syncBlocked,
   syncNotice,
   onDismissSyncNotice,
@@ -166,6 +215,8 @@ export function ReplicaChannelRow({
   offline,
   onToggleOffline,
   viaGroupOnly = false,
+  vaultVersion = null,
+  holdsPeerVault = false,
 }: ReplicaChannelRowProps) {
   // The countdown ticks in this row and nothing above it, and a row with
   // nothing pending never arms a timer at all.
@@ -175,7 +226,7 @@ export function ReplicaChannelRow({
   )
   const status = viaGroupOnly
     ? { text: 'Group member', className: 'available' }
-    : statusLabel(view, expiry)
+    : statusLabel(view, expiry, catchingUp, isReplicaBehind(view, vaultVersion))
   // A member with no channel is waiting for nothing: there is no comparison to
   // make and no deadline to miss, so neither the prompt nor the confirmed line
   // applies to it.
@@ -196,8 +247,12 @@ export function ReplicaChannelRow({
         </span>
         <span className={`role-tag role-tag--${peerRole}`}>{pairingRoleLabel(peerRole)}</span>
         <span className="channel-id-inline">{channelId}</span>
-        <span style={{ flex: 1 }} />
-        <span className={`status-tag ${status.className}`}>{status.text}</span>
+        <span className="channel-row-spacer" />
+        {/* Polite live region: "Syncing…" clears on its own when the copy lands,
+            and that change is worth announcing. */}
+        <span className={`status-tag ${status.className}`} aria-live="polite">
+          {status.text}
+        </span>
         {canSync && (
           <button
             className="channel-link-btn"
@@ -260,7 +315,21 @@ export function ReplicaChannelRow({
         keeps running, and nothing about the comparison is lost — it is simply
         not on screen until asked for.
       */}
-      {awaitingConfirmation && (
+      {awaitingConfirmation && view?.refused && (
+        <div className="replica-row-notice replica-row-notice--error" role="status">
+          <span className="replica-row-prompt__text">
+            You reported that the codes did not match, so this device has not confirmed the
+            channel and no vault moves across it. {name} is not told — the protocol has no
+            message for a refusal — and may keep waiting. Remove the row and pair again; if
+            you misread the codes, compare them again.
+          </span>
+          <button className="channel-link-btn" onClick={onOpenFingerprint}>
+            Compare again
+          </button>
+        </div>
+      )}
+
+      {awaitingConfirmation && !view?.refused && (
         <div className="replica-row-prompt" role="status">
           <span className="replica-row-prompt__text">
             Not confirmed yet. Compare the code on both devices — until this device confirms,
@@ -325,7 +394,9 @@ export function ReplicaChannelRow({
         <div className="channel-row-bottom">
           <div className="channel-prop">
             <span className="channel-prop-label">Mirror</span>
-            <span className="channel-prop-value">{mirrorSummary(view)}</span>
+            <span className="channel-prop-value">
+              {mirrorSummary(view, name, catchingUp, vaultVersion, holdsPeerVault)}
+            </span>
           </div>
         </div>
       )}

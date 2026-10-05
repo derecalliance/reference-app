@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { useCallback, useEffect, useState } from 'react'
 import {
   Alert,
@@ -34,6 +37,7 @@ import { errorText } from '../errorText'
 import { FALLBACK_SERVER_DEFAULTS, type ServerDefaults } from '../config'
 import { effectiveDefaults } from '../protocolDefaults'
 import { randomParticipantName } from '../participantNames'
+import { participantLabel } from './participantLabel'
 
 /** How often the pool is refreshed while this pane is open. */
 const POLL_MS = 4000
@@ -65,8 +69,13 @@ function transportLabel(actor: BEActorWithStatus): string {
  */
 export function ParticipantsPane() {
   const [actors, setActors] = useState<BEActorWithStatus[] | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  // Two kinds of failure, kept apart on purpose. The 4 s poll clears its own
+  // error when it next succeeds; if it shared one slot with the actions, every
+  // provision / toggle / delete failure vanished within seconds of appearing.
+  const [pollError, setPollError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
   const [defaults, setDefaults] = useState<ServerDefaults>(FALLBACK_SERVER_DEFAULTS)
+  const [defaultsLoaded, setDefaultsLoaded] = useState(false)
 
   const [name, setName] = useState('')
   const [adding, setAdding] = useState(false)
@@ -82,9 +91,9 @@ export function ParticipantsPane() {
   const refresh = useCallback(async () => {
     try {
       setActors(await apiGetActors())
-      setError(null)
+      setPollError(null)
     } catch (err) {
-      setError(errorText(err))
+      setPollError(errorText(err))
     }
   }, [])
 
@@ -100,12 +109,20 @@ export function ParticipantsPane() {
   useEffect(() => {
     // Provisioning needs the node's protocol defaults. Unreachable is not worth
     // blocking on — the built-in fallbacks are the same values the server
-    // ships.
+    // ships — but the answer is waited for: provisioning from the fallback a
+    // moment before `/config` lands would size the pool from numbers the node
+    // does not use.
     // Merged with any Settings overrides: provisioning from here must use the
     // same values the wizard would.
-    void apiGetServerDefaults().then(result =>
-      setDefaults(effectiveDefaults(result.defaults)),
-    )
+    let cancelled = false
+    void apiGetServerDefaults().then(result => {
+      if (cancelled) return
+      setDefaults(effectiveDefaults(result.defaults))
+      setDefaultsLoaded(true)
+    })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   async function handleAdd() {
@@ -113,7 +130,7 @@ export function ParticipantsPane() {
     if (!trimmed) return
 
     setAdding(true)
-    setError(null)
+    setActionError(null)
     try {
       await apiAddHelper(trimmed, {
         protocolTimeoutSecs: defaults.protocolTimeoutSecs,
@@ -122,7 +139,7 @@ export function ParticipantsPane() {
       setName('')
       await refresh()
     } catch (err) {
-      setError(errorText(err))
+      setActionError(errorText(err))
     } finally {
       setAdding(false)
     }
@@ -130,12 +147,12 @@ export function ParticipantsPane() {
 
   async function handleToggle(actor: BEActorWithStatus) {
     setBusyId(actor.id)
-    setError(null)
+    setActionError(null)
     try {
       await apiToggleParticipantStatus(actor.id, !actor.disabled)
       await refresh()
     } catch (err) {
-      setError(errorText(err))
+      setActionError(errorText(err))
     } finally {
       setBusyId(null)
     }
@@ -154,7 +171,7 @@ export function ParticipantsPane() {
    */
   async function handleEnsurePool() {
     setEnsuring(true)
-    setError(null)
+    setActionError(null)
     try {
       const names = Array.from({ length: defaults.participantCount }, randomParticipantName)
       await apiEnsureHelpers(defaults.participantCount, names, defaults.helperTransports, {
@@ -163,7 +180,7 @@ export function ParticipantsPane() {
       })
       await refresh()
     } catch (err) {
-      setError(errorText(err))
+      setActionError(errorText(err))
     } finally {
       setEnsuring(false)
     }
@@ -173,7 +190,7 @@ export function ParticipantsPane() {
     if (!pendingDelete) return
 
     setDeleting(true)
-    setError(null)
+    setActionError(null)
     try {
       await apiDeleteParticipant(pendingDelete.id)
       setPendingDelete(null)
@@ -181,7 +198,7 @@ export function ParticipantsPane() {
     } catch (err) {
       // The dialog stays open on failure: closing it would leave the row on
       // screen with nothing said about why it is still there.
-      setError(errorText(err))
+      setActionError(errorText(err))
     } finally {
       setDeleting(false)
     }
@@ -202,9 +219,16 @@ export function ParticipantsPane() {
           </Typography>
         </Box>
 
-        {error && <Alert severity="error">{error}</Alert>}
+        {pollError && (
+          <Alert severity="error">Could not refresh the pool: {pollError}</Alert>
+        )}
+        {actionError && (
+          <Alert severity="error" onClose={() => setActionError(null)}>
+            {actionError}
+          </Alert>
+        )}
 
-        <Stack direction="row" spacing={1} alignItems="flex-start">
+        <Stack direction="row" spacing={1} alignItems="flex-start" flexWrap="wrap" useFlexGap>
           <TextField
             size="small"
             label="Name"
@@ -220,14 +244,14 @@ export function ParticipantsPane() {
           <Button
             variant="contained"
             onClick={() => void handleAdd()}
-            disabled={adding || name.trim() === ''}
+            disabled={adding || !defaultsLoaded || name.trim() === ''}
             sx={{ mt: 0.25 }}
           >
             {adding ? 'Provisioning…' : 'Provision'}
           </Button>
           <Button
             onClick={() => void handleEnsurePool()}
-            disabled={ensuring || helpers.length >= defaults.participantCount}
+            disabled={ensuring || !defaultsLoaded || helpers.length >= defaults.participantCount}
             sx={{ mt: 0.25 }}
           >
             {ensuring
@@ -237,14 +261,19 @@ export function ParticipantsPane() {
         </Stack>
 
         {actors === null ? (
-          <Stack direction="row" spacing={1} alignItems="center">
-            <CircularProgress size={18} />
-            <Typography color="text.secondary">Loading the pool…</Typography>
-          </Stack>
+          // Never loaded: the error above already says why, and a spinner next
+          // to it would claim a load is still under way when it has failed.
+          pollError === null && (
+            <Stack direction="row" spacing={1} alignItems="center">
+              <CircularProgress size={18} />
+              <Typography color="text.secondary">Loading the pool…</Typography>
+            </Stack>
+          )
         ) : helpers.length === 0 ? (
           <Alert severity="info">
-            No participants provisioned yet. Add one above, or set up an owner —
-            the wizard provisions a pool as part of setup.
+            No participants provisioned yet. Add one above, or use “Provision up
+            to {defaults.participantCount}” to fill the pool to the node’s
+            target. Setting up an owner does not provision any.
           </Alert>
         ) : (
           <>
@@ -262,42 +291,50 @@ export function ParticipantsPane() {
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {helpers.map(actor => (
-                    <TableRow key={actor.id} hover>
-                      <TableCell>{actor.name}</TableCell>
-                      <TableCell>
-                        <Chip size="small" label={transportLabel(actor)} />
-                      </TableCell>
-                      <TableCell>
-                        {actor.disabled ? (
-                          <Chip size="small" color="warning" label="offline" />
-                        ) : (
-                          <Typography variant="body2" color="text.secondary">
-                            online
-                          </Typography>
-                        )}
-                      </TableCell>
-                      <TableCell align="right">
-                        <Stack direction="row" spacing={1} justifyContent="flex-end">
-                          <Button
-                            size="small"
-                            onClick={() => void handleToggle(actor)}
-                            disabled={busyId === actor.id}
-                          >
-                            {actor.disabled ? 'Bring online' : 'Take offline'}
-                          </Button>
-                          <Button
-                            size="small"
-                            color="error"
-                            onClick={() => setPendingDelete(actor)}
-                            disabled={busyId === actor.id}
-                          >
-                            Delete
-                          </Button>
-                        </Stack>
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                  {helpers.map(actor => {
+                    const label = participantLabel(actor, helpers)
+                    return (
+                      <TableRow key={actor.id} hover>
+                        <TableCell>{actor.name}</TableCell>
+                        <TableCell>
+                          <Chip size="small" label={transportLabel(actor)} />
+                        </TableCell>
+                        <TableCell>
+                          {actor.disabled ? (
+                            <Chip size="small" color="warning" label="offline" />
+                          ) : (
+                            <Typography variant="body2" color="text.secondary">
+                              online
+                            </Typography>
+                          )}
+                        </TableCell>
+                        <TableCell align="right">
+                          <Stack direction="row" spacing={1} justifyContent="flex-end">
+                            {/* Named per row: every row repeats the same two
+                                labels, which a screen reader's button list cannot
+                                tell apart without the participant's name. */}
+                            <Button
+                              size="small"
+                              onClick={() => void handleToggle(actor)}
+                              disabled={busyId === actor.id}
+                              aria-label={`${actor.disabled ? 'Bring online' : 'Take offline'} ${label}`}
+                            >
+                              {actor.disabled ? 'Bring online' : 'Take offline'}
+                            </Button>
+                            <Button
+                              size="small"
+                              color="error"
+                              onClick={() => setPendingDelete(actor)}
+                              disabled={busyId === actor.id}
+                              aria-label={`Delete ${label}`}
+                            >
+                              Delete
+                            </Button>
+                          </Stack>
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
                 </TableBody>
               </Table>
             </TableContainer>

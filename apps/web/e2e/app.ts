@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { expect, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test'
 
 /**
@@ -100,8 +103,38 @@ export async function setUpOwner(page: Page, options: OwnerSetupOptions): Promis
   await ensurePool(page, options)
   await seedNodeDefaults(page, options)
   await openApp(page)
+  await runSetupWizard(page, options)
+}
 
-  await page.getByRole('button', { name: 'Set up a new owner' }).click()
+/**
+ * Set up one more vault in a browser that already holds some, from the list.
+ *
+ * The node's pool and defaults were seeded by the first `setUpOwner`, and the
+ * list — not the empty-state greeting — is the home screen now.
+ */
+export async function setUpAnotherVault(page: Page, options: OwnerSetupOptions): Promise<void> {
+  await backToVaults(page)
+  await runSetupWizard(page, options)
+}
+
+/** Leave the vault on screen for the list. Nothing stops: it keeps running. */
+export async function backToVaults(page: Page): Promise<void> {
+  if (!(await page.getByRole('heading', { name: 'Your vaults' }).isVisible())) {
+    await page.getByRole('button', { name: 'All vaults' }).click()
+  }
+  await expect(page.getByRole('heading', { name: 'Your vaults' })).toBeVisible()
+}
+
+/** Open a vault from the list by name, leaving `page` on its dashboard. */
+export async function openVault(page: Page, name: string): Promise<void> {
+  await backToVaults(page)
+  await page.getByRole('button', { name: `Open ${name}`, exact: true }).click()
+  await expectOwnerDashboard(page)
+}
+
+/** The wizard, from its first click to the new vault's dashboard. */
+async function runSetupWizard(page: Page, options: OwnerSetupOptions): Promise<void> {
+  await page.getByRole('button', { name: 'Set up a new vault' }).click()
 
   await expect(page.getByRole('heading', { name: 'Your name' })).toBeVisible()
   await page.getByPlaceholder('e.g. Alice').fill(options.name)
@@ -110,6 +143,10 @@ export async function setUpOwner(page: Page, options: OwnerSetupOptions): Promis
   // What is left in the wizard is what belongs to the owner rather than the
   // node: the timeout, and how many participants to pre-pair.
   await expect(page.getByRole('heading', { name: 'Your settings' })).toBeVisible()
+  // The step is inert until the node has answered — its defaults and the
+  // pre-pair ceiling are unknown before then. Waiting here is what keeps a
+  // counter from being read as "…" or set against a ceiling not yet known.
+  await expect(page.getByRole('button', { name: 'Set up', exact: true })).toBeEnabled()
   await setCounter(page, 'Pre-pair locally', options.prePaired)
   await page.getByRole('button', { name: 'Set up' }).click()
 
@@ -192,7 +229,7 @@ async function seedNodeDefaults(page: Page, options: OwnerSetupOptions): Promise
 
 /** Assert that `page` is on the owner dashboard rather than the wizard. */
 export async function expectOwnerDashboard(page: Page): Promise<void> {
-  await expect(page.getByRole('tab', { name: /Secret Bag/ })).toBeVisible({ timeout: 90_000 })
+  await expect(page.getByRole('tab', { name: /^Secrets/ })).toBeVisible({ timeout: 90_000 })
 }
 
 /**
@@ -296,7 +333,7 @@ export async function confirmFingerprint(page: Page, accept = true): Promise<voi
 /**
  * Protect a secret across every paired participant.
  *
- * Resolves once the Secret Bag tab reports the entry, which only happens when
+ * Resolves once the Secrets tab reports the entry, which only happens when
  * the round reaches its threshold — so this waits on the protocol completing,
  * not merely on the request being dispatched.
  */
@@ -309,15 +346,15 @@ export async function protectSecret(
   // independently, so one already in flight — from a pairing auto-publish, say
   // — neither blocks this one nor is disturbed by it. The button is disabled
   // only for too few paired helpers, which is a standing condition.
-  const before = await tabCount(page, 'Secret Bag')
-  const start = page.getByRole('button', { name: /^(Protect Secret|Add Secret)$/ })
+  const before = await tabCount(page, 'Secrets')
+  const start = page.getByRole('button', { name: 'Add Secret', exact: true })
   await expect(start).toBeEnabled({ timeout: 120_000 })
   await start.click()
 
   const form = page.locator('.modal-overlay[aria-label="Add secret"] .modal')
   await form.locator('#ps-name').fill(name)
   await form.getByLabel('Secret data').fill(data)
-  await form.getByRole('button', { name: /^(Protect|Add Secret)$/ }).click()
+  await form.getByRole('button', { name: 'Add Secret', exact: true }).click()
 
   // The form is replaced in place by a per-participant progress view, which
   // stays up (and keeps intercepting clicks) until dismissed.
@@ -335,7 +372,7 @@ export async function protectSecret(
   // slow member therefore delays it by up to the sharing-round timeout, even
   // though every helper answered in milliseconds.
   await expect
-    .poll(() => tabCount(page, 'Secret Bag'), { timeout: 120_000 })
+    .poll(() => tabCount(page, 'Secrets'), { timeout: 120_000 })
     .toBeGreaterThan(before)
 }
 
@@ -349,14 +386,14 @@ export async function protectAndReadConfirmations(
   // confirming a gated channel publishes from `verifyFingerprint` — and the
   // library keeps one round per secret. The button stays disabled until the
   // one in flight resolves, so waiting on it is waiting for quiescence.
-  const start = page.getByRole('button', { name: /^(Protect Secret|Add Secret)$/ })
+  const start = page.getByRole('button', { name: 'Add Secret', exact: true })
   await expect(start).toBeEnabled({ timeout: 120_000 })
   await start.click()
 
   const form = page.locator('.modal-overlay[aria-label="Add secret"] .modal')
   await form.locator('#ps-name').fill(name)
   await form.getByLabel('Secret data').fill(data)
-  await form.getByRole('button', { name: /^(Protect|Add Secret)$/ }).click()
+  await form.getByRole('button', { name: 'Add Secret', exact: true }).click()
 
   const overlay = page.locator('.modal-overlay[aria-label="Add secret"]')
   await expect(overlay.getByRole('button', { name: 'Done' })).toBeVisible({ timeout: 90_000 })
@@ -512,8 +549,10 @@ export async function addReplica(page: Page, name: string): Promise<void> {
 /**
  * Dismiss the comparison without answering it.
  *
- * Writes nothing — the channel stays `Pending` and its deadline keeps running,
- * which is exactly what makes the row's own confirm prompt a safe way back in.
+ * Escape, not "Doesn’t match": that button is an answer now, recorded on the
+ * row as a refusal. Dismissing writes nothing — the channel stays `Pending`
+ * and its deadline keeps running, which is exactly what makes the row's own
+ * confirm prompt a safe way back in.
  *
  * Required before touching anything outside the dialog: MUI's modal manager
  * marks the rest of the app `aria-hidden` while it is open, so the tab strip is
@@ -523,8 +562,19 @@ export async function dismissReplicaFingerprint(page: Page, name: string): Promi
   const dialog = replicaFingerprintDialog(page, name)
   await expect(dialog).toBeVisible({ timeout: 60_000 })
 
-  await dialog.getByRole('button', { name: 'Doesn’t match' }).click()
+  await page.keyboard.press('Escape')
   await expect(dialog).toBeHidden({ timeout: 30_000 })
+}
+
+/**
+ * Answer the Remove-from-group confirmation every eviction now goes through.
+ * Eviction erases the evicted device's copy, so it is never one click.
+ */
+export async function confirmReplicaRemoval(page: Page): Promise<void> {
+  const dialog = page.locator('.modal-overlay').filter({ hasText: /Remove .* from the group\?|Remove the source/ })
+  await expect(dialog).toBeVisible({ timeout: 15_000 })
+  await dialog.getByRole('button', { name: /^Remove (from group|the source)$/ }).click()
+  await expect(dialog).toBeHidden({ timeout: 15_000 })
 }
 
 /**
@@ -587,7 +637,7 @@ export function replicaMemberRows(page: Page) {
 /** The count badge on a dashboard tab. */
 export async function tabCount(
   page: Page,
-  name: 'Channels' | 'Replicas' | 'Secret Bag' | 'Shares' | 'Recovery',
+  name: 'Channels' | 'Replicas' | 'Secrets' | 'Shares' | 'Recovery',
 ): Promise<number> {
   const text = await page.getByRole('tab', { name: new RegExp(`^${name}`) }).innerText()
   return Number(text.replace(/\D+/g, '') || '0')
@@ -596,7 +646,7 @@ export async function tabCount(
 /** Switch the owner dashboard to one of its tabs. */
 export async function openTab(
   page: Page,
-  name: 'Channels' | 'Replicas' | 'Secret Bag' | 'Shares' | 'Recovery',
+  name: 'Channels' | 'Replicas' | 'Secrets' | 'Shares' | 'Recovery',
 ): Promise<void> {
   await page.getByRole('tab', { name: new RegExp(`^${name}`) }).click()
 }

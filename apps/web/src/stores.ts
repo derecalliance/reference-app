@@ -1,5 +1,10 @@
-import { fromBase64Url, toBase64Url } from './derecApi'
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
+import { TRANSPORT_PROTOCOL_GRPC } from './contactDto'
+import { DeliveryError, fromBase64Url, toBase64Url } from './derecApi'
 import { errorText } from './errorText'
+import type { Transport } from './types'
 
 // ── Key layout ───────────────────────────────────────────────────────────────
 //
@@ -72,6 +77,102 @@ export function clearNamespace(ns: string): void {
   for (const key of toRemove) localStorage.removeItem(key)
 }
 
+// ── Storage quota ────────────────────────────────────────────────────────────
+//
+// Every store here writes to localStorage, which holds a few megabytes per
+// origin. When a write is refused the library sees only a generic "store
+// backend error" — the reason does not survive the trip through WASM — so the
+// refusal is also recorded here, where the runtime can read it back and say
+// what actually went wrong.
+
+/** Thrown when browser storage refuses a write because it is full. */
+export class StorageQuotaError extends Error {
+  constructor(options?: { cause?: unknown }) {
+    super(STORAGE_FULL_MESSAGE, options)
+    this.name = 'StorageQuotaError'
+  }
+}
+
+/** What a full browser storage means for the person using the app. */
+export const STORAGE_FULL_MESSAGE =
+  'This browser’s storage for the app is full, so the change could not be saved. ' +
+  'Remove vaults or secrets you no longer need (or use smaller secrets), then try again.'
+
+/** When storage last refused a write, or `null` if it has not since it was last read. */
+let lastQuotaFailureAt: number | null = null
+
+/** Whether `err` is the browser refusing a write for lack of space. */
+export function isQuotaError(err: unknown): boolean {
+  if (err instanceof StorageQuotaError) return true
+  if (!(err instanceof DOMException)) return false
+  // `code` 22 / the Firefox name cover browsers that predate the standard name.
+  return err.name === 'QuotaExceededError' || err.name === 'NS_ERROR_DOM_QUOTA_REACHED' || err.code === 22
+}
+
+/** `localStorage.setItem`, recording a quota refusal before rethrowing it legibly. */
+function storeItem(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value)
+  } catch (err) {
+    if (!isQuotaError(err)) throw err
+    lastQuotaFailureAt = Date.now()
+    throw new StorageQuotaError({ cause: err })
+  }
+}
+
+/**
+ * Whether a store write was refused for lack of space since `sinceMs`, and
+ * forget it either way. The runtime calls this when a flow fails with a
+ * generic store error, to replace that with what actually happened.
+ */
+export function takeStorageQuotaFailure(sinceMs: number): boolean {
+  const failed = lastQuotaFailureAt !== null && lastQuotaFailureAt >= sinceMs
+  lastQuotaFailureAt = null
+  return failed
+}
+
+/** How recent a refused write must be to explain a generic store error. */
+const QUOTA_FAILURE_RELEVANCE_MS = 60_000
+
+/**
+ * `error` in words a person can act on: the library's generic "store backend
+ * error" becomes "storage is full" when a write was refused for lack of space
+ * within the last minute. Anything else is returned unchanged.
+ */
+export function describeStorageFailure(error: string): string {
+  const recent = lastQuotaFailureAt !== null && Date.now() - lastQuotaFailureAt <= QUOTA_FAILURE_RELEVANCE_MS
+  if (!recent || !/store backend error|store_error|storage/i.test(error)) return error
+  return `${STORAGE_FULL_MESSAGE} (${error})`
+}
+
+const HEADROOM_PROBE_KEY = 'derec:storage-headroom-probe'
+
+/**
+ * Whether browser storage can take `chars` more characters right now.
+ *
+ * localStorage reports no free space, so this asks it directly: it writes a
+ * throwaway value of that size and removes it at once. Checked before work
+ * whose writes cannot be taken back — a protect round sends each share to its
+ * helper *before* storing this side's copy, so running out of space halfway
+ * would leave the helpers holding a version this vault never recorded.
+ */
+export function hasStorageHeadroom(chars: number): boolean {
+  if (chars <= 0) return true
+  try {
+    localStorage.setItem(HEADROOM_PROBE_KEY, 'x'.repeat(chars))
+    return true
+  } catch (err) {
+    if (isQuotaError(err)) return false
+    throw err
+  } finally {
+    try {
+      localStorage.removeItem(HEADROOM_PROBE_KEY)
+    } catch {
+      // Nothing was written, or storage is unavailable altogether.
+    }
+  }
+}
+
 function loadStringArray(key: string): string[] {
   const raw = localStorage.getItem(key)
   return raw ? (JSON.parse(raw) as string[]) : []
@@ -87,7 +188,7 @@ function addToIndex(key: string, value: string): void {
   const idx = loadStringArray(key)
   if (!idx.includes(value)) {
     idx.push(value)
-    localStorage.setItem(key, JSON.stringify(idx))
+    storeItem(key, JSON.stringify(idx))
   }
 }
 
@@ -137,10 +238,11 @@ function spliceRecords(rows: Array<string | null>, variant: 'Helper' | 'Replica'
 
 // ── Listing filters ──────────────────────────────────────────────────────────
 //
-// The library narrows `listHelpers` / `listReplicas` with a filter and does
-// **not** re-apply it to what comes back — a store that ignores it hands the
-// protocol rows it asked to be spared, and the protocol acts on them. So it
-// has to be applied here.
+// The library narrows `listHelpers` / `listReplicas` with a filter. It is
+// applied here so the store returns only what was asked; the library re-applies
+// it to what comes back (`retain_matching` in `extensions/channel_store.rs`) as
+// a safety net, so this is about not shipping rows across the boundary for
+// nothing rather than about correctness.
 //
 // localStorage has no query language to push the filter into, so this is the
 // list-and-match shape the SDK documents as correct-but-unoptimised. Ids come
@@ -256,7 +358,7 @@ export function makeChannelStore(namespace: string) {
       replicaId: string,
       bytes: Uint8Array,
     ): Promise<void> {
-      localStorage.setItem(rowKey(secretId, channelId, replicaId), toBase64Url(bytes))
+      storeItem(rowKey(secretId, channelId, replicaId), toBase64Url(bytes))
       addToIndex(
         indexKey(secretId, replicaId),
         replicaId === HELPER_REPLICA_ID ? channelId : replicaId,
@@ -274,7 +376,7 @@ export function makeChannelStore(namespace: string) {
 
       const idxKey = indexKey(secretId, replicaId)
       const dropped = replicaId === HELPER_REPLICA_ID ? channelId : replicaId
-      localStorage.setItem(
+      storeItem(
         idxKey,
         JSON.stringify(loadStringArray(idxKey).filter(id => id !== dropped)),
       )
@@ -343,7 +445,7 @@ export function makeChannelStore(namespace: string) {
       if (!links[b]) links[b] = []
       if (!links[a].includes(b)) links[a].push(b)
       if (!links[b].includes(a)) links[b].push(a)
-      localStorage.setItem(key, JSON.stringify(links))
+      storeItem(key, JSON.stringify(links))
     },
 
     /** Transitive closure of `channelId`, including `channelId` itself. */
@@ -406,6 +508,153 @@ export function readHelperChannelStatus(
   } catch {
     return null
   }
+}
+
+/** One helper-type channel, as the library's own store holds it. */
+export interface StoredHelperChannel {
+  /** Decimal string — from the index, so never rounded through `JSON.parse`. */
+  channelId: string
+  status: ChannelStatus
+  /** The *peer's* role as serde wrote it — `Helper` or `Owner` — or `null`. */
+  peerRole: string | null
+  /** Seconds since the epoch the record was created, or `null` when absent. */
+  createdAtSecs: number | null
+}
+
+/**
+ * Every helper-type channel in one partition, in index order.
+ *
+ * Read for the app's own decisions — which channels a broadcast may name, and
+ * which `Pending` record a failed pairing left behind. Only the status, role
+ * and timestamp are parsed out; the channel id comes from the index.
+ */
+export function listHelperChannels(namespace: string, secretId: string): StoredHelperChannel[] {
+  const channels: StoredHelperChannel[] = []
+  for (const channelId of loadStringArray(helperIndexKey(namespace, secretId))) {
+    const raw = localStorage.getItem(helperRecordKey(namespace, secretId, channelId))
+    if (!raw) continue
+    try {
+      const record = (
+        JSON.parse(new TextDecoder().decode(fromBase64Url(raw))) as {
+          Helper?: Record<string, unknown>
+        }
+      ).Helper
+      if (!record) continue
+      const status = record['status']
+      const createdAt = record['created_at']
+      channels.push({
+        channelId,
+        status: status === 'Pending' || status === 'Paired' || status === 'Unpairing' ? status : 'Paired',
+        peerRole: typeof record['peer_role'] === 'string' ? (record['peer_role'] as string) : null,
+        createdAtSecs: typeof createdAt === 'number' && createdAt > 0 ? createdAt : null,
+      })
+    } catch {
+      // A record that will not parse is the library's to report.
+    }
+  }
+  return channels
+}
+
+/**
+ * Remove every trace of one helper-type channel from this partition: its
+ * record and index entry, its keys and pairing material, the shares filed
+ * under it and its links.
+ *
+ * The local half of an unpair, for when there is no peer left to agree to
+ * one — a pairing that never completed, or a helper deleted from its node.
+ * Nothing is sent: the peer, if it still exists, keeps its side. The caller
+ * must hold the protocol lock, so the library cannot be mid-way through a
+ * call that reads these rows.
+ */
+export function forgetHelperChannel(namespace: string, secretId: string, channelId: string): void {
+  localStorage.removeItem(helperRecordKey(namespace, secretId, channelId))
+  const idxKey = helperIndexKey(namespace, secretId)
+  const index = loadStringArray(idxKey)
+  if (index.includes(channelId)) {
+    storeItem(idxKey, JSON.stringify(index.filter(id => id !== channelId)))
+  }
+
+  for (const kind of [0, 1, 2] as const) {
+    localStorage.removeItem(secretKey(namespace, secretId, channelId, kind))
+  }
+
+  const cKey = channelVersionsKey(namespace, secretId, channelId)
+  for (const version of loadNumberArray(cKey)) {
+    localStorage.removeItem(shareDataKey(namespace, secretId, channelId, version))
+    localStorage.removeItem(shareMetaKey(namespace, secretId, channelId, version))
+  }
+  localStorage.removeItem(cKey)
+  const sharesKey = shareChannelsKey(namespace, secretId)
+  const withShares = loadStringArray(sharesKey)
+  if (withShares.includes(channelId)) {
+    storeItem(sharesKey, JSON.stringify(withShares.filter(id => id !== channelId)))
+  }
+
+  const linksKey = channelLinkKey(namespace, secretId)
+  const links: Record<string, string[]> = JSON.parse(localStorage.getItem(linksKey) || '{}')
+  if (links[channelId] !== undefined || Object.values(links).some(peers => peers.includes(channelId))) {
+    delete links[channelId]
+    for (const id of Object.keys(links)) links[id] = links[id].filter(peer => peer !== channelId)
+    storeItem(linksKey, JSON.stringify(links))
+  }
+}
+
+/** What a peer last told this vault about itself, as its channel record holds it. */
+export interface StoredChannelInfo {
+  /** The peer's advertised `name`, or `null` when it sent none. */
+  name: string | null
+  /** Every endpoint the peer advertised, in its preference order. */
+  transports: Transport[]
+}
+
+/**
+ * The name and endpoints the **library's own store** holds for a helper-type
+ * channel — what `UpdateChannelInfo` rewrites on the receiving side.
+ *
+ * The protocol's `ChannelInfoUpdated` event names the channel only; the new
+ * values are applied to the stored record, so this is where they are read back
+ * from. Only `communication_info` and `transports` are read, so `JSON.parse`
+ * rounding the record's `u64` channel id does not matter here.
+ */
+export function readHelperChannelInfo(
+  namespace: string,
+  secretId: string,
+  channelId: string,
+): StoredChannelInfo | null {
+  const raw = localStorage.getItem(helperRecordKey(namespace, secretId, channelId))
+  if (!raw) return null
+
+  try {
+    const text = liftLegacyTransport(new TextDecoder().decode(fromBase64Url(raw)))
+    const record = (JSON.parse(text) as { Helper?: Record<string, unknown> }).Helper
+    if (!record) return null
+
+    const info = record['communication_info']
+    const name =
+      typeof info === 'object' && info !== null && typeof (info as Record<string, unknown>)['name'] === 'string'
+        ? ((info as Record<string, string>)['name'].trim() || null)
+        : null
+
+    const transports = Array.isArray(record['transports'])
+      ? (record['transports'] as Array<{ uri?: unknown; protocol?: unknown }>).flatMap(t =>
+          typeof t.uri === 'string' && t.uri !== ''
+            ? [{ uri: t.uri, protocol: transportProtocolOf(t.protocol) }]
+            : [],
+        )
+      : []
+
+    return { name, transports }
+  } catch {
+    return null
+  }
+}
+
+/** A stored protocol discriminant or name, as the app's transport type. */
+function transportProtocolOf(value: unknown): Transport['protocol'] {
+  if (value === TRANSPORT_PROTOCOL_GRPC || (typeof value === 'string' && value.toLowerCase() === 'grpc')) {
+    return 'grpc'
+  }
+  return 'https'
 }
 
 /**
@@ -497,36 +746,19 @@ export function makeSecretStore(namespace: string) {
     /**
      * Batch sibling of `load`, used when the protocol broadcasts to many
      * channels at once. Returns one entry per input id in the same order;
-     * `null` marks a channel with no stored secret of `kind`.
-     *
-     * `missingPolicy` is the library's contract for absent entries: `skip`
-     * tolerates them, `fail` treats them as a cross-store invariant breach.
+     * `null` marks a channel with no stored secret of `kind`. Whether a
+     * missing entry is an error is the library's call (SDK 0.0.6 dropped the
+     * `missingPolicy` argument that used to pass that decision down here).
      */
     async loadMany(
       secretId: string,
       channelIds: string[],
       kind: 0 | 1 | 2,
-      missingPolicy: 'skip' | 'fail',
     ): Promise<Array<Uint8Array | null>> {
-      const result: Array<Uint8Array | null> = []
-      const missing: string[] = []
-
-      for (const channelId of channelIds) {
+      return channelIds.map(channelId => {
         const val = localStorage.getItem(secretKey(namespace, secretId, channelId, kind))
-        if (val) {
-          result.push(fromBase64Url(val))
-        } else {
-          missing.push(channelId)
-          result.push(null)
-        }
-      }
-
-      if (missingPolicy === 'fail' && missing.length > 0) {
-        throw new Error(
-          `secret store: missing kind ${kind} entries for channel(s): ${missing.join(', ')}`,
-        )
-      }
-      return result
+        return val ? fromBase64Url(val) : null
+      })
     },
 
     async save(
@@ -535,7 +767,7 @@ export function makeSecretStore(namespace: string) {
       kind: 0 | 1 | 2,
       value: Uint8Array,
     ): Promise<void> {
-      localStorage.setItem(secretKey(namespace, secretId, channelId, kind), toBase64Url(value))
+      storeItem(secretKey(namespace, secretId, channelId, kind), toBase64Url(value))
     },
 
     async remove(secretId: string, channelId: string, kind: 0 | 1 | 2): Promise<void> {
@@ -676,13 +908,13 @@ export function makeShareStore(namespace: string) {
     },
 
     async save(secretId: string, channelId: string, share: Share): Promise<void> {
-      localStorage.setItem(
+      storeItem(
         shareDataKey(namespace, secretId, channelId, share.version),
         toBase64Url(share.bytes),
       )
       // `share.secretId` is the Owner's, which for a Helper differs from the
       // partition it is filed under.
-      localStorage.setItem(
+      storeItem(
         shareMetaKey(namespace, secretId, channelId, share.version),
         share.secretId,
       )
@@ -691,7 +923,7 @@ export function makeShareStore(namespace: string) {
       const storedVersions = loadNumberArray(cKey)
       if (!storedVersions.includes(share.version)) {
         storedVersions.push(share.version)
-        localStorage.setItem(cKey, JSON.stringify(storedVersions))
+        storeItem(cKey, JSON.stringify(storedVersions))
       }
       addToIndex(shareChannelsKey(namespace, secretId), channelId)
     },
@@ -726,7 +958,7 @@ export function makeShareStore(namespace: string) {
       const remaining = loadStringArray(shareChannelsKey(namespace, secretId)).filter(
         (c) => c !== channelId,
       )
-      localStorage.setItem(shareChannelsKey(namespace, secretId), JSON.stringify(remaining))
+      storeItem(shareChannelsKey(namespace, secretId), JSON.stringify(remaining))
     },
   }
 }
@@ -789,7 +1021,7 @@ export function makeUserSecretStore(namespace: string) {
           data: toBase64Url(s.data),
         })),
       }
-      localStorage.setItem(userSecretKey(namespace, secretId), JSON.stringify(stored))
+      storeItem(userSecretKey(namespace, secretId), JSON.stringify(stored))
     },
 
     async remove(secretId: string): Promise<void> {
@@ -884,7 +1116,7 @@ export function makeStateStore(namespace: string) {
       const fields = decodeStateKeyFields(itemJson)
       const composite = canonicalStateKey(fields)
 
-      localStorage.setItem(
+      storeItem(
         stateRowKey(namespace, secretId, composite),
         toBase64Url(itemJson),
       )
@@ -907,7 +1139,7 @@ export function makeStateStore(namespace: string) {
 
       const idxKey = stateIndexKey(namespace, secretId, fields.kind)
       const remaining = loadStringArray(idxKey).filter((c) => c !== composite)
-      localStorage.setItem(idxKey, JSON.stringify(remaining))
+      storeItem(idxKey, JSON.stringify(remaining))
 
       return existed
     },
@@ -934,11 +1166,39 @@ export function makeStateStore(namespace: string) {
  * relay: a browser cannot speak gRPC itself, and the backend already
  * terminates transport for every actor here. Anything else is skipped. The
  * first endpoint that accepts wins; the promise rejects only when none did.
+ *
+ * An endpoint that could not be *reached* — a `DeliveryError` marked
+ * transient: the node restarting, a proxy timing out — is tried again after
+ * each of `retryDelaysMs` before the next one is tried. Message handling is
+ * idempotent on the receiving side, so a duplicate is harmless. The retry is
+ * deliberately short and bounded: the library awaits this call while holding
+ * the protocol lock, so a long one would stall every other flow on the vault.
+ * A peer down for longer is reported as not delivered, and each flow says so.
  */
 export function makeTransport(
   sendFn: (uri: string, message: Uint8Array) => Promise<void>,
   relayFn: (uri: string, message: Uint8Array) => Promise<void>,
+  options: { retryDelaysMs?: readonly number[] } = {},
 ) {
+  const retryDelaysMs = options.retryDelaysMs ?? DEFAULT_SEND_RETRY_DELAYS_MS
+
+  async function deliverWithRetry(
+    deliver: (uri: string, message: Uint8Array) => Promise<void>,
+    uri: string,
+    message: Uint8Array,
+  ): Promise<void> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await deliver(uri, message)
+        return
+      } catch (err) {
+        const transient = err instanceof DeliveryError && err.transient
+        if (!transient || attempt >= retryDelaysMs.length) throw err
+        await new Promise(resolve => setTimeout(resolve, retryDelaysMs[attempt]))
+      }
+    }
+  }
+
   return {
     async send(
       endpoints: ReadonlyArray<{ protocol: string; uri: string }>,
@@ -962,14 +1222,58 @@ export function makeTransport(
       const failures: string[] = []
       for (const leg of plan) {
         try {
-          await leg.deliver(leg.uri, message)
+          await deliverWithRetry(leg.deliver, leg.uri, message)
           return
         } catch (err) {
           failures.push(`${leg.uri}: ${errorText(err)}`)
         }
       }
 
-      throw new Error(`transport: no endpoint accepted the message (${failures.join('; ')})`)
+      const reason = `transport: no endpoint accepted the message — not delivered (${failures.join('; ')})`
+      recordDeliveryFailure(plan.map(leg => leg.uri), reason)
+      throw new Error(reason)
     },
   }
 }
+
+// ── Delivery failures, in the node's own words ───────────────────────────────
+//
+// The library reports a failed send as a bare "transport.send promise
+// rejected": the reason this transport threw — the node's "relay delivery
+// failed: …", "gRPC is disabled on this node", an unknown actor — does not
+// survive the trip through WASM. Each failure is kept here, briefly, by the
+// endpoints it was for, so whoever reports the library's error can put the
+// real reason back.
+
+/** How long a recorded failure may explain a library error. */
+const DELIVERY_FAILURE_RELEVANCE_MS = 30_000
+
+const deliveryFailures = new Map<string, { message: string; at: number }>()
+
+function recordDeliveryFailure(uris: readonly string[], message: string): void {
+  const at = Date.now()
+  for (const uri of uris) deliveryFailures.set(uri, { message, at })
+}
+
+/**
+ * `error` with the transport's own reason restored, when it is the library's
+ * bare "transport.send" failure and a send to one of `uris` — or, with none
+ * given, any send — failed moments ago. Anything else is returned unchanged.
+ */
+export function explainDeliveryFailure(error: string, uris?: readonly string[]): string {
+  if (!/transport\.send/i.test(error)) return error
+  const now = Date.now()
+  let latest: { message: string; at: number } | null = null
+  for (const [uri, failure] of deliveryFailures) {
+    if (now - failure.at > DELIVERY_FAILURE_RELEVANCE_MS) {
+      deliveryFailures.delete(uri)
+      continue
+    }
+    if (uris && !uris.includes(uri)) continue
+    if (!latest || failure.at > latest.at) latest = failure
+  }
+  return latest ? `${error}: ${latest.message}` : error
+}
+
+/** Pauses before each resend of an unreachable endpoint — about 1.6 s in all. */
+const DEFAULT_SEND_RETRY_DELAYS_MS: readonly number[] = [400, 1200]

@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
+import { ModalFrame } from '../ModalFrame'
 import { TransportBlock } from './TransportTag'
 import { useEffect, useRef, useState } from 'react'
 import { useConsole } from '../ConsoleContext'
@@ -224,69 +228,72 @@ export function ShareContactModal({
   }, [contact])
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="share-contact-title">
-      <div className="modal">
-        <div className="modal-header">
-          <h2 className="modal-title" id="share-contact-title">{title}</h2>
-          <ModalCloseButton onClose={onClose} />
-        </div>
-
-        <div className="modal-body">
-          <ContactModeSelector
-            value={mode}
-            onChange={setMode}
-            idPrefix="share-contact"
-          />
-
-          {step.kind === 'loading' && (
-            <p className="modal-description">Generating contact message…</p>
-          )}
-
-          {step.kind === 'error' && (
-            <p className="field-error">{step.message}</p>
-          )}
-
-          {step.kind === 'ready' && (
-            <>
-              {/* Same box either way, so the modal keeps its height while a new
-                  contact is minted. The old QR is *replaced* rather than dimmed:
-                  it encodes a real, still-pending channel in the previous mode,
-                  and someone scanning it mid-swap would pair in a mode the user
-                  has just moved away from. */}
-              <div className="qr-wrapper" aria-busy={refreshing || undefined}>
-                {refreshing ? (
-                  <div className="qr-placeholder">Generating…</div>
-                ) : (
-                  /* Deliberately does not follow the colour scheme: a QR needs
-                     dark modules on a light field to scan. The wrapper supplies
-                     the cream field, so the code itself draws transparent. */
-                  <QRCodeSVG
-                    value={step.qrPayload}
-                    size={200}
-                    bgColor="transparent"
-                    fgColor="#0f1512"
-                  />
-                )}
-              </div>
-
-              <div className="modal-section">
-                <h3 className="sub-heading">Copy</h3>
-                <div className="copy-row">
-                  {/* Copying is disabled for the same reason the QR is hidden —
-                      the payload on screen is about to be superseded. */}
-                  <CopyButton label="QR Payload" text={step.qrPayload} disabled={refreshing} />
-                  <CopyButton label="Raw Bytes (hex)" text={step.rawHex} disabled={refreshing} />
-                </div>
-              </div>
-
-              <div className="modal-section">
-                <h3 className="sub-heading">Transport</h3>
-                <TransportBlock transport={transport} />
-              </div>
-            </>
-          )}
-        </div>
+    <ModalFrame
+      overlayClassName="modal-overlay"
+      className="modal"
+      labelledBy="share-contact-title"
+      onEscape={onClose}
+    >
+      <div className="modal-header">
+        <h2 className="modal-title" id="share-contact-title">{title}</h2>
+        <ModalCloseButton onClose={onClose} />
       </div>
-    </div>
+
+      <div className="modal-body">
+        <ContactModeSelector
+          value={mode}
+          onChange={setMode}
+          idPrefix="share-contact"
+        />
+
+        {step.kind === 'loading' && (
+          <p className="modal-description">Generating contact message…</p>
+        )}
+
+        {step.kind === 'error' && (
+          <p className="field-error">{step.message}</p>
+        )}
+
+        {step.kind === 'ready' && (
+          <>
+            {/* Same box either way, so the modal keeps its height while a new
+                contact is minted. The old QR is *replaced* rather than dimmed:
+                it encodes a real, still-pending channel in the previous mode,
+                and someone scanning it mid-swap would pair in a mode the user
+                has just moved away from. */}
+            <div className="qr-wrapper" aria-busy={refreshing || undefined}>
+              {refreshing ? (
+                <div className="qr-placeholder">Generating…</div>
+              ) : (
+                /* Deliberately does not follow the colour scheme: a QR needs
+                   dark modules on a light field to scan. The wrapper supplies
+                   the cream field, so the code itself draws transparent. */
+                <QRCodeSVG
+                  value={step.qrPayload}
+                  size={200}
+                  bgColor="transparent"
+                  fgColor="#0f1512"
+                />
+              )}
+            </div>
+
+            <div className="modal-section">
+              <h3 className="sub-heading">Copy</h3>
+              <div className="copy-row">
+                {/* Copying is disabled for the same reason the QR is hidden —
+                    the payload on screen is about to be superseded. */}
+                <CopyButton label="QR Payload" text={step.qrPayload} disabled={refreshing} />
+                <CopyButton label="Raw Bytes (hex)" text={step.rawHex} disabled={refreshing} />
+              </div>
+            </div>
+
+            <div className="modal-section">
+              <h3 className="sub-heading">Transport</h3>
+              <TransportBlock transport={transport} />
+            </div>
+          </>
+        )}
+      </div>
+    </ModalFrame>
   )
 }

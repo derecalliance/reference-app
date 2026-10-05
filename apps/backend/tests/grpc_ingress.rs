@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! The gRPC listener resolves an actor from the envelope and hands the bytes
 //! to the same inbox HTTP would.
 
@@ -83,16 +86,15 @@ async fn a_disabled_actor_drops_grpc_traffic_exactly_as_it_drops_http() {
 
 /// Drain whatever is waiting in `actor_id`'s browser inbox.
 async fn drain(state: &derec_backend::state::AppState, actor_id: Uuid) -> Vec<Vec<u8>> {
-    let receiver_lock = state
-        .browser_receivers
-        .get(&actor_id)
-        .expect("actor has a browser mailbox");
-    let mut receiver = receiver_lock.lock().await;
-    let mut messages = Vec::new();
-    while let Ok(msg) = receiver.try_recv() {
-        messages.push(msg);
-    }
-    messages
+    assert!(
+        state.is_browser_managed(&actor_id),
+        "actor has a browser mailbox"
+    );
+    state
+        .mailboxes
+        .drain(&actor_id)
+        .await
+        .expect("the mailbox is readable")
 }
 
 #[actix_rt::test]
@@ -144,29 +146,31 @@ async fn send_on_an_unresolvable_channel_is_refused_and_delivers_nothing() {
     );
 }
 
+use derec_backend::addresses::OwnTarget;
+use derec_backend::routes::derec::{RelayRefusal, RelayTarget, relay_target};
+
 #[actix_rt::test]
-async fn the_relay_refuses_an_endpoint_no_registered_actor_advertises() {
+async fn the_relay_refuses_another_node_nobody_allowed() {
     // Without this check the route is an open SSRF proxy, and this app is run
     // on laptops on shared networks.
     let state = derec_backend::test_support::app_state().await;
 
-    assert!(
-        !derec_backend::routes::derec::relay_target_is_known(
-            &state,
-            "grpc://evil.example:50051"
-        )
-        .await
+    assert_eq!(
+        relay_target(&state, "grpc://evil.example:50051").await,
+        RelayTarget::Refused(RelayRefusal::NotAllowed)
     );
 }
 
 #[actix_rt::test]
 async fn the_relay_accepts_an_endpoint_a_registered_actor_advertises() {
+    // An actor stored with an address that is not this node's current one —
+    // a re-advertise that could not be written — is still dialled for it.
     let state = derec_backend::test_support::app_state().await;
     let actor = derec_backend::provisioning::provisioned_actor(
         derec_backend::models::Role::Helper,
         "grpc helper",
-        "http://localhost:5000",
-        "localhost:50051",
+        "http://10.9.9.9:5000",
+        "10.9.9.9:50051",
         derec_backend::models::TransportMode::Grpc,
     );
     let uri = actor.transports[0].uri.clone();
@@ -176,7 +180,136 @@ async fn the_relay_accepts_an_endpoint_a_registered_actor_advertises() {
         .await
         .expect("the registry is writable");
 
-    assert!(derec_backend::routes::derec::relay_target_is_known(&state, &uri).await);
+    assert_eq!(relay_target(&state, &uri).await, RelayTarget::Remote);
+}
+
+#[actix_rt::test]
+async fn the_relay_dials_a_host_the_operator_allowed() {
+    let mut loaded = derec_backend::config::Loaded::default();
+    loaded.settings.server.relay_allowed_hosts = "node-b:50051, 192.168.0.40".to_owned();
+    let state = derec_backend::state::AppState::new(
+        "http://192.168.0.28:5000",
+        derec_backend::config::Defaults::default(),
+        reqwest::Client::new(),
+        actix_rt::Arbiter::current(),
+        derec_backend::db::connect("sqlite::memory:")
+            .await
+            .expect("an in-memory database always connects"),
+    )
+    .with_config(loaded);
+
+    for uri in ["grpc://node-b:50051", "grpc://192.168.0.40:1234", "http://192.168.0.40/derec/x"] {
+        assert_eq!(relay_target(&state, uri).await, RelayTarget::Remote, "{uri}");
+    }
+    for uri in ["grpc://node-b:50052", "grpc://node-c:50051"] {
+        assert_eq!(
+            relay_target(&state, uri).await,
+            RelayTarget::Refused(RelayRefusal::NotAllowed),
+            "{uri}"
+        );
+    }
+    // Allowed or not, a shape the relay cannot dial is refused as such.
+    assert_eq!(
+        relay_target(&state, "grpc://user@node-b:50051").await,
+        RelayTarget::Refused(RelayRefusal::Malformed)
+    );
+}
+
+/// A node whose address moved from `localhost` to a LAN address, published on
+/// another gRPC port — the situation that used to strand browsers holding a
+/// gRPC helper's previous address.
+async fn moved_node(grpc_enabled: bool) -> derec_backend::state::AppState {
+    derec_backend::state::AppState::new(
+        "http://192.168.0.28:5000",
+        derec_backend::config::Defaults {
+            grpc_enabled,
+            grpc_port: 50051,
+            ..derec_backend::config::Defaults::default()
+        },
+        reqwest::Client::new(),
+        actix_rt::Arbiter::current(),
+        derec_backend::db::connect("sqlite::memory:")
+            .await
+            .expect("an in-memory database always connects"),
+    )
+    .with_public_grpc_port(8081)
+}
+
+const SERVED: RelayTarget = RelayTarget::Local(OwnTarget::GrpcListener { served: true });
+
+#[actix_rt::test]
+async fn the_relay_delivers_to_this_nodes_own_grpc_listener_under_any_name_it_answers_to() {
+    // Nothing is registered, so only the own-address rule can admit these.
+    let state = moved_node(true).await;
+
+    for uri in [
+        "grpc://localhost:50051",
+        "grpc://LOCALHOST:50051",
+        "grpc://127.0.0.1:50051",
+        "grpc://[::1]:50051",
+        "grpc://192.168.0.28:50051",
+        "grpc://192.168.0.28:8081",
+        "grpc://localhost:8081/",
+    ] {
+        assert_eq!(relay_target(&state, uri).await, SERVED, "{uri} is this node");
+    }
+}
+
+#[actix_rt::test]
+async fn an_address_this_node_advertised_before_is_still_this_node() {
+    // A container republished from -p 9090:50051 to -p 8081:50051: nothing
+    // listens on 9090 any more, but a browser paired before the move holds it.
+    let state = moved_node(true).await;
+    assert_eq!(
+        relay_target(&state, "grpc://192.168.0.28:9090").await,
+        RelayTarget::Refused(RelayRefusal::NotAllowed),
+        "unknown until remembered"
+    );
+
+    state
+        .addresses
+        .remember(&state.pool, derec_backend::addresses::Listener::Grpc, "192.168.0.28:9090")
+        .await
+        .expect("the database is writable");
+
+    assert_eq!(relay_target(&state, "grpc://192.168.0.28:9090").await, SERVED);
+}
+
+#[actix_rt::test]
+async fn the_own_address_rule_admits_nothing_else() {
+    // Another host, another port, another scheme, or a URI dressed up with
+    // credentials or a path is not this node.
+    let state = moved_node(true).await;
+
+    for uri in [
+        "grpc://192.168.0.29:50051",
+        "grpc://evil.example:50051",
+        "grpc://localhost:50052",
+        "grpc://localhost",
+        "http://localhost:50051",
+        "grpcs://localhost:50051",
+        "grpc://user@localhost:50051",
+        "grpc://localhost:50051/derec.Transport/Send",
+        "grpc://localhost:50051?x=1",
+        "grpc://localhost.evil.example:50051",
+        "not a uri",
+    ] {
+        let target = relay_target(&state, uri).await;
+        assert!(
+            matches!(target, RelayTarget::Refused(_)),
+            "{uri} must be refused, got {target:?}"
+        );
+    }
+}
+
+#[actix_rt::test]
+async fn with_grpc_disabled_the_relay_says_so_for_this_nodes_grpc_address() {
+    let state = moved_node(false).await;
+
+    assert_eq!(
+        relay_target(&state, "grpc://localhost:50051").await,
+        RelayTarget::Refused(RelayRefusal::GrpcDisabled)
+    );
 }
 
 #[actix_rt::test]
@@ -205,4 +338,44 @@ async fn send_to_a_disabled_actor_returns_ok_without_delivering() {
         drain(&state, actor_id).await.is_empty(),
         "a disabled actor's inbox must stay empty"
     );
+}
+
+#[actix_rt::test]
+async fn a_channel_held_by_two_local_actors_routes_by_the_senders_hint() {
+    // Two provisioned helpers on this node pairing with each other over gRPC
+    // share one channel id and one listener. The id cannot say which end a
+    // message is for; the sender's hint can, because a message is never for
+    // the actor that sent it.
+    let state = derec_backend::test_support::app_state().await;
+    let (initiator, responder) = (Uuid::new_v4(), Uuid::new_v4());
+    derec_backend::provisioning::register_browser_actor(&state, initiator);
+    derec_backend::provisioning::register_browser_actor(&state, responder);
+    state.channel_router.pin(77, responder);
+    state.channel_router.pin(77, initiator);
+
+    let ingress = GrpcIngress::new(state.clone());
+    let decoded = || {
+        derec_proto::DeRecMessage::decode(envelope(77).as_slice()).expect("a well-formed envelope")
+    };
+
+    let mut request = Request::new(decoded());
+    request.metadata_mut().insert(
+        derec_backend::routing::SENDER_METADATA,
+        initiator.to_string().parse().expect("a uuid is valid metadata"),
+    );
+    ingress.send(request).await.expect("the hinted call is accepted");
+
+    assert_eq!(drain(&state, responder).await.len(), 1, "the other end receives it");
+    assert!(
+        drain(&state, initiator).await.is_empty(),
+        "the sender must never receive its own message"
+    );
+
+    let error = ingress
+        .send(Request::new(decoded()))
+        .await
+        .expect_err("without a hint the two ends are indistinguishable");
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    assert!(drain(&state, initiator).await.is_empty());
+    assert!(drain(&state, responder).await.is_empty());
 }

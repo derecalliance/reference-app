@@ -1,8 +1,12 @@
 {
   "name": "derec-reference-app",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.0.6",
+  "license": "Apache-2.0",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -17,7 +21,7 @@
     "dev:lan": "vite --host"
   },
   "dependencies": {
-    "@derec-alliance/web": "^0.0.5",
+    "@derec-alliance/web": "^0.0.6",
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.1",
     "@faker-js/faker": "^10.4.0",

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! Deleting a provisioned participant must leave nothing behind.
 //!
 //! "Completely, as if they never existed" is a claim about eleven tables, an

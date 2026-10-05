@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! Reconfiguring a live actor must not cost it its channels.
 //!
 //! The SDK exposes `timeouts` and `unpair_ack` on the builder only, so the
@@ -45,6 +48,7 @@ fn config(pool: sqlx::AnyPool, actor_id: uuid::Uuid) -> ProtocolConfig {
         http_client: reqwest::Client::new(),
         pool,
         actor_id,
+        local_node: None,
     }
 }
 

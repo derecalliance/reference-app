@@ -1,73 +1,55 @@
-# React + TypeScript + Vite
+# DeRec reference app — web
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+The browser half of the [DeRec reference app](../../README.md): a React + Vite
+static front end that runs the DeRec protocol itself, through the
+`@derec-alliance/web` WASM SDK. Pairing, sharing, verification, recovery and
+replica groups all execute in the page; the backend only registers actors,
+relays messages and hosts provisioned helpers. See
+[`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md) for how the two halves
+divide the work.
 
-Currently, two official plugins are available:
+## Running it
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+The backend must be running (`cargo run` in `apps/backend`, or the Docker
+image). Then:
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```
+npm ci
+npm run dev        # http://localhost:5173/reference-app/
+npm run dev:lan    # the same, bound to the network for a phone or second machine
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Requires Node 22 or newer.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## How it finds the backend
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+Resolved once at load, in this order (`src/apiBase.ts`):
+
+| Setting | Effect |
+| --- | --- |
+| `VITE_API_URL` | An explicit backend address; wins over everything. |
+| `VITE_API_SAME_ORIGIN` | Call whatever origin served the page. The Docker image builds with this, because there the backend serves the UI. |
+| neither | Port 5000 of whatever host served the page — so a phone that loaded the page from your laptop's LAN address talks to the laptop. |
+
+Both are build-time Vite variables (set them in the environment or a
+`.env.local`). Communication is plain HTTP polling: each vault polls its
+actor's mailbox at `GET /derec/{actor_id}/mailbox` and posts outbound protocol
+messages to the peer's advertised transport URI, or through `POST /derec/relay`
+when the peer is reachable only over gRPC.
+
+State lives in `localStorage`, namespaced per vault, with a Web Lock per vault
+so only one tab runs a given vault at a time.
+
+## Scripts
+
+| Script | Does |
+| --- | --- |
+| `npm run build` | Type-check and build to `dist/` (served under `/reference-app/`; the image rebuilds with `--base=/`). |
+| `npm run typecheck` | `tsc -b` only. |
+| `npm run lint` | ESLint. |
+| `npm test` | Unit and component tests (Vitest, jsdom). |
+| `npm run test:e2e` | Browser end-to-end suite (Playwright, Google Chrome); starts its own backend and dev server. |
+| `npm run test:e2e:ui` / `:headed` / `:report` | The same suite interactively, in a visible browser, or the last report. |
+
+The end-to-end suite, its ports and its constraints are described in the root
+README under [End-to-end tests](../../README.md#end-to-end-tests).

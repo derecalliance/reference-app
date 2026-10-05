@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import {
   toServerDefaults,
   type ServerDefaults,
@@ -8,6 +11,7 @@ import { DEFAULT_CONTACT_MODE, type ContactModeKey } from './contactModes'
 import type { TransportMix } from './transportMix'
 
 import { API_BASE } from './apiBase'
+import { responseError } from './httpError'
 
 /** One endpoint an actor advertises, in the actor's own preference order. */
 export interface TransportDto {
@@ -42,6 +46,13 @@ export interface BEActorWithStatus extends BEActor {
    *  every browser actor whatever its role, including one mirroring another
    *  device — that registers as an ordinary `owner` actor. */
   browser_managed?: boolean
+  /**
+   * When this actor's mailbox was last drained (RFC 3339), for a
+   * browser-managed owner — `null` when never, absent on a node that predates
+   * the field. The only signal a claim has that another browser is still
+   * driving the actor.
+   */
+  last_polled_at?: string | null
 }
 
 /** GET /actors — every actor on this server, enriched with pairing status. */
@@ -90,11 +101,6 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
   }
 }
 
-async function errorMessage(res: Response, fallback: string): Promise<string> {
-  const body = await res.json().catch(() => ({}))
-  return (body as { error?: string }).error ?? fallback
-}
-
 /** JSON body headers, repeated on almost every mutating call. */
 const JSON_HEADERS = { 'Content-Type': 'application/json' }
 
@@ -112,16 +118,12 @@ export interface ContactMessageDto {
   channel_id: string
   nonce: string
   /**
-   * Deprecated on the wire since SDK 0.0.3 and removed at 0.0.5, but still
-   * what a peer predating `supported_transports` reads — so a sender keeps it
-   * filled with the first entry of the list.
+   * The singular endpoint, removed from the protocol at SDK 0.0.6. Never
+   * written any more; read only as a fallback, so a payload copied from an
+   * older build of this app still pairs.
    */
-  transport_protocol: TransportProtocolDto
-  /**
-   * Every endpoint the initiator serves, in its own preference order.
-   * Optional so a contact minted by an older peer still parses; readers fall
-   * back to `transport_protocol`.
-   */
+  transport_protocol?: TransportProtocolDto
+  /** Every endpoint the initiator serves, in its own preference order. */
   supported_transports?: TransportProtocolDto[]
   /** ContactMode numeric value: 0 = InlineKeys, 1 = HashedKeys, 2 = NoKeys. */
   contact_mode: number
@@ -188,7 +190,7 @@ export async function apiRegisterOwner(
     body: JSON.stringify({ name, claim_actor_id: claimActorId }),
   })
   if (!res.ok) {
-    throw new Error(await errorMessage(res, `register owner failed: ${res.status}`))
+    throw await responseError(res, 'Could not register the owner')
   }
   return res.json() as Promise<RegisterOwnerResponse>
 }
@@ -269,7 +271,7 @@ export interface DebugEvents {
 export async function apiGetDebugState(): Promise<DebugState> {
   const res = await request(`/debug/state`)
   if (!res.ok) {
-    throw new Error(`Failed to fetch server state: ${res.status} ${res.statusText}`)
+    throw await responseError(res, 'Could not read the server state')
   }
   return res.json() as Promise<DebugState>
 }
@@ -307,7 +309,7 @@ export interface DebugConfig {
 export async function apiGetDebugConfig(): Promise<DebugConfig> {
   const res = await request(`/debug/config`)
   if (!res.ok) {
-    throw new Error(`Failed to fetch server configuration: ${res.status} ${res.statusText}`)
+    throw await responseError(res, 'Could not read the server configuration')
   }
   return res.json() as Promise<DebugConfig>
 }
@@ -316,7 +318,7 @@ export async function apiGetDebugConfig(): Promise<DebugConfig> {
 export async function apiGetDebugEvents(after: number): Promise<DebugEvents> {
   const res = await request(`/debug/events?after=${after}`)
   if (!res.ok) {
-    throw new Error(`Failed to fetch server events: ${res.status} ${res.statusText}`)
+    throw await responseError(res, 'Could not read the server events')
   }
   return res.json() as Promise<DebugEvents>
 }
@@ -324,7 +326,7 @@ export async function apiGetDebugEvents(after: number): Promise<DebugEvents> {
 export async function apiGetActors(): Promise<BEActorWithStatus[]> {
   const res = await request(`/actors`)
   if (!res.ok) {
-    throw new Error(`Failed to fetch actors: ${res.status} ${res.statusText}`)
+    throw await responseError(res, 'Could not list the actors on the node')
   }
   const body = (await res.json()) as ListActorsResponse
   return body.actors
@@ -350,7 +352,7 @@ export async function apiCreateActorContact(
     { method: 'POST' },
   )
   if (!res.ok) {
-    throw new Error(await errorMessage(res, `create actor contact failed: ${res.status}`))
+    throw await responseError(res, 'Could not create a contact for that participant')
   }
   return res.json() as Promise<ContactMessageDto>
 }
@@ -386,7 +388,7 @@ export async function apiCreateReplicaContact(
     { method: 'POST' },
   )
   if (!res.ok) {
-    throw new Error(await errorMessage(res, `create replica contact failed: ${res.status}`))
+    throw await responseError(res, 'Could not create a replica contact')
   }
   return res.json() as Promise<ContactMessageDto>
 }
@@ -415,7 +417,7 @@ export async function apiStartActorPairing(
     },
   )
   if (!res.ok) {
-    throw new Error(await errorMessage(res, `start-pairing failed: ${res.status}`))
+    throw await responseError(res, 'Could not start pairing')
   }
   return res.json() as Promise<{ channel_id: string }>
 }
@@ -465,7 +467,7 @@ export async function apiEnsureHelpers(
     body: JSON.stringify({ total, names, transports, ...settingsBody(settings) }),
   })
   if (!res.ok) {
-    throw new Error(await errorMessage(res, `ensure helpers failed: ${res.status}`))
+    throw await responseError(res, 'Could not provision the participant pool')
   }
   return res.json() as Promise<EnsureHelpersResult>
 }
@@ -480,7 +482,7 @@ export async function apiAddHelper(
     body: JSON.stringify({ name, ...settingsBody(settings) }),
   })
   if (!res.ok) {
-    throw new Error(await errorMessage(res, `add-helper failed: ${res.status}`))
+    throw await responseError(res, 'Could not provision the participant')
   }
   return res.json() as Promise<AddHelperResponse>
 }
@@ -500,7 +502,7 @@ export async function apiToggleParticipantStatus(
     },
   )
   if (!res.ok) {
-    throw new Error(await errorMessage(res, `toggle-status failed: ${res.status}`))
+    throw await responseError(res, 'Could not change the participant’s status')
   }
   return res.json() as Promise<{ disabled: boolean }>
 }
@@ -519,8 +521,40 @@ export async function apiDeleteParticipant(participantId: string): Promise<void>
     method: 'DELETE',
   })
   if (!res.ok) {
-    throw new Error(await errorMessage(res, `delete failed: ${res.status}`))
+    throw await responseError(res, 'Could not delete the participant')
   }
+}
+
+/** What renaming an owner on the node came to. */
+export type RenameOwnerResult =
+  | { kind: 'renamed'; name: string }
+  /**
+   * The node predates `PATCH /owners/{id}` (404 / 405). Not a failure of the
+   * rename — the vault's own name changed and peers were told — only of keeping
+   * the node's roster label in step.
+   */
+  | { kind: 'unsupported' }
+
+/**
+ * PATCH /owners/{id} — change the name the node lists this owner under.
+ *
+ * A browser vault's name lives in two places: its own record and protocol
+ * instance, which `updateIdentity` changes and announces, and the node's
+ * roster, which every other browser context reads names from. Without this the
+ * roster kept the name the vault registered with forever.
+ */
+export async function apiRenameOwner(ownerId: string, name: string): Promise<RenameOwnerResult> {
+  const res = await request(`/owners/${encodeURIComponent(ownerId)}`, {
+    method: 'PATCH',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ name }),
+  })
+  if (res.status === 404 || res.status === 405) return { kind: 'unsupported' }
+  if (!res.ok) {
+    throw await responseError(res, 'Could not rename the vault on the node')
+  }
+  const body = (await res.json()) as { name?: unknown }
+  return { kind: 'renamed', name: typeof body.name === 'string' ? body.name : name }
 }
 
 /** Publish this node's contact so peers can pair against it. */
@@ -537,7 +571,7 @@ export async function apiPostBrowserContact(
     },
   )
   if (!res.ok) {
-    throw new Error(`post browser-contact failed: ${res.status}`)
+    throw await responseError(res, 'Could not publish the contact')
   }
 }
 
@@ -550,7 +584,7 @@ export async function apiGetBrowserContact(
   )
   if (res.status === 404) return null
   if (!res.ok) {
-    throw new Error(`get browser-contact failed: ${res.status}`)
+    throw await responseError(res, 'Could not fetch the peer’s contact')
   }
   return res.json() as Promise<ContactMessageDto>
 }
@@ -581,7 +615,7 @@ export async function apiListParticipantChannels(
     `/helpers/${encodeURIComponent(participantId)}/channels`,
   )
   if (!res.ok) {
-    throw new Error(await errorMessage(res, `list channels failed: ${res.status}`))
+    throw await responseError(res, 'Could not list the participant’s channels')
   }
   const body = (await res.json()) as { channels: ProvisionedChannel[] }
   return body.channels
@@ -600,7 +634,7 @@ export async function apiLinkHelperChannels(
     body: JSON.stringify({ channel_id: channelId, link_to_channel_id: linkToChannelId }),
   })
   if (!res.ok) {
-    throw new Error(await errorMessage(res, `link failed: ${res.status}`))
+    throw await responseError(res, 'Could not link the channels')
   }
 }
 
@@ -625,7 +659,7 @@ export async function apiGetActorFingerprint(
     `/actors/${encodeURIComponent(actorId)}/fingerprint?${params.toString()}`,
   )
   if (!res.ok) {
-    throw new Error(await errorMessage(res, `actor fingerprint failed: ${res.status}`))
+    throw await responseError(res, 'Could not read the participant’s fingerprint')
   }
   const body = (await res.json()) as { fingerprint: string }
   return body.fingerprint
@@ -657,8 +691,9 @@ export async function apiConfirmActorFingerprint(
     const body = (await res.json()) as { confirmed: boolean }
     return body.confirmed
   }
-  const body = (await res.json().catch(() => ({}))) as { error?: string }
+  // Read from a clone so the error path below still has an unread body.
+  const body = (await res.clone().json().catch(() => ({}))) as { error?: string }
   if (res.status === 400 && body.error === 'fingerprint mismatch') return false
-  throw new Error(body.error ?? `confirm-fingerprint failed: ${res.status}`)
+  throw await responseError(res, 'Could not confirm the fingerprint')
 }
 

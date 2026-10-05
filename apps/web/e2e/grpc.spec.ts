@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import type { Locator, Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import {
@@ -127,7 +130,7 @@ async function pairByName(page: Page, name: string): Promise<Locator> {
 
 /** Verify every paired share and wait for the round to complete. */
 async function verifyShares(page: Page, expected: string): Promise<void> {
-  await openTab(page, 'Secret Bag')
+  await openTab(page, 'Secrets')
   await page.getByRole('button', { name: 'Verify Shares' }).click()
   await expect(page.locator('.tab-panel')).toContainText(expected, { timeout: 90_000 })
 }

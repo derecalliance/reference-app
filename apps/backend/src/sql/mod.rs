@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! SQL-backed implementations of the SDK store traits.
 //!
 //! One struct per store, each holding a clone of the process `AnyPool`. The
@@ -49,6 +52,55 @@ pub fn text_to_id(text: &str) -> Result<u64, ParseIdError> {
     text.parse::<u64>().map_err(|_| ParseIdError {
         value: text.to_owned(),
     })
+}
+
+/// The `secret_id` of every protocol instance `actor_id` has stored anything
+/// under, ascending.
+///
+/// Every store table is partitioned by `(actor_id, secret_id)`, and that pair
+/// identifies an instance exactly (see `migrations/0001_initial.sql`), so the
+/// distinct partitions are the instances. That includes replica instances,
+/// which are created on demand and recorded nowhere else: this is how a
+/// restart finds them again. An instance that was created but never wrote a
+/// row has nothing to restore and is not listed; the next request for it
+/// creates it afresh, exactly as the first one did.
+pub async fn stored_instance_secret_ids(
+    pool: &sqlx::AnyPool,
+    actor_id: &str,
+) -> Result<Vec<u64>, sqlx::Error> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT secret_id FROM channels WHERE actor_id = $1 \
+         UNION SELECT secret_id FROM secrets WHERE actor_id = $2 \
+         UNION SELECT secret_id FROM shares WHERE actor_id = $3 \
+         UNION SELECT secret_id FROM state_items WHERE actor_id = $4 \
+         UNION SELECT secret_id FROM user_secrets WHERE actor_id = $5",
+    )
+    // One bind per placeholder rather than a reused `$1`: SQLite reads `$1`
+    // as a named parameter and Postgres as a positional one, and only
+    // distinct placeholders mean the same thing to both.
+    .bind(actor_id)
+    .bind(actor_id)
+    .bind(actor_id)
+    .bind(actor_id)
+    .bind(actor_id)
+    .fetch_all(pool)
+    .await?;
+
+    let mut ids: Vec<u64> = rows
+        .iter()
+        .filter_map(|(text,)| match text_to_id(text) {
+            Ok(id) => Some(id),
+            Err(e) => {
+                // Skipped rather than fatal: one corrupt row must not keep
+                // every other instance of this actor down.
+                tracing::warn!(actor_id, error = %e, "unreadable secret_id; instance skipped");
+                None
+            }
+        })
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    Ok(ids)
 }
 
 /// Encode binary for a `TEXT` column.

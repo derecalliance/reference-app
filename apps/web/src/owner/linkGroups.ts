@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import type { PairedParticipant } from '../types'
 
 /** A group of paired channels that belong to the same Owner identity. */

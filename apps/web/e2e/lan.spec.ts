@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { test, expect } from './fixtures'
 import { BACKEND_PORT, setUpOwner } from './app'
 
@@ -12,7 +15,7 @@ import { BACKEND_PORT, setUpOwner } from './app'
  * Skipped otherwise, because the address is specific to whoever is running it —
  * a hardcoded one would fail for everybody else and teach them to ignore it.
  * The dev servers must already be bound to the network (`npm run dev:lan`, and
- * a backend started with a matching `BASE_URL`).
+ * a backend started with a matching `DEREC_BASE_URL`).
  */
 
 const LAN_HOST = process.env.LAN_HOST

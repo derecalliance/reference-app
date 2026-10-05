@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 // ── ContactMessage transport form ────────────────────────────────────────────
 //
 // The protocol type uses `bigint` for `channel_id`/`nonce` and a numeric
@@ -24,9 +27,17 @@ export const TRANSPORT_PROTOCOL_HTTPS = 0
 /** Numeric TransportProtocol discriminant for gRPC. */
 export const TRANSPORT_PROTOCOL_GRPC = 1
 
-/** An unrecognised discriminant reads as HTTPS, as protobuf treats an unknown enum. */
-export function protocolName(discriminant: number): 'https' | 'grpc' {
-  return discriminant === TRANSPORT_PROTOCOL_GRPC ? 'grpc' : 'https'
+/**
+ * A transport protocol as its name, from either spelling the SDK has used.
+ *
+ * SDK 0.0.6 names the protocol (`"https"` / `"grpc"`) everywhere an app sees an
+ * endpoint; contacts, stored channel records and anything this app persisted
+ * before that still carry the numeric discriminant. Anything unrecognised reads
+ * as HTTPS, as protobuf treats an unknown enum.
+ */
+export function protocolName(value: number | string | undefined): 'https' | 'grpc' {
+  if (value === TRANSPORT_PROTOCOL_GRPC) return 'grpc'
+  return typeof value === 'string' && value.toLowerCase() === 'grpc' ? 'grpc' : 'https'
 }
 
 /** An unrecognised name reads as HTTPS, as protobuf treats an unknown enum. */
@@ -44,13 +55,12 @@ function transportFromWire(t: TransportProtocolDto): TransportProtocol {
 
 /**
  * The endpoints a DTO advertises: the list when present, and otherwise the
- * deprecated singular field, which is all a peer predating the list sends.
+ * removed singular field, which is all a payload from an older build carries.
  */
 function endpointsFromDto(dto: ContactMessageDto): TransportProtocol[] {
   const list = dto.supported_transports ?? []
-  return list.length > 0
-    ? list.map(transportFromWire)
-    : [transportFromWire(dto.transport_protocol)]
+  if (list.length > 0) return list.map(transportFromWire)
+  return dto.transport_protocol ? [transportFromWire(dto.transport_protocol)] : []
 }
 
 export function contactMessageToDto(c: ContactMessage): ContactMessageDto {
@@ -58,12 +68,6 @@ export function contactMessageToDto(c: ContactMessage): ContactMessageDto {
   return {
     channel_id: c.channel_id.toString(),
     nonce: c.nonce.toString(),
-    // Mirrors the first entry of the list, which is how the library fills it
-    // on the wire; a DTO that disagreed would hand a pre-0.0.3 reader a
-    // different endpoint than a current one.
-    transport_protocol: c.transport_protocol
-      ? transportToWire(c.transport_protocol)
-      : (supported[0] ?? { uri: '', protocol: 'https' }),
     supported_transports: supported,
     contact_mode: c.contact_mode,
     mlkem_encapsulation_key: c.mlkem_encapsulation_key
@@ -81,7 +85,6 @@ export function dtoToContactMessage(dto: ContactMessageDto): ContactMessage {
   return {
     channel_id: BigInt(dto.channel_id),
     nonce: BigInt(dto.nonce),
-    transport_protocol: supported[0],
     supported_transports: supported,
     contact_mode: dto.contact_mode ?? ContactMode.InlineKeys,
     mlkem_encapsulation_key: dto.mlkem_encapsulation_key

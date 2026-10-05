@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! HTTP-level coverage for the `replica_for_owner_secret` query parameter on
 //! `POST /actors/{actor_id}/contact`.
 //!
@@ -45,12 +48,22 @@ async fn body_json(response: axum::response::Response) -> Value {
 /// Provision a helper through the real route and return its actor id and its
 /// own `secret_id`.
 async fn create_helper(router: &Router) -> (Uuid, u64) {
+    create_helper_from(router, r#"{"name":"Alex"}"#).await
+}
+
+/// As [`create_helper`], advertising gRPC — the only transport whose ingress
+/// routes by channel id, and so the only one a contact is pinned for.
+async fn create_grpc_helper(router: &Router) -> (Uuid, u64) {
+    create_helper_from(router, r#"{"name":"Grace","transport_mode":"grpc"}"#).await
+}
+
+async fn create_helper_from(router: &Router, body: &'static str) -> (Uuid, u64) {
     let response = router
         .clone()
         .oneshot(
             Request::post("/helpers")
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"name":"Alex"}"#))
+                .body(Body::from(body))
                 .expect("request builds"),
         )
         .await
@@ -84,7 +97,7 @@ fn provisioned_addr(state: &AppState, actor_id: Uuid) -> Addr<ProvisionedActor> 
         .value()
     {
         ActorInbox::Provisioned(addr) => addr.clone(),
-        ActorInbox::Browser(_) => panic!("expected a provisioned actor"),
+        ActorInbox::Browser => panic!("expected a provisioned actor"),
     }
 }
 
@@ -186,7 +199,7 @@ async fn minting_a_contact_pins_its_channel_for_grpc_ingress() {
     // freshly minted contact can only be routed by its channel id — and no
     // channel store has seen that id yet.
     let (state, router) = app().await;
-    let (actor_id, _own_secret) = create_helper(&router).await;
+    let (actor_id, _own_secret) = create_grpc_helper(&router).await;
 
     let response = post_contact(&router, actor_id, "contact_mode=inline_keys").await;
 
@@ -223,4 +236,66 @@ async fn an_empty_replica_for_owner_secret_is_rejected_not_treated_as_absent() {
     .await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[actix_rt::test]
+async fn an_http_only_helpers_contact_takes_no_grpc_route() {
+    // HTTP carries the actor in its path, so a pin for an actor nothing can
+    // reach over gRPC would only be an unauthenticated caller growing a map.
+    let (state, router) = app().await;
+    let (actor_id, _own_secret) = create_helper(&router).await;
+
+    let response = post_contact(&router, actor_id, "contact_mode=inline_keys").await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        state.channel_router.routes().is_empty(),
+        "an HTTP-only helper's contact must not be pinned"
+    );
+}
+
+#[actix_rt::test]
+async fn a_zero_or_own_replica_for_owner_secret_is_rejected() {
+    // Zero is the proto3 default — a field the caller forgot to fill — and
+    // the actor's own secret is not a replica of anything.
+    let (_state, router) = app().await;
+    let (actor_id, own_secret) = create_helper(&router).await;
+
+    for value in ["0".to_owned(), own_secret.to_string()] {
+        let response = post_contact(
+            &router,
+            actor_id,
+            &format!("contact_mode=inline_keys&replica_for_owner_secret={value}"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "value {value}");
+    }
+}
+
+#[actix_rt::test]
+async fn replica_instances_per_actor_are_capped() {
+    // Each distinct secret creates a persistent instance, and the route is
+    // unauthenticated — so a loop over secret ids must hit a limit.
+    let (_state, router) = app().await;
+    let (actor_id, _own_secret) = create_helper(&router).await;
+
+    for secret in 1..=derec_backend::actor::MAX_REPLICA_INSTANCES as u64 {
+        let response = post_contact(
+            &router,
+            actor_id,
+            &format!("contact_mode=inline_keys&replica_for_owner_secret={}", 0x1000 + secret),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK, "secret {secret} is within the cap");
+    }
+
+    let response = post_contact(
+        &router,
+        actor_id,
+        "contact_mode=inline_keys&replica_for_owner_secret=999999",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = body_json(response).await;
+    assert!(body["error"].is_string(), "the refusal uses the shared error shape: {body}");
 }

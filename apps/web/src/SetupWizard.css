@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * Copyright (c) 2026 DeRec Alliance. All rights reserved. */
+
 .wizard {
   display: flex;
   flex-direction: column;
@@ -637,4 +640,25 @@
   font-size: 13px;
   line-height: 1.5;
   color: var(--text);
+}
+
+/* The paste field under the claim picker: set apart from the list above it. */
+.wizard-field-label--spaced {
+  display: block;
+  margin-top: 16px;
+}
+
+/* Claiming an owner another browser is still driving: said loudly, and the
+   Claim button waits for the acknowledgement below. */
+.wizard-claim-warning {
+  margin-top: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--warning);
+  border-radius: 6px;
+  background: var(--warning-bg);
+  text-align: left;
+
+  & p {
+    margin: 0 0 8px;
+  }
 }

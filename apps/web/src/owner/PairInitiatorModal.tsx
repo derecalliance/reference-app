@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
+import { ModalFrame } from '../ModalFrame'
 import { PairingRoleSelector } from './ShareContactModal'
 import { useEffect, useRef, useState } from 'react'
 import { useConsole } from '../ConsoleContext'
@@ -5,6 +9,7 @@ import { useProtocolTimeoutMs } from '../ProtocolConfig'
 import { QrScanner } from '../QrScanner'
 import { ReplicaPairingWarningDialog, useReplicaEraseConsent } from '../ReplicaPairingWarningDialog'
 import { errorText } from '../errorText'
+import { pairingErrorText } from '../pairingReach'
 import { deserializeContact } from './contact'
 import { ModalCloseButton } from './primitives'
 import {
@@ -15,7 +20,7 @@ import {
 import { type PairingRole, complementRole } from '../pairingRoles'
 import { type QrScanSupport, describeQrScanUnavailable, qrScanSupport } from '../qrScanning'
 import { requestPairingConsent } from '../replicaPairingConsent'
-import type { ContactMessage } from '@derec-alliance/web'
+import { advertisedEndpoints, type ContactMessage } from '@derec-alliance/web'
 
 // Handles scanning/pasting a peer's contact QR. `startPairing` abstracts
 // which protocol instance (owner or recovery) to route the request through.
@@ -207,13 +212,13 @@ export function PairInitiatorModal<R extends PairingRole>({
       // Carry the contact's URI regardless: browser peers have no participant
       // row to resolve against, and it is what identifies them once the
       // pairing completes.
-      onPairingRequestSent(channelId, resolvedParticipantId, contact.transport_protocol?.uri)
+      onPairingRequestSent(channelId, resolvedParticipantId, advertisedEndpoints(contact)[0]?.uri)
       rejectionCountAtWaitRef.current = pairingRejectionCount
       completedSignalAtWaitRef.current = pairingCompletedSignal
       setStep({ kind: 'waiting', channelId })
     } catch (err) {
-
-      setError(`Failed: ${errorText(err)}`)
+      // A failed send is a reachability problem, and says so.
+      setError(`Failed: ${pairingErrorText(err)}`)
       setStep({ kind: 'input' })
     }
   }
@@ -226,127 +231,130 @@ export function PairInitiatorModal<R extends PairingRole>({
   }
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="pair-modal-title">
-      <div className="modal">
-        <div className="modal-header">
-          <h2 className="modal-title" id="pair-modal-title">
-            {step.kind === 'success' ? 'Pairing Complete' : step.kind === 'failed' ? 'Pairing Failed' : 'Pair'}
-          </h2>
-          {step.kind !== 'waiting' && <ModalCloseButton onClose={handleClose} />}
-        </div>
-
-        {step.kind === 'waiting' ? (
-          <div className="modal-body">
-            <div className="pairing-waiting-indicator">
-              <div className="spinner" />
-              <p className="modal-description">Pairing request sent. Waiting for the peer to respond…</p>
-            </div>
-            <div className="modal-actions">
-              <button type="button" className="secondary" onClick={handleClose}>Cancel</button>
-            </div>
-          </div>
-        ) : step.kind === 'success' ? (
-          <div className="modal-body">
-            <p className="modal-description">{pairingSuccessMessage(role)}</p>
-            <div className="modal-actions">
-              <button className="primary" onClick={handleClose}>Done</button>
-            </div>
-          </div>
-        ) : step.kind === 'failed' ? (
-          <div className="modal-body">
-            <p className="modal-description pairing-error-text">{step.reason}</p>
-            <div className="modal-actions">
-              <button className="primary" onClick={handleClose}>Close</button>
-            </div>
-          </div>
-        ) : (
-          <form className="modal-body" onSubmit={handleSubmit}>
-            <div className="form-field">
-              <div className="form-label-row">
-                <label className="form-label" htmlFor="qr-payload">{label}</label>
-                {/* Offered only where it can actually work — no camera, no
-                    `BarcodeDetector`, or an insecure origin all leave paste as
-                    the single path rather than a button that fails on click.
-                    The reason is on the tooltip so a missing button is
-                    explicable. */}
-                {scanning ? null : scanSupport?.supported ? (
-                  <button
-                    type="button"
-                    className="secondary copy-field-btn"
-                    onClick={() => { setScanning(true); setError(null) }}
-                    disabled={step.kind === 'sending'}
-                  >
-                    Scan QR
-                  </button>
-                ) : scanSupport ? (
-                  <span
-                    className="form-label-hint"
-                    title={describeQrScanUnavailable(scanSupport.reason)}
-                  >
-                    Scanning unavailable
-                  </span>
-                ) : null}
-              </div>
-
-              {scanning ? (
-                <QrScanner
-                  onScan={value => {
-                    setScanning(false)
-                    // Straight into the same field the paste path fills, so
-                    // everything downstream — validation, role, submission — is
-                    // one code path regardless of how the payload arrived.
-                    setPayload(value)
-                  }}
-                  onCancel={() => setScanning(false)}
-                />
-              ) : (
-                <textarea
-                  id="qr-payload"
-                  className="full-input mono-textarea"
-                  rows={4}
-                  placeholder={placeholder}
-                  value={payload}
-                  onChange={e => setPayload(e.target.value)}
-                  disabled={step.kind === 'sending'}
-                  autoFocus
-                  spellCheck={false}
-                />
-              )}
-              {error && <p className="field-error">{error}</p>}
-            </div>
-
-            {!fixedRole && (
-              <>
-                <PairingRoleSelector
-                  value={role}
-                  onChange={setRole}
-                  options={roleOptions}
-                  disabled={step.kind === 'sending'}
-                  idPrefix="pair"
-                  legend={initiatorLabel ? `${initiatorLabel} role` : 'Your role'}
-                />
-                <p className="modal-description">
-                  The other side becomes <strong>{pairingRoleLabel(complementRole(role))}</strong> on
-                  this channel.
-                </p>
-              </>
-            )}
-
-            <div className="modal-actions">
-              <button type="button" className="secondary" onClick={handleClose} disabled={step.kind === 'sending'}>
-                Cancel
-              </button>
-              <button type="submit" className="primary" disabled={payload.trim().length === 0 || step.kind === 'sending'}>
-                {step.kind === 'sending' ? 'Sending…' : `Pair as ${pairingRoleLabel(role)}`}
-              </button>
-            </div>
-          </form>
-        )}
+    <ModalFrame
+      overlayClassName="modal-overlay"
+      className="modal"
+      labelledBy="pair-modal-title"
+      onEscape={step.kind === 'waiting' ? undefined : handleClose}
+    >
+      <div className="modal-header">
+        <h2 className="modal-title" id="pair-modal-title">
+          {step.kind === 'success' ? 'Pairing Complete' : step.kind === 'failed' ? 'Pairing Failed' : 'Pair'}
+        </h2>
+        {step.kind !== 'waiting' && <ModalCloseButton onClose={handleClose} />}
       </div>
 
-      {/* Consent gate for `replica_destination`. Rendered here only; it decides
-          whether `handleSubmit` proceeds and touches no storage either way. */}
-      <ReplicaPairingWarningDialog {...eraseConsent.dialogProps} />
-    </div>
+      {step.kind === 'waiting' ? (
+        <div className="modal-body">
+          <div className="pairing-waiting-indicator">
+            <div className="spinner" />
+            <p className="modal-description">Pairing request sent. Waiting for the peer to respond…</p>
+          </div>
+          <div className="modal-actions">
+            <button type="button" className="secondary" onClick={handleClose}>Cancel</button>
+          </div>
+        </div>
+      ) : step.kind === 'success' ? (
+        <div className="modal-body">
+          <p className="modal-description">{pairingSuccessMessage(role)}</p>
+          <div className="modal-actions">
+            <button className="primary" onClick={handleClose}>Done</button>
+          </div>
+        </div>
+      ) : step.kind === 'failed' ? (
+        <div className="modal-body">
+          <p className="modal-description pairing-error-text">{step.reason}</p>
+          <div className="modal-actions">
+            <button className="primary" onClick={handleClose}>Close</button>
+          </div>
+        </div>
+      ) : (
+        <form className="modal-body" onSubmit={handleSubmit}>
+          <div className="form-field">
+            <div className="form-label-row">
+              <label className="form-label" htmlFor="qr-payload">{label}</label>
+              {/* Offered only where it can actually work — no camera, no
+                  `BarcodeDetector`, or an insecure origin all leave paste as
+                  the single path rather than a button that fails on click.
+                  The reason is on the tooltip so a missing button is
+                  explicable. */}
+              {scanning ? null : scanSupport?.supported ? (
+                <button
+                  type="button"
+                  className="secondary copy-field-btn"
+                  onClick={() => { setScanning(true); setError(null) }}
+                  disabled={step.kind === 'sending'}
+                >
+                  Scan QR
+                </button>
+              ) : scanSupport ? (
+                <span
+                  className="form-label-hint"
+                  title={describeQrScanUnavailable(scanSupport.reason)}
+                >
+                  Scanning unavailable
+                </span>
+              ) : null}
+            </div>
+
+            {scanning ? (
+              <QrScanner
+                onScan={value => {
+                  setScanning(false)
+                  // Straight into the same field the paste path fills, so
+                  // everything downstream — validation, role, submission — is
+                  // one code path regardless of how the payload arrived.
+                  setPayload(value)
+                }}
+                onCancel={() => setScanning(false)}
+              />
+            ) : (
+              <textarea
+                id="qr-payload"
+                className="full-input mono-textarea"
+                rows={4}
+                placeholder={placeholder}
+                value={payload}
+                onChange={e => setPayload(e.target.value)}
+                disabled={step.kind === 'sending'}
+                autoFocus
+                spellCheck={false}
+              />
+            )}
+            {error && <p className="field-error">{error}</p>}
+          </div>
+
+          {!fixedRole && (
+            <>
+              <PairingRoleSelector
+                value={role}
+                onChange={setRole}
+                options={roleOptions}
+                disabled={step.kind === 'sending'}
+                idPrefix="pair"
+                legend={initiatorLabel ? `${initiatorLabel} role` : 'Your role'}
+              />
+              <p className="modal-description">
+                The other side becomes <strong>{pairingRoleLabel(complementRole(role))}</strong> on
+                this channel.
+              </p>
+            </>
+          )}
+
+          <div className="modal-actions">
+            <button type="button" className="secondary" onClick={handleClose} disabled={step.kind === 'sending'}>
+              Cancel
+            </button>
+            <button type="submit" className="primary" disabled={payload.trim().length === 0 || step.kind === 'sending'}>
+              {step.kind === 'sending' ? 'Sending…' : `Pair as ${pairingRoleLabel(role)}`}
+            </button>
+          </div>
+        </form>
+      )}
+
+    {/* Consent gate for `replica_destination`. Rendered here only; it decides
+        whether `handleSubmit` proceeds and touches no storage either way. */}
+    <ReplicaPairingWarningDialog {...eraseConsent.dialogProps} />
+    </ModalFrame>
   )
 }

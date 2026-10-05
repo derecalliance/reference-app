@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! `DeRecUserSecretStore` over SQL.
 //!
 //! `UserSecrets` has no serde of its own — unlike `ChannelRecord` and
@@ -11,7 +14,7 @@
 //! losing it across a restart forces a re-derivation of share material, which
 //! is exactly the cost persistence exists to avoid.
 
-use derec_library::protocol::types::{Replicas, UserSecret};
+use derec_library::protocol::types::UserSecret;
 use derec_library::protocol::{
     DeRecUserSecretStore, ShareStoreError, ShareStoreFuture, UserSecrets,
 };
@@ -32,7 +35,13 @@ struct UserSecretsRow {
     version: u32,
     description: Option<String>,
     secrets: Vec<String>,
-    replicas: Option<String>,
+    /// The replica member that published this version, as a decimal string —
+    /// what the library compares to tell a re-send from a conflicting copy.
+    /// Absent on rows written before SDK 0.0.6, which carried a `replicas`
+    /// field instead (ignored on read: the library rebuilds the group from the
+    /// channel store every round and never read it back).
+    #[serde(default)]
+    author_replica_id: Option<String>,
 }
 
 impl UserSecretsRow {
@@ -45,10 +54,7 @@ impl UserSecretsRow {
                 .iter()
                 .map(|s| to_base64(&s.encode_to_vec()))
                 .collect(),
-            replicas: value
-                .replicas
-                .as_ref()
-                .map(|r| to_base64(&r.encode_to_vec())),
+            author_replica_id: value.author_replica_id.map(|id| id.to_string()),
         })
     }
 
@@ -59,19 +65,18 @@ impl UserSecretsRow {
             secrets.push(UserSecret::decode(bytes.as_slice()).map_err(backend)?);
         }
 
-        let replicas = match &self.replicas {
-            Some(encoded) => {
-                let bytes = from_base64(encoded).map_err(backend)?;
-                Some(Replicas::decode(bytes.as_slice()).map_err(backend)?)
-            }
-            None => None,
-        };
+        let author_replica_id = self
+            .author_replica_id
+            .as_deref()
+            .map(str::parse::<u64>)
+            .transpose()
+            .map_err(backend)?;
 
         Ok(UserSecrets {
             version: self.version,
             secrets,
             description: self.description,
-            replicas,
+            author_replica_id,
         })
     }
 }
@@ -132,7 +137,7 @@ impl DeRecUserSecretStore for SqlUserSecretStore {
 
             // Replace, never accumulate: there is one current snapshot per
             // secret, which is what "latest" means.
-            let mut tx = pool.begin().await.map_err(backend)?;
+            let mut tx = crate::db::begin_write(&pool).await.map_err(backend)?;
 
             sqlx::query("DELETE FROM user_secrets WHERE secret_id = $1 AND actor_id = $2")
                 .bind(&secret)
@@ -178,10 +183,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_field_survives_the_row_encoding_including_replicas() {
-        // The SDK's WASM adapter drops `replicas`; this one must not. Without
-        // it an Owner cannot resume a publish after a restart without
-        // re-deriving share material — which is the thing persistence is for.
+    fn every_field_survives_the_row_encoding_including_the_author() {
+        // `author_replica_id` is what tells a replica a re-send from a
+        // conflicting copy of the same version; dropping it would make every
+        // copy after a restart look authorless. Above i64::MAX on purpose, so a
+        // signed or float encoding would come back a different number.
         let original = UserSecrets {
             version: 9,
             secrets: vec![UserSecret {
@@ -190,13 +196,14 @@ mod tests {
                 data: vec![0xff, 0x00],
             }],
             description: Some("a description".to_owned()),
-            replicas: None,
+            author_replica_id: Some(u64::MAX - 7),
         };
 
         let row = UserSecretsRow::from_secrets(&original).expect("encodes");
         let back = row.into_secrets().expect("decodes");
 
         assert_eq!(back.version, original.version);
+        assert_eq!(back.author_replica_id, Some(u64::MAX - 7));
         assert_eq!(back.description, original.description);
         assert_eq!(back.secrets.len(), 1);
         assert_eq!(back.secrets[0].name, "a name");
@@ -213,7 +220,7 @@ mod tests {
             version: 0,
             secrets: Vec::new(),
             description: None,
-            replicas: None,
+            author_replica_id: None,
         };
 
         let back = UserSecretsRow::from_secrets(&original)
@@ -224,5 +231,19 @@ mod tests {
         assert_eq!(back.version, 0);
         assert!(back.secrets.is_empty());
         assert_eq!(back.description, None);
+        assert_eq!(back.author_replica_id, None);
+    }
+
+    #[test]
+    fn a_row_written_before_sdk_0_0_6_still_reads() {
+        // Those rows carried a base64 `replicas` blob and no author. The blob is
+        // ignored — the library never read it back — and the author is absent,
+        // which the library treats as "not published by a group member".
+        let json = r#"{"version":3,"description":null,"secrets":[],"replicas":"AAAA"}"#;
+        let row: UserSecretsRow = serde_json::from_str(json).expect("an old row parses");
+
+        let back = row.into_secrets().expect("decodes");
+        assert_eq!(back.version, 3);
+        assert_eq!(back.author_replica_id, None);
     }
 }

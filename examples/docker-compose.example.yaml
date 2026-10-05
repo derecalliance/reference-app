@@ -6,9 +6,14 @@
 #   cp examples/docker-compose.example.yaml compose.yaml
 #
 # To run it in place instead, tell compose where the project actually is —
-# otherwise it resolves `context: .` against `examples/` and the build fails:
+# otherwise it resolves paths against `examples/` and the build fails:
 #
 #   docker compose -f examples/docker-compose.example.yaml --project-directory . up
+#
+# It works as-is on a fresh checkout: no `.env` and no config file are needed.
+#
+# This is a development tool with no authentication. Publish it only on a
+# trusted machine or LAN.
 
 name: derec
 
@@ -19,29 +24,44 @@ services:
     #
     # Nothing is published yet, so build it first:
     #
-    #   docker build -f apps/backend/Dockerfile -t derec/reference-app:0.0.4 .
+    #   docker build -f apps/backend/Dockerfile -t derec/reference-app:0.0.6 .
     #
     # Swap `image:` for the `build:` block below to have compose do it:
     #
     #   build:
     #     context: .
     #     dockerfile: apps/backend/Dockerfile
-    image: derec/reference-app:0.0.4
+    image: derec/reference-app:0.0.6
 
-    # Bulk configuration. `env_file` injects real environment variables into
-    # the container, so everything here outranks config.toml.
-    env_file: .env
+    # Optional bulk configuration: copy examples/.env.example to `.env` at the
+    # repo root. `env_file` passes its variables INTO the container, where they
+    # outrank the config file. Absent is fine.
+    env_file:
+      - path: .env
+        required: false
 
-    # Highest precedence — wins over .env and over the file.
+    # Highest precedence — wins over .env and over the config file.
+    #
+    # Peers post back to DEREC_BASE_URL, so to pair from another device it must
+    # be this machine's LAN address. `${LAN_IP}` is substituted by compose
+    # itself — from your shell, or from the `.env` beside this file — which is a
+    # different mechanism from `env_file` above. Unset, it falls back to
+    # localhost, which works for browsers on this machine only — not for other
+    # devices, and not for another container (a second node included), whose
+    # localhost is its own.
+    #
+    # Keep this line OR set DEREC_BASE_URL in `.env`, not both: this one wins.
     environment:
-      # ${LAN_IP} is substituted by compose from the .env at the project root —
-      # a different mechanism from `env_file` above, which passes variables
-      # into the container rather than into this file.
       DEREC_BASE_URL: "http://${LAN_IP:-localhost}"
-      DEREC_CONFIG_PATH: /etc/derec/config.toml
 
+    # Host side on the left, container side on the right. The container ports
+    # are the defaults (port = 5000, grpc_port = 50051). To publish on other
+    # HOST ports, change only the left side and tell peers about it, e.g.
+    #   - "8080:5000"   plus   DEREC_PUBLIC_PORT: "8080"
+    # Changing the container side means changing DEREC_PORT / DEREC_GRPC_PORT to
+    # match, or nothing will be listening where the mapping points.
     ports:
-      - "5000:5000"      # HTTP API
+      - "5000:5000"      # HTTP API and UI
       - "50051:50051"    # gRPC transport
 
     volumes:
@@ -53,7 +73,19 @@ services:
       # This is what keeps data across `docker rm`; a restart alone survives
       # without it, on the anonymous volume the image's VOLUME declares.
       - derec-data:/var/lib/derec
-      - ./apps/backend/config.toml:/etc/derec/config.toml:ro
+
+      # Optional config file. The image reads /etc/derec/config.toml with no
+      # variable to set. Create the host file FIRST, then uncomment:
+      #
+      #   cp examples/config.example.toml apps/backend/config.toml
+      #
+      # Mounting a host file that does not exist makes Docker create a
+      # *directory* in its place, and the node then refuses to boot.
+      # - ./apps/backend/config.toml:/etc/derec/config.toml:ro
+
+    # The image's own HEALTHCHECK applies (`derec-backend healthcheck`, which
+    # reads the port from the same configuration the server does), so nothing
+    # is restated here.
 
     restart: unless-stopped
 

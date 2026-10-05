@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 /** How many helpers of each transport mode the pool should hold. */
 export interface TransportMix {
   http: number
@@ -37,9 +40,12 @@ export function fitTransportsTo(mix: TransportMix, total: number): TransportMix 
  * Set one mode's count and rebalance the others so the mix still sums to
  * `total`.
  *
- * Raising a mode takes from the largest of the other two — taking from the
- * smallest would empty it first and make the mix lopsided for no reason.
- * Lowering one gives back to `http`, the mode that needs no listener.
+ * The edited mode always keeps the value typed. Raising it takes from the
+ * largest of the other two — taking from the smallest would empty it first and
+ * make the mix lopsided for no reason. Lowering it gives back to `http`, the
+ * mode that needs no listener — unless `http` is the mode being lowered, in
+ * which case it goes to `grpc`: handing the difference straight back to the
+ * field just edited silently reverted every attempt to lower "HTTP only".
  */
 export function rebalance(
   mix: TransportMix,
@@ -57,7 +63,7 @@ export function rebalance(
     next[donor] -= 1
     drift -= 1
   }
-  if (drift < 0) next.http -= drift
+  if (drift < 0) next[mode === 'http' ? 'grpc' : 'http'] -= drift
 
   return next
 }

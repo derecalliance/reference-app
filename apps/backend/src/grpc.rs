@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! The gRPC ingress listener.
 //!
 //! One listener serves the whole process. gRPC has no path segment to carry an
@@ -8,9 +11,11 @@
 use std::sync::Arc;
 
 use tonic::{Request, Response, Status};
-use tracing::{error, info};
+use tracing::{error, info, warn};
+use uuid::Uuid;
 
 use crate::routes::derec::{DispatchOutcome, dispatch_to_inbox};
+use crate::routing::{Resolution, SENDER_METADATA};
 use crate::state::AppState;
 
 pub mod pb {
@@ -40,15 +45,45 @@ impl DeRecTransport for GrpcIngress {
         &self,
         request: Request<derec_proto::DeRecMessage>,
     ) -> Result<Response<()>, Status> {
+        // Read before `into_inner` consumes the request. Absent from any peer
+        // but this node's own actors — see `routing::SENDER_METADATA`.
+        let sender = sender_hint(&request);
         let envelope = request.into_inner();
         let channel_id = envelope.channel_id;
+        let len = envelope.message.len();
 
-        let Some(actor_id) = self.state.channel_router.resolve(channel_id) else {
+        let actor_id = match self.state.channel_router.resolve_from(channel_id, sender) {
+            Resolution::Actor(actor_id) => actor_id,
             // Refused rather than guessed. A wrong guess delivers a peer's
             // message to an actor that does not own the channel.
-            return Err(Status::not_found(format!(
-                "no actor holds channel {channel_id}"
-            )));
+            Resolution::Unknown => {
+                self.refuse(channel_id, len, "no actor on this node holds the channel");
+                return Err(Status::not_found(format!(
+                    "no actor holds channel {channel_id}"
+                )));
+            }
+            Resolution::Ambiguous(claimants) => {
+                // Both ends of a pairing are on this node and the caller did
+                // not say which one it is. Only another node — or a client
+                // other than this backend's — reaches here, since every actor
+                // here stamps its calls.
+                warn!(
+                    channel_id,
+                    claimants = ?claimants,
+                    "gRPC message on a channel held by more than one actor here, \
+                     with no sender hint; refusing rather than guessing"
+                );
+                self.refuse(
+                    channel_id,
+                    len,
+                    "more than one actor on this node holds the channel and the \
+                     sender did not identify itself",
+                );
+                return Err(Status::failed_precondition(format!(
+                    "channel {channel_id} is held by more than one actor on this node; \
+                     send `{SENDER_METADATA}` to say which end you are"
+                )));
+            }
         };
 
         // Re-encode rather than pass the decoded message on: every inbox in
@@ -62,8 +97,43 @@ impl DeRecTransport for GrpcIngress {
             // should see the same success it sees over HTTP.
             DispatchOutcome::Delivered | DispatchOutcome::Dropped => Ok(Response::new(())),
             DispatchOutcome::NoInbox => Err(Status::not_found("actor inbox not found")),
+            DispatchOutcome::MailboxFull => Err(Status::resource_exhausted(
+                "the recipient's mailbox is full; it has not polled for a while",
+            )),
+            DispatchOutcome::Unavailable => {
+                Err(Status::unavailable("the recipient's mailbox could not be written"))
+            }
         }
     }
+}
+
+impl GrpcIngress {
+    /// Record a message ingress could not place, so the debug log shows it.
+    fn refuse(&self, channel_id: u64, len: usize, detail: &str) {
+        use crate::debug::{Carrier, Direction, Outcome};
+        self.state.events.record(
+            Direction::Inbound,
+            Carrier::Grpc,
+            Outcome::Refused,
+            None,
+            (channel_id != 0).then_some(channel_id),
+            len,
+            detail,
+        );
+    }
+}
+
+/// The sending actor this node's own gRPC client stamped on the call, if any.
+///
+/// A malformed value is treated as absent rather than refused: the hint only
+/// narrows a choice between local claimants, and a call without it is still
+/// routable whenever the channel has a single one.
+fn sender_hint<T>(request: &Request<T>) -> Option<Uuid> {
+    request
+        .metadata()
+        .get(SENDER_METADATA)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|text| text.parse().ok())
 }
 
 /// Bind the gRPC listen socket.
@@ -85,7 +155,10 @@ pub async fn serve(state: Arc<AppState>, incoming: tonic::transport::server::Tcp
     info!("gRPC transport listening");
 
     if let Err(e) = tonic::transport::Server::builder()
-        .add_service(DeRecTransportServer::new(GrpcIngress::new(state)))
+        .add_service(
+            DeRecTransportServer::new(GrpcIngress::new(state))
+                .max_decoding_message_size(crate::transport::MAX_MESSAGE_BYTES),
+        )
         .serve_with_incoming(incoming)
         .await
     {

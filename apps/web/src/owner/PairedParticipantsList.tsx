@@ -1,11 +1,26 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
+import { useState } from 'react'
+
 import type { LinkGroup } from './linkGroups'
 import { TransportTag } from './TransportTag'
 import { SharedKeyRow } from './primitives'
 import { pairingRoleLabel } from '../pairingRoleOptions'
 import type { PairedParticipant } from '../types'
+import { heldShareCount } from './heldShares'
+import { lastDeliveryProblem, SHARE_FAILURE_LABEL } from './shareFailure'
+import { offersRemoteLink } from '../remoteHelperLink'
+import { RemoteHelperLinkModal } from './RemoteHelperLinkModal'
 
 /** Channel detail line shown under a channel (shared key + share count). */
-function ChannelDetails({ h }: { h: PairedParticipant }) {
+function ChannelDetails({
+  h,
+  committedVersions,
+}: {
+  h: PairedParticipant
+  committedVersions?: ReadonlySet<number>
+}) {
   return (
     <div className="channel-row-bottom">
       {h.sharedKey && (
@@ -16,9 +31,60 @@ function ChannelDetails({ h }: { h: PairedParticipant }) {
       )}
       <div className="channel-prop">
         <span className="channel-prop-label">Shares</span>
-        <span className="channel-prop-value">{h.secretShares.length}</span>
+        <span className="channel-prop-value">
+          {heldShareCount(h.secretShares, committedVersions)}
+        </span>
       </div>
     </div>
+  )
+}
+
+/**
+ * How a channel is doing, as a dot and — when there is something to say — a tag.
+ *
+ * Green means the peer answers. A peer switched off on the node, or whose
+ * newest share was met with silence or never left, is not shown green: that
+ * is exactly the peer a person looking at this list needs to notice.
+ */
+function channelHealth(h: PairedParticipant) {
+  const problem = h.offline ? null : lastDeliveryProblem(h.secretShares)
+  return { problem, dot: h.offline ? 'offline' : problem ? 'available' : 'paired' }
+}
+
+function ChannelStatusDot({ h }: { h: PairedParticipant }) {
+  return <span className={`participant-dot ${channelHealth(h).dot}`} aria-hidden="true" />
+}
+
+function ChannelStatusTags({ h }: { h: PairedParticipant }) {
+  const { problem } = channelHealth(h)
+  return (
+    <>
+      {h.offline && <span className="status-tag offline">Offline</span>}
+      {problem && (
+        <span className="status-tag available" title="How the most recent share sent over this channel went">
+          Last share: {SHARE_FAILURE_LABEL[problem]}
+        </span>
+      )}
+    </>
+  )
+}
+
+/**
+ * What stands where Unpair would on a channel this vault cannot unpair.
+ *
+ * Unpairing is the owner's to start: on a channel where the peer is the owner
+ * — this vault holds shares *for* them — the library refuses it outright
+ * (`role_mismatch: expected Helper, got Owner`). Offering the button there was
+ * a promise that always failed.
+ */
+function OwnerUnpairsNote() {
+  return (
+    <span
+      className="channel-id-inline"
+      title="This vault is the helper on this channel. Only the owner can unpair it."
+    >
+      Only the owner can unpair
+    </span>
   )
 }
 
@@ -35,19 +101,28 @@ export function PairedParticipantsList({
   unpairingChannelIds,
   onTogglePair,
   onLink,
+  committedVersions,
 }: {
   groups: LinkGroup[]
+  /** This vault's committed bag versions — see `committedVersionsOf`. */
+  committedVersions?: ReadonlySet<number>
   /** Channel IDs whose unpair request is currently in flight — disables the
    *  Unpair button so a repeated click doesn't send a second envelope. */
   unpairingChannelIds: Set<string>
   onTogglePair: (id: string) => void
   onLink: (channelId: string) => void
 }) {
+  // The channel whose helper is being linked on its own node, if any.
+  const [remoteLinkFor, setRemoteLinkFor] = useState<PairedParticipant | null>(null)
+
   if (groups.length === 0) {
     return <p className="tab-empty-state">No paired participant channels yet. Pair a participant from the side panel. Replicas are listed in the Replicas tab.</p>
   }
 
-  function unpairButton(channelId: string, participantId: string) {
+  function unpairButton(h: PairedParticipant) {
+    if (h.peerRole === 'owner') return <OwnerUnpairsNote />
+    const channelId = h.channelId
+    const participantId = h.id
     const inFlight = unpairingChannelIds.has(channelId)
     return (
       <button
@@ -61,8 +136,24 @@ export function PairedParticipantsList({
     )
   }
 
+  function remoteLinkButton(h: PairedParticipant) {
+    if (!offersRemoteLink(h)) return null
+    return (
+      <button
+        className="channel-link-btn"
+        onClick={() => setRemoteLinkFor(h)}
+        title="Recovering? Tell this helper, on the node that runs it, that this channel belongs to an owner it already holds shares for."
+      >
+        Link on its node
+      </button>
+    )
+  }
+
   return (
     <div className="channel-table">
+      {remoteLinkFor && (
+        <RemoteHelperLinkModal channel={remoteLinkFor} onClose={() => setRemoteLinkFor(null)} />
+      )}
       {groups.map(group => {
         // Singleton (unlinked) channel — compact single row with Link + Unpair.
         if (group.channels.length === 1) {
@@ -71,7 +162,7 @@ export function PairedParticipantsList({
           return (
             <div key={group.key} className="channel-block">
               <div className="channel-row-top">
-                <span className={`participant-dot ${h.offline ? 'offline' : 'paired'}`} aria-hidden="true" />
+                <ChannelStatusDot h={h} />
                 <span className="channel-row-name" style={{ flex: 'none' }}>{group.name}</span>
                 {h.peerRole && (
                   <span className={`role-tag role-tag--${h.peerRole}`}>
@@ -80,14 +171,15 @@ export function PairedParticipantsList({
                 )}
                 <TransportTag h={h} />
                 <span className="channel-id-inline">{h.channelId}</span>
-                <span style={{ flex: 1 }} />
-                {h.offline && <span className="status-tag offline">Offline</span>}
+                <span className="channel-row-spacer" />
+                <ChannelStatusTags h={h} />
                 <button className="channel-link-btn" onClick={() => onLink(h.channelId)}>
                   Link
                 </button>
-                {unpairButton(h.channelId, h.id)}
+                {remoteLinkButton(h)}
+                {unpairButton(h)}
               </div>
-              <ChannelDetails h={h} />
+              <ChannelDetails h={h} committedVersions={committedVersions} />
             </div>
           )
         }
@@ -98,7 +190,7 @@ export function PairedParticipantsList({
             <div className="channel-group-header">
               <span className="participant-dot paired" aria-hidden="true" />
               <span className="channel-row-name" style={{ flex: 'none' }}>{group.name}</span>
-              <span style={{ flex: 1 }} />
+              <span className="channel-row-spacer" />
               <button className="channel-link-btn" onClick={() => onLink(group.mainChannelId)}>
                 Link
               </button>
@@ -106,7 +198,7 @@ export function PairedParticipantsList({
             {group.channels.map(h => (
               <div key={h.id} className="channel-sub">
                 <div className="channel-sub-top">
-                  <span className={`participant-dot ${h.offline ? 'offline' : 'paired'}`} aria-hidden="true" />
+                  <ChannelStatusDot h={h} />
                   {h.peerRole && (
                     <span className={`role-tag role-tag--${h.peerRole}`}>
                       {pairingRoleLabel(h.peerRole)}
@@ -114,11 +206,12 @@ export function PairedParticipantsList({
                   )}
                   <TransportTag h={h} />
                   <span className="channel-id-inline">{h.channelId}</span>
-                  <span style={{ flex: 1 }} />
-                  {h.offline && <span className="status-tag offline">Offline</span>}
-                  {unpairButton(h.channelId, h.id)}
+                  <span className="channel-row-spacer" />
+                  <ChannelStatusTags h={h} />
+                  {remoteLinkButton(h)}
+                  {unpairButton(h)}
                 </div>
-                <ChannelDetails h={h} />
+                <ChannelDetails h={h} committedVersions={committedVersions} />
               </div>
             ))}
           </div>

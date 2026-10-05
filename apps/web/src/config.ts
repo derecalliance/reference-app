@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 // Single front-end protocol configuration.
 //
 // Configuration is owned by the front end: each browser context picks its own
@@ -23,6 +26,13 @@
  * User-configurable in the setup wizard. This is the fallback default.
  */
 export const DEFAULT_PROTOCOL_TIMEOUT_SECS = 300
+
+/**
+ * Lowest protocol timeout the app accepts, in seconds — in Settings and in the
+ * wizard's stepper alike. Below this a handshake or a share round cannot finish
+ * even against a local node, so every flow would time out on its own latency.
+ */
+export const MIN_PROTOCOL_TIMEOUT_SECS = 10
 
 /** Resolve a (possibly missing) seconds value to milliseconds. */
 export function protocolTimeoutMs(secs: number | undefined | null): number {
@@ -75,6 +85,15 @@ export function normalizeUnpairAck(value: string | undefined | null): UnpairAck 
  */
 export const DEFAULT_AUTO_ACCEPT_UNPAIR_REQUESTS = true
 
+/**
+ * FE-only UI preferences for a vault acting as a helper: whether a peer's
+ * request to store a share, or to verify one, is answered outright or shown as
+ * a confirmation dialog first. Asking is the default — storing a share is a
+ * commitment the person running the helper should see.
+ */
+export const DEFAULT_AUTO_ACCEPT_STORE_SHARE_REQUESTS = false
+export const DEFAULT_AUTO_ACCEPT_VERIFY_SHARE_REQUESTS = false
+
 /** Fallback participant count for the setup wizard. */
 export const DEFAULT_PARTICIPANT_COUNT = 7
 /** Fallback count of participants to auto-pair (testing shortcut). */
@@ -101,6 +120,8 @@ export interface ServerDefaults {
   authenticationMethod: AuthenticationMethod
   unpairAck: UnpairAck
   autoAcceptUnpairRequests: boolean
+  autoAcceptStoreShareRequests: boolean
+  autoAcceptVerifyShareRequests: boolean
   /** Prefills the wizard's transport breakdown for the helper pool. */
   helperTransports: { http: number; grpc: number; both: number }
   /** Whether the backend runs the gRPC ingress listener at all. */
@@ -118,6 +139,8 @@ export const FALLBACK_SERVER_DEFAULTS: ServerDefaults = {
   authenticationMethod: DEFAULT_AUTHENTICATION_METHOD,
   unpairAck: DEFAULT_UNPAIR_ACK,
   autoAcceptUnpairRequests: DEFAULT_AUTO_ACCEPT_UNPAIR_REQUESTS,
+  autoAcceptStoreShareRequests: DEFAULT_AUTO_ACCEPT_STORE_SHARE_REQUESTS,
+  autoAcceptVerifyShareRequests: DEFAULT_AUTO_ACCEPT_VERIFY_SHARE_REQUESTS,
   helperTransports: { http: DEFAULT_PARTICIPANT_COUNT, grpc: 0, both: 0 },
   grpcEnabled: true,
   grpcRelayEnabled: true,
@@ -133,6 +156,8 @@ export interface ServerDefaultsDto {
   authentication_method: string
   unpair_ack: string
   auto_accept_unpair_requests: boolean
+  auto_accept_store_share_requests: boolean
+  auto_accept_verify_share_requests: boolean
   helper_transports: { http: number; grpc: number; both: number }
   grpc_enabled: boolean
   grpc_relay_enabled: boolean
@@ -180,6 +205,14 @@ export function toServerDefaults(dto: Partial<ServerDefaultsDto> | null | undefi
       typeof dto?.auto_accept_unpair_requests === 'boolean'
         ? dto.auto_accept_unpair_requests
         : FALLBACK_SERVER_DEFAULTS.autoAcceptUnpairRequests,
+    autoAcceptStoreShareRequests:
+      typeof dto?.auto_accept_store_share_requests === 'boolean'
+        ? dto.auto_accept_store_share_requests
+        : FALLBACK_SERVER_DEFAULTS.autoAcceptStoreShareRequests,
+    autoAcceptVerifyShareRequests:
+      typeof dto?.auto_accept_verify_share_requests === 'boolean'
+        ? dto.auto_accept_verify_share_requests
+        : FALLBACK_SERVER_DEFAULTS.autoAcceptVerifyShareRequests,
     helperTransports: helperTransports(
       dto?.helper_transports,
       FALLBACK_SERVER_DEFAULTS.helperTransports,

@@ -1,22 +1,40 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { BagPayloadModal } from './BagPayloadModal'
 import { VerifySharesModal } from './VerifySharesModal'
 import { useState } from 'react'
-import { EyeIcon, EyeOffIcon } from './icons'
-import type { BagVersion, PairedParticipant, SecretBag } from '../types'
+import { EyeIcon, EyeOffIcon, TrashIcon } from './icons'
+import { verifyBlockedReason, type VerifyDispatch } from './verification'
+import type { BagVersion, PairedParticipant, PendingProtectRound, SecretBag, UserSecret } from '../types'
+import { shareFailureLabel } from './shareFailure'
+
+/**
+ * Removing a secret from the current version. Absent for earlier versions,
+ * which are history: removal publishes a new version, it does not edit an old one.
+ */
+interface SecretRemoval {
+  onRemove: (secret: UserSecret) => void
+  /** Why removal is unavailable right now, shown as the button's tooltip; `null` when it is available. */
+  disabledReason: string | null
+}
 
 function BagVersionDetails({
   version,
   participants,
   onVerify,
-  onVerifyClose,
+  verifyDisabledReason,
+  removal,
 }: {
   version: BagVersion
   participants: PairedParticipant[]
-  onVerify: (version: number) => Promise<void>
-  onVerifyClose?: () => void
+  /** Open verification for this version. */
+  onVerify: (version: number) => void
+  /** Why Verify Shares is unavailable right now; `null` when it is available. */
+  verifyDisabledReason: string | null
+  removal?: SecretRemoval
 }) {
   const [revealedSecrets, setRevealedSecrets] = useState<Set<string>>(new Set())
-  const [verifyOpen, setVerifyOpen] = useState(false)
   const [payloadOpen, setPayloadOpen] = useState(false)
 
   function toggleSecretVisibility(secretId: string) {
@@ -70,6 +88,18 @@ function BagVersionDetails({
                         >
                           {visible ? <EyeOffIcon /> : <EyeIcon />}
                         </button>
+                        {removal && (
+                          <button
+                            type="button"
+                            className="secondary reveal-btn remove-secret-btn"
+                            onClick={() => removal.onRemove(s)}
+                            disabled={removal.disabledReason !== null}
+                            title={removal.disabledReason ?? `Remove ${s.name}`}
+                            aria-label={`Remove ${s.name}`}
+                          >
+                            <TrashIcon />
+                          </button>
+                        )}
                       </td>
                     </tr>
                   )
@@ -115,11 +145,14 @@ function BagVersionDetails({
             <h5 className="sub-heading sub-heading--failed">Failed ({failedEntries.length})</h5>
             <ul className="participant-tag-list" role="list">
               {failedEntries.map(f => {
-                const reason = f.memo || (f.status === 10 ? 'Rejected' : `Status ${f.status}`)
+                // One word for the kind of failure, the same in every view; the
+                // library's own memo stays in the tooltip.
+                const label = shareFailureLabel(f)
+                const detail = f.memo || `Status ${f.status}`
                 return (
                   <li key={f.id} className="participant-tag participant-tag--failed">
                     <span>{f.name}</span>
-                    <span className="participant-failure-reason" title={reason}>{reason}</span>
+                    <span className="participant-failure-reason" title={detail}>{label}</span>
                   </li>
                 )
               })}
@@ -140,21 +173,16 @@ function BagVersionDetails({
           <button
             type="button"
             className="secondary verify-btn"
-            onClick={() => setVerifyOpen(true)}
+            onClick={() => onVerify(version.version)}
+            disabled={verifyDisabledReason !== null}
+            title={verifyDisabledReason ?? undefined}
           >
             Verify Shares
           </button>
         )}
       </div>
-
-      {verifyOpen && (
-        <VerifySharesModal
-          version={version.version}
-          verifiedParticipantIds={version.verifiedParticipantIds}
-          confirmedParticipants={confirmedParticipants}
-          onClose={() => { setVerifyOpen(false); onVerifyClose?.() }}
-          onVerify={onVerify}
-        />
+      {confirmedParticipants.length > 0 && verifyDisabledReason && (
+        <p className="empty-hint">{verifyDisabledReason}</p>
       )}
 
       {payloadOpen && (
@@ -170,42 +198,63 @@ function BagVersionDetails({
 export function SecretBagPanel({
   bag,
   participants,
+  pendingRounds,
   onVerify,
   onVerifyClose,
   onAddSecret,
+  onRemoveSecret,
+  removeDisabledReason,
 }: {
   bag: SecretBag | null
   participants: PairedParticipant[]
-  onVerify: (version: number) => Promise<void>
+  /** Publishing rounds still open, oldest first — see `Vault.pendingProtectRounds`. */
+  pendingRounds: readonly PendingProtectRound[]
+  onVerify: (version: number) => Promise<VerifyDispatch>
   onVerifyClose?: () => void
   onAddSecret: () => void
+  onRemoveSecret: (secret: UserSecret) => void
+  /** Why secrets cannot be removed right now — e.g. too few paired participants. */
+  removeDisabledReason: string | null
 }) {
   const [showPreviousVersions, setShowPreviousVersions] = useState(false)
+  // The version being verified, by number: held here, above the per-version
+  // cards, so a publish that moves the current version mid-verification
+  // cannot swap the version the open dialog is reading.
+  const [verifying, setVerifying] = useState<number | null>(null)
 
   if (!bag) {
     return (
       <div className="tab-empty-state">
+        <PendingRoundsNotice rounds={pendingRounds} participants={participants} />
         <p>No secrets protected yet. Add a secret to create the bag and distribute it to all paired participants.</p>
         <button type="button" className="primary" onClick={onAddSecret} style={{ marginTop: '1rem' }}>
-          Protect Secret
+          Add Secret
         </button>
       </div>
     )
   }
 
+  const verifyingVersion =
+    verifying === null
+      ? null
+      : [bag.currentVersion, ...bag.previousVersions].find(v => v.version === verifying) ?? null
+
   return (
     <div className="card-list">
       <div className="detail-card">
         <div className="card-header">
-          <span className="card-title">Secret Bag</span>
+          <span className="card-title">Secrets</span>
           <span className="version-tag">v{bag.currentVersion.version}</span>
         </div>
+
+        <PendingRoundsNotice rounds={pendingRounds} participants={participants} />
 
         <BagVersionDetails
           version={bag.currentVersion}
           participants={participants}
-          onVerify={onVerify}
-          onVerifyClose={onVerifyClose}
+          onVerify={setVerifying}
+          verifyDisabledReason={verifyBlockedReason(bag.currentVersion, pendingRounds)}
+          removal={{ onRemove: onRemoveSecret, disabledReason: removeDisabledReason }}
         />
 
         {bag.previousVersions.length > 0 && (
@@ -223,8 +272,8 @@ export function SecretBagPanel({
                 <BagVersionDetails
                   version={v}
                   participants={participants}
-                  onVerify={onVerify}
-                  onVerifyClose={onVerifyClose}
+                  onVerify={setVerifying}
+                  verifyDisabledReason={verifyBlockedReason(v, pendingRounds)}
                 />
               </div>
             ))}
@@ -244,6 +293,50 @@ export function SecretBagPanel({
           </dl>
         </div>
       </div>
+
+      {verifyingVersion && (
+        <VerifySharesModal
+          version={verifyingVersion.version}
+          verifiedParticipantIds={verifyingVersion.verifiedParticipantIds}
+          confirmedParticipants={participants.filter(h => verifyingVersion.participantIds.includes(h.id))}
+          onClose={() => { setVerifying(null); onVerifyClose?.() }}
+          onVerify={onVerify}
+        />
+      )}
+    </div>
+  )
+}
+
+/**
+ * The publishing rounds still open, so closing the progress dialog early does
+ * not make a round disappear: the version is not in the bag until the round
+ * commits, and without this the tab read as though nothing had happened.
+ */
+function PendingRoundsNotice({
+  rounds,
+  participants,
+}: {
+  rounds: readonly PendingProtectRound[]
+  participants: readonly PairedParticipant[]
+}) {
+  if (rounds.length === 0) return null
+  return (
+    <div className="card-body">
+      {rounds.map(round => {
+        const confirmed = round.bag.currentVersion.participantIds.length
+        const total = participants.filter(p =>
+          p.secretShares.some(s => s.version === round.version),
+        ).length
+        const threshold = round.bag.threshold
+        return (
+          <p key={round.version} className="round-pending-note" role="status">
+            Publishing v{round.version}: {confirmed} of {total} confirmed (need {threshold}).{' '}
+            {confirmed >= threshold
+              ? 'Threshold reached — it is committed once the rest answer or time out.'
+              : 'It is committed once enough participants confirm, or rolled back if too few do.'}
+          </p>
+        )
+      })}
     </div>
   )
 }

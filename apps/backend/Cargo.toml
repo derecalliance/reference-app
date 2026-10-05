@@ -1,7 +1,11 @@
 [package]
 name = "derec-backend"
-version = "0.1.0"
+version = "0.0.6"
 edition = "2021"
+rust-version = "1.88"
+description = "Thin backend for the DeRec reference app: actor registry, message relay and hosted helpers"
+license = "Apache-2.0"
+repository = "https://github.com/derecalliance/reference-app"
 
 # Split into a library plus a thin binary so integration tests under `tests/`
 # can drive the actors directly instead of going through HTTP.
@@ -20,7 +24,8 @@ figment = { version = "0.10", features = ["toml"] }
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+# `compression-*` for the static front end (see `static_files` in lib.rs).
+tower-http = { version = "0.6", features = ["cors", "trace", "fs", "compression-gzip", "compression-br"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = { version = "1", features = ["derive"] }
@@ -31,8 +36,8 @@ base64 = "0.22"
 # SDK. Plaintext endpoints are not a compile-time feature — they are
 # `DeRecProtocolBuilder::with_unsafe_connection`, decided per instance at
 # runtime.
-derec-library = { version = "0.0.5", features = ["serde"] }
-derec-proto = "0.0.5"
+derec-library = { version = "0.0.6", features = ["serde"] }
+derec-proto = "0.0.6"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 rand = "0.8"
 # Operator-supplied defaults for the front end, read from a mounted config file.

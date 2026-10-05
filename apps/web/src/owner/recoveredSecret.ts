@@ -1,7 +1,11 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import type { DeRecEvent } from '@derec-alliance/web'
 
 import { toBytes } from '../bytes'
 import { fromBase64Url, toBase64Url } from '../derecApi'
+import { protocolName } from '../contactDto'
 import type { RecoveredSecretSnapshot } from '../types'
 
 // ── Recovered secret snapshot ────────────────────────────────────────────────
@@ -19,7 +23,7 @@ export function snapshotFromEvent(secret: RecoveredSecretPayload): RecoveredSecr
   return {
     helpers: secret.helpers.map(h => ({
       channelId: h.channel_id,
-      transports: h.transports.map(t => ({ uri: t.uri, protocol: t.protocol })),
+      transports: (h.transports ?? []).map(t => ({ uri: t.uri, protocol: protocolName(t.protocol) })),
       communicationInfo: h.communication_info,
       sharedKey: toBase64Url(toBytes(h.shared_key)),
     })),
@@ -32,7 +36,7 @@ export function snapshotFromEvent(secret: RecoveredSecretPayload): RecoveredSecr
       ? {
           channelId: secret.replicas.channel_id,
           members: secret.replicas.members.map(m => ({
-            transports: m.transports.map(t => ({ uri: t.uri, protocol: t.protocol })),
+            transports: (m.transports ?? []).map(t => ({ uri: t.uri, protocol: protocolName(t.protocol) })),
             communicationInfo: m.communication_info,
             replicaId: m.replica_id,
             role: m.role,
@@ -48,7 +52,7 @@ export function snapshotToPayload(snapshot: RecoveredSecretSnapshot): RecoveredS
   return {
     helpers: snapshot.helpers.map(h => ({
       channel_id: h.channelId,
-      transports: h.transports.map(t => ({ uri: t.uri, protocol: t.protocol })),
+      transports: (h.transports ?? []).map(t => ({ uri: t.uri, protocol: protocolName(t.protocol) })),
       communication_info: h.communicationInfo,
       shared_key: fromBase64Url(h.sharedKey),
     })),
@@ -62,7 +66,7 @@ export function snapshotToPayload(snapshot: RecoveredSecretSnapshot): RecoveredS
           channel_id: snapshot.replicas.channelId,
           members: snapshot.replicas.members.map(m => ({
             replica_id: m.replicaId,
-            transports: m.transports.map(t => ({ uri: t.uri, protocol: t.protocol })),
+            transports: (m.transports ?? []).map(t => ({ uri: t.uri, protocol: protocolName(t.protocol) })),
             role: m.role,
             communication_info: m.communicationInfo,
           })),

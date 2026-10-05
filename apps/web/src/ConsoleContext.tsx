@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import {
   createContext,
   useCallback,
@@ -41,6 +44,21 @@ export interface ConsoleEntry {
   payload?: unknown
   /** Outputs returned by the library function (wire bytes, keys, etc.) */
   response?: unknown
+  /**
+   * The vault this entry is about. `server` entries have none: backend events
+   * are node-wide, and forcing a vault onto them would file them under an
+   * arbitrary one.
+   */
+  vaultId?: string
+}
+
+/** What a caller supplies; the id and time are stamped on. */
+export type ConsoleEntryInput = Omit<ConsoleEntry, 'id' | 'timestamp'>
+
+/** Build an entry from what a caller supplies. */
+// eslint-disable-next-line react-refresh/only-export-components
+export function makeConsoleEntry(input: ConsoleEntryInput, at: Date = new Date()): ConsoleEntry {
+  return { ...input, id: randomId(), timestamp: at }
 }
 
 
@@ -64,7 +82,7 @@ function reducer(state: State, action: Action): State {
 
 interface ConsoleContextValue {
   entries: ConsoleEntry[]
-  log: (entry: Omit<ConsoleEntry, 'id' | 'timestamp'>) => void
+  log: (entry: ConsoleEntryInput) => void
   clear: () => void
 }
 
@@ -72,13 +90,12 @@ const ConsoleContext = createContext<ConsoleContextValue | null>(null)
 
 
 /** How a backend event reads as a console row. */
-function toEntry(event: DebugEvent): Omit<ConsoleEntry, 'id'> {
+function toEntry(event: DebugEvent): ConsoleEntry {
   const arrow = event.direction === 'inbound' ? '←' : '→'
   const carrier =
     event.carrier === 'grpc_via_relay' ? 'gRPC (relayed)' : event.carrier.toUpperCase()
 
-  return {
-    timestamp: new Date(event.at_ms),
+  return makeConsoleEntry({
     role: 'server',
     flow: 'transport',
     step: `${arrow} ${carrier}`,
@@ -86,17 +103,14 @@ function toEntry(event: DebugEvent): Omit<ConsoleEntry, 'id'> {
     // The whole event, so "copy entry" yields something worth pasting into a
     // bug report — and matches what `/debug/events` would have given.
     payload: event,
-  }
+  }, new Date(event.at_ms))
 }
 
 export function ConsoleProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, { entries: [] })
 
-  const log = useCallback((entry: Omit<ConsoleEntry, 'id' | 'timestamp'>) => {
-    dispatch({
-      type: 'log',
-      entry: { ...entry, id: randomId(), timestamp: new Date() },
-    })
+  const log = useCallback((entry: ConsoleEntryInput) => {
+    dispatch({ type: 'log', entry: makeConsoleEntry(entry) })
   }, [])
 
   const clear = useCallback(() => dispatch({ type: 'clear' }), [])
@@ -119,7 +133,7 @@ export function ConsoleProvider({ children }: { children: ReactNode }) {
         // Ascending, and `log` prepends, so the newest ends up on top —
         // interleaved with this page's entries by arrival, as a reader expects.
         for (const event of page.events) {
-          dispatch({ type: 'log', entry: { ...toEntry(event), id: randomId() } })
+          dispatch({ type: 'log', entry: toEntry(event) })
         }
       } catch {
         // The backend is legitimately absent during setup, and a console that

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -12,6 +15,20 @@ pub enum TransportProtocol {
 pub struct Transport {
     pub protocol: TransportProtocol,
     pub uri: String,
+}
+
+impl Transport {
+    /// This endpoint as the protocol carries it on the wire.
+    pub fn to_proto(&self) -> derec_proto::TransportProtocol {
+        let protocol = match self.protocol {
+            TransportProtocol::Https => derec_proto::Protocol::Https,
+            TransportProtocol::Grpc => derec_proto::Protocol::Grpc,
+        };
+        derec_proto::TransportProtocol {
+            uri: self.uri.clone(),
+            protocol: protocol as i32,
+        }
+    }
 }
 
 /// Which transports one provisioned helper serves.
@@ -146,7 +163,28 @@ pub struct ProtocolSettingsRequest {
     pub unpair_ack: Option<UnpairAck>,
 }
 
+/// The longest a requested protocol timeout may be, in seconds: one day.
+///
+/// The value is the replay window — how stale an inbound envelope may be and
+/// still be accepted — so anything beyond a day is a typo, not a setting.
+pub const MAX_PROTOCOL_TIMEOUT_SECS: u32 = 86_400;
+
 impl ProtocolSettingsRequest {
+    /// Reject settings no actor can usefully run with.
+    ///
+    /// Zero is the case that matters: as a replay window it refuses every
+    /// inbound message, so the actor pairs with nothing and says nothing about
+    /// why. Only the request's own values are checked — the operator defaults
+    /// they fall back to are validated when the configuration is loaded.
+    pub fn validate(&self) -> Result<(), String> {
+        match self.protocol_timeout_secs {
+            Some(secs) if secs == 0 || secs > MAX_PROTOCOL_TIMEOUT_SECS => Err(format!(
+                "protocol_timeout_secs must be between 1 and {MAX_PROTOCOL_TIMEOUT_SECS}"
+            )),
+            _ => Ok(()),
+        }
+    }
+
     /// Fill the unset fields from the operator-supplied defaults.
     pub fn resolve(self, defaults: &crate::config::Defaults) -> (u32, UnpairAck) {
         (
@@ -155,6 +193,31 @@ impl ProtocolSettingsRequest {
             self.unpair_ack.unwrap_or(defaults.unpair_ack),
         )
     }
+}
+
+/// The longest display name an actor may carry, in characters.
+///
+/// Names are rendered in roster rows and sent to peers as
+/// `communication_info["name"]` on every pairing, so an unbounded one is both
+/// a layout problem and a payload every peer has to carry.
+pub const MAX_NAME_CHARS: usize = 64;
+
+/// Trim a caller-supplied display name and check it is usable.
+///
+/// `field` names the input in the error, so a caller sending several names
+/// learns which one was refused.
+pub fn validate_display_name(raw: &str, field: &str) -> Result<String, String> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Err(format!("{field} must not be empty"));
+    }
+    if name.chars().count() > MAX_NAME_CHARS {
+        return Err(format!("{field} must be at most {MAX_NAME_CHARS} characters"));
+    }
+    if name.chars().any(char::is_control) {
+        return Err(format!("{field} must not contain control characters"));
+    }
+    Ok(name.to_owned())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -207,6 +270,14 @@ pub struct ActorWithStatus {
     /// another device's replica, which registers as an ordinary `Role::Owner`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub browser_managed: Option<bool>,
+    /// When a browser-managed actor last drained its mailbox, as an RFC 3339
+    /// UTC timestamp — or `null` if it has not since this node started.
+    ///
+    /// The outer `Option` decides presence: only browser-managed actors carry
+    /// the field at all, because nothing polls on a provisioned actor's
+    /// behalf. Held in memory, so every value resets to `null` on restart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_polled_at: Option<Option<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -225,9 +296,9 @@ pub struct RegisterOwnerRequest {
     ///
     /// The claim is **unauthenticated here** — for a reference app, this is
     /// intentional. A real app would gate this behind server-side auth.
-    /// On a successful claim the actor's mailbox tx/rx is rebound to a fresh
-    /// pair, so the new tab starts receiving messages and any previous tab
-    /// silently stops.
+    /// A claim keeps the actor's mailbox: whatever queued while no tab was
+    /// polling is delivered on the claiming tab's first poll. A previous tab
+    /// still polling the same actor competes for messages from then on.
     #[serde(default)]
     pub claim_actor_id: Option<Uuid>,
 }
@@ -236,6 +307,20 @@ pub struct RegisterOwnerRequest {
 pub struct RegisterOwnerResponse {
     #[serde(flatten)]
     pub actor: Actor,
+}
+
+/// `PATCH /owners/{owner_id}`: the owner's new display name, held to the same
+/// rules as a name given at registration.
+#[derive(Debug, Deserialize)]
+pub struct RenameOwnerRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RenameOwnerResponse {
+    pub id: Uuid,
+    /// The name as stored — trimmed, which may differ from what was sent.
+    pub name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -255,6 +340,12 @@ pub struct AddHelperResponse {
     pub actor: Actor,
 }
 
+/// The largest helper pool `POST /helpers/ensure` will build.
+///
+/// The transport breakdown counts each mode in a `u8`, and so does the
+/// front end's participant count, so a larger pool could not be described.
+pub const MAX_POOL_SIZE: u8 = u8::MAX;
+
 /// Bring the shared helper pool up to a size.
 ///
 /// Provisioned helpers belong to the server rather than to whoever asked
@@ -263,8 +354,13 @@ pub struct AddHelperResponse {
 /// caller does not want.
 #[derive(Debug, Deserialize)]
 pub struct EnsureHelpersRequest {
-    /// How many helpers should exist once this call returns.
-    pub total: u8,
+    /// How many helpers should exist once this call returns, at most
+    /// [`MAX_POOL_SIZE`].
+    ///
+    /// Wider than the limit on purpose: read as a `u8`, an out-of-range value
+    /// was refused by serde with a message about integer widths and JSON
+    /// columns. Read wide, the handler refuses it with the actual limit.
+    pub total: u64,
     /// Display names offered for any helpers that need creating, taken in
     /// order from the first one created. The caller cannot know in advance how
     /// many that will be — that depends on what other owners have already

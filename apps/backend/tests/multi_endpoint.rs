@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! A peer advertising two endpoints must land two on the channel record, and
 //! failover must use the second without rewriting what the peer advertised.
 

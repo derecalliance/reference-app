@@ -1,12 +1,17 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! The node's registries, backed by SQL.
 //!
-//! These replace the `dashmap`s that used to live on `AppState`. Two registries
-//! deliberately did **not** move: `actor_inboxes` and `browser_receivers` hold
-//! `actix::Addr`s and `mpsc` channel halves, which are live runtime handles
-//! with no serialised form. They are rebuilt when actors are respawned.
+//! These replace the `dashmap`s that used to live on `AppState`. One registry
+//! deliberately did **not** move: `actor_inboxes` holds `actix::Addr`s, which
+//! are live runtime handles with no serialised form, and is rebuilt when
+//! actors are respawned. Browser mailboxes did move — see [`mailbox`] — because
+//! what they hold is undelivered data, not a handle.
 
 pub mod actors;
 pub mod flags;
+pub mod mailbox;
 
 /// Why a registry operation failed.
 ///

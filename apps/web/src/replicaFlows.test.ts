@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { describe, expect, it, vi } from 'vitest'
 import {
   acceptFingerprintMatch,
@@ -449,6 +452,22 @@ describe('describeRestoreFailure', () => {
     expect(describeRestoreFailure({ code: 'CONFLICT' }).wipeDidNotTake).toBe(true)
   })
 
+  it('classifies the codes SDK 0.0.6 reports, which it renamed', () => {
+    // Lower snake case, and two renamed outright. Unmapped, every one of these
+    // read as UNKNOWN — and a wipe that did not take went unflagged.
+    expect(describeRestoreFailure({ code: 'already_restored' })).toMatchObject({
+      code: 'ALREADY_RESTORED',
+      wipeDidNotTake: true,
+    })
+    expect(describeRestoreFailure({ code: 'restore_conflict', channel_ids: ['901'] })).toMatchObject({
+      code: 'CONFLICT',
+      wipeDidNotTake: true,
+      channelIds: ['901'],
+    })
+    expect(describeRestoreFailure({ code: 'invariant' }).code).toBe('INVARIANT')
+    expect(describeRestoreFailure({ code: 'store_error' }).code).toBe('STORAGE')
+  })
+
   it('does not flag failures that are unrelated to the wipe', () => {
     // Only the two preconditions `restore` checks before touching a store mean
     // the namespace was not empty. An implementation that marks every failure
@@ -857,7 +876,7 @@ describe('adoptedVaultState', () => {
       helpers: [
         {
           channel_id: '901',
-          transports: [{ uri: helperUri, protocol: 0 }],
+          transports: [{ uri: helperUri, protocol: 'https' }],
           shared_key: bytes('key'),
           communication_info: { name: 'Snapshot name' },
         },
@@ -890,13 +909,13 @@ describe('adoptedVaultState', () => {
           {
             replica_id: '1001',
             role: 'Source',
-            transports: [{ uri: 'https://example.test/source', protocol: 0 }],
+            transports: [{ uri: 'https://example.test/source', protocol: 'https' }],
             communication_info: { name: 'AliceA' },
           },
           {
             replica_id: '2002',
             role: 'Destination',
-            transports: [{ uri: 'https://example.test/me', protocol: 0 }],
+            transports: [{ uri: 'https://example.test/me', protocol: 'https' }],
             communication_info: { name: 'BobB' },
           },
         ],
@@ -958,10 +977,46 @@ describe('adoptedVaultState', () => {
     // An implementation that took "the only actor there is" passes the first
     // case and fails here, mis-attributing another peer's identity.
     const elsewhere: BEActorWithStatus[] = [
-      { ...actors[0], transport: { protocol: 'https', uri: 'https://example.test/other' } },
+      {
+        ...actors[0],
+        transport: { protocol: 'https', uri: 'https://example.test/other' },
+        transports: [{ protocol: 'https', uri: 'https://example.test/other' }],
+      },
     ]
 
     expect(adoptedVaultState(adoption, elsewhere, 2).participants[0].id).toBe('peer-901')
+  })
+
+  it('tells apart helpers that share one gRPC endpoint, never giving two rows one actor', () => {
+    // Every gRPC helper on a node advertises the node's one `grpc://host:port`;
+    // keyed by URI, the last one won and both rows carried its id.
+    const grpc = 'grpc://example.test:50051'
+    const grpcHelper = (channelId: string, name: string) => ({
+      channel_id: channelId,
+      transports: [{ uri: grpc, protocol: 'grpc' as const }],
+      shared_key: bytes('key'),
+      communication_info: { name },
+    })
+    const grpcActor = (id: string, name: string): BEActorWithStatus => ({
+      id,
+      role: 'helper',
+      name,
+      transport: { protocol: 'grpc', uri: grpc },
+      transports: [{ protocol: 'grpc', uri: grpc }],
+      secret_id: '42',
+    })
+    const twoGrpc: PendingReplicaAdoption = {
+      ...adoption,
+      secret: { ...adoption.secret, helpers: [grpcHelper('901', 'Alex'), grpcHelper('902', 'Richard')] },
+    }
+
+    const { participants } = adoptedVaultState(
+      twoGrpc,
+      [grpcActor('alex-actor', 'Alex'), grpcActor('richard-actor', 'Richard')],
+      2,
+    )
+
+    expect(participants.map(p => p.id)).toEqual(['alex-actor', 'richard-actor'])
   })
 
   it('keys the adopted bag on the source’s secret id at the offered version', () => {
@@ -1009,6 +1064,7 @@ function replicaView(overrides: Partial<ReplicaView> = {}): ReplicaView {
     direction: 'replica_source',
     peerReplicaId: null,
     helperActorId: null,
+    refused: false,
     ...overrides,
   }
 }

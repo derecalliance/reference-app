@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 # Reconcile the data directory's ownership, then drop to the runtime user.
 #
 # A fresh named or anonymous volume inherits the image's ownership of
@@ -10,6 +13,13 @@
 #
 # Only possible when the container starts as root. Run with `--user` and this
 # step is skipped: the caller has chosen the uid and it is theirs to get right.
+#
+# DEREC_DATA_DIR names the directory to reconcile. Set it when the database
+# lives on a bind mount somewhere other than /var/lib/derec (for example
+# DEREC_DATABASE_URL=/data/derec.db with -v "$PWD/data:/data" needs
+# DEREC_DATA_DIR=/data). It is not derived from DEREC_DATABASE_URL on purpose:
+# a recursive chown, as root, of a directory taken from a URL is too sharp an
+# edge for a convenience. The server knows the name and does not warn about it.
 set -e
 
 DATA_DIR="${DEREC_DATA_DIR:-/var/lib/derec}"

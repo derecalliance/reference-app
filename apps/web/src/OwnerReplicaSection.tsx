@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
+import { ModalFrame } from './ModalFrame'
 import { useState } from 'react'
 import { errorText } from './errorText'
 
@@ -84,44 +88,47 @@ function AddReplicaModal({
   }
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Add replica">
-      <div className="modal" style={{ maxWidth: 400 }}>
-        <div className="modal-header">
-          <h2 className="modal-title">Add Replica</h2>
-        </div>
-        <form onSubmit={handleSubmit}>
-          <div className="modal-body">
-            <p className="modal-description">
-              A replica is another of your own devices. It mirrors this vault once both
-              devices confirm a shared code.
-            </p>
-            <div className="form-field">
-              <label className="form-label" htmlFor="add-replica-name">
-                Name
-              </label>
-              <input
-                id="add-replica-name"
-                className="form-input"
-                type="text"
-                value={name}
-                onChange={e => setName(e.target.value)}
-                placeholder="Laptop"
-                autoFocus
-                disabled={submitting}
-              />
-            </div>
-            {error && <p className="field-error">{error}</p>}
-          </div>
-          <div className="modal-actions">
-            <button type="button" className="secondary" onClick={onClose} disabled={submitting}>
-              Cancel
-            </button>
-            <button type="submit" className="primary" disabled={!name.trim() || submitting}>
-              {submitting ? 'Adding…' : 'Add Replica'}
-            </button>
-          </div>
-        </form>
+    <ModalFrame
+      overlayClassName="modal-overlay"
+      className="modal modal--form"
+      label="Add replica"
+      onEscape={submitting ? undefined : onClose}
+    >
+      <div className="modal-header">
+        <h2 className="modal-title">Add Replica</h2>
       </div>
-    </div>
+      <form onSubmit={handleSubmit}>
+        <div className="modal-body">
+          <p className="modal-description">
+            A replica is another of your own devices. It mirrors this vault once both
+            devices confirm a shared code.
+          </p>
+          <div className="form-field">
+            <label className="form-label" htmlFor="add-replica-name">
+              Name
+            </label>
+            <input
+              id="add-replica-name"
+              className="form-input"
+              type="text"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              placeholder="Laptop"
+              autoFocus
+              disabled={submitting}
+            />
+          </div>
+          {error && <p className="field-error">{error}</p>}
+        </div>
+        <div className="modal-actions">
+          <button type="button" className="secondary" onClick={onClose} disabled={submitting}>
+            Cancel
+          </button>
+          <button type="submit" className="primary" disabled={!name.trim() || submitting}>
+            {submitting ? 'Adding…' : 'Add Replica'}
+          </button>
+        </div>
+      </form>
+    </ModalFrame>
   )
 }

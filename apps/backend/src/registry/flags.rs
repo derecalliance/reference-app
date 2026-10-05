@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! The three small per-actor registries: which channels a helper holds, which
 //! helpers the operator has switched off, and the contact a browser-managed
 //! participant has posted for its owner to fetch.
@@ -27,7 +30,7 @@ impl HelperChannels {
     /// refuses the second. Delete-then-insert rather than an upsert, for the
     /// same portability reason as the stores.
     pub async fn push(&self, actor_id: &Uuid, channel_id: &str) -> Result<(), RegistryError> {
-        let mut tx = self.pool.begin().await.map_err(RegistryError::new)?;
+        let mut tx = crate::db::begin_write(&self.pool).await.map_err(RegistryError::new)?;
 
         sqlx::query("DELETE FROM actor_channels WHERE actor_id = $1 AND channel_id = $2")
             .bind(actor_id.to_string())
@@ -99,7 +102,7 @@ impl DisabledHelpers {
 
     pub async fn set_disabled(&self, actor_id: &Uuid, disabled: bool) -> Result<(), RegistryError> {
         if disabled {
-            let mut tx = self.pool.begin().await.map_err(RegistryError::new)?;
+            let mut tx = crate::db::begin_write(&self.pool).await.map_err(RegistryError::new)?;
 
             sqlx::query("DELETE FROM disabled_helpers WHERE actor_id = $1")
                 .bind(actor_id.to_string())
@@ -141,7 +144,7 @@ impl ParticipantContacts {
 
     /// Store a contact, replacing any previous one for this actor.
     pub async fn put(&self, actor_id: &Uuid, contact: &str) -> Result<(), RegistryError> {
-        let mut tx = self.pool.begin().await.map_err(RegistryError::new)?;
+        let mut tx = crate::db::begin_write(&self.pool).await.map_err(RegistryError::new)?;
 
         sqlx::query("DELETE FROM participant_contacts WHERE actor_id = $1")
             .bind(actor_id.to_string())

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! `/debug/config` reports what the node was configured with and where each
 //! value came from. `/config` must keep its existing shape — the front end
 //! deserialises it directly, so widening it would be an API break for every
@@ -48,8 +51,15 @@ async fn debug_config_reports_values_and_origins() {
     assert!(body["settings"]["defaults"]["participant_count"].is_number());
     assert!(body["settings"]["server"]["port"].is_number());
 
+    // Counted from the response rather than written down: a hard-coded total
+    // goes stale the moment a setting is added, and what matters is that
+    // every value reported has an origin beside it.
     let origins = body["origins"].as_array().expect("origins array");
-    assert_eq!(origins.len(), 18, "every setting needs an origin");
+    assert_eq!(
+        origins.len(),
+        leaf_count(&body["settings"]),
+        "every setting needs an origin"
+    );
 
     let participant = origins
         .iter()
@@ -74,4 +84,12 @@ async fn plain_config_keeps_its_flat_shape() {
     assert!(body["participant_count"].is_number());
     assert!(body["settings"].is_null());
     assert!(body["origins"].is_null());
+}
+
+/// How many scalar values a JSON tree holds — one per setting.
+fn leaf_count(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::Object(map) => map.values().map(leaf_count).sum(),
+        _ => 1,
+    }
 }

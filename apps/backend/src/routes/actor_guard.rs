@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! Resolving the `{actor_id}` path segment shared by most routes.
 //!
 //! `AppState::actor_inboxes`, `disabled_helpers`, `helper_channels`
@@ -11,15 +14,12 @@
 //! `AppState::actors` is the registry of what exists and what role it holds, so
 //! it is what these routes resolve through.
 
-use axum::{
-    Json,
-    http::StatusCode,
-    response::{IntoResponse, Response},
-};
+use axum::response::{IntoResponse, Response};
 use uuid::Uuid;
 
 use crate::{
     models::{Actor, Role},
+    routes::api_error::ApiError,
     state::{AppState, RoleMismatch},
 };
 
@@ -89,27 +89,15 @@ fn with_article(role: Role) -> String {
 /// connection error, and it may name a host.
 pub fn registry_unavailable(e: crate::registry::RegistryError) -> Response {
     tracing::error!(error = %e, "actor registry unavailable");
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(serde_json::json!({ "error": "actor registry unavailable" })),
-    )
-        .into_response()
+    ApiError::internal("actor registry unavailable").into_response()
 }
 
 pub fn not_found(message: &str) -> Response {
-    (
-        StatusCode::NOT_FOUND,
-        Json(serde_json::json!({ "error": message })),
-    )
-        .into_response()
+    ApiError::not_found(message).into_response()
 }
 
 pub fn bad_request(message: &str) -> Response {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(serde_json::json!({ "error": message })),
-    )
-        .into_response()
+    ApiError::bad_request(message).into_response()
 }
 
 #[cfg(test)]

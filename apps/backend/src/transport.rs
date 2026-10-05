@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! Outbound `DeRecTransport` implementations.
 //!
 //! The library filters a peer's advertised endpoints and hands the survivors
@@ -8,9 +11,27 @@
 //! [`GrpcTransport`]) can dial its advertised protocol, walking the list in
 //! the peer's order and stopping at the first delivery that succeeds.
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use derec_library::protocol::{DeRecTransport, TransportFuture};
 use derec_proto::TransportProtocol;
 use prost::Message as _;
+use uuid::Uuid;
+
+use crate::routes::derec::DispatchOutcome;
+use crate::state::AppState;
+
+/// The largest DeRec message this node accepts on any transport, in raw
+/// (decoded) bytes: 4 MiB.
+///
+/// The figure is the gRPC listener's — tonic's default decoding limit, set
+/// explicitly in [`crate::grpc::serve`] so the two cannot drift — and the
+/// HTTP transport route and the relay are held to the same one, so a message
+/// that can travel one way can travel every way. The relay's JSON body is
+/// larger by the base64url overhead; see
+/// [`crate::routes::derec::RELAY_BODY_LIMIT`].
+pub const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 
 // ── HTTP transport ───────────────────────────────────────────────────────────
 
@@ -66,13 +87,45 @@ pub fn dial_uri(uri: &str) -> String {
         .replacen("grpc://", "http://", 1)
 }
 
+/// How long a gRPC dial may take to establish a connection.
+///
+/// An actor's protocol instance is borrowed for the whole of a `send`, and
+/// every other message for that instance is dropped as "instance busy" while
+/// it is out. A black-holed peer — a firewalled port, a host that went away —
+/// would otherwise hold it for the OS's TCP connect timeout, which is minutes.
+pub const GRPC_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long one gRPC `Send` may take end to end, connection included.
+///
+/// A peer that accepts the connection and never answers is the same hazard as
+/// one that never accepts it, so the call itself is bounded too.
+pub const GRPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Delivers each envelope as one unary `DeRecTransport.Send` call.
+///
+/// Both timeouts are always applied — see [`GRPC_CONNECT_TIMEOUT`] and
+/// [`GRPC_REQUEST_TIMEOUT`] — whether the call is an actor's own or one the
+/// relay makes on a browser's behalf.
 #[derive(Clone, Default)]
-pub struct GrpcTransport;
+pub struct GrpcTransport {
+    /// The actor this transport sends for, stamped on every call as
+    /// [`crate::routing::SENDER_METADATA`]. `None` for the relay, which sends
+    /// for a browser this node does not route gRPC to anyway.
+    sender: Option<Uuid>,
+}
 
 impl GrpcTransport {
+    /// A transport that does not identify its sender.
     pub fn new() -> Self {
-        Self
+        Self { sender: None }
+    }
+
+    /// A transport that stamps each call with `actor_id`, so this node's own
+    /// ingress can tell the two ends of a same-node pairing apart.
+    pub fn for_actor(actor_id: Uuid) -> Self {
+        Self {
+            sender: Some(actor_id),
+        }
     }
 
     async fn call(&self, uri: &str, message: &[u8]) -> Result<(), String> {
@@ -80,14 +133,38 @@ impl GrpcTransport {
             .map_err(|e| format!("undecodable envelope: {e}"))?;
         let dial = dial_uri(uri);
 
-        let mut client = crate::grpc::pb::de_rec_transport_client::DeRecTransportClient::connect(
-            dial.clone(),
-        )
-        .await
-        .map_err(|e| format!("connect {dial}: {e}"))?;
+        let endpoint = tonic::transport::Endpoint::from_shared(dial.clone())
+            .map_err(|e| format!("invalid endpoint {dial}: {e}"))?
+            .connect_timeout(GRPC_CONNECT_TIMEOUT)
+            .timeout(GRPC_REQUEST_TIMEOUT);
+
+        // The connect is bounded by `connect_timeout`; this outer bound also
+        // covers name resolution, which that setting does not.
+        let channel = tokio::time::timeout(GRPC_REQUEST_TIMEOUT, endpoint.connect())
+            .await
+            .map_err(|_| format!("connect {dial}: timed out"))?
+            .map_err(|e| format!("connect {dial}: {e}"))?;
+
+        let mut client =
+            crate::grpc::pb::de_rec_transport_client::DeRecTransportClient::new(channel);
+
+        let mut request = tonic::Request::new(envelope);
+        if let Some(sender) = self.sender {
+            // A UUID's text form is plain ASCII, so this cannot fail; if it
+            // ever did, the call goes out without the hint rather than not at
+            // all — the hint only matters when both ends are on this node.
+            if let Ok(value) = sender
+                .to_string()
+                .parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
+            {
+                request
+                    .metadata_mut()
+                    .insert(crate::routing::SENDER_METADATA, value);
+            }
+        }
 
         client
-            .send(envelope)
+            .send(request)
             .await
             .map(|_| ())
             .map_err(|e| format!("send {dial}: {e}"))
@@ -111,11 +188,26 @@ pub enum Leg {
 pub struct CompositeTransport {
     http: HttpTransport,
     grpc: GrpcTransport,
+    /// This node, when the transport belongs to one of its actors. An
+    /// endpoint naming this node is then delivered in-process rather than
+    /// dialled — see [`crate::addresses`] for why that matters once an
+    /// address it advertised has gone away.
+    local: Option<Arc<AppState>>,
 }
 
 impl CompositeTransport {
     pub fn new(http: HttpTransport, grpc: GrpcTransport) -> Self {
-        Self { http, grpc }
+        Self {
+            http,
+            grpc,
+            local: None,
+        }
+    }
+
+    /// Deliver to endpoints that name `node` in-process, without a dial.
+    pub fn delivering_locally_on(mut self, node: Arc<AppState>) -> Self {
+        self.local = Some(node);
+        self
     }
 
     /// Pair each endpoint with the client that can dial it, dropping any whose
@@ -141,6 +233,7 @@ impl DeRecTransport for CompositeTransport {
         let offered = endpoints.len();
         let client = self.http.client();
         let grpc = self.grpc.clone();
+        let local = self.local.clone();
 
         Box::pin(async move {
             if plan.is_empty() {
@@ -151,6 +244,19 @@ impl DeRecTransport for CompositeTransport {
             }
 
             for (leg, uri) in &plan {
+                if let Some(node) = &local {
+                    match deliver_if_local(node, uri, &message, grpc.sender).await {
+                        LocalAttempt::Delivered => return Ok(()),
+                        LocalAttempt::Refused(reason) => {
+                            // The recipient is here and refused it — a full
+                            // mailbox, a database failure. Dialling the same
+                            // node would only be refused again.
+                            tracing::warn!(uri = %uri, reason = %reason, "transport: local delivery refused");
+                            continue;
+                        }
+                        LocalAttempt::NotLocal => {}
+                    }
+                }
                 let attempt = match leg {
                     Leg::Http => HttpTransport::post(&client, uri, message.clone()).await,
                     Leg::Grpc => grpc.call(uri, &message).await,
@@ -168,6 +274,46 @@ impl DeRecTransport for CompositeTransport {
                 "transport: no endpoint accepted the message",
             ))
         })
+    }
+}
+
+/// What trying `uri` as a local delivery came to.
+enum LocalAttempt {
+    Delivered,
+    /// The recipient is on this node and refused the message.
+    Refused(String),
+    /// `uri` is not this node, or names nothing on it: dial as usual. A
+    /// previously advertised address may since have been taken by another
+    /// node, which is why an unknown recipient falls through to the dial
+    /// rather than failing here.
+    NotLocal,
+}
+
+async fn deliver_if_local(
+    node: &AppState,
+    uri: &str,
+    message: &[u8],
+    sender: Option<Uuid>,
+) -> LocalAttempt {
+    let Some(target) = crate::addresses::own_target(node, uri) else {
+        return LocalAttempt::NotLocal;
+    };
+    match crate::local::deliver(node, target, uri, message.to_vec(), sender).await {
+        Ok(DispatchOutcome::Delivered | DispatchOutcome::Dropped) => {
+            tracing::debug!(uri = %uri, "transport: delivered locally");
+            LocalAttempt::Delivered
+        }
+        Ok(DispatchOutcome::NoInbox) => LocalAttempt::NotLocal,
+        Ok(DispatchOutcome::MailboxFull) => {
+            LocalAttempt::Refused("the recipient's mailbox is full".to_owned())
+        }
+        Ok(DispatchOutcome::Unavailable) => {
+            LocalAttempt::Refused("the recipient's mailbox could not be written".to_owned())
+        }
+        Err(not_here) => {
+            tracing::debug!(uri = %uri, reason = %not_here, "transport: names this node but nothing here takes it; dialling");
+            LocalAttempt::NotLocal
+        }
     }
 }
 

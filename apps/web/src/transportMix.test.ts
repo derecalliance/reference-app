@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { describe, expect, it } from 'vitest'
 import { fitTransportsTo, rebalance, totalOf } from './transportMix'
 
@@ -22,6 +25,23 @@ describe('rebalance', () => {
     const mix = rebalance({ http: 1, grpc: 1, both: 1 }, 'grpc', 0, total)
 
     expect(mix).toEqual({ http: 2, grpc: 0, both: 1 })
+  })
+
+  it('lets "HTTP only" be lowered, handing the difference to gRPC', () => {
+    // Giving it back to http reverted the edit the moment it was typed.
+    const mix = rebalance({ http: 3, grpc: 0, both: 0 }, 'http', 1, total)
+
+    expect(mix).toEqual({ http: 1, grpc: 2, both: 0 })
+  })
+
+  it('always keeps the value typed into the edited field', () => {
+    for (const mode of ['http', 'grpc', 'both'] as const) {
+      for (let value = 0; value <= total; value++) {
+        const mix = rebalance({ http: 1, grpc: 1, both: 1 }, mode, value, total)
+        expect(mix[mode]).toBe(value)
+        expect(totalOf(mix)).toBe(total)
+      }
+    }
   })
 
   it('clamps a value beyond the total', () => {

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -9,13 +12,23 @@ import {
   type ReplicaChannel,
 } from './ownerPairing'
 import type { ReplicaView } from './replicaFlows'
-import type { Owner } from './types'
+import type { Vault } from './types'
 // Read as text, not imported as modules: these assertions are about *where* a
 // dialog is mounted, which is a fact about the source and not about any value
 // the module exports. `OwnerPage` also cannot be imported into a test —
 // it pulls in WASM.
 import replicasTabSource from './ReplicasTab.tsx?raw'
 import ownerPageSource from './OwnerPage.tsx?raw'
+import pairingFoldSource from './vault/fold/pairing.ts?raw'
+
+/** Every engine module's source, specs and fixtures excluded. */
+const engineSource = Object.values(
+  import.meta.glob<string>(['./vault/**/*.ts', '!./vault/**/*.test.ts', '!./vault/testVault.ts'], {
+    query: '?raw',
+    import: 'default',
+    eager: true,
+  }),
+).join('\n')
 
 /**
  * The Replicas tab, and the line it must not cross.
@@ -64,6 +77,7 @@ function view(overrides: Partial<ReplicaView> = {}): ReplicaView {
     direction: 'replica_source',
     peerReplicaId: null,
     helperActorId: null,
+    refused: false,
     ...overrides,
   }
 }
@@ -87,6 +101,7 @@ const BASE: ReplicasTabProps = {
   viewByChannelId: new Map([['1234', view()]]),
   protocolTimeoutSecs: 300,
   syncingChannelId: null,
+  catchingUpChannelIds: [],
   syncNoticeFor: () => null,
   onDismissSyncNotice: () => {},
   onOpenFingerprint: () => {},
@@ -94,6 +109,8 @@ const BASE: ReplicasTabProps = {
   onForget: () => {},
   onReplicaDiscovery: () => {},
   replicaDiscoveryRunning: false,
+  vaultVersion: null,
+  groupSourceReplicaId: null,
   onRemoveFromGroup: () => {},
   removingReplicaIds: new Set<string>(),
   onToggleOffline: () => {},
@@ -149,6 +166,30 @@ describe('what the Replicas tab lists', () => {
 
     const labels = Array.from(host.querySelectorAll('button')).map(b => b.textContent ?? '')
     expect(labels).toContain('Sync now')
+  })
+
+  it('shows a destination still fetching its copy as syncing, and says why', () => {
+    render({
+      viewByChannelId: new Map([
+        ['1234', view({ status: 'paired', direction: 'replica_destination' })],
+      ]),
+      catchingUpChannelIds: ['1234'],
+    })
+
+    expect(text()).toContain('Syncing…')
+    expect(text()).toContain('keeps asking until Laptop answers')
+    expect(text()).not.toContain('Verified')
+  })
+
+  it('shows a confirmed destination as verified once its copy has landed', () => {
+    render({
+      viewByChannelId: new Map([
+        ['1234', view({ status: 'paired', direction: 'replica_destination' })],
+      ]),
+    })
+
+    expect(text()).toContain('Verified')
+    expect(text()).not.toContain('Syncing…')
   })
 
   it('says so plainly when there are no replicas at all', () => {
@@ -216,24 +257,36 @@ describe('the replica modals are mounted by the page, not the tab', () => {
   })
 
   it('raises the fingerprint modal from the pairing fold, with no tab involved', () => {
-    const page = ownerPageSource
-    const start = page.indexOf('onReplicaChannelEstablished:')
+    // The fold moved out of the page and into the engine's pairing handlers, so
+    // this reads their source. The invariant is unchanged — a replica channel
+    // announces itself unconditionally — but it is enforced more strongly than
+    // it was: the engine is React-free and has no `activeTab` to gate on.
+    const start = pairingFoldSource.indexOf('onReplicaChannelEstablished:')
     expect(start).toBeGreaterThan(-1)
-    const handler = page.slice(start, page.indexOf('},', start))
+    const handler = pairingFoldSource.slice(start, pairingFoldSource.indexOf('},', start))
 
-    expect(handler).toContain('setFingerprintChannelId(channelId)')
+    expect(handler).toContain('ctx.effects.openFingerprint(channelId)')
     // No tab, no panel, no ref read: the announcement is unconditional.
     expect(handler).not.toContain('activeTab')
+  })
+
+  it('keeps the engine free of any notion of which tab is open', () => {
+    // The structural guarantee behind the test above. If `activeTab` ever
+    // reaches the engine, a fold could start gating protocol-driven state on
+    // what the user happens to be looking at.
+    // A glob that matched nothing would pass the check below vacuously.
+    expect(engineSource).toContain('class VaultRuntime')
+    expect(engineSource).not.toContain('activeTab')
   })
 })
 
 // ── …and they raise with a different tab open ────────────────────────────────
 
-function replicaOwner(): Owner {
+function replicaOwner(): Vault {
   return {
-    ownerId: 'owner-1',
-    ownerName: 'Alice',
-    ownSecretId: '42',
+    id: 'owner-1',
+    name: 'Alice',
+    secretId: '42',
     transport: { protocol: 'https', uri: 'https://example.test/owner-1' },
     participants: [],
     secretBag: null,
@@ -246,12 +299,7 @@ function replicaOwner(): Owner {
     recoveryFailures: [],
     heldShares: [],
     mainChannels: [],
-    config: {
-      protocolTimeoutSecs: 300,
-      authenticationMethod: 'user',
-      unpairAck: 'required',
-      autoAcceptUnpairRequests: false,
-    },
+    configOverrides: {},
   }
 }
 
@@ -282,14 +330,14 @@ function PageShaped() {
     <div>
       <button onClick={() => setActiveTab('replicas')}>Replicas</button>
       <div className="tab-panel">
-        {activeTab === 'secrets' && <p>Secret Bag</p>}
+        {activeTab === 'secrets' && <p>Secrets list</p>}
         {activeTab === 'replicas' && <p>Replica channels</p>}
       </div>
       <button
         onClick={() =>
           applyPairingCompleted(replicaOwner(), REPLICA_COMPLETION, {
             log: () => {},
-            getOwner: replicaOwner,
+            getVault: replicaOwner,
             commit: () => {},
             onReplicaChannelEstablished: channelId => setFingerprintChannelId(channelId),
           })
@@ -304,11 +352,11 @@ function PageShaped() {
 }
 
 describe('the fingerprint comparison with a different tab open', () => {
-  it('raises on pairing completion while the Secret Bag tab is selected', () => {
+  it('raises on pairing completion while the Secrets tab is selected', () => {
     act(() => root.render(<PageShaped />))
 
     // The Replicas tab has never been opened.
-    expect(text()).toContain('Secret Bag')
+    expect(text()).toContain('Secrets list')
     expect(text()).not.toContain('Replica channels')
     expect(text()).not.toContain('Fingerprint comparison')
 
@@ -320,7 +368,7 @@ describe('the fingerprint comparison with a different tab open', () => {
 
     expect(text()).toContain('Fingerprint comparison for 1234')
     // Still on the other tab: the modal came to the user, not the other way round.
-    expect(text()).toContain('Secret Bag')
+    expect(text()).toContain('Secrets list')
     expect(text()).not.toContain('Replica channels')
   })
 })
@@ -353,6 +401,7 @@ describe('group members the app cannot account for', () => {
       direction: 'replica_source' as const,
       peerReplicaId: orphan.replicaId,
       helperActorId: null,
+      refused: false,
     },
   }
 
@@ -394,5 +443,23 @@ describe('group members the app cannot account for', () => {
       removingReplicaIds: new Set([orphan.replicaId]),
     })
     expect(text()).toContain('Removing…')
+  })
+})
+
+describe('a destination row whose vault this device already holds', () => {
+  it('stops calling it an offer once the vault names that peer as its source', () => {
+    render({
+      channels: [{ ...HELPER_REPLICA }],
+      viewByChannelId: new Map([
+        [
+          '5678',
+          view({ channelId: '5678', status: 'paired', direction: 'replica_destination', peerReplicaId: '9' }),
+        ],
+      ]),
+      vaultVersion: 3,
+      groupSourceReplicaId: '9',
+    })
+    expect(host.textContent).toContain('at v3')
+    expect(host.textContent).not.toContain('is offered')
   })
 })

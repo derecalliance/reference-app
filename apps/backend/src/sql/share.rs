@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! `DeRecShareStore` over SQL.
 //!
 //! `bytes` is base64 `TEXT` rather than a blob type, which neither engine
@@ -241,7 +244,7 @@ impl DeRecShareStore for SqlShareStore {
         let share_secret = id_to_text(share.secret_id);
 
         Box::pin(async move {
-            let mut tx = pool.begin().await.map_err(backend)?;
+            let mut tx = crate::db::begin_write(&pool).await.map_err(backend)?;
 
             sqlx::query(
                 "DELETE FROM shares \

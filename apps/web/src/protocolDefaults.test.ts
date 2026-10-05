@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { FALLBACK_SERVER_DEFAULTS } from './config'
@@ -107,6 +110,31 @@ describe('protocolDefaults', () => {
 
     // http absorbs the difference; the named modes are the choice.
     expect(helperTransports).toEqual({ http: 3, grpc: 1, both: 1 })
+  })
+
+  it('folds every helper into HTTP when the node runs no gRPC listener', () => {
+    // QA: a mix saved while gRPC was on kept being sent after the node was
+    // restarted without it, and every "Provision up to N" failed with
+    // "gRPC helpers requested but grpc_enabled is false".
+    persistDefaultOverrides({ participantCount: 14, helperTransports: { http: 4, grpc: 5, both: 5 } })
+
+    const server = {
+      ...FALLBACK_SERVER_DEFAULTS,
+      grpcEnabled: false,
+      helperTransports: { http: 3, grpc: 2, both: 2 },
+    }
+
+    expect(effectiveDefaults(server).helperTransports).toEqual({ http: 14, grpc: 0, both: 0 })
+  })
+
+  it('takes what the node runs from the node, never from an override', () => {
+    persistDefaultOverrides({ grpcEnabled: true, grpcRelayEnabled: true })
+
+    const server = { ...FALLBACK_SERVER_DEFAULTS, grpcEnabled: false, grpcRelayEnabled: false }
+    const effective = effectiveDefaults(server)
+
+    expect(effective.grpcEnabled).toBe(false)
+    expect(effective.grpcRelayEnabled).toBe(false)
   })
 
   it('survives localStorage throwing', () => {

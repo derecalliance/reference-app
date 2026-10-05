@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 /** The owner page's tabs, in the order they are shown. */
 export type ActiveTab = 'participants' | 'replicas' | 'secrets' | 'shares' | 'recovery'
 

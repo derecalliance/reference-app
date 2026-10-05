@@ -1,4 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import type { ServerDefaults } from './config'
+import type { VaultConfig, VaultConfigOverrides } from './types'
 import { fitTransportsTo } from './transportMix'
 
 /**
@@ -65,7 +69,24 @@ export function clearDefaultOverrides(): void {
  * pane and the Settings pane cannot disagree about what a default is.
  */
 export function effectiveDefaults(server: ServerDefaults): ServerDefaults {
-  const merged = { ...server, ...loadDefaultOverrides() }
+  const merged: ServerDefaults = {
+    ...server,
+    ...loadDefaultOverrides(),
+    // What the node runs is a fact about the node, not a preference: an
+    // override saved against another configuration must not claim a listener
+    // or relay this node does not have.
+    grpcEnabled: server.grpcEnabled,
+    grpcRelayEnabled: server.grpcRelayEnabled,
+  }
+
+  // A node without the gRPC listener can only provision HTTP helpers, and it
+  // refuses a request naming any other ("gRPC helpers requested but
+  // grpc_enabled is false"). A breakdown saved while it had one — or the
+  // node's own, reconfigured — would otherwise break every provisioning
+  // request, with the fields that hold it hidden on Settings.
+  const transports = merged.grpcEnabled
+    ? merged.helperTransports
+    : { http: merged.participantCount, grpc: 0, both: 0 }
 
   // The count and the breakdown are configured separately, so a merge can
   // produce a pair that disagree — override the count alone and the breakdown
@@ -74,6 +95,39 @@ export function effectiveDefaults(server: ServerDefaults): ServerDefaults {
   // reasonable Settings edit from making provisioning fail.
   return {
     ...merged,
-    helperTransports: fitTransportsTo(merged.helperTransports, merged.participantCount),
+    helperTransports: fitTransportsTo(transports, merged.participantCount),
+  }
+}
+
+/**
+ * What a vault actually runs with: the node's defaults, this browser's
+ * overrides, then the vault's own — the third tier of the merge
+ * [`effectiveDefaults`] performs, and the only place it happens.
+ *
+ * `minParticipants` is deliberately absent. It is the Shamir threshold passed to
+ * `withThreshold`, and shares already distributed depend on it, so it is
+ * resolved once and frozen onto the vault record at creation rather than
+ * inherited live — otherwise editing a browser default would retroactively
+ * change the threshold of a vault that has already published. See
+ * `Vault.minParticipants`.
+ *
+ * Every field is resolved with `??` rather than `||`: `autoAcceptUnpairRequests:
+ * false` is a real choice, and `||` would silently restore the server's `true`.
+ */
+export function resolveVaultConfig(
+  overrides: VaultConfigOverrides,
+  server: ServerDefaults,
+): VaultConfig {
+  const base = effectiveDefaults(server)
+  return {
+    protocolTimeoutSecs: overrides.protocolTimeoutSecs ?? base.protocolTimeoutSecs,
+    authenticationMethod: overrides.authenticationMethod ?? base.authenticationMethod,
+    unpairAck: overrides.unpairAck ?? base.unpairAck,
+    autoAcceptUnpairRequests:
+      overrides.autoAcceptUnpairRequests ?? base.autoAcceptUnpairRequests,
+    autoAcceptStoreShareRequests:
+      overrides.autoAcceptStoreShareRequests ?? base.autoAcceptStoreShareRequests,
+    autoAcceptVerifyShareRequests:
+      overrides.autoAcceptVerifyShareRequests ?? base.autoAcceptVerifyShareRequests,
   }
 }

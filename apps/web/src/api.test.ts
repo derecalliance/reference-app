@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { apiGetServerDefaults, apiRegisterOwner } from './api'
 import { FALLBACK_SERVER_DEFAULTS } from './config'
@@ -83,5 +86,23 @@ describe('api — reachable backend', () => {
     vi.stubGlobal('fetch', vi.fn(() => jsonResponse({ error: 'claim_actor_id not found' }, 404)))
 
     await expect(apiRegisterOwner('Alice', 'nope')).rejects.toThrow('claim_actor_id not found')
+  })
+})
+
+describe('api — rejected requests', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('never surfaces a bare status code for a malformed claim', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response('', { status: 422, statusText: 'Unprocessable Entity' }))),
+    )
+
+    const err = (await apiRegisterOwner('Alice', 'nope').catch((e: unknown) => e)) as Error
+
+    expect(err.message).not.toMatch(/failed: 422$/)
+    expect(err.message).toMatch(/^Could not register the owner: the server could not understand/)
   })
 })

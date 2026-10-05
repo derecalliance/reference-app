@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
+//! What no route handles still answers in the API's one error shape.
+//!
+//! These depend on `build_router` registering
+//! `routes::api_error::route_not_found` as its fallback and
+//! `routes::api_error::method_not_allowed` as its method-not-allowed fallback;
+//! without them Axum answers both with an empty body.
+
+use axum::{
+    body::Body,
+    http::{header, Request, StatusCode},
+};
+use serde_json::Value;
+use tower::ServiceExt;
+
+async fn send(request: Request<Body>) -> (StatusCode, Option<String>, Value) {
+    let router = derec_backend::build_router(derec_backend::test_support::app_state().await);
+    let response = router.oneshot(request).await.expect("router is infallible");
+    let status = response.status();
+    let allow = response
+        .headers()
+        .get(header::ALLOW)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("response body readable");
+    (
+        status,
+        allow,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+#[actix_rt::test]
+async fn an_unknown_path_is_404_in_the_shared_shape() {
+    let (status, _, body) = send(
+        Request::get("/no/such/route")
+            .body(Body::empty())
+            .expect("request builds"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        body["error"].is_string(),
+        "expected the shared error shape, got {body}"
+    );
+}
+
+#[actix_rt::test]
+async fn a_wrong_method_is_405_in_the_shared_shape_and_still_says_what_is_allowed() {
+    let (status, allow, body) = send(
+        Request::delete("/actors")
+            .body(Body::empty())
+            .expect("request builds"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    assert!(
+        body["error"].is_string(),
+        "expected the shared error shape, got {body}"
+    );
+    assert!(
+        allow.is_some_and(|methods| methods.contains("GET")),
+        "the Allow header must survive the custom body"
+    );
+}

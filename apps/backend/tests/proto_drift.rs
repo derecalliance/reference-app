@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! The vendored protos in `proto/` must match the `derec-proto` release the
 //! backend is pinned to.
 //!

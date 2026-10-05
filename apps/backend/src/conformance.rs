@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 //! Behaviour every store implementation must have, independent of engine.
 //!
 //! Written against the in-memory stores first, so it is proven to catch real
@@ -370,7 +373,7 @@ pub async fn user_secret_store_conforms<S: DeRecUserSecretStore>(store: &mut S) 
                 version: 4,
                 secrets: Vec::new(),
                 description: Some("first".to_owned()),
-                replicas: None,
+                author_replica_id: None,
             },
         )
         .await
@@ -392,7 +395,7 @@ pub async fn user_secret_store_conforms<S: DeRecUserSecretStore>(store: &mut S) 
                 version: 5,
                 secrets: Vec::new(),
                 description: Some("second".to_owned()),
-                replicas: None,
+                author_replica_id: None,
             },
         )
         .await

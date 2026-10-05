@@ -1,25 +1,64 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
+import { ModalFrame } from '../ModalFrame'
 import { useState } from 'react'
 import { fromBase64Url } from '../derecApi'
+import { errorText } from '../errorText'
+import { committedVersionsOf } from './heldShares'
 import { EyeIcon, EyeOffIcon } from './icons'
 import { ClickToCopyCode } from './primitives'
 import { decodeSecretText } from './recoveredSecret'
 import { findRecoveryFailure } from './recoveryFailures'
 import { isReplicaChannel } from '../ownerPairing'
 import { loadRawShare } from '../stores'
-import type { HeldShare, Owner, PairedParticipant, RecoveredSecret } from '../types'
+import type { HeldShare, Vault, PairedParticipant, RecoveredSecret } from '../types'
+
+/** What a helper's last discovery answer amounted to. */
+type DiscoveryState = 'pending' | 'found' | 'nothing' | 'unreachable'
+
+/** Shown on a helper that answered discovery with nothing for this device. */
+const NOTHING_FOUND_HINT =
+  'This helper holds no shares for this device yet. Ask it to link this channel to ' +
+  'the owner it already helps, then discover again.'
+
+function discoveryState(participant: PairedParticipant): DiscoveryState {
+  if (participant.discoveryError) return 'unreachable'
+  if (!participant.discoveryComplete) return 'pending'
+  return (participant.discoveredVersions ?? []).length > 0 ? 'found' : 'nothing'
+}
+
+const DISCOVERY_TAG: Record<DiscoveryState, { label: string; className: string }> = {
+  pending: { label: 'Pending', className: 'available' },
+  found: { label: 'Discovered', className: 'paired' },
+  // Not the green "Discovered": an empty answer is not a success.
+  nothing: { label: 'Nothing found', className: 'available' },
+  unreachable: { label: 'No answer', className: 'offline' },
+}
 
 function RecoveryParticipantCard({
   participant,
 }: {
   participant: PairedParticipant
 }) {
+  const state = discoveryState(participant)
+  const tag = DISCOVERY_TAG[state]
   return (
     <div className="recovery-helper-row">
       <span className={`participant-dot paired`} aria-hidden="true" />
       <span className="card-title">{participant.name}</span>
       <ClickToCopyCode label="Channel ID" value={participant.channelId} />
-      <span className={`status-tag ${participant.discoveryComplete ? 'paired' : 'available'}`}>
-        {participant.discoveryComplete ? 'Discovered' : 'Pending'}
+      <span
+        className={`status-tag ${tag.className}`}
+        title={
+          state === 'nothing'
+            ? NOTHING_FOUND_HINT
+            : state === 'unreachable'
+              ? participant.discoveryError
+              : undefined
+        }
+      >
+        {tag.label}
       </span>
     </div>
   )
@@ -80,55 +119,56 @@ function RecoveredSecretCard({
           cannot autofocus the safe choice, and looks nothing like the
           equally-destructive replica adoption dialog. */}
       {confirmOpen && (
-        <div
-          className="modal-overlay"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="restore-bag-confirm-title"
+        <ModalFrame
+          overlayClassName="modal-overlay"
+          className="modal"
+          labelledBy="restore-bag-confirm-title"
+          onEscape={restoring ? undefined : () => setConfirmOpen(false)}
         >
-          <div className="modal">
-            <div className="modal-header">
-              <h2 className="modal-title" id="restore-bag-confirm-title">
-                Recover from this bag?
-              </h2>
-            </div>
-            <div className="modal-body">
-              <p>
-                This replaces every channel, secret and share this device holds
-                with what <strong>{secret.label}</strong> (v{secret.version})
-                carries, then leaves recovery mode.
-              </p>
-              <p>
-                The recovery-paired helpers are unlinked from the app; they stay
-                paired on their own side. This cannot be undone.
-              </p>
-              <div className="modal-actions">
-                <button
-                  className="secondary"
-                  onClick={() => setConfirmOpen(false)}
-                  disabled={restoring}
-                  autoFocus
-                >
-                  Cancel
-                </button>
-                <button
-                  className="danger"
-                  onClick={() => void handleConfirmRestore()}
-                  disabled={restoring}
-                >
-                  {restoring ? 'Recovering…' : 'Recover from bag'}
-                </button>
-              </div>
+          <div className="modal-header">
+            <h2 className="modal-title" id="restore-bag-confirm-title">
+              Recover from this bag?
+            </h2>
+          </div>
+          <div className="modal-body">
+            <p>
+              This replaces every channel, secret and share this device holds
+              with what <strong>{secret.label}</strong> (v{secret.version})
+              carries, then leaves recovery mode.
+            </p>
+            <p>
+              The helpers this bag names keep their channels and their
+              shares: this device takes those channels back and tells each
+              helper where to reach it. Any other channel — one paired only to
+              recover — is unpaired on both sides. This cannot be undone.
+            </p>
+            <div className="modal-actions">
+              <button
+                className="secondary"
+                onClick={() => setConfirmOpen(false)}
+                disabled={restoring}
+                autoFocus
+              >
+                Cancel
+              </button>
+              <button
+                className="danger"
+                onClick={() => void handleConfirmRestore()}
+                disabled={restoring}
+              >
+                {restoring ? 'Recovering…' : 'Recover from bag'}
+              </button>
             </div>
           </div>
-        </div>
+        </ModalFrame>
       )}
       <div className="card-body">
         <dl className="field-list">
           <div className="field-row">
             <dt>Secret ID</dt>
             <dd>
-              <ClickToCopyCode label="Secret ID" value={secret.secretId} />
+              {/* The row's own label already names it. */}
+              <ClickToCopyCode value={secret.secretId} />
             </dd>
           </div>
         </dl>
@@ -186,7 +226,7 @@ function RecoveredSecretCard({
           ) : (
             <ul className="participant-tag-list" role="list">
               {secret.snapshot.helpers.map(h => {
-                const displayName = h.communicationInfo['name'] || 'Unknown'
+                const displayName = h.communicationInfo?.['name'] || 'Unknown'
                 return (
                   <li key={h.channelId} className="participant-tag">
                     <span>{displayName}</span>
@@ -207,21 +247,21 @@ type ShareFormat = 'base64' | 'protobuf'
 function ShareDataRow({
   channelId,
   version,
-  ownerId,
-  ownSecretId,
+  vaultId,
+  secretId,
 }: {
   channelId: string
   version: number
-  ownerId: string
+  vaultId: string
   /**
    * This node's own secret id — the partition every share it holds is filed
    * under, including shares belonging to another owner's secret.
    */
-  ownSecretId: string
+  secretId: string
 }) {
   const [format, setFormat] = useState<ShareFormat>('base64')
 
-  const raw = loadRawShare(`owner:${ownerId}`, ownSecretId, channelId, version)
+  const raw = loadRawShare(`vault:${vaultId}`, secretId, channelId, version)
   if (!raw) return <span className="share-data-empty">Share data not found in local storage</span>
 
   const display = format === 'base64'
@@ -247,13 +287,13 @@ function ShareDataRow({
 export function HeldSharesList({
   shares,
   participants,
-  ownerId,
-  ownSecretId,
+  vaultId,
+  secretId,
 }: {
   shares: HeldShare[]
   participants: PairedParticipant[]
-  ownerId: string
-  ownSecretId: string
+  vaultId: string
+  secretId: string
 }) {
   if (shares.length === 0) {
     return (
@@ -286,8 +326,8 @@ export function HeldSharesList({
               <ShareDataRow
                 channelId={share.channelId}
                 version={share.version}
-                ownerId={ownerId}
-                ownSecretId={ownSecretId}
+                vaultId={vaultId}
+                secretId={secretId}
               />
             </div>
           </div>
@@ -297,83 +337,107 @@ export function HeldSharesList({
   )
 }
 
-export function RecoveryPanel({
-  owner,
-  onRequestDiscovery,
-  onRecover,
-  onRestoreFromBag,
-}: {
-  owner: Owner
-  onRequestDiscovery: () => Promise<void>
-  onRecover: (secretId: string, version: number, label: string, participantChannelIds: bigint[]) => Promise<void>
-  onRestoreFromBag: (secret: RecoveredSecret) => Promise<void>
-}) {
-  // Every paired helper is a discovery candidate. There is no separate
-  // "recovery pairing" any more: a re-paired owner looks like any other, and
-  // whether a helper can answer depends on it having *linked* the channel to
-  // an owner it already helps — which happens on the helper's side.
-  // A replica channel is never a discovery candidate: it holds no VSS share, so
-  // it has nothing to answer a discovery — or a share request — with.
-  const recoveryParticipants = owner.participants.filter(
-    h => h.connectionStatus === 'paired' && h.channelId && !isReplicaChannel(h),
-  )
-  const recoveredSecrets = owner.recoveredSecrets ?? []
-  const alreadyRecoveredKeys = new Set(recoveredSecrets.map(s => `${s.secretId}:${s.version}`))
-  const recoveryProgress = owner.recoveryProgress
+/**
+ * One version of a secret some helpers hold, as discovery reported it.
+ *
+ * Channel ids stay decimal strings here: this travels as a component prop, and
+ * React's development build serialises props — a `bigint` there throws.
+ */
+interface AggregatedVersion {
+  version: number
+  description: string
+  helperChannelIds: string[]
+  helperNames: string[]
+}
 
-  // Aggregate discovered versions from all paired helpers, grouped
-  // by secret_id. Each version carries the helpers that hold it so the UI
-  // can render one card per secret with its versions nested inside.
-  type AggregatedVersion = {
-    version: number
-    description: string
-    helperChannelIds: bigint[]
-    helperNames: string[]
-  }
-  type AggregatedSecret = {
-    secretId: string
-    versions: AggregatedVersion[]
-  }
-  // First pass: bucket every (secretId, version) → helpers.
+interface AggregatedSecret {
+  secretId: string
+  versions: AggregatedVersion[]
+}
+
+/**
+ * Group every paired helper's discovery answer into one entry per secret, its
+ * versions newest first, the secret seen most recently first.
+ */
+function aggregateDiscovered(helpers: readonly PairedParticipant[]): AggregatedSecret[] {
   const versionMap = new Map<string, AggregatedVersion & { secretId: string }>()
-  for (const h of recoveryParticipants) {
+  for (const h of helpers) {
     for (const v of h.discoveredVersions ?? []) {
       const key = `${v.secretId}:${v.version}`
       const existing = versionMap.get(key)
       if (existing) {
-        existing.helperChannelIds.push(BigInt(h.channelId))
+        existing.helperChannelIds.push(h.channelId)
         existing.helperNames.push(h.name)
       } else {
         versionMap.set(key, {
           secretId: v.secretId,
           version: v.version,
           description: v.description,
-          helperChannelIds: [BigInt(h.channelId)],
+          helperChannelIds: [h.channelId],
           helperNames: [h.name],
         })
       }
     }
   }
-  // Second pass: group by secret_id, versions sorted newest-first within each
-  // secret, secrets ordered by their newest version (most recently observed
-  // secret rises to the top).
   const secretMap = new Map<string, AggregatedSecret>()
-  for (const entry of versionMap.values()) {
-    const bucket = secretMap.get(entry.secretId)
-    const { secretId: _drop, ...version } = entry
-    void _drop
-    if (bucket) {
-      bucket.versions.push(version)
-    } else {
-      secretMap.set(entry.secretId, { secretId: entry.secretId, versions: [version] })
+  for (const { secretId, ...version } of versionMap.values()) {
+    const bucket = secretMap.get(secretId)
+    if (bucket) bucket.versions.push(version)
+    else secretMap.set(secretId, { secretId, versions: [version] })
+  }
+  for (const secret of secretMap.values()) secret.versions.sort((a, b) => b.version - a.version)
+  return Array.from(secretMap.values()).sort((a, b) => b.versions[0].version - a.versions[0].version)
+}
+
+/**
+ * What this device knows about `secretId` from its own record: the threshold
+ * its bag was published with, and which versions were committed rather than
+ * rolled back. `null` on a fresh device, which knows neither.
+ */
+function knownBag(vault: Vault, secretId: string): { threshold: number; committed: Set<number>; oldest: number } | null {
+  const bag = vault.secretBag
+  if (!bag || bag.secretId !== secretId) return null
+  const committed = committedVersionsOf(bag)
+  return { threshold: bag.threshold, committed, oldest: Math.min(...committed) }
+}
+
+export function RecoveryPanel({
+  vault,
+  onRequestDiscovery,
+  onRecover,
+  onRestoreFromBag,
+}: {
+  vault: Vault
+  onRequestDiscovery: () => Promise<void>
+  onRecover: (secretId: string, version: number, label: string, participantChannelIds: bigint[]) => Promise<void>
+  onRestoreFromBag: (secret: RecoveredSecret) => Promise<void>
+}) {
+  const [discovering, setDiscovering] = useState(false)
+  const [discoveryError, setDiscoveryError] = useState<string | null>(null)
+
+  // Every paired helper is a discovery candidate. There is no separate
+  // "recovery pairing" any more: a re-paired owner looks like any other, and
+  // whether a helper can answer depends on it having *linked* the channel to
+  // an owner it already helps — which happens on the helper's side.
+  // A replica channel is never a discovery candidate: it holds no VSS share, so
+  // it has nothing to answer a discovery — or a share request — with.
+  const recoveryParticipants = vault.participants.filter(
+    h => h.connectionStatus === 'paired' && h.channelId && !isReplicaChannel(h),
+  )
+  const recoveredSecrets = vault.recoveredSecrets ?? []
+  const availableSecrets = aggregateDiscovered(recoveryParticipants)
+
+  async function handleDiscover() {
+    setDiscovering(true)
+    setDiscoveryError(null)
+    try {
+      await onRequestDiscovery()
+    } catch (err) {
+      setDiscoveryError(errorText(err))
+    } finally {
+      setDiscovering(false)
     }
   }
-  for (const secret of secretMap.values()) {
-    secret.versions.sort((a, b) => b.version - a.version)
-  }
-  const availableSecrets = Array.from(secretMap.values()).sort(
-    (a, b) => b.versions[0].version - a.versions[0].version,
-  )
 
   return (
     <div className="recovery-panel">
@@ -382,11 +446,20 @@ export function RecoveryPanel({
         <div className="section-header-row">
           <h3 className="sub-heading">Recovery-Paired Helpers</h3>
           {recoveryParticipants.length > 0 && (
-            <button className="primary" onClick={() => onRequestDiscovery()}>
-              {recoveryParticipants.every(h => h.discoveryComplete) ? 'Re-discover All' : 'Discover All'}
+            <button className="primary" onClick={() => void handleDiscover()} disabled={discovering}>
+              {discovering
+                ? 'Discovering…'
+                : recoveryParticipants.every(h => h.discoveryComplete)
+                  ? 'Re-discover All'
+                  : 'Discover All'}
             </button>
           )}
         </div>
+        {discoveryError && (
+          <p className="field-error" role="alert">
+            {discoveryError}
+          </p>
+        )}
         {recoveryParticipants.length === 0 ? (
           <p className="tab-empty-state">
             No helpers paired yet. Pair with the people or entities that hold
@@ -400,6 +473,15 @@ export function RecoveryPanel({
             ))}
           </div>
         )}
+        {recoveryParticipants.some(h => discoveryState(h) === 'nothing') && (
+          <p className="empty-hint" role="status">
+            {recoveryParticipants.every(h => discoveryState(h) === 'nothing')
+              ? 'Discovery found nothing. '
+              : 'Some helpers found nothing. '}
+            A helper can only answer once it has linked this channel to the owner it already
+            helps — ask it to, then discover again.
+          </p>
+        )}
       </div>
 
       {/* Available secrets discovered from helpers — one card per secret_id,
@@ -408,113 +490,14 @@ export function RecoveryPanel({
         <div className="recovery-section">
           <h3 className="sub-heading">Available Secrets</h3>
           <div className="card-list">
-            {availableSecrets.map(secret => {
-              // The most recent version's description acts as the secret's
-              // current label; older versions show their own description on
-              // the version row when it diverges.
-              const latest = secret.versions[0]
-              const cardTitle = latest.description || 'Untitled secret'
-              return (
-                <div key={secret.secretId} className="detail-card">
-                  <div className="card-header">
-                    <span className="card-title">{cardTitle}</span>
-                    <span className="mono-tag">{secret.secretId}</span>
-                    <span className="version-tag">
-                      {secret.versions.length} version{secret.versions.length !== 1 ? 's' : ''}
-                    </span>
-                  </div>
-                  <div className="card-body">
-                    <div className="available-versions-list">
-                      {secret.versions.map(v => {
-                        const key = `${secret.secretId}:${v.version}`
-                        const alreadyRecovered = alreadyRecoveredKeys.has(key)
-                        const helperCount = v.helperChannelIds.length
-                        const isThisVersionActive =
-                          recoveryProgress?.secretId === secret.secretId &&
-                          recoveryProgress?.version === v.version
-                        const isInProgress =
-                          isThisVersionActive && !recoveryProgress?.error
-                        // Persistent failure (from a prior attempt) survives
-                        // when the user clicks Recover on a different version;
-                        // it's cleared only on retry or success of THIS row.
-                        const pastFailure = findRecoveryFailure(
-                          owner.recoveryFailures,
-                          secret.secretId,
-                          v.version,
-                        )
-                        const versionError = isThisVersionActive
-                          ? recoveryProgress?.error ?? null
-                          : pastFailure?.error ?? null
-                        const insufficientShares = versionError != null
-                        const descriptionDiverges =
-                          v.description && v.description !== cardTitle
-                        return (
-                          <div key={key} className="available-version-row">
-                            <span className="version-tag">v{v.version}</span>
-                            {descriptionDiverges && (
-                              <span className="available-version-description">
-                                {v.description}
-                              </span>
-                            )}
-                            <span className="available-version-helpers">
-                              {helperCount} helper{helperCount !== 1 ? 's' : ''}
-                              {v.helperNames.length > 0 && (
-                                <span className="available-version-helper-names">
-                                  {' '}({v.helperNames.join(', ')})
-                                </span>
-                              )}
-                            </span>
-                            {isInProgress && (
-                              <span className="available-version-progress">
-                                {recoveryProgress!.sharesReceived} share
-                                {recoveryProgress!.sharesReceived !== 1 ? 's' : ''} received…
-                              </span>
-                            )}
-                            {insufficientShares && (
-                              <span
-                                className="available-version-insufficient"
-                                title="Not enough shares — pair with more helpers and try again."
-                              >
-                                Insufficient shares
-                              </span>
-                            )}
-                            <span
-                              className={`status-tag ${
-                                alreadyRecovered ? 'paired'
-                                : isInProgress ? 'available'
-                                : versionError ? 'offline'
-                                : 'available'
-                              }`}
-                            >
-                              {alreadyRecovered ? 'Recovered'
-                                : isInProgress ? 'Recovering…'
-                                : versionError ? 'Incomplete'
-                                : 'Ready'}
-                            </span>
-                            {!alreadyRecovered && (
-                              <button
-                                className="primary available-version-recover-btn"
-                                disabled={isInProgress}
-                                onClick={() =>
-                                  onRecover(
-                                    secret.secretId,
-                                    v.version,
-                                    v.description || 'secret',
-                                    v.helperChannelIds,
-                                  )
-                                }
-                              >
-                                {versionError ? 'Try Again' : 'Recover'}
-                              </button>
-                            )}
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </div>
-                </div>
-              )
-            })}
+            {availableSecrets.map(secret => (
+              <AvailableSecretCard
+                key={secret.secretId}
+                secret={secret}
+                vault={vault}
+                onRecover={onRecover}
+              />
+            ))}
           </div>
         </div>
       )}
@@ -533,6 +516,167 @@ export function RecoveryPanel({
             ))}
           </div>
         </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * One discovered secret and the versions helpers hold of it.
+ *
+ * Versions this device's own record shows were rolled back are left out —
+ * helpers keep the shares of a round that never committed, and offering to
+ * recover one invites restoring a bag that was never the vault's.
+ */
+function AvailableSecretCard({
+  secret,
+  vault,
+  onRecover,
+}: {
+  secret: AggregatedSecret
+  vault: Vault
+  onRecover: (secretId: string, version: number, label: string, participantChannelIds: bigint[]) => Promise<void>
+}) {
+  const known = knownBag(vault, secret.secretId)
+  const rolledBack = (v: AggregatedVersion) =>
+    known !== null && v.version >= known.oldest && !known.committed.has(v.version)
+  const versions = secret.versions.filter(v => !rolledBack(v))
+  const hiddenCount = secret.versions.length - versions.length
+  if (versions.length === 0) return null
+
+  // The most recent version's description acts as the secret's current
+  // label; older versions show their own description on the version row
+  // when it diverges.
+  const cardTitle = versions[0].description || 'Untitled secret'
+  return (
+    <div className="detail-card">
+      <div className="card-header">
+        <span className="card-title">{cardTitle}</span>
+        <span className="mono-tag">{secret.secretId}</span>
+        <span className="version-tag">
+          {versions.length} version{versions.length !== 1 ? 's' : ''}
+        </span>
+      </div>
+      <div className="card-body">
+        <div className="available-versions-list">
+          {versions.map(v => (
+            <AvailableVersionRow
+              key={`${secret.secretId}:${v.version}`}
+              secretId={secret.secretId}
+              version={v}
+              cardTitle={cardTitle}
+              threshold={known?.threshold ?? null}
+              vault={vault}
+              onRecover={onRecover}
+            />
+          ))}
+        </div>
+        {hiddenCount > 0 && (
+          <p className="empty-hint">
+            {hiddenCount} rolled-back version{hiddenCount !== 1 ? 's' : ''} not shown — helpers
+            still hold shares of {hiddenCount !== 1 ? 'rounds' : 'a round'} this vault never committed.
+          </p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function AvailableVersionRow({
+  secretId,
+  version: v,
+  cardTitle,
+  threshold,
+  vault,
+  onRecover,
+}: {
+  secretId: string
+  version: AggregatedVersion
+  cardTitle: string
+  /** The threshold the bag was published with, when this device knows it. */
+  threshold: number | null
+  vault: Vault
+  onRecover: (secretId: string, version: number, label: string, participantChannelIds: bigint[]) => Promise<void>
+}) {
+  const [requestError, setRequestError] = useState<string | null>(null)
+
+  const alreadyRecovered = (vault.recoveredSecrets ?? []).some(
+    s => s.secretId === secretId && s.version === v.version,
+  )
+  const helperCount = v.helperChannelIds.length
+  const recoveryProgress = vault.recoveryProgress
+  const isThisVersionActive =
+    recoveryProgress?.secretId === secretId && recoveryProgress?.version === v.version
+  const isInProgress = isThisVersionActive && !recoveryProgress?.error
+  // Persistent failure (from a prior attempt) survives when the user clicks
+  // Recover on a different version; it's cleared only on retry or success of
+  // THIS row.
+  const pastFailure = findRecoveryFailure(vault.recoveryFailures, secretId, v.version)
+  const versionError =
+    requestError ??
+    (isThisVersionActive ? (recoveryProgress?.error ?? null) : (pastFailure?.error ?? null))
+  const belowThreshold = threshold !== null && helperCount < threshold
+  const descriptionDiverges = v.description && v.description !== cardTitle
+
+  async function handleRecover() {
+    setRequestError(null)
+    try {
+      await onRecover(secretId, v.version, v.description || 'secret', v.helperChannelIds.map(id => BigInt(id)))
+    } catch (err) {
+      setRequestError(errorText(err))
+    }
+  }
+
+  // Only claim "Ready" when the threshold is known. A fresh device does not
+  // know it, so it says how many helpers hold the version and lets Recover
+  // report whether that was enough.
+  const status = alreadyRecovered
+    ? { label: 'Recovered', className: 'paired' }
+    : isInProgress
+      ? { label: 'Recovering…', className: 'available' }
+      : versionError
+        ? { label: 'Incomplete', className: 'offline' }
+        : threshold === null
+          ? null
+          : belowThreshold
+            ? { label: `Needs ${threshold}`, className: 'offline' }
+            : { label: 'Ready', className: 'paired' }
+
+  return (
+    <div className="available-version-row">
+      <span className="version-tag">v{v.version}</span>
+      {descriptionDiverges && <span className="available-version-description">{v.description}</span>}
+      <span className="available-version-helpers">
+        {helperCount} helper{helperCount !== 1 ? 's' : ''} hold{helperCount === 1 ? 's' : ''} it
+        {v.helperNames.length > 0 && (
+          <span className="available-version-helper-names"> ({v.helperNames.join(', ')})</span>
+        )}
+      </span>
+      {isInProgress && (
+        <span className="available-version-progress">
+          {recoveryProgress!.sharesReceived} share
+          {recoveryProgress!.sharesReceived !== 1 ? 's' : ''} received…
+        </span>
+      )}
+      {versionError && (
+        <span className="available-version-insufficient" role="alert">
+          {versionError}
+        </span>
+      )}
+      {!versionError && belowThreshold && (
+        <span className="available-version-insufficient">
+          Only {helperCount} of the {threshold} helpers needed hold this version.
+        </span>
+      )}
+      {status && <span className={`status-tag ${status.className}`}>{status.label}</span>}
+      {!alreadyRecovered && (
+        <button
+          className="primary available-version-recover-btn"
+          disabled={isInProgress}
+          onClick={() => void handleRecover()}
+        >
+          {versionError ? 'Try Again' : 'Recover'}
+        </button>
       )}
     </div>
   )
