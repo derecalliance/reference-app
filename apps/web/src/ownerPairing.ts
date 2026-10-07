@@ -1,5 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { SenderKind, type DeRecEvent } from '@derec-alliance/web'
-import type { ChannelRole, Owner, PairedParticipant } from './types'
+import type { ChannelRole, Vault, PairedParticipant } from './types'
 import type { ConsoleEntry } from './ConsoleContext'
 import { apiGetActors } from './api'
 import {
@@ -11,7 +14,8 @@ import {
 } from './pairingRoles'
 import { pairingRoleLabel } from './pairingRoleOptions'
 import { recordReplicaChannel, resolveReplicaPairing } from './replicaFlows'
-import { resolvePeerActor } from './peerIdentity'
+import { resolvePeerActor, type PeerActorCandidate } from './peerIdentity'
+import type { StoredChannelInfo } from './stores'
 
 /**
  * The `PairingCompleted` fold, lifted out of `OwnerPage`, together with
@@ -147,9 +151,9 @@ export type PairingCompletedEvent = Extract<DeRecEvent, { type: 'PairingComplete
 export interface PairingCompletedDeps {
   log: (entry: Omit<ConsoleEntry, 'id' | 'timestamp'>) => void
   /** Latest committed owner state, read when the async identity lookup lands. */
-  getOwner: () => Owner
+  getVault: () => Vault
   /** Commit owner state produced after this fold has already returned. */
-  commit: (next: Owner) => void
+  commit: (next: Vault) => void
   /**
    * A replica handshake just completed on `channelId`.
    *
@@ -159,6 +163,13 @@ export interface PairingCompletedDeps {
    * cares about the roster.
    */
   onReplicaChannelEstablished?: (channelId: string) => void
+  /**
+   * What the library's channel record says the peer advertised. Read for a
+   * peer this vault had no roster identity for — the side that *accepted* a
+   * pairing request learns the peer's endpoints only from the handshake, and
+   * without this the row carried an empty URI until an identity update arrived.
+   */
+  readChannelInfo?: (channelId: string) => StoredChannelInfo | null
 }
 
 /**
@@ -169,11 +180,11 @@ export interface PairingCompletedDeps {
  * here and does nothing else with the event.
  */
 export function applyPairingCompleted(
-  current: Owner,
+  current: Vault,
   event: PairingCompletedEvent,
   deps: PairingCompletedDeps,
-): Owner {
-  const { log, getOwner, commit, onReplicaChannelEstablished } = deps
+): Vault {
+  const { log, getVault, commit, onReplicaChannelEstablished, readChannelInfo } = deps
 
   // The handshake atomically rotates to a long-term channel id at
   // completion. `pairing_channel_id` is the transient id that travelled on
@@ -199,7 +210,7 @@ export function applyPairingCompleted(
     payload: { channelId, pairingChannelId, actorId },
   })
 
-  let updated: Owner = {
+  let updated: Vault = {
     ...current,
     pendingPairings: pending
       ? current.pendingPairings.filter(p => p !== pending)
@@ -217,7 +228,7 @@ export function applyPairingCompleted(
   // re-derives the role, so getting it wrong here is getting it wrong
   // everywhere — hence `peerRoleFromKind`, never an inline kind test.
   if (isReplicaSenderKind(event.kind)) {
-    resolveReplicaPairing(current.ownerId, pairingChannelId, channelId)
+    resolveReplicaPairing(current.id, pairingChannelId, channelId)
 
     // This is the only point at which *both* sides of a replica handshake are
     // observed — the initiator and the responder each get this event — so it is
@@ -231,7 +242,7 @@ export function applyPairingCompleted(
     // `isReplicaSenderKind` has already established that a role exists.
     const localRole = replicaRoleForSenderKind(event.kind)
     if (localRole) {
-      recordReplicaChannel(current.ownerId, {
+      recordReplicaChannel(current.id, {
         channelId,
         role: localRole,
         peerName: event.peer_communication_info?.['name'],
@@ -270,10 +281,10 @@ export function applyPairingCompleted(
               name: replicaName,
               channelId,
               // Deliberately not resolved against the backend roster the way a
-              // participant row is. A browser replica is an ordinary owner actor
-              // that is indistinguishable from any other, and a provisioned one
-              // is a `Role::Replica` actor the participant resolver does not
-              // model — either way the lookup could only relabel this row with
+              // participant row is. Nothing on the roster marks a replica: a
+              // browser one is an ordinary owner actor indistinguishable from
+              // any other, and a helper paired in replica mode is an ordinary
+              // helper — so the lookup could only relabel this row with
               // somebody else's identity.
               transport: { protocol: 'https' as const, uri: '' },
               connectionStatus: 'paired' as const,
@@ -338,13 +349,17 @@ export function applyPairingCompleted(
     // Channel-scoped id so repeated pairings with the same peer stay
     // distinct (channelId is unique per pairing).
     const tempId = syntheticPeerId(channelId)
+    // An unknown peer's endpoints are whatever the handshake carried, which
+    // the library has already written to the channel record.
+    const advertised = knownActor ? [] : (readChannelInfo?.(channelId)?.transports ?? [])
     updated = {
       ...updated,
       participants: [...updated.participants, {
         id: tempId,
         name: peerName,
         channelId,
-        transport: knownActor?.transport ?? { protocol: 'https' as const, uri: '' },
+        transport: knownActor?.transport ?? advertised[0] ?? { protocol: 'https' as const, uri: '' },
+        ...(advertised.length > 0 ? { transports: advertised } : {}),
         connectionStatus: 'paired' as const,
         peerRole,
         secretShares: [],
@@ -356,31 +371,29 @@ export function applyPairingCompleted(
     // unknown. When it was already identified by a prior pairing, the
     // name/transport are carried over above.
     if (!actorId) {
-      const ownerId = current.ownerId
-      // The URI we paired against, when we were the initiator. Without it
-      // (responder side) resolution falls back to inference, which only
-      // commits when a single candidate exists — a server holding stale owner
-      // actors from a device that reset and registered again would otherwise
-      // relabel this channel with the wrong peer's identity.
-      const peerTransportUri = pending?.peerTransportUri
-      apiGetActors().then(actors => {
-        const snapshot = getOwner()
-        const peerActor = resolvePeerActor(actors, {
-          selfActorId: ownerId,
-          knownActorIds: new Set(snapshot.participants.map(h => h.id)),
-          peerTransportUri,
-        })
-        if (!peerActor) return
-        // Replace the placeholder with real actor info.
-        commit({
-          ...snapshot,
-          participants: snapshot.participants.map(h =>
-            h.id === tempId
-              ? { ...h, id: peerActor.id, name: peerActor.name, transport: { protocol: peerActor.transport.protocol, uri: peerActor.transport.uri }, browserManaged: peerActor.browser_managed ?? false }
-              : h
-          ),
-        })
-      }).catch(() => {})
+      const vaultId = current.id
+      // Only endpoints the peer itself is known to use: the contact we paired
+      // against (initiator), and what the handshake advertised. Never this
+      // node's roster alone — a peer on another node is not on it, and an
+      // inference from it relabelled such a channel with a local stranger.
+      const peerTransportUris = [
+        ...(pending?.peerTransportUri ? [pending.peerTransportUri] : []),
+        ...advertised.map(t => t.uri),
+      ]
+      const sentName = event.peer_communication_info?.name?.trim()
+      if (peerTransportUris.length > 0) {
+        apiGetActors().then(actors => {
+          const peerActor = resolvePeerActor(actors, { selfActorId: vaultId, peerTransportUris })
+          if (!peerActor) return
+          const snapshot = getVault()
+          commit({
+            ...snapshot,
+            participants: snapshot.participants.map(h =>
+              h.id === tempId ? identifyRow(h, peerActor, sentName) : h,
+            ),
+          })
+        }).catch(() => {})
+      }
     }
   }
 
@@ -391,9 +404,7 @@ export function applyPairingCompleted(
   // Read the shared key from the local secret store for browser-managed peers.
   // Backend-managed participants get their shared key from the backend poll,
   // but for WASM-to-WASM pairing the key only exists locally.
-  const localSharedKey = localStorage.getItem(
-    `derec:owner:${current.ownerId}:secret:${channelId}:0`,
-  )
+  const localSharedKey = readLocalSharedKey(current.id, channelId)
   if (localSharedKey) {
     // Target the row by channelId — each paired entry owns a unique
     // channel, so this works whether a placeholder was filled in or a
@@ -409,7 +420,61 @@ export function applyPairingCompleted(
   return updated
 }
 
+/**
+ * The channel's shared key as the library's secret store holds it, or `null`.
+ *
+ * The store partitions by secret id — `derec:vault:<id>:<secret id>:secret:
+ * <channel>:0` — and the partition is not always this vault's own secret: on a
+ * channel where this vault is the *helper*, it is the owner's. This used to
+ * read the key without any partition, which matched nothing, so a channel the
+ * roster poll does not cover (a helper paired from a pasted contact, a browser
+ * peer) never showed its key. Scanning for the channel across partitions finds
+ * it wherever it is.
+ */
+export function readLocalSharedKey(vaultId: string, channelId: string): string | null {
+  const prefix = `derec:vault:${vaultId}:`
+  const suffix = `:secret:${channelId}:0`
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i)
+      if (key && key.startsWith(prefix) && key.endsWith(suffix)) {
+        return localStorage.getItem(key)
+      }
+    }
+  } catch {
+    // Storage unavailable: the key is a display nicety, not something to fail on.
+  }
+  return null
+}
+
 // ── Peer identity ────────────────────────────────────────────────────────────
+
+/**
+ * A placeholder row, adopted by the actor its endpoints identify.
+ *
+ * The id and the browser-managed flag come from the actor — that is what the
+ * lookup was for. The name the peer itself sent wins over the roster's, since
+ * it is what the peer calls itself on this channel. The endpoints the
+ * handshake advertised are kept: they are the peer's own word, and the
+ * roster's are used only to fill a row that had none.
+ */
+export function identifyRow(
+  row: PairedParticipant,
+  actor: PeerActorCandidate,
+  sentName: string | undefined,
+): PairedParticipant {
+  const hasTransport = row.transport.uri !== ''
+  return {
+    ...row,
+    id: actor.id,
+    name: sentName || actor.name,
+    transport: hasTransport
+      ? row.transport
+      : { protocol: actor.transport.protocol, uri: actor.transport.uri },
+    transports: hasTransport ? row.transports : actor.transports,
+    browserManaged: actor.browser_managed ?? false,
+  }
+}
 
 /** Prefix marking a row the app minted for a peer it has no roster entry for. */
 const SYNTHETIC_PEER_PREFIX = 'peer-'

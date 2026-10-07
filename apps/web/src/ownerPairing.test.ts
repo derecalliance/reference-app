@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SenderKind } from '@derec-alliance/web'
 import {
   applyPairingCompleted,
@@ -7,10 +10,12 @@ import {
   splitPairedChannels,
   type PairingCompletedEvent,
   canDrivePeerViaBackend,
+  identifyRow,
+  readLocalSharedKey,
   syntheticPeerId,
 } from './ownerPairing'
 import { loadReplicaState, replicaViews } from './replicaFlows'
-import type { ChannelRole, Owner, PairedParticipant } from './types'
+import type { ChannelRole, Vault, PairedParticipant } from './types'
 
 /**
  * The one invariant replica pairing exists to enforce: a replica channel never
@@ -35,11 +40,11 @@ const EXISTING: PairedParticipant = {
   peerRole: 'helper',
 }
 
-function owner(): Owner {
+function owner(): Vault {
   return {
-    ownerId: 'owner-1',
-    ownerName: 'Alice',
-    ownSecretId: '42',
+    id: 'owner-1',
+    name: 'Alice',
+    secretId: '42',
     transport: { protocol: 'https', uri: 'https://example.test/owner-1' },
     participants: [EXISTING],
     secretBag: null,
@@ -53,12 +58,7 @@ function owner(): Owner {
     recoveryFailures: [],
     heldShares: [],
     mainChannels: [],
-    config: {
-      protocolTimeoutSecs: 300,
-      authenticationMethod: 'user',
-      unpairAck: 'required',
-      autoAcceptUnpairRequests: false,
-    },
+    configOverrides: {},
   }
 }
 
@@ -75,7 +75,7 @@ function event(kind: number): PairingCompletedEvent {
 function deps() {
   return {
     log: vi.fn(),
-    getOwner: () => owner(),
+    getVault: () => owner(),
     commit: vi.fn(),
     onReplicaChannelEstablished: vi.fn(),
   }
@@ -298,6 +298,7 @@ describe('applyPairingCompleted — replica channel record', () => {
           role: 'owner',
           name: 'Alice',
           transport: { protocol: 'https', uri: 'https://example.test/owner-1' },
+          transports: [{ protocol: 'https', uri: 'https://example.test/owner-1' }],
           secret_id: '42',
         },
       ],
@@ -372,7 +373,6 @@ describe('applyPairingCompleted — replica channel record', () => {
       channelId: '1234',
       name: 'Second device',
       status: 'pending',
-      provisioned: false,
       direction: 'replica_source',
     })
   })
@@ -410,5 +410,65 @@ describe('canDrivePeerViaBackend', () => {
 
   it('is false for a missing row', () => {
     expect(canDrivePeerViaBackend(undefined)).toBe(false)
+  })
+})
+
+describe('a peer that paired by accepting the request', () => {
+  it('takes its endpoints from the channel record rather than leaving the row blank', () => {
+    const vault = { ...owner(), pendingPairings: [] }
+    // No pending pairing and no roster match: the fold falls back to an
+    // identity lookup, which is irrelevant here.
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]')))
+    const readChannelInfo = vi.fn(() => ({
+      name: 'Bob',
+      transports: [{ protocol: 'https' as const, uri: 'http://node/derec/bob' }],
+    }))
+
+    const next = applyPairingCompleted(vault, event(SenderKind.Helper), { ...deps(), readChannelInfo })
+
+    const row = next.participants.find(p => p.channelId === '1234')
+    expect(row?.transport.uri).toBe('http://node/derec/bob')
+    expect(row?.transports).toEqual([{ protocol: 'https', uri: 'http://node/derec/bob' }])
+    vi.unstubAllGlobals()
+  })
+})
+
+describe('identifyRow', () => {
+  const actor = {
+    id: 'actor-1',
+    role: 'owner' as const,
+    name: 'Roster name',
+    transport: { protocol: 'https' as const, uri: 'http://node/derec/actor-1' },
+    browser_managed: true,
+  }
+
+  it('prefers the name the peer sent and keeps the endpoints it advertised', () => {
+    const row = { ...EXISTING, id: 'peer-1', transport: { protocol: 'https' as const, uri: 'http://peer/derec/p' } }
+    const next = identifyRow(row, actor, 'Alice')
+    expect(next.id).toBe('actor-1')
+    expect(next.name).toBe('Alice')
+    expect(next.transport.uri).toBe('http://peer/derec/p')
+    expect(next.browserManaged).toBe(true)
+  })
+
+  it('falls back to the roster for a row that had no name or endpoint', () => {
+    const row = { ...EXISTING, id: 'peer-1', transport: { protocol: 'https' as const, uri: '' } }
+    const next = identifyRow(row, actor, undefined)
+    expect(next.name).toBe('Roster name')
+    expect(next.transport.uri).toBe('http://node/derec/actor-1')
+  })
+})
+
+describe('readLocalSharedKey', () => {
+  afterEach(() => localStorage.clear())
+
+  it('finds the key in whichever secret partition holds the channel', () => {
+    // A helper-role channel lives under the owner's secret id, not ours.
+    localStorage.setItem('derec:vault:v1:99887766:secret:1234:0', 'a2V5')
+    localStorage.setItem('derec:vault:v1:99887766:secret:12345:0', 'other')
+
+    expect(readLocalSharedKey('v1', '1234')).toBe('a2V5')
+    expect(readLocalSharedKey('v1', '999')).toBeNull()
+    expect(readLocalSharedKey('v2', '1234')).toBeNull()
   })
 })

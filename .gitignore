@@ -1,7 +1,22 @@
 # Rust
 target/
+# SQLite databases from a local run. `-wal` and `-shm` are the journal and
+# shared-memory files SQLite writes beside the database.
+*.db
+*.db-wal
+*.db-shm
+
 .env
 .env.*
+# ...but `examples/.env.example` is documentation, not somebody's local secrets,
+# and developers need it tracked to copy from. The pattern above matches at any
+# depth, so re-including it takes an explicit negation.
+!examples/.env.example
+
+# Local copy of `examples/config.example.toml` — each developer's own, never
+# shared. (`compose.yaml` and `examples/compose.*.yaml` are tracked: they are
+# what `docker compose up` and ./start.sh run.)
+apps/backend/config.toml
 
 # React
 

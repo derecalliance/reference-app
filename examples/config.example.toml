@@ -1,0 +1,152 @@
+# Configuration for the DeRec reference app.
+#
+# Two tables:
+#   [server]    how this node runs — enforced
+#   [defaults]  starting values for the front-end setup wizard, plus three
+#               gRPC keys the node enforces itself (marked below)
+#
+# The wizard values are defaults only: the user can change any of them before
+# setting up, and the settings a vault actually runs with are whatever the front
+# end sends on each provisioning request.
+#
+# Every key is optional. Omit one and the built-in default applies. An
+# unrecognised key is a boot error, so a typo fails loudly.
+#
+# Precedence, lowest first: built-in defaults < this file < environment
+# variables. Every key is also an environment variable, with a flat, prefixed
+# name — the table does not appear:
+#
+#   participant_count           -> DEREC_PARTICIPANT_COUNT
+#   base_url                    -> DEREC_BASE_URL
+#   helper_transports.http      -> DEREC_HELPER_TRANSPORTS_HTTP
+#
+# An unrecognised DEREC_ variable is warned about, not fatal: the environment is
+# shared, and refusing to boot over an unrelated variable would be hostile. A
+# variable set to an empty value counts as unset.
+#
+# Where the node looks for this file:
+#   * `cargo run`  — config.toml in the working directory (apps/backend/)
+#   * the image    — /etc/derec/config.toml; mount it there, read-only
+#   * anywhere     — set DEREC_CONFIG_PATH to its path. A path named this way
+#                    that does not exist aborts the boot.
+
+[server]
+# Stamped into every transport URI this node hands to a peer, and the address
+# that peer posts back to. The port is appended, so write the scheme and host
+# only — any port (even :80), user name, path or query here is refused at boot.
+# A loopback value reaches only peers on this machine outside a container: use
+# this machine's LAN address to pair across devices, and across containers —
+# two nodes in Docker on one host included, since each container's loopback is
+# its own.
+base_url = "http://localhost"
+
+# The HTTP listener port. The UI and the API share it. Must differ from
+# grpc_port while gRPC is enabled.
+port = 5000
+
+# The ports peers are told to dial, when they differ from the listeners — for
+# a container published elsewhere (`-p 8080:5000 -p 8081:50051`), set these to
+# 8080 and 8081. Unset, they follow `port` and `defaults.grpc_port`.
+# public_port = 5000
+# public_grpc_port = 50051
+
+# Other nodes POST /derec/relay may dial on a browser owner's behalf: a
+# comma-separated list of host or host:port entries, or "*" for any host (only
+# on a network you trust — the node has no authentication). Empty, the relay
+# reaches this node only, which is enough for one node; list a second node's
+# address here to let a browser on this one reach its gRPC-only helpers.
+# relay_allowed_hosts = "192.168.0.30:50051"
+
+# Where state lives.
+#
+#   a bare path         SQLite at that path, created if missing
+#   anything with ://   passed through untouched (Postgres, or a tuned SQLite)
+#   "sqlite::memory:"   a scratch node that forgets everything on exit
+#
+# Unset, this is "derec.db" in the working directory for `cargo run`, and
+# /var/lib/derec/derec.db in the image — under the volume that makes a
+# container survive a restart. A relative path in the image also resolves under
+# /var/lib/derec.
+# database_url = "./derec.db"
+
+# Directory of built front-end assets to serve.
+#
+# Unset, this is empty for `cargo run` — no UI, which is what you want beside a
+# Vite dev server; a fallback here would shadow it — and /app/static in the
+# image, so the container serves the UI and the API on one origin.
+# static_dir = ""
+
+[defaults]
+# Participants to provision when setting up. Must be at least 1.
+participant_count = 7
+
+# The next four are DERIVED from participant_count when left unset, and are
+# deliberately commented out here. Pin one only if you mean it: a pinned value
+# is checked as written, so pinning them all means any later change to the
+# count — including a one-line DEREC_PARTICIPANT_COUNT override — has to change
+# them too, or the node refuses to boot.
+#
+# How many participants to pair automatically, skipping the QR exchange. A
+# testing shortcut. Unset: 3, or participant_count if lower.
+# pre_paired_count = 3
+#
+# Paired participants required before secret protection is allowed. Unset: 3,
+# or participant_count if lower.
+# min_participants = 3
+#
+# Paired participants below which the UI shows a warning. Must fall between
+# min_participants and participant_count. Unset: 5, kept inside that range.
+# recommended_participants = 5
+#
+# The wizard's transport breakdown; must sum to participant_count. Unset: every
+# participant over HTTP. Uncomment the whole table at the end of this file to
+# pin it.
+
+# General protocol timeout, in seconds. The single timeout the app uses: the
+# protocol discards expired messages and stale rounds with it, and the UI uses
+# the same value as its active deadline for pairing waits and auto-rejects.
+# Lower = snappier failures; higher = more tolerant of slow peers.
+protocol_timeout_secs = 300
+
+# How the app decides that two pairing channels belong to the same user. An
+# app-level concern — the DeRec protocol itself is identity-blind.
+#
+#   "user"         the helper links channels manually when accepting a pairing
+#   "application"  reserved for a future identity-driven mode; not yet selectable
+authentication_method = "user"
+
+# Protocol-level acknowledgement policy for the unpair flow.
+#
+#   "required"      the initiator keeps local state until the peer acknowledges
+#                   or the protocol timeout elapses
+#   "not_required"  fire-and-forget: state drops immediately, later replies ignored
+unpair_ack = "required"
+
+# Whether an incoming unpair request is accepted quietly (true) or surfaced as a
+# confirmation dialog the operator must answer (false). UI behaviour only.
+auto_accept_unpair_requests = true
+
+# Whether a vault acting as a helper stores an incoming share (store_share) or
+# answers a verification request (verify_share) without asking (true), or shows
+# a confirmation dialog first (false). UI behaviour only — provisioned helpers
+# on this server always answer on their own.
+auto_accept_store_share_requests = false
+auto_accept_verify_share_requests = false
+
+# ENFORCED BY THE NODE. The gRPC transport listener. Provisioned helpers can
+# advertise a `grpc://` endpoint only while this is running; set false to run
+# HTTP-only.
+grpc_enabled = true
+grpc_port = 50051
+
+# ENFORCED BY THE NODE. Whether the backend will dial gRPC on a browser owner's
+# behalf. A browser cannot speak gRPC itself. Turning this off makes a
+# gRPC-only helper unreachable from a browser, which is a behaviour worth
+# observing on purpose.
+grpc_relay_enabled = true
+
+# Derived — see above. Must sum to participant_count.
+# [defaults.helper_transports]
+# http = 7
+# grpc = 0
+# both = 0

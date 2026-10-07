@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * Copyright (c) 2026 DeRec Alliance. All rights reserved. */
+
 /* ── Panel shell ──────────────────────────────────────────────────────────── */
 
 .console-panel {
@@ -29,7 +32,11 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 36px;
+  /* Wraps rather than overflowing: on a phone the filter and the three
+     actions do not fit beside the title, and a fixed height pushed them past
+     the right edge of the page. */
+  flex-wrap: wrap;
+  min-height: 36px;
   padding: 0 12px 0 0;
   border-bottom: 1px solid transparent;
 }
@@ -42,7 +49,7 @@
   display: flex;
   align-items: center;
   gap: 7px;
-  height: 100%;
+  height: 36px;
   padding: 0 14px;
   background: none;
   border: none;
@@ -91,7 +98,11 @@
 .console-header-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 6px;
+  min-width: 0;
+  padding: 4px 0 4px 14px;
 }
 
 .console-clear-btn {
@@ -116,6 +127,25 @@
   &:disabled {
     opacity: 0.3;
     cursor: not-allowed;
+  }
+}
+
+/* The vault filter, styled to sit with the header buttons. */
+.console-filter {
+  max-width: 100%;
+  background: var(--c-bg);
+  border: 1px solid var(--c-border);
+  color: var(--c-text-dim);
+  font-family: var(--c-mono);
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+
+  &:hover,
+  &:focus-visible {
+    color: var(--c-text);
+    border-color: var(--c-text-dim);
   }
 }
 
@@ -368,4 +398,61 @@
   word-break: break-all;
   max-height: 300px;
   overflow-y: auto;
+}
+
+/* Server-sourced rows answer a different question from the page's own — what
+   the backend did with a message, not what this page asked for — so they need
+   their own cue. Deliberately the quietest badge in the set: infrastructure,
+   not a party to the protocol, and it must not read as `participant`. */
+.cbadge.role-server      { background: rgba(159, 165, 147, 0.18); color: #9fa593; }
+.cbadge.flow-transport   { background: rgba(159, 165, 147, 0.14); color: #9fa593; }
+
+/* ── Phones ───────────────────────────────────────────────────────────────── */
+
+@media (max-width: 640px) {
+  /* The page scrolls as a whole on a phone (see `#root`), so the console sticks
+     to the bottom edge instead of being a fixed band of the layout. Collapsed,
+     it is the title row alone: the filter and export actions only mean
+     anything with the log open, and as a second row they cost every screen
+     another 36px. */
+  .console-panel {
+    position: sticky;
+    bottom: 0;
+    z-index: 10;
+  }
+
+  .console-panel.collapsed .console-header-actions {
+    display: none;
+  }
+
+  .console-header-actions {
+    padding: 0 0 6px 12px;
+  }
+
+  /* A share of the screen rather than a fixed height, so the page behind it
+     stays visible on a short phone. */
+  .console-body {
+    height: 45svh;
+  }
+
+  /* Six fixed columns need ~460px before the message gets any; on a phone
+     the message vanished entirely. The badges, step and time share the first
+     line and the message takes a full line under them. */
+  .console-row {
+    grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+    column-gap: 6px;
+    row-gap: 2px;
+    padding: 6px 10px;
+  }
+
+  .console-desc {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    padding: 0;
+    white-space: normal;
+    /* `#root` centres text globally; a wrapped log line reads as a log only
+       when it starts at the left edge. */
+    text-align: left;
+    overflow-wrap: anywhere;
+  }
 }

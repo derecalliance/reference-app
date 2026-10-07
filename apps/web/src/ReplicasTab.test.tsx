@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -9,13 +12,23 @@ import {
   type ReplicaChannel,
 } from './ownerPairing'
 import type { ReplicaView } from './replicaFlows'
-import type { Owner } from './types'
+import type { Vault } from './types'
 // Read as text, not imported as modules: these assertions are about *where* a
 // dialog is mounted, which is a fact about the source and not about any value
 // the module exports. `OwnerPage` also cannot be imported into a test —
 // it pulls in WASM.
 import replicasTabSource from './ReplicasTab.tsx?raw'
 import ownerPageSource from './OwnerPage.tsx?raw'
+import pairingFoldSource from './vault/fold/pairing.ts?raw'
+
+/** Every engine module's source, specs and fixtures excluded. */
+const engineSource = Object.values(
+  import.meta.glob<string>(['./vault/**/*.ts', '!./vault/**/*.test.ts', '!./vault/testVault.ts'], {
+    query: '?raw',
+    import: 'default',
+    eager: true,
+  }),
+).join('\n')
 
 /**
  * The Replicas tab, and the line it must not cross.
@@ -61,9 +74,10 @@ function view(overrides: Partial<ReplicaView> = {}): ReplicaView {
     lastSync: null,
     establishedAt: Date.now(),
     firstSyncStarted: false,
-    provisioned: false,
     direction: 'replica_source',
     peerReplicaId: null,
+    helperActorId: null,
+    refused: false,
     ...overrides,
   }
 }
@@ -75,7 +89,7 @@ const BROWSER_REPLICA: ReplicaChannel = {
   peerRole: 'replica_destination',
 }
 
-const PROVISIONED_REPLICA: ReplicaChannel = {
+const HELPER_REPLICA: ReplicaChannel = {
   id: 'peer-5678',
   name: 'Hosted mirror',
   channelId: '5678',
@@ -84,20 +98,24 @@ const PROVISIONED_REPLICA: ReplicaChannel = {
 
 const BASE: ReplicasTabProps = {
   channels: [BROWSER_REPLICA],
-  awaitingPairing: [],
   viewByChannelId: new Map([['1234', view()]]),
   protocolTimeoutSecs: 300,
   syncingChannelId: null,
-  unpairingChannelIds: new Set<string>(),
+  catchingUpChannelIds: [],
   syncNoticeFor: () => null,
   onDismissSyncNotice: () => {},
   onOpenFingerprint: () => {},
   onSyncNow: () => {},
-  onUnpair: () => {},
-  onSyncCheck: () => {},
-  syncCheckRunning: false,
+  onForget: () => {},
+  onReplicaDiscovery: () => {},
+  replicaDiscoveryRunning: false,
+  vaultVersion: null,
+  groupSourceReplicaId: null,
   onRemoveFromGroup: () => {},
   removingReplicaIds: new Set<string>(),
+  onToggleOffline: () => {},
+  memberRows: [],
+  onRemoveMember: () => {},
 }
 
 function render(overrides: Partial<ReplicasTabProps> = {}): void {
@@ -119,12 +137,12 @@ describe('what the Replicas tab lists', () => {
     expect(text()).toContain('Replica destination')
   })
 
-  it('lists both a browser-paired and a provisioned replica, each with its own role', () => {
+  it('lists both a browser-paired and a helper-backed replica, each with its own role', () => {
     render({
-      channels: [BROWSER_REPLICA, PROVISIONED_REPLICA],
+      channels: [BROWSER_REPLICA, HELPER_REPLICA],
       viewByChannelId: new Map([
         ['1234', view()],
-        ['5678', view({ id: 'hosted', name: 'Hosted mirror', channelId: '5678', provisioned: true })],
+        ['5678', view({ id: 'replica-channel:5678', name: 'Hosted mirror', channelId: '5678' })],
       ]),
     })
 
@@ -150,18 +168,32 @@ describe('what the Replicas tab lists', () => {
     expect(labels).toContain('Sync now')
   })
 
-  it('lists a provisioned replica that has never paired, so the tab is complete', () => {
+  it('shows a destination still fetching its copy as syncing, and says why', () => {
     render({
-      channels: [],
-      awaitingPairing: [view({ id: 'hosted', name: 'Spare laptop', channelId: null, provisioned: true })],
+      viewByChannelId: new Map([
+        ['1234', view({ status: 'paired', direction: 'replica_destination' })],
+      ]),
+      catchingUpChannelIds: ['1234'],
     })
 
-    expect(text()).toContain('Spare laptop')
-    expect(text()).toContain('Not paired')
+    expect(text()).toContain('Syncing…')
+    expect(text()).toContain('keeps asking until Laptop answers')
+    expect(text()).not.toContain('Verified')
+  })
+
+  it('shows a confirmed destination as verified once its copy has landed', () => {
+    render({
+      viewByChannelId: new Map([
+        ['1234', view({ status: 'paired', direction: 'replica_destination' })],
+      ]),
+    })
+
+    expect(text()).toContain('Verified')
+    expect(text()).not.toContain('Syncing…')
   })
 
   it('says so plainly when there are no replicas at all', () => {
-    render({ channels: [], awaitingPairing: [], viewByChannelId: new Map() })
+    render({ channels: [], viewByChannelId: new Map() })
 
     expect(text()).toContain('No replicas yet')
   })
@@ -225,24 +257,36 @@ describe('the replica modals are mounted by the page, not the tab', () => {
   })
 
   it('raises the fingerprint modal from the pairing fold, with no tab involved', () => {
-    const page = ownerPageSource
-    const start = page.indexOf('onReplicaChannelEstablished:')
+    // The fold moved out of the page and into the engine's pairing handlers, so
+    // this reads their source. The invariant is unchanged — a replica channel
+    // announces itself unconditionally — but it is enforced more strongly than
+    // it was: the engine is React-free and has no `activeTab` to gate on.
+    const start = pairingFoldSource.indexOf('onReplicaChannelEstablished:')
     expect(start).toBeGreaterThan(-1)
-    const handler = page.slice(start, page.indexOf('},', start))
+    const handler = pairingFoldSource.slice(start, pairingFoldSource.indexOf('},', start))
 
-    expect(handler).toContain('setFingerprintChannelId(channelId)')
+    expect(handler).toContain('ctx.effects.openFingerprint(channelId)')
     // No tab, no panel, no ref read: the announcement is unconditional.
     expect(handler).not.toContain('activeTab')
+  })
+
+  it('keeps the engine free of any notion of which tab is open', () => {
+    // The structural guarantee behind the test above. If `activeTab` ever
+    // reaches the engine, a fold could start gating protocol-driven state on
+    // what the user happens to be looking at.
+    // A glob that matched nothing would pass the check below vacuously.
+    expect(engineSource).toContain('class VaultRuntime')
+    expect(engineSource).not.toContain('activeTab')
   })
 })
 
 // ── …and they raise with a different tab open ────────────────────────────────
 
-function replicaOwner(): Owner {
+function replicaOwner(): Vault {
   return {
-    ownerId: 'owner-1',
-    ownerName: 'Alice',
-    ownSecretId: '42',
+    id: 'owner-1',
+    name: 'Alice',
+    secretId: '42',
     transport: { protocol: 'https', uri: 'https://example.test/owner-1' },
     participants: [],
     secretBag: null,
@@ -255,12 +299,7 @@ function replicaOwner(): Owner {
     recoveryFailures: [],
     heldShares: [],
     mainChannels: [],
-    config: {
-      protocolTimeoutSecs: 300,
-      authenticationMethod: 'user',
-      unpairAck: 'required',
-      autoAcceptUnpairRequests: false,
-    },
+    configOverrides: {},
   }
 }
 
@@ -291,14 +330,14 @@ function PageShaped() {
     <div>
       <button onClick={() => setActiveTab('replicas')}>Replicas</button>
       <div className="tab-panel">
-        {activeTab === 'secrets' && <p>Secret Bag</p>}
+        {activeTab === 'secrets' && <p>Secrets list</p>}
         {activeTab === 'replicas' && <p>Replica channels</p>}
       </div>
       <button
         onClick={() =>
           applyPairingCompleted(replicaOwner(), REPLICA_COMPLETION, {
             log: () => {},
-            getOwner: replicaOwner,
+            getVault: replicaOwner,
             commit: () => {},
             onReplicaChannelEstablished: channelId => setFingerprintChannelId(channelId),
           })
@@ -313,11 +352,11 @@ function PageShaped() {
 }
 
 describe('the fingerprint comparison with a different tab open', () => {
-  it('raises on pairing completion while the Secret Bag tab is selected', () => {
+  it('raises on pairing completion while the Secrets tab is selected', () => {
     act(() => root.render(<PageShaped />))
 
     // The Replicas tab has never been opened.
-    expect(text()).toContain('Secret Bag')
+    expect(text()).toContain('Secrets list')
     expect(text()).not.toContain('Replica channels')
     expect(text()).not.toContain('Fingerprint comparison')
 
@@ -329,7 +368,98 @@ describe('the fingerprint comparison with a different tab open', () => {
 
     expect(text()).toContain('Fingerprint comparison for 1234')
     // Still on the other tab: the modal came to the user, not the other way round.
-    expect(text()).toContain('Secret Bag')
+    expect(text()).toContain('Secrets list')
     expect(text()).not.toContain('Replica channels')
+  })
+})
+
+describe('group members the app cannot account for', () => {
+  const orphan = {
+    replicaId: '3534782649887640751',
+    channelId: '2335620354810298024',
+    role: 'Destination',
+    status: 'Paired' as const,
+    name: 'Bob',
+  }
+
+  /** The row shape the tab now receives for a member with no direct channel. */
+  const memberRow = {
+    replicaId: orphan.replicaId,
+    name: 'Bob',
+    channelId: orphan.channelId,
+    peerRole: 'replica_destination' as const,
+    view: {
+      id: `replica-member:${orphan.replicaId}`,
+      name: 'Bob',
+      channelId: orphan.channelId,
+      status: 'paired' as const,
+      offline: false,
+      peerConfirmation: 'none' as const,
+      lastSync: null,
+      establishedAt: null,
+      firstSyncStarted: false,
+      direction: 'replica_source' as const,
+      peerReplicaId: orphan.replicaId,
+      helperActorId: null,
+      refused: false,
+    },
+  }
+
+  it('renders a member with no direct channel as an ordinary row', () => {
+    // Two destinations of one source are in the same group and never pair with
+    // each other. Listing them under a separate "no channel" heading described
+    // the app's bookkeeping; from the group's point of view they are members.
+    render({ memberRows: [memberRow] })
+
+    expect(text()).toContain('Bob')
+    expect(text()).not.toContain('Group members with no channel')
+  })
+
+  it('offers eviction by replica id', () => {
+    // The library's removal names a member rather than a channel, so this is
+    // the one action that still works without a pairing.
+    const onRemoveMember = vi.fn()
+    render({ memberRows: [memberRow], onRemoveMember })
+
+    const button = Array.from(host.querySelectorAll('button')).find(
+      b => b.textContent === 'Remove from group',
+    )
+    button!.click()
+
+    expect(onRemoveMember).toHaveBeenCalledWith(orphan.replicaId)
+  })
+
+  it('shows a member even when this device holds no replica channel at all', () => {
+    // The state that stranded the reported session: every row forgotten, the
+    // tab saying "no replicas yet", and the protocol still refusing to pair.
+    render({ channels: [], memberRows: [memberRow] })
+
+    expect(text()).toContain('Bob')
+  })
+
+  it('marks a removal in flight', () => {
+    render({
+      memberRows: [memberRow],
+      removingReplicaIds: new Set([orphan.replicaId]),
+    })
+    expect(text()).toContain('Removing…')
+  })
+})
+
+describe('a destination row whose vault this device already holds', () => {
+  it('stops calling it an offer once the vault names that peer as its source', () => {
+    render({
+      channels: [{ ...HELPER_REPLICA }],
+      viewByChannelId: new Map([
+        [
+          '5678',
+          view({ channelId: '5678', status: 'paired', direction: 'replica_destination', peerReplicaId: '9' }),
+        ],
+      ]),
+      vaultVersion: 3,
+      groupSourceReplicaId: '9',
+    })
+    expect(host.textContent).toContain('at v3')
+    expect(host.textContent).not.toContain('is offered')
   })
 })

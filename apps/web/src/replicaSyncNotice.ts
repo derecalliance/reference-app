@@ -1,4 +1,11 @@
-import type { ManualReplicaSyncOutcome, UnresolvedAutomaticSync } from './replicaFlows'
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
+import type {
+  ManualReplicaSyncOutcome,
+  ReplicaView,
+  UnresolvedAutomaticSync,
+} from './replicaFlows'
 
 /**
  * What a sync round has to say for itself, in the words the row shows.
@@ -75,4 +82,21 @@ export function describeAutomaticSyncOutcome(
         )}. It will not be retried on its own — use “Sync now” here.`,
       }
   }
+}
+
+/**
+ * Whether a "sent — will acknowledge" notice has been answered.
+ *
+ * The dispatched notice promises an acknowledgement, so once one lands for
+ * this row — any ack observed at or after the send — the promise is kept and
+ * the notice has nothing left to say; the row's own "Mirrored vN" line takes
+ * over. Every other outcome stays until dismissed: they report something the
+ * user still has to act on.
+ */
+export function isSyncNoticeAnswered(
+  outcome: ManualReplicaSyncOutcome['kind'],
+  sentAt: number,
+  view: ReplicaView,
+): boolean {
+  return outcome === 'dispatched' && view.lastSync !== null && view.lastSync.syncedAt >= sentAt
 }

@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * Copyright (c) 2026 DeRec Alliance. All rights reserved. */
+
 /* ── DeRec Alliance — "Recovery Gold" ─────────────────────────────────────────
  *
  * Raw brand colours. These are the palette as issued and are never used
@@ -141,6 +144,17 @@
   flex-direction: column;
   box-sizing: border-box;
   overflow: hidden;
+
+  /* Phones scroll the page, not a box inside it. The fixed-height shell kept
+     the header, the section bar, the console and the footer on screen at all
+     times — about 40% of a phone's height — and left the content a strip in
+     the middle. Letting the document grow hands that space back; the console
+     stays reachable by sticking to the bottom edge (see ConsolePanel.css). */
+  @media (max-width: 640px) {
+    height: auto;
+    min-height: 100svh;
+    overflow: visible;
+  }
 }
 
 body {

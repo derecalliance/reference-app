@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 /**
  * Persistence for the terminal "wipe-and-adopt failed" block.
  *
@@ -15,8 +18,10 @@
  *  - nothing here retries `restore` or repairs anything;
  *  - nothing here clears the record on load, on success, or on a timer.
  *
- * The only thing that removes it is the user: the header's "Reset browser data"
- * action sweeps the whole `derec:` prefix, which is why this key carries it.
+ * The only things that remove it are the user's: the header's "Reset browser
+ * data" action sweeps the whole `derec:` prefix, which is why this key carries
+ * it, and removing the blocked vault from the browser erases its record along
+ * with the vault (see `clearReplicaAdoptionBlock`).
  *
  * Keyed per owner. It used to be a single key carrying the owner id inside the
  * record, on the grounds that a wipe erases the device's protocol storage so at
@@ -94,6 +99,18 @@ export function saveReplicaAdoptionBlock(ownerId: string, failure: RestoreFailur
     localStorage.setItem(storageKey(ownerId), JSON.stringify(failure))
   } catch {
     // Storage quota exceeded or unavailable — the live block still holds.
+  }
+}
+
+/**
+ * Forget the block for a vault that is being removed from this browser. Not a
+ * way out of the block: the vault it guarded goes with it.
+ */
+export function clearReplicaAdoptionBlock(ownerId: string): void {
+  try {
+    localStorage.removeItem(storageKey(ownerId))
+  } catch {
+    // Storage unavailable — nothing to remove.
   }
 }
 

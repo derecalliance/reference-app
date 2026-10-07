@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { test, expect } from './fixtures'
 import {
   discoverAll,
@@ -90,12 +93,24 @@ test.describe('recovery', () => {
     await expect
       .poll(
         async () => {
-          await openTab(page, 'Secret Bag')
+          await openTab(page, 'Secrets')
           return page.locator('.tab-panel').innerText()
         },
         { timeout: 120_000 },
       )
       .toContain('Passphrase')
+
+    // Restoring on the device that protected the bag keeps its helpers: the
+    // channels the snapshot names are the very ones this device held, so
+    // retiring them as "recovery channels" told the helpers to drop their
+    // channels and shares, and the next protect reached nobody (0 of 2,
+    // rolled back). A new version must reach them and commit.
+    await openTab(page, 'Channels')
+    expect(await tabCount(page, 'Channels')).toBe(2)
+    await protectSecret(page, 'After restore', 'still-reachable')
+    await openTab(page, 'Secrets')
+    await expect(page.locator('.tab-panel')).toContainText('After restore')
+    await expect(page.locator('.tab-panel')).toContainText('Passphrase')
     expect(pageErrors).toEqual([])
   })
 
@@ -152,7 +167,7 @@ test.describe('unpairing', () => {
 
     // Unpairing drops the shares held under that channel, but the owner's own
     // bag is not one of them.
-    await openTab(page, 'Secret Bag')
+    await openTab(page, 'Secrets')
     await expect(page.locator('.tab-panel')).toContainText('Passphrase')
   })
 })

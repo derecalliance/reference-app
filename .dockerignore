@@ -1,0 +1,47 @@
+# Build context excludes. Everything here is either rebuilt inside the image or
+# irrelevant to it, and shipping it costs build time and cache invalidation.
+#
+# Patterns without `**/` match only at the context root, which is the repo
+# root — so a bare `target/` missed apps/backend/target and sent gigabytes.
+# Every pattern that can occur below the root is written with `**/`.
+
+# Rust build output — gigabytes, and the wrong target triple anyway.
+**/target/
+
+# Reinstalled by `npm ci` inside the web builder stage, from the lockfile.
+**/node_modules/
+
+# Rebuilt by the web builder with `--base=/`; a host `dist/` was built for
+# GitHub Pages and would be wrong here.
+**/dist/
+
+# Playwright artefacts.
+**/test-results/
+**/playwright-report/
+**/blob-report/
+
+# Not needed to build, and it changes on every commit — copying it would
+# invalidate layers for no reason.
+.git/
+
+# Local databases. A host `derec.db` copied into the image would ship one
+# developer's actors to everyone who pulls it.
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/*.db-journal
+
+# Local environment and config, which are supplied at run time — and may hold
+# credentials (a Postgres DATABASE_URL) that must never end up in a layer.
+**/.env
+**/.env.*
+apps/backend/.env
+apps/web/.env*
+**/config.toml
+
+# Agent and editor working directories.
+.claude/
+**/.claude/
+.superpowers/
+**/.superpowers/
+**/.DS_Store

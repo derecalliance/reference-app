@@ -1,6 +1,10 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { pairingRoleLabel } from './pairingRoleOptions'
 import {
   canRequestReplicaSync,
+  isReplicaBehind,
   type ReplicaExpiry,
   type ReplicaPairingRole,
   type ReplicaView,
@@ -45,16 +49,27 @@ export interface ReplicaChannelRowProps {
   protocolTimeoutSecs: number
   /** This row's own sync is running. */
   syncing: boolean
+  /**
+   * This device, as the destination, is still fetching the peer's copy over
+   * this channel — asking again until it lands. See `ReplicaCatchUp`.
+   */
+  catchingUp?: boolean
   /** Some row's sync is running — a protect round is global, so all are blocked. */
   syncBlocked: boolean
-  /** An unpair request for this channel is in flight. */
-  unpairing: boolean
   /** The sync result this row should show, or `null`. */
   syncNotice: ReplicaRowSyncNotice | null
   onDismissSyncNotice: () => void
   onOpenFingerprint: () => void
   onSyncNow: () => void
-  onUnpair: () => void
+  /**
+   * Drop this row from *this device only*, telling the peer nothing.
+   *
+   * The escape hatch, and deliberately not a teardown: a replica has no
+   * channel-level unpair — the library's only removal names a member, which
+   * `onRemoveFromGroup` does — so a row whose pairing never announced a replica
+   * id has nothing the protocol will act on. Without this it is unremovable.
+   */
+  onForget: () => void
   /**
    * Whether this row can be evicted from the replica group.
    *
@@ -66,16 +81,64 @@ export interface ReplicaChannelRowProps {
   /** A removal for this member is in flight. */
   removingFromGroup: boolean
   onRemoveFromGroup: () => void
+  /**
+   * Whether this row can simulate its peer going offline.
+   *
+   * `false` unless the peer is a provisioned helper: a browser peer has no
+   * backend actor whose delivery could be suspended.
+   */
+  canToggleOffline: boolean
+  /** Whether the peer is currently suspended. Meaningless unless `canToggleOffline`. */
+  offline: boolean
+  onToggleOffline: () => void
+  /**
+   * This peer is known only as a member of the group — there is no channel
+   * between it and this device.
+   *
+   * Two destinations of one source are in the same group and never pair with
+   * each other, so each is a real member with nothing direct to act on. Such a
+   * row must not offer Forget (there is no local record to drop), Sync now
+   * (there is no channel to send over) or a fingerprint (there is no comparison
+   * to make), and above all must not report itself verified — the row would be
+   * asserting a check that never happened. Eviction stays: the library's
+   * removal names a member, not a channel.
+   */
+  viaGroupOnly?: boolean
+  /**
+   * The version this vault currently holds, or `null` before its first protect
+   * round. What a source row's last acknowledgement is measured against: a
+   * destination that missed a round while offline acked an older version, and
+   * without the comparison its row read as current.
+   */
+  vaultVersion?: number | null
+  /**
+   * This device, as the destination on this row, already holds the peer's
+   * vault — it adopted it, or has since been receiving its updates. Once that
+   * is true the "offered" wording describes a decision already made.
+   */
+  holdsPeerVault?: boolean
 }
 
 /** The status word for a replica channel, with expiry outranking everything. */
-function statusLabel(view: ReplicaView | null, expiry: ReplicaExpiry | null): {
+function statusLabel(
+  view: ReplicaView | null,
+  expiry: ReplicaExpiry | null,
+  catchingUp: boolean,
+  behind: boolean,
+): {
   text: string
   className: string
 } {
   // An expired channel has been dropped by the protocol; "pending confirmation"
   // would describe something that is no longer waiting for anything.
   if (expiry?.state === 'expired') return { text: 'Expired', className: 'expired' }
+  // A refusal outranks the pending prompt: nothing is waiting for an answer —
+  // the answer was no.
+  if (view?.refused) return { text: 'Codes didn’t match', className: 'expired' }
+  // Declining to adopt is the same kind of answer: nothing is waiting on it.
+  if (view?.adoptionDeclined) return { text: 'Adoption declined', className: 'expired' }
+  if (catchingUp) return { text: 'Syncing…', className: 'syncing' }
+  if (behind) return { text: 'Behind', className: 'available' }
   if (view?.status === 'paired') return { text: 'Verified', className: 'paired' }
   return { text: 'Pending confirmation', className: 'available' }
 }
@@ -104,17 +167,33 @@ function expiryText(expiry: ReplicaExpiry): string {
 }
 
 /** What this row mirrors, and in which direction. */
-function mirrorSummary(view: ReplicaView | null): string {
+function mirrorSummary(
+  view: ReplicaView | null,
+  name: string,
+  catchingUp: boolean,
+  vaultVersion: number | null,
+  holdsPeerVault: boolean,
+): string {
   if (!view) return 'Waiting for this device to project the channel.'
   if (view.direction === 'replica_destination') {
+    if (catchingUp) {
+      return `Getting ${name}’s copy of the vault — this device keeps asking until ${name} answers, which can take until they confirm the code on their screen. Nothing is erased until you accept it.`
+    }
+    // After adoption the offer is history: this vault *is* the peer's now,
+    // and further versions apply without a prompt.
+    if (holdsPeerVault) {
+      return `This vault is ${name}’s${vaultVersion === null ? '' : `, at v${vaultVersion}`}. Versions ${name} publishes are applied here automatically.`
+    }
     return 'This device is offered the peer’s vault. Nothing is erased until you accept an offer.'
   }
   if (!view.lastSync) {
-    return 'Nothing mirrored yet — it goes out on the next protect round.'
+    return 'Nothing acknowledged yet — the vault goes out on the next protect round.'
   }
-  return `Mirrored v${view.lastSync.version}, acknowledged ${new Date(
-    view.lastSync.syncedAt,
-  ).toLocaleString()}.`
+  const acked = `acknowledged ${new Date(view.lastSync.syncedAt).toLocaleString()}`
+  if (isReplicaBehind(view, vaultVersion)) {
+    return `Behind: last mirrored v${view.lastSync.version} (${acked}), but this vault is at v${vaultVersion}. Use “Sync now” to send the current version.`
+  }
+  return `Mirrored v${view.lastSync.version}, ${acked}.`
 }
 
 export function ReplicaChannelRow({
@@ -124,16 +203,22 @@ export function ReplicaChannelRow({
   view,
   protocolTimeoutSecs,
   syncing,
+  catchingUp = false,
   syncBlocked,
-  unpairing,
   syncNotice,
   onDismissSyncNotice,
   onOpenFingerprint,
   onSyncNow,
-  onUnpair,
+  onForget,
   canRemoveFromGroup,
   removingFromGroup,
   onRemoveFromGroup,
+  canToggleOffline,
+  offline,
+  onToggleOffline,
+  viaGroupOnly = false,
+  vaultVersion = null,
+  holdsPeerVault = false,
 }: ReplicaChannelRowProps) {
   // The countdown ticks in this row and nothing above it, and a row with
   // nothing pending never arms a timer at all.
@@ -141,15 +226,22 @@ export function ReplicaChannelRow({
     { status: view?.status ?? 'pending', establishedAt: view?.establishedAt ?? null },
     protocolTimeoutSecs,
   )
-  const status = statusLabel(view, expiry)
-  const awaitingConfirmation = view === null || view.status !== 'paired'
-  const canSync = view !== null && canRequestReplicaSync(view)
+  const status = viaGroupOnly
+    ? { text: 'Group member', className: 'available' }
+    : statusLabel(view, expiry, catchingUp, isReplicaBehind(view, vaultVersion))
+  // A member with no channel is waiting for nothing: there is no comparison to
+  // make and no deadline to miss, so neither the prompt nor the confirmed line
+  // applies to it.
+  const awaitingConfirmation = !viaGroupOnly && (view === null || view.status !== 'paired')
+  const canSync = !viaGroupOnly && view !== null && canRequestReplicaSync(view)
 
   return (
     <div className="channel-block">
       <div className="channel-row-top">
         <span
-          className={`participant-dot ${view?.status === 'paired' ? 'paired' : 'available'}`}
+          className={`participant-dot ${
+            offline ? 'offline' : view?.status === 'paired' ? 'paired' : 'available'
+          }`}
           aria-hidden="true"
         />
         <span className="channel-row-name" style={{ flex: 'none' }}>
@@ -157,8 +249,12 @@ export function ReplicaChannelRow({
         </span>
         <span className={`role-tag role-tag--${peerRole}`}>{pairingRoleLabel(peerRole)}</span>
         <span className="channel-id-inline">{channelId}</span>
-        <span style={{ flex: 1 }} />
-        <span className={`status-tag ${status.className}`}>{status.text}</span>
+        <span className="channel-row-spacer" />
+        {/* Polite live region: "Syncing…" clears on its own when the copy lands,
+            and that change is worth announcing. */}
+        <span className={`status-tag ${status.className}`} aria-live="polite">
+          {status.text}
+        </span>
         {canSync && (
           <button
             className="channel-link-btn"
@@ -169,8 +265,9 @@ export function ReplicaChannelRow({
             {syncing ? 'Syncing…' : 'Sync now'}
           </button>
         )}
-        {/* Distinct from Unpair: that tears down this channel, while this
-            removes the member from the roster the group publishes. */}
+        {/* The real teardown: a replica is removed from the group by *member*,
+            never by channel — every member answers on the one shared channel,
+            so there is no channel-level unpair for the protocol to run. */}
         {canRemoveFromGroup && (
           <button
             className="channel-unpair-btn"
@@ -182,14 +279,36 @@ export function ReplicaChannelRow({
             {removingFromGroup ? 'Removing…' : 'Remove from group'}
           </button>
         )}
-        <button
-          className="channel-unpair-btn"
-          onClick={onUnpair}
-          disabled={unpairing}
-          aria-busy={unpairing || undefined}
-        >
-          {unpairing ? 'Unpairing…' : 'Unpair'}
-        </button>
+        {/* Simulates the peer dropping off the network. The channel survives —
+            this suspends delivery to the helper, which is what makes a missed
+            mirror observable without tearing anything down. */}
+        {canToggleOffline && (
+          <button
+            className="channel-link-btn"
+            onClick={onToggleOffline}
+            title={
+              offline
+                ? `Resume message delivery to ${name}`
+                : `Suspend message delivery to ${name}`
+            }
+          >
+            {offline ? 'Go Online' : 'Go Offline'}
+          </button>
+        )}
+        {/* Always offered, because it is the only action that cannot fail.
+            "Remove from group" needs a member id the protocol may never have
+            announced, and this row used to carry an "Unpair" that dispatched
+            the *helper* unpair flow — which the library rejects on every
+            replica channel, leaving a row nothing could clear. */}
+        {!viaGroupOnly && (
+          <button
+            className="channel-link-btn"
+            onClick={onForget}
+            title={`Remove ${name} from this device's list without telling them`}
+          >
+            Forget
+          </button>
+        )}
       </div>
 
       {/*
@@ -198,7 +317,34 @@ export function ReplicaChannelRow({
         keeps running, and nothing about the comparison is lost — it is simply
         not on screen until asked for.
       */}
-      {awaitingConfirmation && (
+      {awaitingConfirmation && view?.refused && (
+        <div className="replica-row-notice replica-row-notice--error" role="status">
+          <span className="replica-row-prompt__text">
+            You reported that the codes did not match, so this device has not confirmed the
+            channel and no vault moves across it. {name} is not told — the protocol has no
+            message for a refusal — and may keep waiting. Remove the row and pair again; if
+            you misread the codes, compare them again.
+          </span>
+          <button className="channel-link-btn" onClick={onOpenFingerprint}>
+            Compare again
+          </button>
+        </div>
+      )}
+
+      {awaitingConfirmation && !view?.refused && view?.adoptionDeclined && (
+        <div className="replica-row-notice replica-row-notice--error" role="status">
+          <span className="replica-row-prompt__text">
+            You declined to adopt {name}’s vault, so this device has not confirmed the channel and
+            this vault is unchanged. {name} is not told. Remove the row, or confirm after all to
+            adopt their vault.
+          </span>
+          <button className="channel-link-btn" onClick={onOpenFingerprint}>
+            Reconsider
+          </button>
+        </div>
+      )}
+
+      {awaitingConfirmation && !view?.refused && !view?.adoptionDeclined && (
         <div className="replica-row-prompt" role="status">
           <span className="replica-row-prompt__text">
             Not confirmed yet. Compare the code on both devices — until this device confirms,
@@ -214,13 +360,24 @@ export function ReplicaChannelRow({
         </div>
       )}
 
-      {!awaitingConfirmation && (
+      {viaGroupOnly && (
+        <div className="replica-row-prompt replica-row-prompt--quiet">
+          <span className="replica-row-prompt__text">
+            In the same replica group, through the source. This device has no channel of its
+            own to {name}, so there is nothing here to verify or sync — only to evict.
+          </span>
+        </div>
+      )}
+
+      {!viaGroupOnly && !awaitingConfirmation && (
         <div className="replica-row-prompt replica-row-prompt--quiet">
           <span className="replica-row-prompt__text">
             Confirmed on this device
             {view?.peerConfirmation === 'protocol-verified'
               ? ' and by the peer.'
-              : '. The peer confirms on its own screen, which this device cannot see.'}
+              : view?.helperActorId != null
+                ? '. The peer confirms itself automatically, as a helper — this device cannot observe it.'
+                : '. The peer confirms on its own screen, which this device cannot see.'}
           </span>
           <button className="channel-link-btn" onClick={onOpenFingerprint}>
             View fingerprint
@@ -244,12 +401,20 @@ export function ReplicaChannelRow({
         </div>
       )}
 
-      <div className="channel-row-bottom">
-        <div className="channel-prop">
-          <span className="channel-prop-label">Mirror</span>
-          <span className="channel-prop-value">{mirrorSummary(view)}</span>
+      {/* No mirror line for a member with no channel: the summary would say the
+          vault "goes out on the next protect round", which contradicts the line
+          above it — nothing is ever sent to a peer this device has no channel
+          to. */}
+      {!viaGroupOnly && (
+        <div className="channel-row-bottom">
+          <div className="channel-prop">
+            <span className="channel-prop-label">Mirror</span>
+            <span className="channel-prop-value">
+              {mirrorSummary(view, name, catchingUp, vaultVersion, holdsPeerVault)}
+            </span>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   )
 }

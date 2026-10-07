@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * Copyright (c) 2026 DeRec Alliance. All rights reserved. */
+
 .toast-viewport {
   position: fixed;
   bottom: 16px;
@@ -63,4 +66,22 @@
 
 .toast-close:hover {
   opacity: 1;
+}
+
+/* A banner for a vault off screen: the whole message opens that vault. */
+.toast-link {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.toast-link:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
 }

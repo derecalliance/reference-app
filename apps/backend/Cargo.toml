@@ -1,32 +1,75 @@
 [package]
 name = "derec-backend"
-version = "0.1.0"
+version = "0.0.7"
 edition = "2021"
+rust-version = "1.88"
+description = "Thin backend for the DeRec reference app: actor registry, message relay and hosted helpers"
+license = "Apache-2.0"
+repository = "https://github.com/derecalliance/reference-app"
+
+# Split into a library plus a thin binary so integration tests under `tests/`
+# can drive the actors directly instead of going through HTTP.
+[lib]
+name = "derec_backend"
+path = "src/lib.rs"
+
+[[bin]]
+name = "derec-backend"
+path = "src/main.rs"
 
 [dependencies]
-dotenv = "0.15.0"
-axum = "0.8"
+dotenvy = "0.15"
+# Layered configuration: TOML file beneath a DEREC_* environment provider.
+figment = { version = "0.10", features = ["toml"] }
+# `macros` for `#[derive(FromRef)]`: each handler takes only the service it
+# uses, drawn from the one application state.
+axum = { version = "0.8", features = ["macros"] }
+async-trait = "0.1"
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "trace"] }
+# `compression-*` for the static front end (see `static_files` in lib.rs).
+tower-http = { version = "0.6", features = ["cors", "trace", "fs", "compression-gzip", "compression-br"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 dashmap = "6"
 base64 = "0.22"
-# Published SDK. Plaintext `http://` is no longer a compile-time feature — it
-# is `DeRecProtocolBuilder::with_unsafe_http`, decided per instance at runtime.
-derec-library = "0.0.2"
-derec-proto = "0.0.2"
+# SDK. Plaintext endpoints are not a compile-time feature — they are
+# `DeRecProtocolBuilder::with_unsafe_connection`, decided per instance at
+# runtime.
+derec-library = { version = "0.0.7", features = ["serde"] }
+derec-proto = "0.0.7"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 rand = "0.8"
 # Operator-supplied defaults for the front end, read from a mounted config file.
 toml = "0.8"
 thiserror = "2"
+# Persistence. `any` is what makes SQLite and Postgres one code path; SQLite is
+# compiled in, so the image needs no database service and nothing installed.
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio-rustls",
+    "any",
+    "sqlite",
+    "postgres",
+    "migrate",
+    "macros",
+] }
 actix = "0.13"
 actix-rt = "2"
 # Envelope decoding: inbound messages are routed to a per-secret protocol
 # instance by the cleartext `channel_id` on the DeRecMessage envelope.
 prost = "0.14.4"
+# gRPC transport. Versions match the library's own `smoke-tests/grpc`, which
+# keeps one `DeRecMessage` in the build rather than a duplicate definition.
+tonic = "0.14.6"
+tonic-prost = "0.14.6"
+
+[build-dependencies]
+tonic-prost-build = "0.14.6"
+
+[dev-dependencies]
+# `ServiceExt::oneshot`, for HTTP-level integration tests that drive a real
+# handler through `derec_backend::build_router` instead of calling it directly.
+tower = { version = "0.5", features = ["util"] }

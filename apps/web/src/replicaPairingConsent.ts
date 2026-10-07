@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import type { SenderKind } from '@derec-alliance/web'
 import { complementRole, senderKindFor, type PairingRole } from './pairingRoles'
 
@@ -10,9 +13,9 @@ import { complementRole, senderKindFor, type PairingRole } from './pairingRoles'
  *
  * This module **destroys nothing**. It reads no storage and writes none; it
  * decides whether a pairing may start and resolves the role to what goes on the
- * wire. The erase itself happens later, at first sync, behind the separate
- * adoption confirmation in `ReplicaAdoptionDialog` — which is the only place
- * `clearNamespace` and `restore` are reachable from.
+ * wire. The decision to adopt is asked again in the fingerprint dialog, before
+ * this device confirms the channel — confirming is that decision (SDK 0.0.7) —
+ * and the erase follows when the source's vault arrives.
  */
 
 /**

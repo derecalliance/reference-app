@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { createContext, useContext, type ReactNode } from 'react'
 import { DEFAULT_PROTOCOL_TIMEOUT_SECS } from './config'
 

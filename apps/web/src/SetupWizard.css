@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * Copyright (c) 2026 DeRec Alliance. All rights reserved. */
+
 .wizard {
   display: flex;
   flex-direction: column;
@@ -237,6 +240,53 @@
   text-transform: none;
   letter-spacing: 0;
   margin-top: 2px;
+}
+
+/* ── Transport mix ────────────────────────────────────────────────────────
+   A breakdown of the participant count above rather than another sibling
+   counter, so it's nested in its own bordered block instead of three more
+   full-height `.participant-count-section` rows. Its rows reuse that same
+   class for the steppers, just at a smaller scale that reflects being a
+   secondary, derived control — the primary counters above are untouched. */
+.transport-mix {
+  margin-top: 8px;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.transport-mix-heading {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-h);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  text-align: left;
+}
+
+.transport-mix-rows {
+  margin-top: 4px;
+}
+
+.transport-mix-row {
+  padding: 8px 0;
+
+  .participant-count-input {
+    gap: 12px;
+    margin-top: 0;
+  }
+
+  .count {
+    font-size: 20px;
+    min-width: 22px;
+  }
+
+  .stepper {
+    width: 28px;
+    height: 28px;
+    font-size: 15px;
+  }
 }
 
 .wizard-actions {
@@ -590,4 +640,25 @@
   font-size: 13px;
   line-height: 1.5;
   color: var(--text);
+}
+
+/* The paste field under the claim picker: set apart from the list above it. */
+.wizard-field-label--spaced {
+  display: block;
+  margin-top: 16px;
+}
+
+/* Claiming an owner another browser is still driving: said loudly, and the
+   Claim button waits for the acknowledgement below. */
+.wizard-claim-warning {
+  margin-top: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--warning);
+  border-radius: 6px;
+  background: var(--warning-bg);
+  text-align: left;
+
+  & p {
+    margin: 0 0 8px;
+  }
 }

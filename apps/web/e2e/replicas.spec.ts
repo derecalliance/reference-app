@@ -1,11 +1,19 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { test, expect } from './fixtures'
 import {
   addAndPairReplica,
   addReplica,
+  confirmReplicaRemoval,
+  dismissReplicaFingerprint,
   openTab,
   pairParticipant,
+  pairReplica,
   protectSecret,
   replicaChannelCount,
+  replicaChannelRow,
+  replicaMemberRows,
   setUpOwner,
   uniqueReplicaName,
 } from './app'
@@ -14,13 +22,15 @@ import {
  * Replica groups: this device as `Source` plus provisioned `Destination`
  * fixtures.
  *
- * Using fixtures rather than extra browser contexts is what makes a group of
- * three tractable — the protocol path is identical, and the fixture has no
- * screen so this device drives both ends of the fingerprint comparison.
+ * The `Destination`s are ordinary provisioned helpers paired in replica mode —
+ * a replica is a pairing mode, not a kind of actor. Using them rather than
+ * extra browser contexts is what makes a group of three tractable: the protocol
+ * path is identical, and an unattended fixture auto-confirms its own
+ * fingerprint, so this device only ever compares its own.
  *
- * Names come from `uniqueReplicaName` because the replica pool is server-wide
- * and the dev backend is reused between runs: a fixed name would match rows an
- * earlier run left behind.
+ * Names come from `uniqueReplicaName` because actors are server-wide and the
+ * dev backend is reused between runs: a fixed name would match rows an earlier
+ * run left behind.
  *
  * Source succession is deliberately not covered. The library's promotion is not
  * yet implemented end to end, so a group whose source leaves is left without
@@ -32,13 +42,32 @@ test.describe('replica groups', () => {
     await setUpOwner(page, { name: 'Alice', participants: 3, prePaired: 0, minParticipants: 2 })
 
     const name = uniqueReplicaName()
+    // Returns with the handshake complete and the comparison raised, but not
+    // answered.
     await addReplica(page, name)
 
-    // Provisioned, but no handshake has run yet. Every replica pairing is gated
-    // regardless of contact mode, so nothing moves until both sides confirm.
-    const row = page.locator('.side-participant-item')
-      .filter({ has: page.locator('.side-participant-name', { hasText: new RegExp(`^${name}$`) }) })
-    await expect(row.locator('.status-tag')).toHaveText('Not paired')
+    // Put the comparison away unanswered. Dismissing writes nothing, so this
+    // leaves precisely the state under test — and it is what makes the tab
+    // reachable at all, since the open modal hides the rest of the app from
+    // the accessibility tree.
+    await dismissReplicaFingerprint(page, name)
+
+    // The handshake alone must never be enough. Every replica pairing is gated
+    // regardless of contact mode, so a channel whose codes nobody has compared
+    // stays `Pending` and carries no secret — asserted on the owner's own row,
+    // which is the side the gate is for. The helper's side is not observable
+    // from here and is not what this test is about.
+    await openTab(page, 'Replicas')
+    const row = replicaChannelRow(page, name)
+    await expect(row.locator('.status-tag')).toHaveText('Pending confirmation')
+
+    // And confirming is what lifts it — otherwise the assertion above would
+    // pass just as well against a replica flow that had stopped working
+    // entirely. The row's own prompt is the standing way back into a dismissed
+    // comparison, so this covers that route too.
+    await row.getByRole('button', { name: 'Confirm fingerprint' }).click()
+    await pairReplica(page, name)
+    await expect(row.locator('.status-tag')).toHaveText('Verified', { timeout: 60_000 })
 
     expect(pageErrors).toEqual([])
   })
@@ -55,6 +84,11 @@ test.describe('replica groups', () => {
   })
 
   test('the group mirrors a protected secret to every member', async ({ page, pageErrors }) => {
+    // The ordering that broke on the SDK twice: the second replica's admission
+    // and the protect below go out a poll apart. SDK 0.0.7 keeps the group on
+    // the first member's channel and moves each joiner onto it as soon as the
+    // handover is sent, so every member gets the mirror (also pinned in
+    // `apps/backend/tests/replica_second_admission.rs`).
     await setUpOwner(page, { name: 'Alice', participants: 3, prePaired: 0, minParticipants: 2 })
     await pairParticipant(page, { index: 0, mode: 'Inline keys' })
     await pairParticipant(page, { index: 1, mode: 'Inline keys' })
@@ -93,6 +127,130 @@ test.describe('replica groups', () => {
     await expect(check).toBeEnabled({ timeout: 60_000 })
   })
 
+  /**
+   * A replica row must always have a way off the screen.
+   *
+   * The row used to carry an "Unpair" that dispatched `Unpair { channel_id }`,
+   * the *helper* teardown. The library stores group members by replica id and
+   * never by channel id, so it rejected that on every replica channel — a
+   * healthy, verified, actively-mirroring one included — with "channel id not
+   * present in channel store". Nothing else could clear the row, so a pairing
+   * that went wrong was permanent.
+   */
+  test('a replica row offers no helper-style Unpair', async ({ page, pageErrors }) => {
+    await setUpOwner(page, { name: 'Alice', participants: 3, prePaired: 0, minParticipants: 2 })
+    const name = uniqueReplicaName()
+    await addAndPairReplica(page, name)
+
+    await openTab(page, 'Replicas')
+    const row = replicaChannelRow(page, name)
+    await expect(row.locator('.status-tag')).toHaveText('Verified', { timeout: 60_000 })
+
+    // The action that never worked is gone, and the one that always works is
+    // there in its place.
+    await expect(row.getByRole('button', { name: 'Unpair' })).toHaveCount(0)
+    await expect(row.getByRole('button', { name: 'Forget' })).toBeVisible()
+
+    expect(pageErrors).toEqual([])
+  })
+
+  test('Forget clears a replica row without any protocol call failing', async ({
+    page,
+    pageErrors,
+  }) => {
+    const failures: string[] = []
+    page.on('console', message => {
+      if (message.type() === 'error') failures.push(message.text())
+    })
+
+    await setUpOwner(page, { name: 'Alice', participants: 3, prePaired: 0, minParticipants: 2 })
+    const name = uniqueReplicaName()
+    await addAndPairReplica(page, name)
+
+    await openTab(page, 'Replicas')
+    const row = replicaChannelRow(page, name)
+    await row.getByRole('button', { name: 'Forget' }).click()
+
+    // Confirmed rather than immediate: nothing goes out on the wire, and the
+    // modal is the only place the user can learn that.
+    const confirm = page.locator('.modal-overlay').filter({ hasText: 'Forget this replica?' })
+    await expect(confirm).toContainText('is not told')
+    await confirm.getByRole('button', { name: 'Forget' }).click()
+
+    await expect.poll(() => replicaChannelCount(page), { timeout: 30_000 }).toBe(0)
+
+    // The point of the escape hatch: it cannot fail. A dispatched flow that the
+    // library refuses would land here, which is exactly how the old Unpair
+    // behaved.
+    expect(failures.filter(text => /unpair|channel store/i.test(text))).toEqual([])
+    expect(pageErrors).toEqual([])
+  })
+
+  /**
+   * Forget is app-side only, and that is a real cost: the library goes on
+   * counting the member, so its replica id stays taken and the device behind it
+   * is refused on every attempt to pair again — with nothing on screen to
+   * explain why. The orphan list is what makes that state visible and clearable.
+   */
+  test('a member the app has forgotten is still listed, and can be evicted', async ({
+    page,
+    pageErrors,
+  }) => {
+    await setUpOwner(page, { name: 'Alice', participants: 3, prePaired: 0, minParticipants: 2 })
+    // Eviction completes by publishing a roster, so the vault needs a secret to
+    // publish — and protecting one needs the configured minimum of helpers.
+    await pairParticipant(page, { index: 0, mode: 'Inline keys' })
+    await pairParticipant(page, { index: 1, mode: 'Inline keys' })
+
+    const name = uniqueReplicaName()
+    await addAndPairReplica(page, name)
+    await protectSecret(page, 'Passphrase', 'hunter2')
+
+    await openTab(page, 'Replicas')
+    await replicaChannelRow(page, name).getByRole('button', { name: 'Forget' }).click()
+    await page
+      .locator('.modal-overlay')
+      .filter({ hasText: 'Forget this replica?' })
+      .getByRole('button', { name: 'Forget' })
+      .click()
+    await expect.poll(() => replicaChannelCount(page), { timeout: 30_000 }).toBe(0)
+
+    // The channel row is gone, but the member is not — it is still in the
+    // group, and the tab lists it as the replica it is rather than claiming
+    // there are none. This device's own Source entry is the group, not a peer
+    // in it, so exactly one member is listed.
+    const members = replicaMemberRows(page)
+    await expect(members).toHaveCount(1, { timeout: 30_000 })
+    await expect(members).toContainText(/Replica destination/i)
+
+    // Nothing on the row pretends to a pairing this device does not have: no
+    // fingerprint to compare, no vault to send, and no local record to forget.
+    await expect(members.getByRole('button', { name: 'Forget' })).toHaveCount(0)
+    await expect(members.getByRole('button', { name: /Sync now/ })).toHaveCount(0)
+    await expect(members.getByRole('button', { name: /fingerprint/i })).toHaveCount(0)
+
+    await members.getByRole('button', { name: 'Remove from group' }).click()
+    await confirmReplicaRemoval(page)
+    await expect(members).toHaveCount(0, { timeout: 90_000 })
+
+    // Gone from the library's own store, not just from the page — only this
+    // device's `Source` entry is left.
+    const memberRoles = () =>
+      page.evaluate(() => {
+        const roles: string[] = []
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i)!
+          if (!key.includes(':channel:replica:')) continue
+          const text = atob(localStorage.getItem(key)!.replace(/-/g, '+').replace(/_/g, '/'))
+          roles.push(/"role":"(\w+)"/.exec(text)?.[1] ?? '?')
+        }
+        return roles.sort()
+      })
+    await expect.poll(memberRoles, { timeout: 90_000 }).toEqual(['Source'])
+
+    expect(pageErrors).toEqual([])
+  })
+
   test('evicting a member removes it from the group and the roster', async ({ page, pageErrors }) => {
     await setUpOwner(page, { name: 'Alice', participants: 3, prePaired: 0, minParticipants: 2 })
     await pairParticipant(page, { index: 0, mode: 'Inline keys' })
@@ -107,6 +265,7 @@ test.describe('replica groups', () => {
     const remove = page.getByRole('button', { name: 'Remove from group' })
     await expect(remove).toBeVisible({ timeout: 60_000 })
     await remove.click()
+    await confirmReplicaRemoval(page)
 
     await expect(remove).toBeHidden({ timeout: 90_000 })
     // Polled: the button goes as soon as the row re-renders, while the roster

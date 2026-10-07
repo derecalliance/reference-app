@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { describe, expect, it } from 'vitest'
 import { selectAutoPairTargets, type AutoPairCandidate } from './autoPairSelection'
 
@@ -91,6 +94,28 @@ describe('selectAutoPairTargets', () => {
     ]
 
     expect(ids(selectAutoPairTargets(candidates, 2))).toEqual(['free'])
+  })
+
+  it('skips participants that are switched off', () => {
+    // An offline participant still reads as available — nothing is paired with
+    // it — but the node drops its messages, so the handshake would never
+    // complete and the setup gate would never clear.
+    const candidates: AutoPairCandidate[] = [
+      { id: 'offline', connectionStatus: 'available', offline: true },
+      { id: 'online', connectionStatus: 'available' },
+    ]
+
+    expect(ids(selectAutoPairTargets(candidates, 2))).toEqual(['online'])
+  })
+
+  it('returns fewer than asked rather than picking an unreachable peer', () => {
+    const candidates: AutoPairCandidate[] = [
+      { id: 'a', connectionStatus: 'available', offline: true },
+      { id: 'b', connectionStatus: 'available', offline: true },
+      { id: 'c', connectionStatus: 'available' },
+    ]
+
+    expect(selectAutoPairTargets(candidates, 3)).toHaveLength(1)
   })
 
   it('skips browser-run peers, which drive their own pairing', () => {

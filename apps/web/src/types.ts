@@ -1,7 +1,10 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import type { AuthenticationMethod, UnpairAck } from './config'
 import type { PairingRole } from './pairingRoles'
 
-export type TransportProtocol = 'https'  // only HTTPS supported in v1
+export type TransportProtocol = 'https' | 'grpc'
 
 export interface Transport {
   protocol: TransportProtocol
@@ -24,6 +27,12 @@ export interface SecretShareRef {
   status: 'pending' | 'confirmed' | 'rejected'
   /** Whether the share has passed an owner-initiated verification challenge. */
   verified: boolean
+  /**
+   * For a `rejected` share, what the library (or the app, closing a round)
+   * said about it — what tells a refusal from a silence or a failed send. See
+   * `owner/shareFailure.ts`. Absent on records written before it was kept.
+   */
+  failure?: { status: number; memo: string }
 }
 
 /**
@@ -45,6 +54,16 @@ export interface PairedParticipant {
   /** Unique identifier for the owner–participant channel (decimal string of u64) */
   channelId: string
   transport: Transport
+  /**
+   * Every endpoint this peer advertises, in its own preference order.
+   *
+   * Optional because not every construction site knows the peer's roster entry
+   * — a channel resolved only from what travelled on the wire has just the one
+   * address. Where it is known it is what distinguishes a gRPC-only peer from
+   * one offering both, which [`Self::transport`] alone cannot: that is only
+   * ever the first entry.
+   */
+  transports?: Transport[]
   secretShares: SecretShareRef[]
   connectionStatus: ParticipantConnectionStatus
   /**
@@ -67,6 +86,12 @@ export interface PairedParticipant {
   offline?: boolean
   /** Whether discovery has been requested and completed for this participant */
   discoveryComplete?: boolean
+  /**
+   * Why the last discovery got no answer from this participant — the request
+   * could not be delivered, or nothing came back in time. Cleared when it is
+   * asked again.
+   */
+  discoveryError?: string
   /** Secret versions this helper reported during discovery (populated after SecretsDiscovered) */
   discoveredVersions?: Array<{ secretId: string; version: number; description: string }>
   /** Shared symmetric key for the owner–participant channel (base64url-encoded) */
@@ -92,14 +117,52 @@ export interface BagVersion {
   participantIds: string[]
   /** IDs of participants whose share passed verification for this version */
   verifiedParticipantIds: string[]
+  /**
+   * Participants that refused the latest verification challenge for this
+   * version (`ShareVerifyRejected`), with their status and memo. Cleared when
+   * a new round of challenges starts, like `verifiedParticipantIds`. Absent on
+   * records saved before SDK 0.0.7 reported refusals.
+   */
+  verifyRejections?: { id: string; status: number; memo: string }[]
   /** Participants that rejected or timed out for this version */
   failedParticipantIds: { id: string; status: number; memo: string }[]
   /** User secrets contained in this version */
   secrets: UserSecret[]
   /** Raw bag bytes (hex), for display */
   rawBytes: string
+  /**
+   * This version was rebuilt by `restore` from a recovered bag. `restore`
+   * writes no tracking shares — a proof is over the exact bytes a helper holds,
+   * and recovery cannot attribute a collected share to its helper — so the
+   * library cannot verify it. Publishing once produces a version that can.
+   */
+  restoredFromRecovery?: boolean
   /** Helper infos snapshot at this version */
   helpers: { id: string; name: string; channelId: string }[]
+  /**
+   * The replica group this version carries, as the library put it in the
+   * secret: `null` when the vault had no group. Absent on versions recorded
+   * before the app tracked it — unknown, not empty.
+   */
+  replicas?: BagReplicaGroup | null
+}
+
+/** One member of the replica group a bag version carries. */
+export interface BagReplicaMember {
+  /** The member's replica id, as the library reported it. */
+  replicaId: string
+  /** `Source` or `Destination`; `null` when the stored record did not say. */
+  role: string | null
+  /** The name the member advertised, when it sent one. */
+  name: string | null
+}
+
+/** The replica group a bag version carries — the `replicas` field of the library's secret. */
+export interface BagReplicaGroup {
+  /** The one channel every member is addressed on. */
+  channelId: string
+  /** Every member, this device included. */
+  members: BagReplicaMember[]
 }
 
 /** The single secret bag managed by the protocol. */
@@ -135,12 +198,28 @@ export interface PendingPairing {
  * These types mirror that payload with binary fields base64url-encoded so the
  * snapshot survives localStorage; `protocol.restore` needs it re-hydrated.
  */
+/**
+ * One endpoint from a roster entry.
+ *
+ * `protocol` is the numeric `Protocol` discriminant the payload carries
+ * (`0` = HTTPS, `1` = gRPC) rather than a name, because that is the form
+ * `protocol.restore` reads it back in. Recoverable-payload v3 stores the
+ * discriminant outright; v2 stored a bare URI and made recovery guess.
+ */
+export interface RecoveredSecretTransport {
+  uri: string
+  /** As SDK 0.0.6 names it. Snapshots saved before that hold `0`/`1`; read through `protocolName`. */
+  protocol: 'https' | 'grpc'
+}
+
 export interface RecoveredSecretHelper {
   /** u64 channel id as decimal string. */
   channelId: string
-  transportUri: string
+  /** Every endpoint this peer advertised, in the order it offered them. */
+  transports: RecoveredSecretTransport[]
   /** App-level identity metadata; opaque to the protocol. */
-  communicationInfo: Record<string, string>
+  /** Absent when the peer advertised nothing — the SDK omits an empty map. */
+  communicationInfo?: Record<string, string>
   /** 32-byte channel key, base64url-encoded. */
   sharedKey: string
 }
@@ -153,8 +232,10 @@ export interface RecoveredSecretHelper {
  * `replicaId` alone.
  */
 export interface RecoveredSecretReplica {
-  transportUri: string
-  communicationInfo: Record<string, string>
+  /** Every endpoint this member advertised, in the order it offered them. */
+  transports: RecoveredSecretTransport[]
+  /** Absent when the peer advertised nothing — the SDK omits an empty map. */
+  communicationInfo?: Record<string, string>
   /** Hex-encoded u64, matching the wire `derec.replica_id` representation. */
   replicaId: string
   /**
@@ -208,8 +289,37 @@ export interface RecoveryProgress {
   sharesReceived: number
   /** Total participants we requested shares from */
   totalRequested: number
+  /**
+   * The channels counted in `totalRequested` — the helpers expected to hold
+   * this version. Lets an answer that is not a share (a refusal, a corrupted
+   * share) count towards "every answer is in" only when it came from one of
+   * them. Absent on records saved before it existed: then every answer counts.
+   */
+  requestedChannelIds?: string[]
+  /** Helpers that refused the request (`RecoveryShareRefused`) — no share from them. */
+  refusals?: { channelId: string; status: number; memo: string }[]
+  /** Helpers whose share was set aside on arrival (`RecoveryShareCorrupted`). */
+  corrupted?: { channelId: string; reason: CorruptionReason }[]
   /** Non-null when recovery failed for a reason other than insufficient shares */
   error: string | null
+}
+
+/** Why the library set a helper's recovery share aside — the SDK's `CorruptionReason`. */
+export type CorruptionReason = 'Malformed' | 'InvalidProof' | 'Inconsistent'
+
+/**
+ * A helper answered a recovery request with a share that cannot be part of the
+ * secret. An honest helper never does, so it is kept until the owner has seen
+ * it and decided — unpair the helper, or dismiss the warning.
+ */
+export interface CorruptShareReport {
+  channelId: string
+  /** The helper's name when it was reported, in case its row is gone since. */
+  peerName: string
+  version: number
+  reason: CorruptionReason
+  /** Epoch ms. */
+  reportedAt: number
 }
 
 /**
@@ -228,28 +338,40 @@ export interface RecoveryFailure {
 
 
 /**
- * Everything one browser context holds as an owner: its backend identity, its
- * paired peers, its vault, and the protocol settings it runs with.
+ * One vault: a DeRec instance bound to a single `secret_id`, holding its own bag
+ * of user secrets, its own paired participants, and its own replica group.
  *
- * This is the root of persisted app state. `ownerId` is the identity — the
- * backend actor this context registered — and is what the storage key is
+ * A vault is an owner-role actor on the backend — `id` is that actor's UUID —
+ * but the app never calls it an owner at the user. Counterparties see unrelated
+ * owners protecting unrelated secrets; only this app knows several vaults belong
+ * to one person.
+ *
+ * This is the root of persisted app state, and `id` is what the storage key is
  * derived from.
  */
-export interface Owner {
-  /** Actor ID of this owner on the backend — used for mailbox polling. */
-  ownerId: string
-  ownerName: string
+export interface Vault {
   /**
-   * This node's own `secret_id` (u64 decimal string) — the secret it protects
+   * The owner-role actor UUID this vault registered as. Also the storage key,
+   * the lock name and the URL segment.
+   */
+  id: string
+  name: string
+  /**
+   * This vault's own `secret_id` (u64 decimal string) — the secret it protects
    * as Owner, allocated by the backend and published on its actor record.
    *
-   * The node runs a single protocol instance bound to this value. Helper-role
+   * The vault runs one protocol instance bound to this value. Helper-role
    * channels live in that same instance: shares are separated by channel and
    * each carries its own Owner's `secret_id` on the record.
    */
-  ownSecretId: string
-  /** The owner's own transport endpoint, shared with participants for contact */
+  secretId: string
+  /** This vault's own transport endpoint, shared with participants for contact */
   transport: Transport
+  /**
+   * `transport` was set by hand (Edit identity), so it no longer follows the
+   * address the node advertises for this vault. Absent or false: it follows.
+   */
+  ownTransportPinned?: boolean
   participants: PairedParticipant[]
   /** The single secret bag, null until the first protect_secret call */
   secretBag: SecretBag | null
@@ -271,7 +393,7 @@ export interface Owner {
    * that specific version, or globally on entering/exiting recovery mode.
    */
   recoveryFailures: RecoveryFailure[]
-  /** Shares this owner holds on behalf of other owners (helper role) */
+  /** Shares this vault holds on behalf of other owners (helper role) */
   heldShares: HeldShare[]
   /**
    * Presentation hint for linked-channel groups: channel IDs designated as the
@@ -280,20 +402,119 @@ export interface Owner {
    * drives the group header per the UI's main-selection rule.
    */
   mainChannels: string[]
-  /** Protocol configuration chosen in the setup wizard. */
-  config: OwnerConfig
+  /**
+   * What this vault overrides, not what it runs with.
+   *
+   * Resolve through `resolveVaultConfig` — never read these values directly, or
+   * a vault that overrides nothing reads as having no configuration at all.
+   */
+  configOverrides: VaultConfigOverrides
+  /**
+   * Protect rounds dispatched but not yet resolved, oldest first, each with the
+   * bag version it will commit. Several can be open at once — a secret added
+   * while the previous round still waits on a slow helper.
+   *
+   * Persisted because a round outlives the page: the library has already
+   * assigned the version and sent the shares, and the helpers' answers wait in
+   * the mailbox across a reload. Held only in memory, a reload mid-round lost
+   * the staged bag, and the round's eventual `SharingComplete` was then taken
+   * for an auto-publish — advancing the version with the old secrets, so the
+   * secret just added silently disappeared. Absent when no round is open.
+   *
+   * Records saved before rounds could overlap carry a single
+   * `pendingProtectRound`; `vaultPersistence` folds it into this list on load.
+   */
+  pendingProtectRounds?: PendingProtectRound[]
+  /**
+   * Verification challenges still awaiting their answers.
+   *
+   * Persisted for the same reason as `pendingProtectRounds`: the library keeps
+   * its half of each challenge in its own store, and the helper's answer can
+   * land after a reload. Held only in memory, that answer was dropped and the
+   * version read "0 verified" although every helper had proved its share.
+   * Absent when none is outstanding.
+   */
+  pendingVerifications?: PendingVerification[]
+  /**
+   * Helpers that sent a corrupted recovery share, awaiting the owner's
+   * decision. Absent when there are none.
+   */
+  corruptShareReports?: CorruptShareReport[]
+  /**
+   * This vault's copy has diverged from its replica group's, and publishing
+   * from this device is paused until the owner resolves it — see
+   * `ReplicaConflict`. Absent when there is no conflict.
+   */
+  replicaConflict?: ReplicaConflict
 }
 
 /**
- * User-tunable protocol configuration, chosen in the setup wizard and fixed for
- * the lifetime of this owner.
+ * Two members of the replica group published different copies of the same
+ * version.
+ *
+ * Every member numbers its next publish from the version it holds, and a newer
+ * version replaces an older one wherever it lands. So from the moment this is
+ * known, a further publish from this device would be a higher version that
+ * every other member applies over its own copy — erasing the change it never
+ * merged. The library reports the collision and merges nothing; resolving it
+ * is the owner's: get the rival copy, merge, publish once.
+ */
+export interface ReplicaConflict {
+  /** The version two members published different copies of. */
+  version: number
+  /**
+   * How this device learned of it: it was offered a rival copy
+   * (`ReplicaVersionConflict`), or its own copy was refused by a member that
+   * holds another (`ReplicaSyncRejected` with `VERSION_CONFLICT`).
+   */
+  detectedVia: 'ReplicaVersionConflict' | 'ReplicaSyncRejected'
+  /** The member holding the rival copy (decimal replica id), when known. */
+  rivalReplicaId: string | null
+  /**
+   * The rival copy's secrets, once this device has received it — `null` until
+   * then. A `ReplicaSyncRejected` says only that a rival exists; a replica
+   * discovery fetches it.
+   */
+  rivalSecrets: UserSecret[] | null
+  /** Epoch ms. */
+  detectedAt: number
+}
+
+/** A dispatched protect round, as persisted on the vault — see `Vault.pendingProtectRounds`. */
+/**
+ * A verification challenge sent and not yet answered, persisted so an answer
+ * that lands after a reload is still applied — see `Vault.pendingVerifications`.
+ */
+export interface PendingVerification {
+  /** The participant channel challenged. */
+  channelId: string
+  /** The secret partition the challenge was issued under. */
+  protocolSecretId: string
+  version: number
+  /** Epoch ms after which an answer is no longer expected or applied. */
+  deadline: number
+}
+
+export interface PendingProtectRound {
+  /** The bag version the library assigned to this round. */
+  version: number
+  protocolSecretId: string
+  /** The bag the round commits when it succeeds, with confirmations so far. */
+  bag: SecretBag
+  /** Participant channels whose answer is still awaited. */
+  channelIds: string[]
+}
+
+/**
+ * User-tunable protocol configuration, chosen when the vault is created and
+ * fixed for its lifetime.
  *
  * Owned by the front end. `protocolTimeoutSecs` and `unpairAck` are sent to the
  * backend when provisioning actors so backend-run peers agree; the rest never
- * leave the browser. Two browser contexts on the same server may hold different
- * settings — they are independent nodes, exactly as two devices would be.
+ * leave the browser. Two vaults on the same server may hold different settings —
+ * they are independent owners, exactly as two devices would be.
  */
-export interface OwnerConfig {
+export interface VaultConfig {
   /**
    * General protocol timeout in seconds. Drives both the library's passive
    * `process()` expiry (via the WASM constructor) and the app's active
@@ -321,4 +542,27 @@ export interface OwnerConfig {
    * backend.
    */
   autoAcceptUnpairRequests: boolean
+  /**
+   * FE-only UI preference for this vault as a helper: when `true`, a peer's
+   * request to store a share is accepted without the confirmation modal.
+   */
+  autoAcceptStoreShareRequests: boolean
+  /**
+   * FE-only UI preference for this vault as a helper: when `true`, a peer's
+   * verification request is answered without the confirmation modal.
+   */
+  autoAcceptVerifyShareRequests: boolean
 }
+
+/**
+ * What one vault overrides of [`VaultConfig`], not what it runs with.
+ *
+ * A partial rather than a full copy, for the same reason the browser-level
+ * `DefaultOverrides` is one: storing a resolved snapshot would strand a vault on
+ * the values its node happened to hold the day it was created, and a later
+ * reconfiguration would never reach it. Resolve with `resolveVaultConfig`.
+ *
+ * Declared here rather than beside the resolver so `types.ts` needs no import
+ * back from `protocolDefaults.ts`, which already imports from here.
+ */
+export type VaultConfigOverrides = Partial<VaultConfig>

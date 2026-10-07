@@ -1,9 +1,12 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * Copyright (c) 2026 DeRec Alliance. All rights reserved. */
+
 header {
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 0 24px;
-  height: 56px;
+  min-height: 56px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 
@@ -18,25 +21,84 @@ header {
     flex: 1;
   }
 
-  .leave-btn {
+  /* Narrow screens: the actions sit in a menu (see `AppHeader`), the gutter
+     shrinks, and the switcher gives up width before anything overflows. */
+  &.header--compact {
+    gap: 8px;
+    padding: 0 16px;
+
+    .header-spacer {
+      flex: 1 1 0;
+      min-width: 0;
+    }
+
+    select.vault-switcher {
+      flex: 0 1 auto;
+      min-width: 0;
+      max-width: 50vw;
+    }
+
+    img {
+      flex-shrink: 0;
+    }
   }
 }
 
 main {
   flex: 1;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  /* `safe` falls back to start alignment once the content can no longer fit
+   * centered — without it, a step taller than the viewport centers around a
+   * scroll position that clips its start and never lets a user (or
+   * Playwright) scroll far enough to reach it, hiding controls behind the
+   * header instead of just showing a scrollbar. */
+  align-items: safe center;
+  justify-content: safe center;
   padding: 40px 24px;
   min-height: 0;
   overflow: auto;
 }
 
-main.owner-mode {
+/* The app shell fills `main` and owns the layout inside it, so the centering
+ * above applies to nothing any more — the shell's own content area does it for
+ * the screens that want it (see `.shell-centered`). */
+main.shell-host {
   align-items: stretch;
   justify-content: flex-start;
   padding: 0;
   overflow: hidden;
+
+  /* On a phone the document scrolls (see `#root`), so the host grows with its
+     content instead of clipping it. */
+  @media (max-width: 640px) {
+    flex: 1 0 auto;
+    overflow: visible;
+  }
+}
+
+/* Screens that were centered by `main` before the shell existed — the setup
+ * wizard and the dialogs it leads to. Applied by `App`, which knows whether
+ * there is an owner; the shell deliberately does not. */
+.shell-centered {
+  flex: 1;
+  display: flex;
+  /* `safe` for the same reason `main` used it: a step taller than the viewport
+   * must fall back to start alignment rather than centering around a scroll
+   * position that clips its top. */
+  align-items: safe center;
+  justify-content: safe center;
+  padding: 40px 24px;
+  min-height: 0;
+  /* A flex item will not shrink below its content without this, so the vault
+     list's table set the width of the whole screen and pushed it past a
+     phone's edge instead of scrolling inside its own container. */
+  min-width: 0;
+  overflow: auto;
+
+  @media (max-width: 640px) {
+    padding: 24px 16px;
+    overflow: visible;
+  }
 }
 
 
@@ -56,6 +118,33 @@ button.secondary.reset-btn:hover:not(:disabled) {
   border-color: var(--danger);
   background: var(--danger-bg);
   color: var(--danger);
+}
+
+/* Other vaults waiting on the owner. The words carry it; the colour only draws the eye. */
+button.secondary.attention-btn {
+  border-color: var(--warning);
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
+/* The header's vault switcher, matched to the secondary buttons beside it. */
+select.vault-switcher {
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  padding: 7px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-h);
+  cursor: pointer;
+  max-width: 260px;
+  text-overflow: ellipsis;
+
+  &:hover {
+    border-color: var(--accent);
+    background: var(--accent-bg);
+  }
 }
 
 button.danger {
@@ -93,6 +182,14 @@ button {
   align-items: center;
   justify-content: center;
   z-index: 1000;
+}
+
+/* Every hand-styled modal's scrim takes focus when nothing inside asks for it
+   (see `ModalFrame`). That is focus parking, not a control, so no ring. */
+.app-dialog-overlay:focus,
+.modal-overlay:focus,
+.cmodal-overlay:focus {
+  outline: none;
 }
 
 .app-dialog {
@@ -143,6 +240,10 @@ footer {
   height: 56px;
   border-top: 1px solid var(--border);
   flex-shrink: 0;
+
+  @media (max-width: 640px) {
+    height: 48px;
+  }
 
   a {
     display: flex;

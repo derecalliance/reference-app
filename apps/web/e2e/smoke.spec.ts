@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { test, expect } from './fixtures'
 import { newOwnerContext, openApp, openTab, setUpOwner } from './app'
 
@@ -23,8 +26,8 @@ test('the setup wizard produces a working owner', async ({ page }) => {
   await expect(page).toHaveTitle('Alice · DeRec')
   await expect(page.getByRole('button', { name: 'Leave' })).toBeVisible()
 
-  await openTab(page, 'Secret Bag')
-  await expect(page.getByRole('tab', { name: /Secret Bag/, selected: true })).toBeVisible()
+  await openTab(page, 'Secrets')
+  await expect(page.getByRole('tab', { name: /^Secrets/, selected: true })).toBeVisible()
 })
 
 test('pre-pairing pairs the requested participants', async ({ page }) => {

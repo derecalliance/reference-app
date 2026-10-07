@@ -1,6 +1,9 @@
-import { pairingRoleLabel } from './pairingRoleOptions'
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import type { ReplicaChannel } from './ownerPairing'
 import { ReplicaChannelRow } from './ReplicaChannelRow'
+import type { GroupMemberRow } from './owner/groupMembers'
 import type { ReplicaView } from './replicaFlows'
 import type { ReplicaRowSyncNotice } from './replicaSyncNotice'
 
@@ -25,29 +28,28 @@ import type { ReplicaRowSyncNotice } from './replicaSyncNotice'
 export interface ReplicasTabProps {
   /** Paired replica channels, role already narrowed by `splitPairedChannels`. */
   channels: readonly ReplicaChannel[]
-  /**
-   * Provisioned replicas with no channel yet.
-   *
-   * Listed so the tab is not lying by omission — a replica that exists but has
-   * never been paired still belongs in a list of replicas. It is a listing only:
-   * pairing, adding and taking a replica offline stay in the side panel, beside
-   * the provisioned participants they mirror.
-   */
-  awaitingPairing: readonly ReplicaView[]
   /** Replica projection by channel id; a channel is missing until the poll lands. */
   viewByChannelId: ReadonlyMap<string, ReplicaView>
   /** Protocol timeout in seconds — the deadline an unconfirmed channel counts down to. */
   protocolTimeoutSecs: number
   /** The channel whose "Sync now" is in flight, or `null`. */
   syncingChannelId: string | null
-  /** Channels whose unpair request is in flight. */
-  unpairingChannelIds: ReadonlySet<string>
+  /** Destination channels still fetching their source's copy. */
+  catchingUpChannelIds: readonly string[]
   /** The sync message to show on a given row, or `null`. */
   syncNoticeFor: (view: ReplicaView) => ReplicaRowSyncNotice | null
   onDismissSyncNotice: () => void
   onOpenFingerprint: (channelId: string) => void
   onSyncNow: (view: ReplicaView) => void
-  onUnpair: (participantId: string) => void
+  /**
+   * Drop a row from this device alone, by channel id.
+   *
+   * Not a teardown and not a substitute for `onRemoveFromGroup`: the peer is
+   * never told. It exists because a replica has no channel-level unpair, so a
+   * row the protocol will not act on — a pairing that never announced a replica
+   * id, most often one that failed — has no other way off the screen.
+   */
+  onForget: (channelId: string, name: string) => void
   /**
    * Ask the group which version its members hold and catch up if behind.
    *
@@ -55,43 +57,128 @@ export interface ReplicasTabProps {
    * group and this device's version from the stores — so it belongs on the
    * section header, not on a channel.
    */
-  onSyncCheck: () => void
-  /** `null` when no check is running. */
-  syncCheckRunning: boolean
+  onReplicaDiscovery: () => void
+  /** True while a discovery round is in flight. */
+  replicaDiscoveryRunning: boolean
   /**
    * Evict a member from the group by its replica id.
    *
-   * Distinct from `onUnpair`, which tears down a channel: this removes a
-   * *member* from the roster the group publishes.
+   * The only teardown the protocol offers for a replica, and it names a
+   * *member* rather than a channel — every member of a group answers on one
+   * shared channel. Unavailable until `ReplicaPaired` has announced that id,
+   * which is why `onForget` exists beside it.
    */
   onRemoveFromGroup: (view: ReplicaView) => void
   /** Replica ids whose removal is in flight. */
   removingReplicaIds: ReadonlySet<string>
+  /**
+   * Suspend or resume message delivery to a row's peer.
+   *
+   * Only ever called for a row whose peer is a provisioned helper — the row
+   * offers no control otherwise, because there is no actor to suspend.
+   */
+  onToggleOffline: (view: ReplicaView) => void
+  /**
+   * Members the library still holds that no row above accounts for.
+   *
+   * Shown because they are otherwise invisible and still consequential: a
+   * member occupies its replica id whether or not the app remembers it, and the
+   * peer holding that id is refused on every attempt to pair again.
+   */
+  /**
+   * Members of the group this device holds no channel of its own with.
+   *
+   * Rendered in the same list as the channels, because from the group's point
+   * of view that is what they are: two destinations of one source never pair
+   * with each other, yet both are members. Listing them apart described the
+   * app's bookkeeping rather than the protocol.
+   */
+  memberRows: readonly GroupMemberRow[]
+  /** Evict a member by its replica id. */
+  onRemoveMember: (replicaId: string) => void
+  /**
+   * The version this vault holds, or `null` before its first protect round —
+   * what a source row's acknowledgement is compared against to say "behind".
+   */
+  vaultVersion: number | null
+  /**
+   * The replica id of the source this vault's current version names, if it
+   * carries a replica group. A destination row whose peer *is* that source is
+   * one whose vault this device already holds — its offer has been taken.
+   *
+   * Matched by member rather than by channel: the group's channel id is not
+   * stable across admissions, while the source's replica id is.
+   */
+  groupSourceReplicaId: string | null
 }
 
 export function ReplicasTab({
   channels,
-  awaitingPairing,
   viewByChannelId,
   protocolTimeoutSecs,
   syncingChannelId,
-  unpairingChannelIds,
+  catchingUpChannelIds,
   syncNoticeFor,
   onDismissSyncNotice,
   onOpenFingerprint,
   onSyncNow,
-  onUnpair,
-  onSyncCheck,
-  syncCheckRunning,
+  onForget,
+  onReplicaDiscovery,
+  replicaDiscoveryRunning,
   onRemoveFromGroup,
   removingReplicaIds,
+  onToggleOffline,
+  memberRows,
+  onRemoveMember,
+  vaultVersion,
+  groupSourceReplicaId,
 }: ReplicasTabProps) {
-  if (channels.length === 0 && awaitingPairing.length === 0) {
+  /**
+   * Members with no direct channel, rendered as the ordinary rows they are.
+   *
+   * `viaGroupOnly` is what withholds the actions that need a pairing — there is
+   * no fingerprint to compare with a peer this device never paired with, and
+   * nothing to sync to it. Passing no-op handlers instead left those buttons on
+   * screen doing nothing, and the row claiming a verification that never
+   * happened. Eviction stays, because the library's removal names a member
+   * rather than a channel.
+   */
+  const members = memberRows.map(member => (
+    <ReplicaChannelRow
+      key={member.replicaId}
+      name={member.name}
+      channelId={member.channelId}
+      peerRole={member.peerRole}
+      view={member.view}
+      protocolTimeoutSecs={protocolTimeoutSecs}
+      syncing={false}
+      syncBlocked={syncingChannelId !== null}
+      syncNotice={null}
+      onDismissSyncNotice={onDismissSyncNotice}
+      viaGroupOnly
+      onOpenFingerprint={() => {}}
+      onSyncNow={() => {}}
+      onForget={() => {}}
+      canRemoveFromGroup
+      removingFromGroup={removingReplicaIds.has(member.replicaId)}
+      onRemoveFromGroup={() => onRemoveMember(member.replicaId)}
+      canToggleOffline={false}
+      offline={false}
+      onToggleOffline={() => {}}
+    />
+  ))
+
+  // Members count as replicas here, not just channels. A device that belongs to
+  // a group it has no direct channel with — a second destination of one source,
+  // or a device whose rows were forgotten — would otherwise be told it has no
+  // replicas while the protocol still holds its membership and refuses to pair
+  // that id again.
+  if (channels.length === 0 && memberRows.length === 0) {
     return (
       <p className="tab-empty-state">
         No replicas yet. A replica is another of your own devices that mirrors this whole
-        vault instead of holding a share of it. Add a hosted one under “Provisioned
-        replicas”, or pair another browser as a replica with the Pair button above.
+        vault instead of holding a share of it. Add a hosted one under “Replicas” in the
+        side panel, or pair another browser as a replica with the Pair button above.
       </p>
     )
   }
@@ -101,113 +188,62 @@ export function ReplicasTab({
       <div className="replicas-tab-section">
         <div className="section-header-row">
           <h3 className="sub-heading">Replica channels</h3>
-          {channels.length > 0 && (
-            <button
-              className="secondary side-action-btn"
-              onClick={onSyncCheck}
-              disabled={syncCheckRunning}
-              title="Ask the group which version each member holds, and catch up if this device is behind"
-            >
-              {syncCheckRunning ? 'Checking…' : 'Check sync'}
-            </button>
-          )}
+          <button
+            className="secondary side-action-btn"
+            onClick={onReplicaDiscovery}
+            disabled={replicaDiscoveryRunning}
+            title="Ask the group which version each member holds, and catch up if this device is behind"
+          >
+            {replicaDiscoveryRunning ? 'Checking…' : 'Check sync'}
+          </button>
         </div>
-        {channels.length === 0 ? (
-          <p className="tab-empty-state">
-            No replica channels yet. Pair a provisioned replica from the side panel, or
-            pair another browser as a replica.
-          </p>
-        ) : (
-          <div className="channel-table">
-            {channels.map(channel => {
-              const view = viewByChannelId.get(channel.channelId) ?? null
-              return (
-                <ReplicaChannelRow
-                  key={channel.channelId}
-                  name={channel.name}
-                  channelId={channel.channelId}
-                  peerRole={channel.peerRole}
-                  view={view}
-                  protocolTimeoutSecs={protocolTimeoutSecs}
-                  syncing={syncingChannelId === channel.channelId}
-                  // A protect round is global, so one in flight anywhere blocks
-                  // every row's request.
-                  syncBlocked={syncingChannelId !== null}
-                  unpairing={unpairingChannelIds.has(channel.channelId)}
-                  syncNotice={view ? syncNoticeFor(view) : null}
-                  onDismissSyncNotice={onDismissSyncNotice}
-                  onOpenFingerprint={() => onOpenFingerprint(channel.channelId)}
-                  onSyncNow={() => view && onSyncNow(view)}
-                  onUnpair={() => onUnpair(channel.id)}
-                  // Only offered once the peer's replica id is known: the flow
-                  // names the member, and every member shares this channel, so
-                  // without it there is nothing to name.
-                  canRemoveFromGroup={view?.peerReplicaId != null}
-                  removingFromGroup={
-                    view?.peerReplicaId != null && removingReplicaIds.has(view.peerReplicaId)
-                  }
-                  onRemoveFromGroup={() => view && onRemoveFromGroup(view)}
-                />
-              )
-            })}
-          </div>
-        )}
-      </div>
-
-      {awaitingPairing.length > 0 && (
-        <div className="replicas-tab-section">
-          <div className="section-header-row">
-            <h3 className="sub-heading">Provisioned, not paired yet</h3>
-          </div>
-          <div className="channel-table">
-            {awaitingPairing.map(replica => (
-              <AwaitingPairingRow key={replica.id} replica={replica} />
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-/**
- * A provisioned replica that has never completed a handshake.
- *
- * It has no channel, so there is nothing to confirm, sync or unpair — the row
- * says what it is and points at the one place that can act on it. Duplicating
- * the pair action here would mean duplicating its busy and error handling too,
- * for a control that already sits a few centimetres away.
- */
-function AwaitingPairingRow({ replica }: { replica: ReplicaView }) {
-  return (
-    <div className="channel-block">
-      <div className="channel-row-top">
-        <span
-          className={`participant-dot ${replica.offline ? 'offline' : 'available'}`}
-          aria-hidden="true"
-        />
-        <span className="channel-row-name" style={{ flex: 'none' }}>
-          {replica.name}
-        </span>
-        <span className={`role-tag role-tag--${replica.direction}`}>
-          {/* The direction recorded for a replica that has not paired is what it
-              *will* be, so it is stated as this device's side rather than the
-              peer's — there is no peer yet. */}
-          This device: {pairingRoleLabel(replica.direction)}
-        </span>
-        <span style={{ flex: 1 }} />
-        {replica.offline && <span className="status-tag offline">Offline</span>}
-        <span className="status-tag available">Not paired</span>
-      </div>
-      <div className="channel-row-bottom">
-        <div className="channel-prop">
-          <span className="channel-prop-label">Mirror</span>
-          <span className="channel-prop-value">
-            Nothing mirrored yet. Pair it under “Provisioned replicas” in the side panel;
-            both devices then confirm a shared code before anything moves.
-          </span>
+        <div className="channel-table">
+          {channels.map(channel => {
+            const view = viewByChannelId.get(channel.channelId) ?? null
+            return (
+              <ReplicaChannelRow
+                key={channel.channelId}
+                name={channel.name}
+                channelId={channel.channelId}
+                peerRole={channel.peerRole}
+                view={view}
+                protocolTimeoutSecs={protocolTimeoutSecs}
+                syncing={syncingChannelId === channel.channelId}
+                catchingUp={catchingUpChannelIds.includes(channel.channelId)}
+                // A protect round is global, so one in flight anywhere blocks
+                // every row's request.
+                syncBlocked={syncingChannelId !== null}
+                syncNotice={view ? syncNoticeFor(view) : null}
+                onDismissSyncNotice={onDismissSyncNotice}
+                onOpenFingerprint={() => onOpenFingerprint(channel.channelId)}
+                onSyncNow={() => view && onSyncNow(view)}
+                onForget={() => onForget(channel.channelId, channel.name)}
+                // Only offered once the peer's replica id is known: the flow
+                // names the member, and every member shares this channel, so
+                // without it there is nothing to name.
+                canRemoveFromGroup={view?.peerReplicaId != null}
+                removingFromGroup={
+                  view?.peerReplicaId != null && removingReplicaIds.has(view.peerReplicaId)
+                }
+                onRemoveFromGroup={() => view && onRemoveFromGroup(view)}
+                // Offered only for a peer the `/helpers` endpoints will
+                // accept, which is exactly what a non-null id means.
+                canToggleOffline={view?.helperActorId != null}
+                offline={view?.offline === true}
+                onToggleOffline={() => view && onToggleOffline(view)}
+                vaultVersion={vaultVersion}
+                holdsPeerVault={
+                  view?.direction === 'replica_destination' &&
+                  groupSourceReplicaId !== null &&
+                  view.peerReplicaId === groupSourceReplicaId
+                }
+              />
+            )
+          })}
+          {members}
         </div>
       </div>
     </div>
   )
 }
+

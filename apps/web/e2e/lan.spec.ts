@@ -1,5 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { test, expect } from './fixtures'
-import { setUpOwner } from './app'
+import { BACKEND_PORT, setUpOwner } from './app'
 
 /**
  * The app served from a LAN address rather than `localhost`, which is how a
@@ -12,7 +15,7 @@ import { setUpOwner } from './app'
  * Skipped otherwise, because the address is specific to whoever is running it —
  * a hardcoded one would fail for everybody else and teach them to ignore it.
  * The dev servers must already be bound to the network (`npm run dev:lan`, and
- * a backend started with a matching `BASE_URL`).
+ * a backend started with a matching `DEREC_BASE_URL`).
  */
 
 const LAN_HOST = process.env.LAN_HOST
@@ -30,7 +33,7 @@ test.describe('LAN access', () => {
     const apiHosts = new Set<string>()
     page.on('request', request => {
       const url = new URL(request.url())
-      if (url.port === '5000') apiHosts.add(url.hostname)
+      if (url.port === String(BACKEND_PORT)) apiHosts.add(url.hostname)
     })
 
     await setUpOwner(page, { name: 'Phone', participants: 3, prePaired: 0, minParticipants: 2 })

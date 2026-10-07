@@ -1,45 +1,53 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { describe, expect, it, vi } from 'vitest'
 import {
-  adoptReplicaSecret,
+  acceptFingerprintMatch,
+  type AdoptableInstance,
   adoptedVaultState,
   adoptionSourceLabel,
+  adoptReplicaSecret,
+  type AutomaticReplicaSyncOutcome,
   automaticSyncNeedsAttention,
   canRequestReplicaSync,
   clearReplicaState,
   createReplicaFirstSyncTrigger,
   describeRestoreFailure,
+  forgetReplicaChannel,
+  forgetReplicaMember,
+  formatFingerprint,
   loadReplicaState,
   markReplicaFirstSyncStarted,
-  recordConfirmation,
-  recordReplicaChannel,
-  replicaChannelRowId,
-  acceptFingerprintMatch,
-  formatFingerprint,
-  type ReplicaProtocol,
   mergeReplicaSecretReceipt,
   mergeReplicaSync,
   nextReplicaStatus,
-  replicaChannelExpiry,
-  replicasAwaitingFirstSync,
-  replicaSyncTargets,
-  replicaViews,
-  ReplicaAdoptionError,
+  type PendingReplicaAdoption,
+  recordConfirmation,
+  recordPendingReplicaPairing,
+  recordReplicaChannel,
+  recordReplicaSync,
   REPLICA_EXPIRY_WARNING_SECS,
   REPLICA_PAYLOAD_MIRRORS_RECOVERY,
-  type AdoptableInstance,
-  type AutomaticReplicaSyncOutcome,
-  type ReplicaChannelTiming,
-  type PendingReplicaAdoption,
   type ReplicaAdoptionDeps,
+  ReplicaAdoptionError,
   type ReplicaAdoptionInstanceParams,
   type ReplicaAdoptionProtocolConfig,
+  replicaChannelExpiry,
+  replicaChannelRowId,
+  type ReplicaChannelTiming,
   type ReplicaFirstSyncTrigger,
+  type ReplicaProtocol,
+  replicasAwaitingFirstSync,
+  type ReplicaSecretPayload,
   type ReplicaState,
   type ReplicaStatus,
   type ReplicaSyncReason,
   type ReplicaSyncRecord,
   type ReplicaSyncRoundResult,
+  replicaSyncTargets,
   type ReplicaView,
+  replicaViews,
 } from './replicaFlows'
 import { getOrCreateReplicaId } from './replicaIdentity'
 import type { BEActorWithStatus } from './api'
@@ -364,6 +372,7 @@ describe('mergeReplicaSecretReceipt', () => {
 
 describe('adoptionSourceLabel', () => {
   const transport = { protocol: 'https' as const, uri: 'https://example.test/mailbox' }
+  const transports = [transport]
 
   function adoption(secretId: string): PendingReplicaAdoption {
     return {
@@ -379,7 +388,7 @@ describe('adoptionSourceLabel', () => {
   it('names the owner whose secret the offer carries', () => {
     expect(
       adoptionSourceLabel(adoption('42'), [
-        { id: 'owner-1', role: 'owner', name: 'Alice', transport, secret_id: '42' },
+        { id: 'owner-1', role: 'owner', name: 'Alice', transport, transports, secret_id: '42' },
       ]),
     ).toBe('Alice')
   })
@@ -389,17 +398,17 @@ describe('adoptionSourceLabel', () => {
     // and fails here — naming the wrong person on a destructive prompt.
     expect(
       adoptionSourceLabel(adoption('42'), [
-        { id: 'owner-1', role: 'owner', name: 'Alice', transport, secret_id: '7' },
+        { id: 'owner-1', role: 'owner', name: 'Alice', transport, transports, secret_id: '7' },
       ]),
     ).toBe('replica source ff01')
   })
 
   it('does not name a non-owner actor that shares the secret id', () => {
-    // This device may act as helper for that owner, which puts a participant
-    // row on the roster carrying the very same secret id.
+    // This device may act as helper for that owner, which puts a helper row on
+    // the roster carrying the very same secret id.
     expect(
       adoptionSourceLabel(adoption('42'), [
-        { id: 'participant-1', role: 'participant', name: 'Bob', transport, secret_id: '42' },
+        { id: 'helper-1', role: 'helper', name: 'Bob', transport, transports, secret_id: '42' },
       ]),
     ).toBe('replica source ff01')
   })
@@ -411,7 +420,7 @@ describe('adoptionSourceLabel', () => {
   it('falls back rather than showing a blank name', () => {
     expect(
       adoptionSourceLabel(adoption('42'), [
-        { id: 'owner-1', role: 'owner', name: '   ', transport, secret_id: '42' },
+        { id: 'owner-1', role: 'owner', name: '   ', transport, transports, secret_id: '42' },
       ]),
     ).toBe('replica source ff01')
   })
@@ -441,6 +450,22 @@ describe('describeRestoreFailure', () => {
 
   it('flags CONFLICT as the wipe not having taken', () => {
     expect(describeRestoreFailure({ code: 'CONFLICT' }).wipeDidNotTake).toBe(true)
+  })
+
+  it('classifies the codes SDK 0.0.6 reports, which it renamed', () => {
+    // Lower snake case, and two renamed outright. Unmapped, every one of these
+    // read as UNKNOWN — and a wipe that did not take went unflagged.
+    expect(describeRestoreFailure({ code: 'already_restored' })).toMatchObject({
+      code: 'ALREADY_RESTORED',
+      wipeDidNotTake: true,
+    })
+    expect(describeRestoreFailure({ code: 'restore_conflict', channel_ids: ['901'] })).toMatchObject({
+      code: 'CONFLICT',
+      wipeDidNotTake: true,
+      channelIds: ['901'],
+    })
+    expect(describeRestoreFailure({ code: 'invariant' }).code).toBe('INVARIANT')
+    expect(describeRestoreFailure({ code: 'store_error' }).code).toBe('STORAGE')
   })
 
   it('does not flag failures that are unrelated to the wipe', () => {
@@ -528,7 +553,7 @@ describe('adoptReplicaSecret', () => {
     ownTransportUri: 'https://example.test/mailbox',
     communicationInfo: { name: 'This device' },
     threshold: 2,
-    keepVersionsCount: 3,
+    keepList: () => null,
     timeoutSecs: 300,
     unpairAck: 'required',
   }
@@ -554,6 +579,10 @@ describe('adoptReplicaSecret', () => {
     /** Whether the wipe had already happened when `restore` ran. */
     wipedBeforeRestore: boolean
     restoreCalls: Array<{ secretId: string; version: number }>
+    /** The payloads `restore` was actually handed, to assert their byte types. */
+    restoredSecrets: ReplicaSecretPayload[]
+    /** Tracking-share writes, to assert they happen and in what order. */
+    savedShares: Array<{ count: number; secretId: string; version: number }>
     drained: DeRecEvent[]
   }
 
@@ -568,6 +597,7 @@ describe('adoptReplicaSecret', () => {
         getReplicaId: () => OWN_REPLICA_ID,
         buildInstance: () => ({ protocol: { restore: async () => [] } }),
         onEvent: () => {},
+      saveTrackingShares: async () => {},
       },
       calls: [],
       wiped: [],
@@ -575,15 +605,18 @@ describe('adoptReplicaSecret', () => {
       wipedBeforeBuild: false,
       wipedBeforeRestore: false,
       restoreCalls: [],
+      restoredSecrets: [],
+      savedShares: [],
       drained: [],
     }
 
     const instance: AdoptableInstance = {
       protocol: {
-        restore: (_secret, version) => {
+        restore: (secret, version) => {
           state.calls.push('restore')
           state.wipedBeforeRestore = state.wiped.length > 0
           state.restoreCalls.push({ secretId: state.buildParams.at(-1)?.secretId ?? '', version })
+          state.restoredSecrets.push(secret)
           return restoreOutcome()
         },
       },
@@ -607,6 +640,10 @@ describe('adoptReplicaSecret', () => {
         state.buildParams.push(params)
         return instance
       },
+      saveTrackingShares: async (shares, secretId, version) => {
+        state.calls.push('saveTrackingShares')
+        state.savedShares.push({ count: shares.length, secretId, version })
+      },
       onEvent: event => {
         state.calls.push(`onEvent:${event.type}`)
         state.drained.push(event)
@@ -618,6 +655,74 @@ describe('adoptReplicaSecret', () => {
   }
 
   const unpaired = (channelId: string): DeRecEvent => ({ type: 'Unpaired', channel_id: channelId })
+
+  it('rejects an unreadable payload without touching the device', async () => {
+    // The failure that motivated this: a payload whose `data` arrived as a
+    // plain array blew up inside `restore` — *after* the wipe — so a copy this
+    // device could never have adopted still cost it its vault. Validation now
+    // runs first, and nothing is destroyed.
+    const h = harness(async () => [])
+    const unreadable: PendingReplicaAdoption = {
+      ...adoption,
+      secret: {
+        helpers: [],
+        secrets: [{ id: new Uint8Array([1]), name: 'Passphrase', data: undefined as never }],
+      },
+    }
+
+    await expect(
+      adoptReplicaSecret({ adoption: unreadable, namespace: NAMESPACE, config, deps: h.deps }),
+    ).rejects.toBeInstanceOf(ReplicaAdoptionError)
+
+    expect(h.calls).toEqual([])
+    expect(h.wiped).toEqual([])
+  })
+
+  it('says the vault is intact when it refused before the wipe', async () => {
+    const h = harness(async () => [])
+    const unreadable: PendingReplicaAdoption = {
+      ...adoption,
+      secret: {
+        helpers: [],
+        secrets: [{ id: new Uint8Array([1]), name: 'Passphrase', data: undefined as never }],
+      },
+    }
+
+    let error: ReplicaAdoptionError | null = null
+    try {
+      await adoptReplicaSecret({ adoption: unreadable, namespace: NAMESPACE, config, deps: h.deps })
+    } catch (err) {
+      error = err as ReplicaAdoptionError
+    }
+    expect(error).toBeInstanceOf(ReplicaAdoptionError)
+
+    // The standing message tells the user their vault was erased. Saying that
+    // when it was not would send someone inspecting a device that is fine.
+    expect(error?.failure.text).toContain('intact')
+    expect(error?.failure.wipeDidNotTake).toBe(false)
+  })
+
+  it('hands restore real byte views, whatever shape the payload arrived in', async () => {
+    const h = harness(async () => [])
+    const plainArrays: PendingReplicaAdoption = {
+      ...adoption,
+      secret: {
+        helpers: [],
+        secrets: [{ id: [1, 2] as never, name: 'Passphrase', data: [104, 105] as never }],
+      },
+    }
+
+    await adoptReplicaSecret({
+      adoption: plainArrays,
+      namespace: NAMESPACE,
+      config,
+      deps: h.deps,
+    })
+
+    const restored = h.restoredSecrets.at(-1)
+    expect(restored?.secrets[0].data).toBeInstanceOf(Uint8Array)
+    expect(restored?.secrets[0].id).toBeInstanceOf(Uint8Array)
+  })
 
   it('clears the FE replica bookkeeping as part of the wipe, before the instance exists', async () => {
     const h = harness(async () => [])
@@ -644,7 +749,7 @@ describe('adoptReplicaSecret', () => {
     expect(h.wipedBeforeRestore).toBe(true)
   })
 
-  it('runs wipe, build and restore in that order, then drains', async () => {
+  it('runs wipe, build, restore and the share write in order, then drains', async () => {
     const h = harness(async () => [unpaired('901'), unpaired('902')])
     await adoptReplicaSecret({ adoption, namespace: NAMESPACE, config, deps: h.deps })
 
@@ -654,6 +759,9 @@ describe('adoptReplicaSecret', () => {
       'getReplicaId',
       'buildInstance',
       'restore',
+      // After `restore`, which creates the channels the shares key against,
+      // and before the drain so a verification triggered by an event has them.
+      'saveTrackingShares',
       'onEvent:Unpaired',
       'onEvent:Unpaired',
     ])
@@ -768,7 +876,7 @@ describe('adoptedVaultState', () => {
       helpers: [
         {
           channel_id: '901',
-          transport_uri: helperUri,
+          transports: [{ uri: helperUri, protocol: 'https' }],
           shared_key: bytes('key'),
           communication_info: { name: 'Snapshot name' },
         },
@@ -781,12 +889,69 @@ describe('adoptedVaultState', () => {
   const actors: BEActorWithStatus[] = [
     {
       id: 'helper-actor-1',
-      role: 'participant',
+      role: 'helper',
       name: 'Richard',
       transport: { protocol: 'https', uri: helperUri },
+      transports: [{ protocol: 'https', uri: helperUri }],
       secret_id: '42',
     },
   ]
+
+  /** The same snapshot, plus the replica group the destination belongs to. */
+  const withGroup: PendingReplicaAdoption = {
+    ...adoption,
+    secret: {
+      ...adoption.secret,
+      replicas: {
+        channel_id: '950',
+        shared_key: bytes('group-key'),
+        members: [
+          {
+            replica_id: '1001',
+            role: 'Source',
+            transports: [{ uri: 'https://example.test/source', protocol: 'https' }],
+            communication_info: { name: 'AliceA' },
+          },
+          {
+            replica_id: '2002',
+            role: 'Destination',
+            transports: [{ uri: 'https://example.test/me', protocol: 'https' }],
+            communication_info: { name: 'BobB' },
+          },
+        ],
+      },
+    },
+  }
+
+  it('keeps the replica group the destination belongs to', () => {
+    // Adoption wipes this device's replica bookkeeping before restoring, so the
+    // snapshot is the only place the group survives. Without projecting it the
+    // destination showed `Replicas 0` while the source showed the pairing live.
+    const { participants } = adoptedVaultState(withGroup, actors, 2)
+
+    const replicas = participants.filter(p => p.peerRole === 'replica_source')
+    expect(replicas).toHaveLength(1)
+    expect(replicas[0].channelId).toBe('950')
+    // The peer is the source; this device is the destination that adopted.
+    expect(replicas[0].name).toBe('AliceA')
+  })
+
+  it('does not count the replica group as a share holder', () => {
+    // A replica mirrors a vault; it holds no share. Counting it would put a
+    // peer into the bag version that no verification round can ever answer for.
+    const { participants, secretBag } = adoptedVaultState(withGroup, actors, 2)
+
+    const replica = participants.find(p => p.peerRole === 'replica_source')
+    expect(secretBag.currentVersion.participantIds).not.toContain(replica?.id)
+    expect(secretBag.currentVersion.helpers.map(h => h.channelId)).not.toContain('950')
+    expect(replica?.secretShares).toEqual([])
+  })
+
+  it('leaves the roster unchanged when the snapshot carries no group', () => {
+    const { participants } = adoptedVaultState(adoption, actors, 2)
+
+    expect(participants.filter(p => p.peerRole === 'replica_source')).toHaveLength(0)
+  })
 
   it('re-identifies an adopted helper against the roster by transport uri', () => {
     const { participants } = adoptedVaultState(adoption, actors, 2)
@@ -812,10 +977,46 @@ describe('adoptedVaultState', () => {
     // An implementation that took "the only actor there is" passes the first
     // case and fails here, mis-attributing another peer's identity.
     const elsewhere: BEActorWithStatus[] = [
-      { ...actors[0], transport: { protocol: 'https', uri: 'https://example.test/other' } },
+      {
+        ...actors[0],
+        transport: { protocol: 'https', uri: 'https://example.test/other' },
+        transports: [{ protocol: 'https', uri: 'https://example.test/other' }],
+      },
     ]
 
     expect(adoptedVaultState(adoption, elsewhere, 2).participants[0].id).toBe('peer-901')
+  })
+
+  it('tells apart helpers that share one gRPC endpoint, never giving two rows one actor', () => {
+    // Every gRPC helper on a node advertises the node's one `grpc://host:port`;
+    // keyed by URI, the last one won and both rows carried its id.
+    const grpc = 'grpc://example.test:50051'
+    const grpcHelper = (channelId: string, name: string) => ({
+      channel_id: channelId,
+      transports: [{ uri: grpc, protocol: 'grpc' as const }],
+      shared_key: bytes('key'),
+      communication_info: { name },
+    })
+    const grpcActor = (id: string, name: string): BEActorWithStatus => ({
+      id,
+      role: 'helper',
+      name,
+      transport: { protocol: 'grpc', uri: grpc },
+      transports: [{ protocol: 'grpc', uri: grpc }],
+      secret_id: '42',
+    })
+    const twoGrpc: PendingReplicaAdoption = {
+      ...adoption,
+      secret: { ...adoption.secret, helpers: [grpcHelper('901', 'Alex'), grpcHelper('902', 'Richard')] },
+    }
+
+    const { participants } = adoptedVaultState(
+      twoGrpc,
+      [grpcActor('alex-actor', 'Alex'), grpcActor('richard-actor', 'Richard')],
+      2,
+    )
+
+    expect(participants.map(p => p.id)).toEqual(['alex-actor', 'richard-actor'])
   })
 
   it('keys the adopted bag on the source’s secret id at the offered version', () => {
@@ -860,9 +1061,10 @@ function replicaView(overrides: Partial<ReplicaView> = {}): ReplicaView {
     lastSync: null,
     establishedAt: null,
     firstSyncStarted: false,
-    provisioned: true,
     direction: 'replica_source',
     peerReplicaId: null,
+    helperActorId: null,
+    refused: false,
     ...overrides,
   }
 }
@@ -932,195 +1134,20 @@ describe('replicaViews', () => {
   }
 
   const transport = { protocol: 'https' as const, uri: 'https://example.test/mailbox' }
+  const transports = [transport]
 
-  function replicaActor(
-    overrides: Partial<BEActorWithStatus> = {},
-  ): BEActorWithStatus {
-    return {
-      id: 'replica-1',
-      role: 'replica',
-      name: 'Laptop',
-      transport,
-      secret_id: '42',
-      ...overrides,
-    }
-  }
-
-  it('ignores every actor that is not a replica', () => {
-    const views = replicaViews(
-      ([
-        { id: 'owner-1', role: 'owner', name: 'Alice', transport, secret_id: '42' },
-        { id: 'participant-1', role: 'participant', name: 'Bob', transport, secret_id: '7' },
-      ]),
-      emptyState,
-    )
-
-    expect(views).toEqual([])
-  })
-
-  it('reports a replica with no channel as unpaired', () => {
-    const [view] = replicaViews(([replicaActor()]), emptyState)
-
-    expect(view.status).toBe('unpaired')
-    expect(view.channelId).toBeNull()
-    expect(view.peerConfirmation).toBe('none')
-  })
-
-  it('reports a paired-but-unconfirmed replica as pending', () => {
-    const [view] = replicaViews(([replicaActor({ channel_id: '900' })]), emptyState)
-
-    expect(view.status).toBe('pending')
-    expect(view.channelId).toBe('900')
-  })
-
-  it('falls back to the locally recorded channel id when the backend has none', () => {
-    // This device's own `PairingCompleted` fires before the backend's own
-    // protocol instance for the replica has necessarily caught up.
-    const [view] = replicaViews(([replicaActor()]), {
-      replicas: { 'replica-1': { local: false, peer: 'none', channelId: '901' } },
-      pendingPairings: {},
-      channels: {},
-      syncs: {},
-    })
-
-    expect(view.channelId).toBe('901')
-    expect(view.status).toBe('pending')
-  })
-
-  it('is paired once this device has verified, whatever the peer has done', () => {
-    // The library promoted this channel on the local `verifyFingerprint` alone
-    // — `handlers/sharing.rs` filters the fan-out on exactly that status — so a
-    // row still reading `pending` here would be stricter than the protocol it
-    // reports on, and would strand the sync trigger.
-    const [view] = replicaViews(([replicaActor({ channel_id: '900' })]), {
-      replicas: { 'replica-1': { local: true, peer: 'none' } },
-      pendingPairings: {},
-      channels: {},
-      syncs: {},
-    })
-
-    expect(view.status).toBe('paired')
-    // Reported, but not as a gate: it says whether a copy sent now would land.
-    expect(view.peerConfirmation).toBe('none')
-  })
-
-  it('stays pending when the peer confirmed but this device has not', () => {
-    // The complement, and the one that must not regress: the peer's verify
-    // promotes the peer's channel record, never this device's. Treating it as
-    // promotion here would make a channel a share target without anyone on this
-    // device ever comparing a code.
-    const [view] = replicaViews(
-      ([replicaActor({ channel_id: '900', replica_confirmed: true })]),
-      {
-        replicas: { 'replica-1': { local: false, peer: 'none' } },
-        pendingPairings: {},
-        channels: {},
-        syncs: {},
-      },
-    )
-
-    expect(view.status).toBe('pending')
-    expect(replicaSyncTargets([view])).toEqual([])
-    expect(view.peerConfirmation).toBe('protocol-verified')
-  })
-
-  it('lets the backend confirmation outrank stale local peer bookkeeping', () => {
-    const [view] = replicaViews(
-      ([replicaActor({ channel_id: '900', replica_confirmed: true })]),
-      {
-        replicas: { 'replica-1': { local: true, peer: 'none' } },
-        pendingPairings: {},
-        channels: {},
-        syncs: {},
-      },
-    )
-
-    expect(view.status).toBe('paired')
-    expect(view.peerConfirmation).toBe('protocol-verified')
-  })
-
-  it('projects the sync recorded against the replica’s channel', () => {
-    const [view] = replicaViews(([replicaActor({ channel_id: '900', replica_confirmed: true })]), {
-      replicas: { 'replica-1': { local: true, peer: 'protocol-verified' } },
-      pendingPairings: {},
-      channels: {},
-      syncs: { '900': { version: 5, syncedAt: 1_700_000_000_000 } },
-    })
-
-    expect(view.lastSync).toEqual({ version: 5, syncedAt: 1_700_000_000_000 })
-  })
-
-  it('carries the recorded establishment stamp onto a provisioned row', () => {
-    // Without this the row has no deadline to count down, and a pending channel
-    // expires with no warning at all.
-    const [view] = replicaViews(([replicaActor({ channel_id: '900' })]), {
-      replicas: {},
-      pendingPairings: {},
-      channels: {
-        '900': { channelId: '900', role: 'replica_source', establishedAt: 1_700_000 },
-      },
-      syncs: {},
-    })
-
-    expect(view.establishedAt).toBe(1_700_000)
-    expect(replicaChannelExpiry(view, 300, 1_700_000 + 299_000)).toMatchObject({
-      state: 'expiring-soon',
-      remainingSecs: 1,
-    })
-  })
-
-  it('reports no stamp when the channel record carries none', () => {
-    // The control: a row with no stamp must report `null`, not a fabricated
-    // "now", or every unstamped channel would show a full fresh countdown.
-    const [view] = replicaViews(([replicaActor({ channel_id: '900' })]), {
-      replicas: {},
-      pendingPairings: {},
-      channels: { '900': { channelId: '900', role: 'replica_source' } },
-      syncs: {},
-    })
-
-    expect(view.establishedAt).toBeNull()
-    expect(replicaChannelExpiry(view, 300, Date.now())).toBeNull()
-  })
-
-  it('does not attribute another channel’s sync to this replica', () => {
-    // Syncs are keyed by channel; an implementation that took "the only sync
-    // there is" would pass the case above and fail here.
-    const [view] = replicaViews(([replicaActor({ channel_id: '900' })]), {
-      replicas: {},
-      pendingPairings: {},
-      channels: {},
-      syncs: { '901': { version: 5, syncedAt: 1_700_000_000_000 } },
-    })
-
-    expect(view.lastSync).toBeNull()
-  })
-
-  it('reports no sync for a replica that has no channel yet', () => {
-    const [view] = replicaViews(([replicaActor()]), emptyState)
-
-    expect(view.lastSync).toBeNull()
-  })
-
-  it('surfaces a disabled replica as offline', () => {
-    const [view] = replicaViews(
-      ([replicaActor({ channel_id: '900', disabled: true })]),
-      emptyState,
-    )
-
-    expect(view.offline).toBe(true)
-  })
-
-  // ── Browser replicas ───────────────────────────────────────────────────────
+  // ── Rows come from channels, never from the roster ─────────────────────────
   //
-  // A browser replica registers as an ordinary *owner* actor, so the
-  // roster says nothing about it. Its row can only come from the channel record
-  // written when the replica pairing completed.
+  // A replica is a pairing *mode*, so nothing on the roster marks one: a helper
+  // paired in replica mode is an ordinary `helper` there, and another browser
+  // device mirroring this vault is an ordinary `owner`. Every row therefore
+  // comes from the channel record this device wrote when the handshake
+  // completed. The roster is consulted only to enrich a row that already exists.
 
-  /** A roster of only ordinary owner actors — no replica actor at all. */
+  /** A roster with no replica-shaped thing on it, because there is no such thing. */
   const browserRoster: BEActorWithStatus[] = [
-    { id: 'owner-1', role: 'owner', name: 'Alice', transport, secret_id: '42' },
-    { id: 'owner-2', role: 'owner', name: 'Bob', transport, secret_id: '7' },
+    { id: 'owner-1', role: 'owner', name: 'Alice', transport, transports, secret_id: '42' },
+    { id: 'owner-2', role: 'owner', name: 'Bob', transport, transports, secret_id: '7' },
   ]
 
   function withChannels(
@@ -1130,9 +1157,22 @@ describe('replicaViews', () => {
     return { ...emptyState, ...rest, channels }
   }
 
-  it('emits a row for a browser-initiated replica channel with no replica actor', () => {
-    // The Task 15 defect: rows came only from `role === 'replica'`, so this
-    // pairing produced nothing and the fingerprint dialog was unreachable.
+  it('emits no row from the roster alone, however many actors it holds', () => {
+    const views = replicaViews(
+      [
+        { id: 'owner-1', role: 'owner', name: 'Alice', transport, transports, secret_id: '42' },
+        { id: 'helper-1', role: 'helper', name: 'Bob', transport, transports, secret_id: '7' },
+      ],
+      emptyState,
+    )
+
+    expect(views).toEqual([])
+  })
+
+  it('emits a row for a recorded replica channel', () => {
+    // The Task 15 defect: rows came only from a `replica` actor on the roster,
+    // so a browser-initiated pairing produced nothing and the fingerprint
+    // dialog was unreachable.
     const views = replicaViews(
       browserRoster,
       withChannels({
@@ -1146,13 +1186,82 @@ describe('replicaViews', () => {
       name: 'Bob’s laptop',
       channelId: '900',
       status: 'pending',
-      provisioned: false,
       direction: 'replica_source',
     })
   })
 
-  it('carries the establishment stamp onto a browser row', () => {
-    // The row a browser replica is *only* visible on, so it is also the only
+  // ── Helper-backed replicas ─────────────────────────────────────────────────
+  //
+  // A helper paired in replica mode is an ordinary `helper` on the roster, so —
+  // like a browser peer — its row comes from the channel record. Unlike a
+  // browser peer it *has* a backend actor, and the link to it is the actor-keyed
+  // record `resolveReplicaPairing` wrote. That link is what lets the row offer
+  // the controls only a backend actor can answer.
+
+  it('resolves the peer helper for a channel this device paired', () => {
+    const views = replicaViews(
+      [
+        { id: 'owner-1', role: 'owner', name: 'Alice', transport, transports, secret_id: '42' },
+        { id: 'helper-9', role: 'helper', name: 'Laptop', transport, transports, secret_id: '7' },
+      ],
+      withChannels(
+        { '900': { channelId: '900', role: 'replica_source', peerName: 'Laptop' } },
+        // Written by `resolveReplicaPairing` when the handshake completed.
+        { replicas: { 'helper-9': { local: false, peer: 'none', channelId: '900' } } },
+      ),
+    )
+
+    expect(views).toHaveLength(1)
+    expect(views[0].helperActorId).toBe('helper-9')
+  })
+
+  it('reads a helper peer’s offline flag off the roster', () => {
+    // A browser peer's liveness is unobservable, so `offline` was hardcoded
+    // false for every locally-recorded channel. A helper peer has an actor and
+    // the roster reports it — without this the row could never show a
+    // suspended peer as suspended.
+    const views = replicaViews(
+      [{ id: 'helper-9', role: 'helper', name: 'Laptop', transport, transports, secret_id: '7', disabled: true }],
+      withChannels(
+        { '900': { channelId: '900', role: 'replica_source', peerName: 'Laptop' } },
+        { replicas: { 'helper-9': { local: false, peer: 'none', channelId: '900' } } },
+      ),
+    )
+
+    expect(views[0].offline).toBe(true)
+  })
+
+  it('names no helper for a browser peer', () => {
+    // The guard on the controls: a browser replica has no backend actor, so
+    // offering to suspend one would send a row id at an endpoint that has
+    // never heard of it.
+    const views = replicaViews(
+      browserRoster,
+      withChannels({ '900': { channelId: '900', role: 'replica_source', peerName: 'Bob' } }),
+    )
+
+    expect(views[0].helperActorId).toBeNull()
+    expect(views[0].offline).toBe(false)
+  })
+
+  it('names no helper when the recorded peer is an owner actor', () => {
+    // `/helpers/{id}/toggle-status` rejects anything that is not a helper, so
+    // the owner actor another browser device registers as must not be handed
+    // out here — it would be an id that 400s.
+    const views = replicaViews(
+      [{ id: 'owner-7', role: 'owner', name: 'Bob', transport, transports, secret_id: '7' }],
+      withChannels(
+        { '900': { channelId: '900', role: 'replica_source', peerName: 'Bob' } },
+        { replicas: { 'owner-7': { local: false, peer: 'none', channelId: '900' } } },
+      ),
+    )
+
+    const row = views.find(v => v.channelId === '900')
+    expect(row?.helperActorId).toBeNull()
+  })
+
+  it('carries the establishment stamp onto a row', () => {
+    // The row is the only place a replica is visible, so it is also the only
     // place its deadline can be shown.
     const views = replicaViews(
       browserRoster,
@@ -1166,6 +1275,18 @@ describe('replicaViews', () => {
       state: 'expired',
       remainingSecs: 0,
     })
+  })
+
+  it('reports no stamp when the channel record carries none', () => {
+    // The control: a row with no stamp must report `null`, not a fabricated
+    // "now", or every unstamped channel would show a full fresh countdown.
+    const [view] = replicaViews(
+      browserRoster,
+      withChannels({ '900': { channelId: '900', role: 'replica_source' } }),
+    )
+
+    expect(view.establishedAt).toBeNull()
+    expect(replicaChannelExpiry(view, 300, Date.now())).toBeNull()
   })
 
   it('emits a row for the destination direction too', () => {
@@ -1212,13 +1333,13 @@ describe('replicaViews', () => {
 
   it('produces no row for a channel that is not a replica channel', () => {
     // Only replica pairings are recorded — an owner/helper pairing leaves
-    // `channels` empty, and the roster has no replica actor either. The control
-    // for every case above: an implementation that emitted a row per *known
-    // channel* rather than per replica channel would pass those and fail here.
+    // `channels` empty. The control for every case above: an implementation
+    // that emitted a row per *known channel* rather than per replica channel
+    // would pass those and fail here.
     expect(replicaViews(browserRoster, emptyState)).toEqual([])
   })
 
-  it('carries a browser row through the confirmation machine', () => {
+  it('carries a row through the confirmation machine', () => {
     const rowId = replicaChannelRowId('900')
     const channels: ReplicaState['channels'] = {
       '900': { channelId: '900', role: 'replica_source' },
@@ -1231,10 +1352,10 @@ describe('replicaViews', () => {
     )
 
     expect(unconfirmed[0].status).toBe('pending')
-    // The Task 18 defect: nothing on this device can ever observe the other
-    // browser's verify, so `peer` stays `'none'` forever. A row that required it
-    // would be stuck `pending` for the whole life of the channel — never a sync
-    // target, and never a trigger for the automatic first sync — even though the
+    // The Task 18 defect: nothing on this device can ever observe the peer's
+    // verify, so `peer` stays `'none'` forever. A row that required it would be
+    // stuck `pending` for the whole life of the channel — never a sync target,
+    // and never a trigger for the automatic first sync — even though the
     // library has this channel `Paired` and would mirror to it.
     expect(confirmed[0].status).toBe('paired')
     expect(confirmed[0].peerConfirmation).toBe('none')
@@ -1243,7 +1364,7 @@ describe('replicaViews', () => {
     ])
   })
 
-  it('keeps an unconfirmed browser channel out of the sync targets', () => {
+  it('keeps an unconfirmed channel out of the sync targets', () => {
     const views = replicaViews(
       browserRoster,
       withChannels({ '900': { channelId: '900', role: 'replica_source' } }),
@@ -1252,7 +1373,7 @@ describe('replicaViews', () => {
     expect(replicaSyncTargets(views)).toEqual([])
   })
 
-  it('projects the sync recorded against a browser channel', () => {
+  it('projects the sync recorded against the row’s channel', () => {
     const rowId = replicaChannelRowId('900')
     const [view] = replicaViews(
       browserRoster,
@@ -1268,46 +1389,34 @@ describe('replicaViews', () => {
     expect(view.lastSync).toEqual({ version: 5, syncedAt: 1_700_000_000_000 })
   })
 
-  it('shows a provisioned replica exactly once when its channel is also recorded locally', () => {
-    // Both sources describe the same channel: the roster knows the actor, and
-    // the `PairingCompleted` fold recorded the channel without knowing what kind
-    // of peer it had paired with. Merging on anything but the channel id would
-    // show this replica twice.
-    const views = replicaViews(
-      ([replicaActor({ channel_id: '900' })]),
-      withChannels({ '900': { channelId: '900', role: 'replica_source' } }),
-    )
-
-    expect(views).toHaveLength(1)
-    expect(views[0].id).toBe('replica-1')
-    expect(views[0].provisioned).toBe(true)
-  })
-
-  it('de-duplicates against a channel the backend has not caught up to yet', () => {
-    // The backend learns `channel_id` only once its own instance for the replica
-    // observes the completion. Until then the provisioned row's channel comes
-    // from local bookkeeping — and must still suppress the channel-sourced row.
-    const views = replicaViews(
-      ([replicaActor()]),
+  it('does not attribute another channel’s sync to this row', () => {
+    // Syncs are keyed by channel; an implementation that took "the only sync
+    // there is" would pass the case above and fail here.
+    const [view] = replicaViews(
+      browserRoster,
       withChannels(
         { '900': { channelId: '900', role: 'replica_source' } },
-        { replicas: { 'replica-1': { local: false, peer: 'none', channelId: '900' } } },
+        { syncs: { '901': { version: 5, syncedAt: 1_700_000_000_000 } } },
+      ),
+    )
+
+    expect(view.lastSync).toBeNull()
+  })
+
+  it('emits exactly one row per channel', () => {
+    // There is only one row source now. The regression this guards is the old
+    // one returning: a second source keyed on anything but the channel id
+    // showed the same replica twice.
+    const views = replicaViews(
+      [{ id: 'helper-9', role: 'helper', name: 'Laptop', transport, transports, secret_id: '7' }],
+      withChannels(
+        { '900': { channelId: '900', role: 'replica_source' } },
+        { replicas: { 'helper-9': { local: false, peer: 'none', channelId: '900' } } },
       ),
     )
 
     expect(views).toHaveLength(1)
-    expect(views[0].id).toBe('replica-1')
-  })
-
-  it('still shows a browser channel alongside an unrelated provisioned replica', () => {
-    // The dedupe must be per channel, not "any provisioned row suppresses every
-    // local one".
-    const views = replicaViews(
-      ([replicaActor({ channel_id: '900' })]),
-      withChannels({ '901': { channelId: '901', role: 'replica_destination' } }),
-    )
-
-    expect(views.map(v => v.id)).toEqual(['replica-1', replicaChannelRowId('901')])
+    expect(views[0].id).toBe(replicaChannelRowId('900'))
   })
 })
 
@@ -1383,6 +1492,69 @@ describe('recordReplicaChannel', () => {
   })
 })
 
+describe('forgetReplicaChannel', () => {
+  it('drops the channel, its sync record and its confirmation row', () => {
+    recordReplicaChannel('forget-a', {
+      channelId: '900',
+      role: 'replica_destination',
+      peerName: 'Bob',
+    })
+    recordConfirmation('forget-a', replicaChannelRowId('900'), { local: true, channelId: '900' })
+    recordReplicaSync('forget-a', '900', { version: 3, syncedAt: 1_700_000 })
+
+    forgetReplicaChannel('forget-a', '900')
+
+    const state = loadReplicaState('forget-a')
+    expect(state.channels).toEqual({})
+    expect(state.syncs).toEqual({})
+    expect(state.replicas).toEqual({})
+  })
+
+  it('reaches a channel whose pairing never announced a replica id', () => {
+    // The case `forgetReplicaMember` cannot serve: eviction names a member, and
+    // a pairing that failed before `ReplicaPaired` left none to name. Without a
+    // channel-keyed forget such a row is unremovable.
+    recordReplicaChannel('forget-b', { channelId: '900', role: 'replica_destination' })
+    expect(loadReplicaState('forget-b').channels['900']?.peerReplicaId).toBeUndefined()
+
+    expect(forgetReplicaMember('forget-b', 'never-announced').channels).toHaveProperty('900')
+
+    forgetReplicaChannel('forget-b', '900')
+    expect(loadReplicaState('forget-b').channels).toEqual({})
+  })
+
+  it('leaves every other channel of the same owner alone', () => {
+    recordReplicaChannel('forget-c', { channelId: '900', role: 'replica_source' })
+    recordReplicaChannel('forget-c', { channelId: '901', role: 'replica_source' })
+    recordReplicaSync('forget-c', '901', { version: 1, syncedAt: 5 })
+
+    forgetReplicaChannel('forget-c', '900')
+
+    const state = loadReplicaState('forget-c')
+    expect(Object.keys(state.channels)).toEqual(['901'])
+    expect(state.syncs['901']).toEqual({ version: 1, syncedAt: 5 })
+  })
+
+  it('clears a pending pairing keyed by the forgotten transient channel', () => {
+    // Left behind, the next `PairingCompleted` for that transient id would
+    // re-attach the row this just removed.
+    recordPendingReplicaPairing('forget-d', 'transient-1', 'replica-9')
+    recordReplicaChannel('forget-d', { channelId: 'transient-1', role: 'replica_source' })
+
+    forgetReplicaChannel('forget-d', 'transient-1')
+
+    expect(loadReplicaState('forget-d').pendingPairings).toEqual({})
+  })
+
+  it('is a no-op for a channel that was never recorded', () => {
+    recordReplicaChannel('forget-e', { channelId: '900', role: 'replica_source' })
+
+    forgetReplicaChannel('forget-e', 'not-a-channel')
+
+    expect(Object.keys(loadReplicaState('forget-e').channels)).toEqual(['900'])
+  })
+})
+
 describe('markReplicaFirstSyncStarted', () => {
   it('marks a destination without disturbing its confirmation record', () => {
     recordConfirmation('sync-mark-a', 'replica-1', {
@@ -1430,22 +1602,15 @@ describe('markReplicaFirstSyncStarted', () => {
   })
 
   it('is reflected in the projected row', () => {
-    markReplicaFirstSyncStarted('sync-mark-e', ['replica-1'])
+    // Keyed on the row id, which is what the projection reads back — the same
+    // id `replicasAwaitingFirstSync` hands the trigger.
+    const rowId = replicaChannelRowId('900')
+    markReplicaFirstSyncStarted('sync-mark-e', [rowId])
 
-    const [view] = replicaViews(
-      [
-        {
-          id: 'replica-1',
-          role: 'replica',
-          name: 'Laptop',
-          transport: { protocol: 'https', uri: 'https://example.test/mailbox' },
-          secret_id: '42',
-          channel_id: '900',
-          replica_confirmed: true,
-        },
-      ],
-      loadReplicaState('sync-mark-e'),
-    )
+    const [view] = replicaViews([], {
+      ...loadReplicaState('sync-mark-e'),
+      channels: { '900': { channelId: '900', role: 'replica_source' } },
+    })
 
     expect(view.firstSyncStarted).toBe(true)
   })
@@ -1467,9 +1632,7 @@ describe('replicasAwaitingFirstSync', () => {
     // A browser replica confirms on its own screen against its own instance.
     // This device has no way to observe it, so it must not assume.
     expect(
-      replicasAwaitingFirstSync([
-        replicaView({ provisioned: false, peerConfirmation: 'none' }),
-      ]),
+      replicasAwaitingFirstSync([replicaView({ peerConfirmation: 'none' })]),
     ).toEqual([])
   })
 
@@ -1482,7 +1645,7 @@ describe('replicasAwaitingFirstSync', () => {
   it('leaves the manual sync available on exactly the row it will not auto-send to', () => {
     // The recovery path has to stay open precisely where the automatic one
     // steps back, or a browser replica could never be mirrored at all.
-    const view = replicaView({ provisioned: false, peerConfirmation: 'none' })
+    const view = replicaView({ peerConfirmation: 'none' })
 
     expect(replicasAwaitingFirstSync([view])).toEqual([])
     expect(canRequestReplicaSync(view)).toBe(true)

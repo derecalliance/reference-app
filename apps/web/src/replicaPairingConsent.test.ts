@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SenderKind } from '@derec-alliance/web'
 import { type PairingRole } from './pairingRoles'

@@ -1,5 +1,9 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { subscribeToasts, type Toast } from './toastBus'
+import { navigate } from './routing'
+import { subscribeNotices, subscribeToasts, type Notice, type Toast } from './toastBus'
 import './Toast.css'
 
 const AUTO_DISMISS_MS = 7000
@@ -14,10 +18,18 @@ interface VisibleToast extends Toast {
  * Subscribes to the global toast bus and renders a small notification stack.
  * Identical messages are de-duplicated (count badge) so repeated failures
  * (e.g. a flapping mailbox poll) don't spam the UI.
+ *
+ * A toast with an origin is a banner for a vault not on screen: it names the
+ * vault and is a button that opens it.
  */
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<VisibleToast[]>([])
+  const [notices, setNotices] = useState<readonly Notice[]>([])
   const timers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+
+  // Standing notices sit above the toasts and outside their cap: one is a
+  // condition still in force, and must not be pushed out by passing events.
+  useEffect(() => subscribeNotices(setNotices), [])
 
   useEffect(() => {
     const arm = (id: string) => {
@@ -34,7 +46,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
     const unsub = subscribeToasts(toast => {
       setToasts(prev => {
-        const dupe = prev.find(t => t.message === toast.message && t.level === toast.level)
+        const dupe = prev.find(
+          t =>
+            t.message === toast.message &&
+            t.level === toast.level &&
+            t.origin?.vaultId === toast.origin?.vaultId,
+        )
         if (dupe) {
           arm(dupe.id)
           return prev.map(t => (t.id === dupe.id ? { ...t, count: t.count + 1 } : t))
@@ -53,6 +70,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  function open(toast: VisibleToast) {
+    if (!toast.origin) return
+    navigate({ kind: 'vault', id: toast.origin.vaultId })
+    dismiss(toast.id)
+  }
+
   function dismiss(id: string) {
     const t = timers.current.get(id)
     if (t) {
@@ -66,16 +89,35 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     <>
       {children}
       <div className="toast-viewport" role="region" aria-label="Notifications">
+        {notices.map(n => (
+          <div
+            key={n.key}
+            className={`toast toast--${n.level}`}
+            role={n.level === 'error' ? 'alert' : 'status'}
+          >
+            <span className="toast-message">{n.message}</span>
+          </div>
+        ))}
         {toasts.map(t => (
           <div
             key={t.id}
             className={`toast toast--${t.level}`}
             role={t.level === 'error' ? 'alert' : 'status'}
           >
-            <span className="toast-message">
-              {t.message}
-              {t.count > 1 && <span className="toast-count"> ×{t.count}</span>}
-            </span>
+            {t.origin ? (
+              <button
+                type="button"
+                className="toast-message toast-link"
+                title={`Open ${t.origin.vaultName}`}
+                onClick={() => open(t)}
+              >
+                <ToastText toast={t} />
+              </button>
+            ) : (
+              <span className="toast-message">
+                <ToastText toast={t} />
+              </span>
+            )}
             <button
               type="button"
               className="toast-close"
@@ -87,6 +129,16 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           </div>
         ))}
       </div>
+    </>
+  )
+}
+
+function ToastText({ toast }: { toast: VisibleToast }) {
+  return (
+    <>
+      {toast.origin && <strong>{toast.origin.vaultName}: </strong>}
+      {toast.message}
+      {toast.count > 1 && <span className="toast-count"> ×{toast.count}</span>}
     </>
   )
 }

@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * Copyright (c) 2026 DeRec Alliance. All rights reserved. */
+
 /* ── Page shell ────────────────────────────────────────────────────────────── */
 
 .owner-page {
@@ -82,9 +85,13 @@
 .header-actions {
   display: flex;
   align-items: center;
+  /* Wraps onto a second line rather than pushing the page sideways on a
+     narrow screen. */
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
   margin-left: auto;
-  flex-shrink: 0;
+  min-width: 0;
 
   button {
     font-size: 13px;
@@ -122,6 +129,11 @@
      past the screen and `overflow: hidden` clipped whatever did not fit,
      including the buttons. */
   max-height: 100%;
+}
+
+/* The add-participant and add-replica forms, a little wider than a confirm. */
+.modal.modal--form {
+  max-width: 400px;
 }
 
 .modal-header {
@@ -243,6 +255,17 @@
 }
 
 /* ── Modal form fields ─────────────────────────────────────────────────────── */
+
+/* A checkbox with its label beside it, inside a `.form-field`. */
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-h);
+  cursor: pointer;
+  margin-bottom: 6px;
+}
 
 .form-field {
   display: flex;
@@ -428,6 +451,26 @@
   border-bottom: 1px solid var(--border);
   padding: 0 24px;
   flex-shrink: 0;
+  /* Scrolls sideways on its own rather than widening the page: five tabs with
+     counts need about 600px, and on a phone they pushed the whole layout past
+     the right edge. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.tab-bar .tab-btn {
+  flex-shrink: 0;
+}
+
+@media (max-width: 640px) {
+  .tab-bar {
+    padding: 0 16px;
+  }
+
+  .tab-bar .tab-btn {
+    margin-right: 16px;
+  }
 }
 
 .tab-btn {
@@ -585,6 +628,29 @@
 .role-tag--helper {
   background: var(--success-bg);
   color: var(--success);
+}
+
+/* Which transport a peer advertises. Quieter than the role tag beside it —
+   this is reference information you scan for, not a status you react to. */
+.transport-tag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+  font-family: var(--mono);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  background: transparent;
+}
+
+/* gRPC is the newer path and the one people are usually looking for, so it
+   carries the accent; plain HTTPS stays neutral. */
+.transport-tag--grpc,
+.transport-tag--grpc-https {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .channel-id-inline {
@@ -923,6 +989,20 @@
   font-size: 13px;
   color: var(--text);
   margin: 0;
+}
+
+/*
+  Explanatory prose under a section heading.
+
+  Used where a section is a diagnostic rather than a list of things the user
+  put there, and so has to say what it is before it says what is in it.
+*/
+.tab-section-note {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  margin: 6px 0 10px;
+  max-width: 78ch;
 }
 
 .form-hint {
@@ -1744,7 +1824,7 @@ button.small {
 }
 
 .secrets-table__th--action {
-  width: 40px;
+  width: 1%;
 }
 
 .secrets-table__row {
@@ -1776,10 +1856,24 @@ button.small {
 .secrets-table__td--action {
   text-align: center;
   padding: 4px;
+  white-space: nowrap;
 }
 
+/* Reveal and remove sit side by side; `.reveal-btn` alone would stack them. */
 .secrets-table__td--action .reveal-btn {
+  display: inline-flex;
+  vertical-align: middle;
   padding: 3px 5px;
+}
+
+.secrets-table__td--action .reveal-btn + .reveal-btn {
+  margin-left: 4px;
+}
+
+button.secondary.remove-secret-btn:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+  color: var(--danger);
 }
 
 /* ── Previous version history list ──────────────────────────────────────────── */
@@ -1951,6 +2045,14 @@ button.small {
   font-style: italic;
 }
 
+/* Helpers that answered without a usable share. A full-width line of its own,
+   so a long list never squeezes the row's status and action. */
+.available-version-refusals {
+  flex-basis: 100%;
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
 /* Push the action to the right edge of the row. */
 .available-version-recover-btn {
   margin-left: auto;
@@ -2036,6 +2138,13 @@ button.small {
 
 .status-tag.synced {
   background: var(--success);
+  color: var(--status-contrast);
+}
+
+/* A replica destination still fetching its source's copy: in progress, so the
+   info colour rather than pending's warning or verified's success. */
+.status-tag.syncing {
+  background: var(--info);
   color: var(--status-contrast);
 }
 
@@ -2506,17 +2615,6 @@ recovery-pairing-notice {
   border-color: var(--danger);
   background: var(--danger-bg);
 }
-/* ── Provisioned replicas (side panel) ─────────────────────────────────────────── */
-/* Mirrors the provisioned-participants section directly above it — same header
-   row, same accordion item, same action buttons — because it is the same kind of
-   thing: a backend-hosted actor this owner can add, pair and take offline. */
-
-.side-replica-direction {
-  font-size: 11px;
-  color: var(--text);
-  padding: 4px 0;
-}
-
 /* ── QR scanning ─────────────────────────────────────────────────────────── */
 
 .form-label-row {
@@ -2559,4 +2657,267 @@ recovery-pairing-notice {
   /* Fill rather than letterbox: a QR only has to be *within* frame to decode,
      and cropping keeps the preview matching what the detector sees. */
   object-fit: cover;
+}
+
+/* ── Inspect tab ─────────────────────────────────────────────────────────────
+   The server's own view of itself. Denser than the rest of the app on purpose:
+   this is a reference surface you scan and copy from, not one you act in. */
+
+.inspect-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.inspect-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.inspect-live {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  margin-right: auto;
+}
+
+.inspect-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* The actor and route tables have more columns than a phone has width;
+     the section scrolls sideways rather than pushing the page past the edge. */
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.inspect-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.inspect-grid dt {
+  color: var(--muted);
+}
+
+.inspect-grid dd {
+  margin: 0;
+}
+
+.inspect-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.inspect-table th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 4px 12px 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.inspect-table td {
+  padding: 6px 12px 6px 0;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.inspect-table code {
+  font-size: 12px;
+  word-break: break-all;
+}
+
+/* A property of the actor rather than a status to react to, so it sits quieter
+   than `.status-tag` and does not compete with the name beside it. */
+.inspect-flag {
+  margin-left: 6px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
+.inspect-flag.offline {
+  color: var(--warning);
+  border-color: var(--warning);
+}
+
+.inspect-hint {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+  margin: 0;
+}
+
+/* Conditional guidance, not a fault. `localhost` is correct for the ordinary
+   single-machine case, so colouring this as a warning on every default run
+   would just train people to ignore it. */
+.inspect-note {
+  color: var(--muted);
+}
+
+/* Route tiers reuse the transport-tag shape; `pinned` is the one that usually
+   explains a stalled pairing, so it reads as a caution. */
+.transport-tag--pinned {
+  border-color: var(--warning);
+  color: var(--warning);
+}
+
+/* An unfinished protect round, explained: what it waits on and that closing is safe. */
+.round-pending-note {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--accent-bg);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* View Payload: the mask toggle sits under the tabs, apart from them — it
+   changes what both tabs show rather than being a third view. */
+.payload-reveal-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.payload-note {
+  font-size: 12px;
+  color: var(--text);
+}
+
+/* A side-panel row whose actor the node no longer has. */
+.side-detail-note {
+  font-size: 12px;
+  color: var(--text);
+  margin: 6px 0;
+  line-height: 1.5;
+}
+
+/* Channel rows wrap their actions onto a second line rather than pushing
+   Link / Unpair past the edge of a narrow tab panel. */
+.channel-row-top,
+.channel-sub-top,
+.channel-group-header {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.channel-row-spacer {
+  flex: 1;
+}
+
+.channel-id-inline {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+/* Edit identity: a pinned address peers probably cannot answer. A warning,
+   not an error — the save is still allowed. */
+.identity-endpoint-warning {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--warning);
+  border-radius: 6px;
+  background: var(--warning-bg);
+  color: var(--text-h);
+  font-size: 12px;
+  line-height: 1.5;
+
+  & ul {
+    margin: 4px 0 0;
+    padding-left: 18px;
+  }
+}
+
+/* ── Phones ────────────────────────────────────────────────────────────────── */
+
+@media (max-width: 640px) {
+  /* The vault's identity, then its address on a line of its own, then the
+     actions as an even grid. Right-aligned and wrapping, the four buttons
+     landed as a ragged 3 + 1 with the primary one stranded on its own. */
+  .owner-info-bar {
+    gap: 12px;
+    padding: 12px 16px;
+  }
+
+  .header-transport {
+    flex: 1 1 100%;
+  }
+
+  .header-uri {
+    flex: 1 1 auto;
+    max-width: none;
+    min-width: 0;
+  }
+
+  .header-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    width: 100%;
+    margin-left: 0;
+
+    button {
+      width: 100%;
+      padding: 8px 10px;
+    }
+  }
+
+  /* The page scrolls, not the panel, and the gutters shrink to the 16px the
+     rest of the phone layout uses. */
+  .tab-panel {
+    overflow: visible;
+    padding: 16px;
+  }
+
+  .channel-row {
+    padding: 10px 4px;
+  }
+
+  .detail-card {
+    padding: 14px;
+  }
+
+  .detail-card.collapsible .card-header.card-toggle {
+    padding: 14px;
+  }
+
+  .card-body {
+    padding: 14px 14px 14px;
+  }
+
+  /* The side panel's sections share its height on a desktop and scroll each on
+     its own. Stacked under the content on a phone there is no height to share,
+     so they were squeezed to whatever was left — the participant list cut its
+     last row to a sliver. Here they take their natural height and the page
+     scrolls. */
+  .side-panel,
+  .side-panel-section {
+    flex: none;
+    overflow: visible;
+  }
+
+  /* A recovery helper's name takes the line it needs and the channel id wraps
+     under it, instead of the name breaking mid-word to make room. */
+  .recovery-helper-row .card-title {
+    flex: 1 1 auto;
+  }
 }

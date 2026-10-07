@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { ThemeProvider, createTheme } from '@mui/material/styles'
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
 import { Alert, AlertTitle, Container, Paper, Stack, Typography } from '@mui/material'
 import { AppMuiTheme } from './AppMuiTheme'
 import type { RestoreFailure } from './replicaFlows'
@@ -27,12 +30,12 @@ import type { RestoreFailure } from './replicaFlows'
 export interface ReplicaAdoptionBlockedScreenProps {
   failure: RestoreFailure
   /** Whose vault this device was holding before the wipe. */
-  ownerName: string
+  vaultName: string
 }
 
 export function ReplicaAdoptionBlockedScreen({
   failure,
-  ownerName,
+  vaultName,
 }: ReplicaAdoptionBlockedScreenProps) {
   return (
     <AppMuiTheme>
@@ -44,7 +47,7 @@ export function ReplicaAdoptionBlockedScreen({
                 This device is no longer usable
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                {ownerName}’s vault on this device was erased to make room for a mirrored
+                {vaultName}’s vault on this device was erased to make room for a mirrored
                 copy, and installing that copy did not complete.
               </Typography>
             </Stack>

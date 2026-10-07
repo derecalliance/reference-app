@@ -1,4 +1,7 @@
-import { expect, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test'
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
+import { expect, type APIResponse, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test'
 
 /**
  * Helpers for driving the app from an end-to-end test.
@@ -10,12 +13,48 @@ import { expect, type Browser, type BrowserContext, type Locator, type Page } fr
  * `setUpOwner` work on whatever page they are handed.
  */
 
-/** Counter sections on the participant-count step, keyed by their visible label. */
-type CounterLabel =
-  | 'Total participants'
-  | 'Minimum paired to protect'
-  | 'Recommended paired'
-  | 'Pre-pair locally'
+/**
+ * Where this run's backend listens; the app is served separately by Vite.
+ *
+ * The suite's own port, not the app's default 5000 — a developer's node on the
+ * default would otherwise be the one these specs provision against. Kept in
+ * step with `playwright.config.ts`, which starts it.
+ */
+export const BACKEND_PORT = 5100
+export const BACKEND_URL = `http://localhost:${BACKEND_PORT}`
+
+/** The node's versioned API, where everything but the DeRec transport lives. */
+export const BACKEND_API_URL = `${BACKEND_URL}/api/v1`
+
+/** The `result` of an API answer, which travels in the node's envelope. */
+export async function resultOf<T>(response: APIResponse): Promise<T> {
+  const body = (await response.json()) as { result: T }
+  return body.result
+}
+
+/** Pool size for a spec that does not name one — enough for a threshold of 2. */
+const DEFAULT_POOL_SIZE = 3
+
+/**
+ * Counter sections in the wizard, keyed by their visible label.
+ *
+ * Only the owner's own settings are still driven through the UI; the node-level
+ * counters moved to the Settings pane and are seeded through its stored
+ * override instead — see `seedNodeDefaults`.
+ */
+type CounterLabel = 'Pre-pair locally'
+
+/**
+ * Target composition of the shared helper pool by transport mode. Mirrors
+ * `TransportMix` in `src/transportMix.ts` — kept local rather than imported so
+ * the e2e project stays self-contained (its `tsconfig.e2e.json` only includes
+ * `e2e`, not `src`).
+ */
+export interface TransportMix {
+  http: number
+  grpc: number
+  both: number
+}
 
 export interface OwnerSetupOptions {
   /** Owner name, e.g. `Alice`. Also becomes the tab title. */
@@ -32,6 +71,12 @@ export interface OwnerSetupOptions {
   minParticipants?: number
   /** Paired participants below which the app shows a warning. */
   recommendedParticipants?: number
+  /**
+   * Target composition of the helper pool by transport. The three counters
+   * rebalance each other, so only `grpc` and `both` are driven explicitly —
+   * `http` is left to absorb whatever they do not take.
+   */
+  transports?: TransportMix
 }
 
 /**
@@ -64,31 +109,136 @@ export async function openApp(page: Page): Promise<void> {
  * the dashboard to appear.
  */
 export async function setUpOwner(page: Page, options: OwnerSetupOptions): Promise<void> {
+  await ensurePool(page, options)
+  await seedNodeDefaults(page, options)
   await openApp(page)
+  await runSetupWizard(page, options)
+}
 
-  await page.getByRole('button', { name: 'Set up a new owner' }).click()
+/**
+ * Set up one more vault in a browser that already holds some, from the list.
+ *
+ * The node's pool and defaults were seeded by the first `setUpOwner`, and the
+ * list — not the empty-state greeting — is the home screen now.
+ */
+export async function setUpAnotherVault(page: Page, options: OwnerSetupOptions): Promise<void> {
+  await backToVaults(page)
+  await runSetupWizard(page, options)
+}
+
+/** Leave the vault on screen for the list. Nothing stops: it keeps running. */
+export async function backToVaults(page: Page): Promise<void> {
+  if (!(await page.getByRole('heading', { name: 'Your vaults' }).isVisible())) {
+    await page.getByRole('button', { name: 'All vaults' }).click()
+  }
+  await expect(page.getByRole('heading', { name: 'Your vaults' })).toBeVisible()
+}
+
+/** Open a vault from the list by name, leaving `page` on its dashboard. */
+export async function openVault(page: Page, name: string): Promise<void> {
+  await backToVaults(page)
+  await page.getByRole('button', { name: `Open ${name}`, exact: true }).click()
+  await expectOwnerDashboard(page)
+}
+
+/** The wizard, from its first click to the new vault's dashboard. */
+async function runSetupWizard(page: Page, options: OwnerSetupOptions): Promise<void> {
+  await page.getByRole('button', { name: 'Set up a new vault' }).click()
 
   await expect(page.getByRole('heading', { name: 'Your name' })).toBeVisible()
   await page.getByPlaceholder('e.g. Alice').fill(options.name)
   await page.getByRole('button', { name: /^Next/ }).click()
 
-  await expect(page.getByRole('heading', { name: 'How many participants?' })).toBeVisible()
-  // Total first: lowering it clamps the three counters below it.
-  await setCounter(page, 'Total participants', options.participants)
-  await setCounter(page, 'Minimum paired to protect', options.minParticipants)
-  await setCounter(page, 'Recommended paired', options.recommendedParticipants)
+  // What is left in the wizard is what belongs to the owner rather than the
+  // node: the timeout, and how many participants to pre-pair.
+  await expect(page.getByRole('heading', { name: 'Your settings' })).toBeVisible()
+  // The step is inert until the node has answered — its defaults and the
+  // pre-pair ceiling are unknown before then. Waiting here is what keeps a
+  // counter from being read as "…" or set against a ceiling not yet known.
+  await expect(page.getByRole('button', { name: 'Set up', exact: true })).toBeEnabled()
   await setCounter(page, 'Pre-pair locally', options.prePaired)
-  await page.getByRole('button', { name: /^Next/ }).click()
-
-  await expect(page.getByRole('heading', { name: 'Protocol settings' })).toBeVisible()
   await page.getByRole('button', { name: 'Set up' }).click()
 
   await expectOwnerDashboard(page)
 }
 
+/** How many participants this node runs right now. */
+export async function poolSize(page: Page): Promise<number> {
+  const response = await page.request.get(`${BACKEND_API_URL}/actors`)
+  const body = await resultOf<{
+    actors: { role: string; browser_managed?: boolean }[]
+  }>(response)
+  return body.actors.filter(a => a.role === 'helper' && !a.browser_managed).length
+}
+
+/**
+ * Make sure the node runs the participants this test needs.
+ *
+ * Setting up an owner deliberately provisions nothing: the pool belongs to the
+ * node, and an owner that grew it would undo an operator's decision to remove
+ * one. Growing the pool is an operator action, so the harness performs it the
+ * way an operator would — against the same endpoint the Participants pane
+ * calls — rather than the wizard doing it as a side effect.
+ *
+ * Only the shortfall is created, so this is safe to call from every spec even
+ * though they share one backend.
+ */
+async function ensurePool(page: Page, options: OwnerSetupOptions): Promise<void> {
+  const total = options.participants ?? DEFAULT_POOL_SIZE
+  if (total <= 0) return
+
+  const transports = options.transports ?? { http: total, grpc: 0, both: 0 }
+  const response = await page.request.post(`${BACKEND_API_URL}/helpers/ensure`, {
+    data: {
+      total,
+      // Unique per call: the pool is shared and only the shortfall is
+      // created, so a fixed name would collide with one an earlier spec left
+      // behind — and the helpers that reach participants by name would then
+      // match two rows.
+      names: Array.from({ length: total }, () => uniqueReplicaName('Fixture')),
+      transports,
+    },
+  })
+  if (!response.ok()) {
+    throw new Error(
+      `could not provision the pool (${response.status()}): ${await response.text()}`,
+    )
+  }
+}
+
+/**
+ * Put the node-level options in place before the app loads.
+ *
+ * Pool size, thresholds and transport mix are no longer asked for during setup
+ * — they belong to the node and are configured under Settings. Rather than
+ * reach past the app to the backend, this writes the same browser-local
+ * override the Settings pane writes, so the tests exercise the real mechanism
+ * and a change to it fails here rather than silently diverging.
+ *
+ * Stored as a *partial*: anything a test does not name keeps following the
+ * node's own defaults, exactly as the pane behaves.
+ */
+async function seedNodeDefaults(page: Page, options: OwnerSetupOptions): Promise<void> {
+  const overrides: Record<string, unknown> = {}
+  if (options.participants !== undefined) overrides.participantCount = options.participants
+  if (options.minParticipants !== undefined) overrides.minParticipants = options.minParticipants
+  if (options.recommendedParticipants !== undefined) {
+    overrides.recommendedParticipants = options.recommendedParticipants
+  }
+  if (options.transports !== undefined) overrides.helperTransports = options.transports
+  if (Object.keys(overrides).length === 0) return
+
+  // `addInitScript` runs before any of the app's own code on every navigation,
+  // which matters because the wizard reads these on its first render — setting
+  // them afterwards would be a render too late.
+  await page.addInitScript(value => {
+    window.localStorage.setItem('derec.protocolDefaults', JSON.stringify(value))
+  }, overrides)
+}
+
 /** Assert that `page` is on the owner dashboard rather than the wizard. */
 export async function expectOwnerDashboard(page: Page): Promise<void> {
-  await expect(page.getByRole('tab', { name: /Secret Bag/ })).toBeVisible({ timeout: 90_000 })
+  await expect(page.getByRole('tab', { name: /^Secrets/ })).toBeVisible({ timeout: 90_000 })
 }
 
 /**
@@ -192,7 +342,7 @@ export async function confirmFingerprint(page: Page, accept = true): Promise<voi
 /**
  * Protect a secret across every paired participant.
  *
- * Resolves once the Secret Bag tab reports the entry, which only happens when
+ * Resolves once the Secrets tab reports the entry, which only happens when
  * the round reaches its threshold — so this waits on the protocol completing,
  * not merely on the request being dispatched.
  */
@@ -205,15 +355,15 @@ export async function protectSecret(
   // independently, so one already in flight — from a pairing auto-publish, say
   // — neither blocks this one nor is disturbed by it. The button is disabled
   // only for too few paired helpers, which is a standing condition.
-  const before = await tabCount(page, 'Secret Bag')
-  const start = page.getByRole('button', { name: /^(Protect Secret|Add Secret)$/ })
+  const before = await tabCount(page, 'Secrets')
+  const start = page.getByRole('button', { name: 'Add Secret', exact: true })
   await expect(start).toBeEnabled({ timeout: 120_000 })
   await start.click()
 
   const form = page.locator('.modal-overlay[aria-label="Add secret"] .modal')
   await form.locator('#ps-name').fill(name)
   await form.getByLabel('Secret data').fill(data)
-  await form.getByRole('button', { name: /^(Protect|Add Secret)$/ }).click()
+  await form.getByRole('button', { name: 'Add Secret', exact: true }).click()
 
   // The form is replaced in place by a per-participant progress view, which
   // stays up (and keeps intercepting clicks) until dismissed.
@@ -231,7 +381,7 @@ export async function protectSecret(
   // slow member therefore delays it by up to the sharing-round timeout, even
   // though every helper answered in milliseconds.
   await expect
-    .poll(() => tabCount(page, 'Secret Bag'), { timeout: 120_000 })
+    .poll(() => tabCount(page, 'Secrets'), { timeout: 120_000 })
     .toBeGreaterThan(before)
 }
 
@@ -245,14 +395,14 @@ export async function protectAndReadConfirmations(
   // confirming a gated channel publishes from `verifyFingerprint` — and the
   // library keeps one round per secret. The button stays disabled until the
   // one in flight resolves, so waiting on it is waiting for quiescence.
-  const start = page.getByRole('button', { name: /^(Protect Secret|Add Secret)$/ })
+  const start = page.getByRole('button', { name: 'Add Secret', exact: true })
   await expect(start).toBeEnabled({ timeout: 120_000 })
   await start.click()
 
   const form = page.locator('.modal-overlay[aria-label="Add secret"] .modal')
   await form.locator('#ps-name').fill(name)
   await form.getByLabel('Secret data').fill(data)
-  await form.getByRole('button', { name: /^(Protect|Add Secret)$/ }).click()
+  await form.getByRole('button', { name: 'Add Secret', exact: true }).click()
 
   const overlay = page.locator('.modal-overlay[aria-label="Add secret"]')
   await expect(overlay.getByRole('button', { name: 'Done' })).toBeVisible({ timeout: 90_000 })
@@ -319,26 +469,54 @@ export async function unpairParticipant(page: Page, index = 0): Promise<string> 
 // ── Replicas ────────────────────────────────────────────────────────────────
 //
 // A replica is another device holding a mirror of the whole vault, not a share
-// of it. Provisioned replicas are backend fixtures, which is what makes a group
-// of three testable from one browser context: this device is the `Source` and
-// each fixture is a `Destination`.
+// of it — and it is a pairing *mode*, not a kind of actor: the counterparty is
+// an ordinary provisioned helper that gains a protocol instance bound to this
+// owner's secret when its contact is minted.
+//
+// Those helpers are backend fixtures, which is what makes a group of three
+// testable from one browser context: this device is the `Source` and each
+// fixture is a `Destination`. Being unattended, they auto-confirm their own
+// fingerprint, so only this device compares.
 
-/** The "Provisioned replicas" side-panel section. */
+/**
+ * The replicas side-panel section, which is where "+ Add" lives.
+ *
+ * Matched on its heading rather than on loose text: the section names the
+ * Replicas tab in its own body, and so may its sibling one day.
+ */
 function replicaSection(page: Page): Locator {
-  return page.locator('.side-panel-section').filter({ hasText: 'Provisioned replicas' })
+  return page
+    .locator('.side-panel-section')
+    .filter({ has: page.getByRole('heading', { name: 'Replicas', exact: true }) })
 }
 
 /**
- * A replica's row in the side panel, by the name it was added under.
+ * A replica's channel row on the Replicas tab, by the name it was added under.
  *
- * Matched on the whole name, not a substring: provisioned replicas belong to
- * the *server*, so every replica any test has added is listed for every owner,
- * and a loose match would resolve to several rows.
+ * The Replicas tab, not the side panel: a replica is a pairing mode rather than
+ * a kind of actor, so what it produces is a channel. The side panel holds the
+ * "+ Add" action and no list at all.
+ *
+ * Matched on the whole name because the backend is reused between runs and a
+ * loose match would resolve to rows an earlier run left behind.
  */
-function replicaRow(page: Page, name: string): Locator {
-  return replicaSection(page)
-    .locator('.side-participant-item')
-    .filter({ has: page.locator('.side-participant-name', { hasText: new RegExp(`^${name}$`) }) })
+export function replicaChannelRow(page: Page, name: string): Locator {
+  return page
+    .locator('.replicas-tab-section')
+    .filter({ hasText: 'Replica channels' })
+    .locator('.channel-block')
+    .filter({ has: page.locator('.channel-row-name', { hasText: new RegExp(`^${name}$`) }) })
+}
+
+/**
+ * The fingerprint comparison this device raised for `name`.
+ *
+ * Distinct from {@link confirmFingerprint}'s dialog, which is the helper-pairing
+ * one: this is scoped by name because a replica group raises one of these per
+ * member.
+ */
+function replicaFingerprintDialog(page: Page, name: string): Locator {
+  return page.getByRole('dialog').filter({ hasText: name })
 }
 
 /**
@@ -354,7 +532,19 @@ export function uniqueReplicaName(prefix = 'Device'): string {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}`
 }
 
-/** Provision a backend-hosted replica of this vault. */
+/**
+ * Pair a helper as a replica of this vault, stopping short of confirming.
+ *
+ * Adding and pairing are one action: there is no replica actor to provision
+ * first, so "+ Add" mints a replica-mode contact from a helper and runs the
+ * handshake. This returns once that handshake has completed and the comparison
+ * dialog it raises is on screen — still unconfirmed, which is the state
+ * {@link pairReplica} resolves.
+ *
+ * Waiting on the dialog rather than on a row is deliberate: the dialog is
+ * raised by `PairingCompleted`, so it is a signal that the protocol finished
+ * rather than that the request was accepted.
+ */
 export async function addReplica(page: Page, name: string): Promise<void> {
   await replicaSection(page).getByRole('button', { name: '+ Add' }).click()
 
@@ -362,23 +552,58 @@ export async function addReplica(page: Page, name: string): Promise<void> {
   await modal.locator('input[type="text"]').fill(name)
   await modal.getByRole('button', { name: 'Add Replica' }).click()
 
-  await expect(replicaRow(page, name)).toBeVisible({ timeout: 30_000 })
+  await expect(replicaFingerprintDialog(page, name)).toBeVisible({ timeout: 60_000 })
 }
 
 /**
- * Pair a provisioned replica and confirm the fingerprint on both sides.
+ * Dismiss the comparison without answering it.
  *
- * Every replica pairing is gated regardless of contact mode, so the channel
- * sits `Pending` until the comparison is resolved — this device confirms its
- * own side and stands in for the fixture, which has no screen.
+ * Escape, not "Doesn’t match": that button is an answer now, recorded on the
+ * row as a refusal. Dismissing writes nothing — the channel stays `Pending`
+ * and its deadline keeps running, which is exactly what makes the row's own
+ * confirm prompt a safe way back in.
+ *
+ * Required before touching anything outside the dialog: MUI's modal manager
+ * marks the rest of the app `aria-hidden` while it is open, so the tab strip is
+ * invisible to the role engine and the backdrop would swallow the click anyway.
+ */
+export async function dismissReplicaFingerprint(page: Page, name: string): Promise<void> {
+  const dialog = replicaFingerprintDialog(page, name)
+  await expect(dialog).toBeVisible({ timeout: 60_000 })
+
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden({ timeout: 30_000 })
+}
+
+/**
+ * Answer the Remove-from-group confirmation every eviction now goes through.
+ * Eviction erases the evicted device's copy, so it is never one click.
+ */
+export async function confirmReplicaRemoval(page: Page): Promise<void> {
+  const dialog = page.locator('.modal-overlay').filter({ hasText: /Remove .* from the group\?|Remove the source/ })
+  await expect(dialog).toBeVisible({ timeout: 15_000 })
+  await dialog.getByRole('button', { name: /^Remove (from group|the source)$/ }).click()
+  await expect(dialog).toBeHidden({ timeout: 15_000 })
+}
+
+/**
+ * Confirm the comparison {@link addReplica} raised.
+ *
+ * Only this device compares. The helper on the other end auto-confirms — it is
+ * an unattended fixture with no screen to read a code off — so the dialog
+ * settles into a "confirmed here" state with a Done button instead of closing
+ * itself, and dismissing it is part of confirming.
  */
 export async function pairReplica(page: Page, name: string): Promise<void> {
-  const row = replicaRow(page, name)
-  await row.locator('.side-participant-header').click()
-  await row.getByRole('button', { name: 'Pair', exact: true }).click()
+  const dialog = replicaFingerprintDialog(page, name)
+  await expect(dialog).toBeVisible({ timeout: 60_000 })
+  // The code must be on screen before anyone can claim to have compared it.
+  await expect(dialog.getByText(/^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/).first())
+    .toBeVisible()
 
-  await confirmFingerprint(page)
-  await expect(row.locator('.status-tag')).toHaveText('Paired', { timeout: 60_000 })
+  await dialog.getByRole('button', { name: 'Codes match' }).click()
+  await dialog.getByRole('button', { name: 'Done' }).click()
+  await expect(dialog).toBeHidden({ timeout: 30_000 })
 }
 
 /**
@@ -394,24 +619,34 @@ export async function addAndPairReplica(page: Page, name: string): Promise<void>
 }
 
 /**
- * How many replica channel rows this owner has.
+ * How many replica *channel* rows this owner has.
  *
- * Not the Replicas tab badge: that also counts provisioned replicas awaiting
- * pairing, and provisioned replicas are server-wide, so every fixture any other
- * owner ever created is in that number.
+ * Group members this device has no channel with are listed in the same section
+ * — they are replicas too — so the row count alone no longer answers this.
+ * "Offers Forget" is what separates them: Forget drops a local record, and a
+ * member row has none to drop.
  */
 export async function replicaChannelCount(page: Page): Promise<number> {
+  return replicaRows(page).filter({ has: page.getByRole('button', { name: 'Forget' }) }).count()
+}
+
+/** Every row on the Replicas tab: channels this device holds, and group members. */
+export function replicaRows(page: Page) {
   return page
     .locator('.replicas-tab-section')
     .filter({ hasText: 'Replica channels' })
     .locator('.channel-block')
-    .count()
+}
+
+/** Rows for peers known only through the group — no channel of this device's own. */
+export function replicaMemberRows(page: Page) {
+  return replicaRows(page).filter({ hasText: 'This device has no channel of its own' })
 }
 
 /** The count badge on a dashboard tab. */
 export async function tabCount(
   page: Page,
-  name: 'Channels' | 'Replicas' | 'Secret Bag' | 'Shares' | 'Recovery',
+  name: 'Channels' | 'Replicas' | 'Secrets' | 'Shares' | 'Recovery',
 ): Promise<number> {
   const text = await page.getByRole('tab', { name: new RegExp(`^${name}`) }).innerText()
   return Number(text.replace(/\D+/g, '') || '0')
@@ -420,7 +655,7 @@ export async function tabCount(
 /** Switch the owner dashboard to one of its tabs. */
 export async function openTab(
   page: Page,
-  name: 'Channels' | 'Replicas' | 'Secret Bag' | 'Shares' | 'Recovery',
+  name: 'Channels' | 'Replicas' | 'Secrets' | 'Shares' | 'Recovery',
 ): Promise<void> {
   await page.getByRole('tab', { name: new RegExp(`^${name}`) }).click()
 }
