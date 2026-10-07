@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
-import { updateBagVerified, updateBagVersion } from '../../owner/bag'
+import { bagVersionOf, updateBagVerified, updateBagVersion } from '../../owner/bag'
 import type { SecretShareRef, Vault } from '../../types'
 import { UNANSWERED_MEMO, commitRoundVersion, settleUnansweredShares } from '../rounds'
 import type { EventHandlers, FoldContext } from './context'
@@ -9,12 +9,22 @@ import type { EventHandlers, FoldContext } from './context'
 
 /** Share distribution and verification events, from the owner's side. */
 export const sharingHandlers = {
-  ShareStored: (current, event) => {
+  ShareStored: (current, event, ctx) => {
     const channelId = event.channel_id
     if (!channelId) return current
     const version = event.version ?? 1
-    const existing = current.heldShares ?? []
-    if (existing.some(s => s.channelId === channelId && s.version === version)) return current
+    // Storing a share is also when the library applies the owner's
+    // `keepList`, deleting every other version on this channel it does not
+    // name — through the store, before this event, and with no event of its
+    // own. The held-share list follows the store, or the Shares tab goes on
+    // listing versions this vault no longer holds.
+    const existing = (current.heldShares ?? []).filter(
+      s => s.channelId !== channelId || s.version === version || ctx.isShareHeld(channelId, s.version),
+    )
+    const pruned = existing.length !== (current.heldShares ?? []).length
+    if (existing.some(s => s.channelId === channelId && s.version === version)) {
+      return pruned ? { ...current, heldShares: existing } : current
+    }
     return {
       ...current,
       heldShares: [...existing, { channelId, secretId: '', version, description: '' }],
@@ -177,6 +187,7 @@ export const sharingHandlers = {
             ...bag.currentVersion,
             version,
             verifiedParticipantIds: [],
+            verifyRejections: undefined,
             failedParticipantIds: [],
             restoredFromRecovery: undefined,
           },
@@ -210,6 +221,10 @@ export const sharingHandlers = {
     if (!participant) return current
 
     const bag = current.secretBag
+    const secretBag = bag ? updateBagVerified(bag, version, participant.id) : null
+
+    announceVerificationIfDone(secretBag, version, ctx)
+
     return {
       ...current,
       participants: current.participants.map(h =>
@@ -220,10 +235,65 @@ export const sharingHandlers = {
             }
           : h,
       ),
-      secretBag: bag ? updateBagVerified(bag, version, participant.id) : null,
+      secretBag,
     }
   },
+
+  // The helper refused the challenge — by hand, or automatically because it
+  // holds no share of this version. Recorded as that helper's answer, so the
+  // verification view resolves its row to "Rejected" instead of waiting for a
+  // proof that is not coming. The challenge is spent: checking the helper
+  // again takes a new round.
+  ShareVerifyRejected: (current, event, ctx) => {
+    const { channel_id: channelId, version, status, memo } = event
+
+    ctx.log({
+      role: 'owner',
+      flow: 'verification',
+      step: 'ShareVerifyRejected',
+      description: `Verification of v${version} refused on channel ${channelId} (status=${status}${memo ? `, memo=${memo}` : ''})`,
+      payload: { channelId, version, status, memo },
+    })
+
+    if (!ctx.rounds.isAwaitingVerification(channelId, version)) return current
+    ctx.rounds.endVerification(channelId)
+
+    const participant = current.participants.find(h => h.channelId === channelId)
+    if (!participant) return current
+
+    const bag = current.secretBag
+    const secretBag = bag
+      ? updateBagVersion(bag, version, v => ({
+          ...v,
+          verifyRejections: [
+            ...(v.verifyRejections ?? []).filter(r => r.id !== participant.id),
+            { id: participant.id, status, memo },
+          ],
+        }))
+      : null
+    announceVerificationIfDone(secretBag, version, ctx)
+    return { ...current, secretBag }
+  },
 } satisfies Partial<EventHandlers>
+
+/**
+ * One banner per verification round, not one per helper: raised when its last
+ * challenge is answered, whether with a proof or a refusal, and naming both.
+ */
+function announceVerificationIfDone(
+  secretBag: Vault['secretBag'],
+  version: number,
+  ctx: FoldContext,
+): void {
+  if (ctx.rounds.isVerifying(version)) return
+  const bagVersion = bagVersionOf(secretBag, version)
+  const verified = bagVersion?.verifiedParticipantIds.length ?? 0
+  const rejected = bagVersion?.verifyRejections?.length ?? 0
+  ctx.notify.outcome(
+    `Verification of v${version} complete: ${verified} share${verified === 1 ? '' : 's'} verified` +
+      (rejected > 0 ? `, ${rejected} rejected` : ''),
+  )
+}
 
 /**
  * Commit round `version` as soon as every helper it went to has answered and

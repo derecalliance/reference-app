@@ -19,8 +19,8 @@ import {
  *
  * This module **decides which dialog to raise and nothing else**. It reads no
  * storage, writes none, and dispatches no protocol call. Both verdicts share
- * one accept path; the erase itself still happens later, at first sync, behind
- * `ReplicaAdoptionDialog`.
+ * one accept path; the decision to adopt is asked before this device confirms
+ * the fingerprint, and the erase follows when the source's vault arrives.
  */
 
 /** The parts of an inbound pairing request a confirmation needs. */

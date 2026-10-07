@@ -7,8 +7,11 @@
 //! behaviour rather than whatever a new implementation happens to do — which is
 //! what makes it worth anything when the SQL stores point it at a database.
 
-use derec_backend::conformance;
-use derec_backend::stores::{
+#[path = "support/in_memory_stores.rs"]
+mod in_memory_stores;
+
+use derec_backend::repositories::sdk::conformance;
+use in_memory_stores::{
     InMemoryChannelStore, InMemorySecretStore, InMemoryShareStore, InMemoryStateStore,
     InMemoryUserSecretStore,
 };

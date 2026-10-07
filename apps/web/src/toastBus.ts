@@ -95,3 +95,47 @@ export function reportError(
 export function reportInfo(message: string, origin?: ToastOrigin): void {
   emit('info', message, origin)
 }
+
+// ── Standing notices ─────────────────────────────────────────────────────────
+//
+// A condition rather than an event: shown for as long as it holds and cleared
+// when it ends, not on a timer. One per key, so a condition reported by many
+// sources at once — the node down, seen by every vault's poll — is one notice.
+
+export interface Notice {
+  key: string
+  level: ToastLevel
+  message: string
+}
+
+type NoticeListener = (notices: readonly Notice[]) => void
+
+let notices: readonly Notice[] = []
+const noticeListeners = new Set<NoticeListener>()
+
+function publishNotices(next: readonly Notice[]): void {
+  notices = next
+  for (const l of noticeListeners) l(notices)
+}
+
+/** Called at once with the current notices, then on every change. */
+export function subscribeNotices(listener: NoticeListener): () => void {
+  noticeListeners.add(listener)
+  listener(notices)
+  return () => {
+    noticeListeners.delete(listener)
+  }
+}
+
+/** Show the notice `key`, replacing any shown under the same key. */
+export function showNotice(key: string, level: ToastLevel, message: string): void {
+  const current = notices.find(n => n.key === key)
+  if (current && current.level === level && current.message === message) return
+  publishNotices([...notices.filter(n => n.key !== key), { key, level, message }])
+}
+
+/** Take the notice `key` down. A no-op when none is shown. */
+export function clearNotice(key: string): void {
+  if (!notices.some(n => n.key === key)) return
+  publishNotices(notices.filter(n => n.key !== key))
+}

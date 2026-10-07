@@ -84,19 +84,11 @@ test.describe('replica groups', () => {
   })
 
   test('the group mirrors a protected secret to every member', async ({ page, pageErrors }) => {
-    // Known SDK 0.0.6 defect, not an app one: on the *second* member's pairing
-    // the initiator re-points its own roster row at the newcomer's channel
-    // (`handlers/pairing/pair.rs` loads the own row by replica id alone), so
-    // the group channel moves on every admission. The first replica then
-    // follows the roster onto a channel it has no key for, the source keeps
-    // sending on the old one, and its next mirror is dropped. This test passed
-    // before only because the UI kept showing the stale "Mirrored vN"; it now
-    // shows "Behind". Expected to fail until the SDK is fixed — Playwright
-    // reports it as unexpectedly passing once that lands.
-    test.fail(true, 'SDK 0.0.6: group channel re-pointed on second admission')
-    // Room for the final 90s assertion to fail on its own: a test timeout is
-    // reported as "timedOut", which test.fail does not count as expected.
-    test.setTimeout(240_000)
+    // The ordering that broke on the SDK twice: the second replica's admission
+    // and the protect below go out a poll apart. SDK 0.0.7 keeps the group on
+    // the first member's channel and moves each joiner onto it as soon as the
+    // handover is sent, so every member gets the mirror (also pinned in
+    // `apps/backend/tests/replica_second_admission.rs`).
     await setUpOwner(page, { name: 'Alice', participants: 3, prePaired: 0, minParticipants: 2 })
     await pairParticipant(page, { index: 0, mode: 'Inline keys' })
     await pairParticipant(page, { index: 1, mode: 'Inline keys' })

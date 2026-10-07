@@ -10,6 +10,7 @@ import {
 } from '@derec-alliance/web'
 
 import {
+  apiCreateActorContact,
   apiGetActors,
   apiGetServerDefaults,
   apiPostBrowserContact,
@@ -17,7 +18,8 @@ import {
   apiToggleParticipantStatus,
   type BEActorWithStatus,
 } from '../api'
-import { contactMessageToDto } from '../contactDto'
+import { selectAutoPairTargets } from '../autoPairSelection'
+import { contactMessageToDto, dtoToContactMessage } from '../contactDto'
 import { errorText } from '../errorText'
 import {
   DEFAULT_CONTACT_MODE,
@@ -25,10 +27,15 @@ import {
   toContactMode,
   type ContactModeKey,
 } from '../contactModes'
-import { fromBase64Url, pollMailbox, type MailboxMessage } from '../derecApi'
+import { NodeUnreachableError, fromBase64Url, pollMailbox, type MailboxMessage } from '../derecApi'
 import type { PendingPairingConfirmation } from '../inboundPairing'
-import { replicaGroupFromStore, updateBagVersion } from '../owner/bag'
-import { asNonOkStatus, isUnknownChannelError, unknownChannelId } from '../owner/channelErrors'
+import { bagVersionOf, replicaGroupFromStore, updateBagVersion } from '../owner/bag'
+import {
+  asNonOkStatus,
+  eventsOfFailedProcess,
+  isUnknownChannelError,
+  unknownChannelId,
+} from '../owner/channelErrors'
 import {
   buildProtocolInstance,
   PENDING_CHANNEL_TTL_SECS,
@@ -53,6 +60,7 @@ import {
   automaticSyncNeedsAttention,
   createReplicaFirstSyncTrigger,
   forgetReplicaMember,
+  hasAdoptionConsent,
   isReplicaChannelConfirmedLocally,
   loadReplicaState,
   markReplicaFirstSyncStarted,
@@ -84,13 +92,16 @@ import {
   hasStorageHeadroom,
   listHelperChannels,
   listReplicaMembers,
+  loadRawShare,
   readHelperChannelInfo,
   readHelperChannelStatus,
   takeStorageQuotaFailure,
+  type KeepListSource,
 } from '../stores'
 import { getOrCreateReplicaId } from '../replicaIdentity'
 import type {
   BagVersion,
+  CorruptShareReport,
   PendingPairing,
   RecoveredSecret,
   SecretBag,
@@ -113,6 +124,8 @@ import { adoptMirroredVault } from './commands/adoption'
 import type { CommandContext } from './commands/context'
 import { restoreVault } from './commands/restore'
 import { routeActionRequired, type InboundContext } from './inbound'
+import { keepListFor } from './keepList'
+import { replicaConflictBlockReason } from './replicaConflict'
 import { ReplicaCatchUp } from './replicaSync'
 import { RoundTracker, settleUnansweredShares } from './rounds'
 import type {
@@ -310,8 +323,15 @@ export class VaultRuntime {
   /** A drain or tick pass is in flight; the next timer firing skips rather than overlapping. */
   private draining = false
   private ticking = false
-  /** Poll at the fast cadence even while idle — set during auto-pairing. */
-  private fastPolling = false
+  /**
+   * Participants being auto-paired at setup, until all of them have paired.
+   * Non-empty keeps the poll at the fast cadence, so the setup gate clears
+   * promptly — and, being the engine's, stops doing so when the engine stops
+   * rather than when some view remembers to say so.
+   */
+  private autoPairingIds: readonly string[] = []
+  /** Auto-pairing runs once per runtime, however often `start()` is called. */
+  private autoPairStarted = false
 
   /**
    * The replica flows' view of this vault's protocol, lock-guarded.
@@ -343,8 +363,17 @@ export class VaultRuntime {
       start: (flowKind, params) =>
         this.withLock(() => this.forgetPendingOnFailure(() => current().start(flowKind, params))),
       getFingerprint: channelId => this.withLock(() => current().getFingerprint(channelId)),
-      verifyFingerprint: (channelId, fingerprint) =>
-        this.withLock(() => current().verifyFingerprint(channelId, fingerprint)),
+      // Confirming a channel publishes the vault to it on the library's own
+      // initiative, which a diverged vault must not do — see `protect`.
+      verifyFingerprint: (channelId, fingerprint) => {
+        const conflict = this.vault.replicaConflict
+        if (conflict) {
+          return Promise.reject(
+            new Error(`Confirming would publish this vault. ${replicaConflictBlockReason(conflict)}`),
+          )
+        }
+        return this.withLock(() => current().verifyFingerprint(channelId, fingerprint))
+      },
       startReplicaDiscovery: () => this.withLock(() => current().start(FlowKind.ReplicaDiscovery)),
       startUnpairReplica: params => this.withLock(() => current().start(FlowKind.UnpairReplica, params)),
     }
@@ -368,6 +397,8 @@ export class VaultRuntime {
         readHelperChannelInfo(`vault:${this.vault.id}`, this.secretId, channelId),
       awaitingIdentityAnswer: channelId =>
         this.identityUpdate?.channels[channelId]?.outcome === 'pending',
+      isShareHeld: (channelId, version) =>
+        loadRawShare(this.namespace, this.partition, channelId, version) !== null,
       channelInfoOutcome: (channelId, outcome, detail) => {
         const next = withChannelOutcome(this.identityUpdate, channelId, outcome, detail)
         if (next === this.identityUpdate) return
@@ -396,6 +427,7 @@ export class VaultRuntime {
       withLock: fn => this.withLock(fn),
       fold: (current, event) => this.applyEvent(current, event),
       adoptInstance: instance => this.adoptInstance(instance),
+      keepList: this.keepList,
     }
 
     this.catchUp = new ReplicaCatchUp({
@@ -448,6 +480,31 @@ export class VaultRuntime {
     channelsLinked: () => this.view.channelsLinked?.(),
   }
 
+  /**
+   * The vault's answer to the library's per-round `keepList` question — the
+   * versions helpers keep — read from the record at the moment the round is
+   * built, whichever flow started it. See `vault/keepList.ts`.
+   *
+   * Logged, because what it decides happens on the helpers' side, out of
+   * sight: the console is the only place a developer can see which versions a
+   * round told them to drop.
+   */
+  private readonly keepList: KeepListSource = (secretId, version) => {
+    const open = this.rounds.snapshotProtectRounds().map(round => round.version)
+    const kept = keepListFor(this.vault, secretId, version, open)
+    this.deps.log({
+      role: 'owner',
+      flow: 'sharing',
+      step: 'keep_list',
+      description:
+        kept === null
+          ? `Round v${version}: no committed version on record, so helpers keep every version they hold`
+          : `Round v${version}: helpers keep ${[...kept, version].sort((a, b) => a - b).map(v => `v${v}`).join(', ')} and drop any other version of this secret`,
+      payload: { secretId, version, keepList: kept },
+    })
+    return kept
+  }
+
   /** The outside world, defaulted to the real backend. */
   private get io(): VaultRuntimeIo {
     const io = this.deps.io ?? {}
@@ -459,6 +516,8 @@ export class VaultRuntime {
       serverReachable:
         io.serverReachable ?? (async () => (await apiGetServerDefaults()).reachable),
       renameOwner: io.renameOwner ?? apiRenameOwner,
+      participantContact:
+        io.participantContact ?? (async id => dtoToContactMessage(await apiCreateActorContact(id))),
     }
   }
 
@@ -656,6 +715,7 @@ export class VaultRuntime {
       replicaSyncing: this.catchUp.syncing(),
       replicaAutoSyncOutcome: this.autoSyncOutcome,
       identityUpdate: this.identityUpdate,
+      autoPairing: this.autoPairingIds,
     }
   }
 
@@ -767,6 +827,11 @@ export class VaultRuntime {
       clearPendingReplicaOffer(this.vault.id)
       return
     }
+    // Agreed to before the page went away: nothing to ask, only to finish.
+    if (hasAdoptionConsent(loadReplicaState(this.vault.id))) {
+      this.consentedOfferOnStart = offer
+      return
+    }
     this.items = [
       ...this.items,
       { kind: 'replica-adoption', blocksDrain: false, payload: offer, id: randomId(), raisedAt: Date.now() },
@@ -774,60 +839,88 @@ export class VaultRuntime {
   }
 
   /**
-   * Adoption offers that arrived over a replica channel this device has not yet
-   * confirmed, keyed by that channel. See `offerReplicaAdoption`.
+   * A mirrored vault arrived for this device to take on.
    *
-   * In memory only, like a staged offer: losing one on reload is the safe
-   * direction, and the source's next sync re-offers it.
+   * No check that this device confirmed the channel's fingerprint: the library
+   * ignores everything a replica peer sends before this device confirms
+   * (`MessageIgnored { reason: 'PendingVerification' }`), so an offer that
+   * reaches the fold arrived over a verified channel.
+   *
+   * And confirming is the decision to adopt: the fingerprint dialog asks it
+   * first and confirms only on a yes (SDK 0.0.7 documents this as the
+   * application's job — the library installs the group's publishes as they
+   * arrive). So an offer on a device whose person agreed is adopted at once,
+   * without asking a second time. Only a channel confirmed before the app
+   * asked — by an earlier version of it — still gets the adoption dialog.
    */
-  private readonly heldOffers = new Map<string, PendingReplicaAdoption>()
+  offerReplicaAdoption(offer: PendingReplicaAdoption): void {
+    if (hasAdoptionConsent(loadReplicaState(this.vault.id))) {
+      this.adoptConsentedOffer(offer)
+      return
+    }
+    this.stageReplicaAdoption(offer)
+    // Erasing this device's vault is not something to advertise in a banner
+    // at the bottom of the page, so the offer is raised where it cannot be
+    // missed.
+    this.effects.openAdoption()
+  }
+
+  /** An adoption the person agreed to is running — at most one at a time. */
+  private adoptingConsented = false
+  /** An agreed offer restored from storage, adopted once the vault starts. */
+  private consentedOfferOnStart: PendingReplicaAdoption | null = null
 
   /**
-   * Put a mirrored vault in front of the owner — unless the channel it arrived
-   * on has not been confirmed on this device yet, in which case it is held.
+   * Adopt a vault the person already agreed to take on, when they confirmed
+   * the fingerprint.
    *
-   * The fingerprint comparison is what proves the channel is not a man in the
-   * middle. A source mirrors as soon as *it* confirms, which can be before this
-   * device has, and the library delivers that copy regardless — so without this
-   * the owner was asked to erase their vault for one from an unverified channel,
-   * and the prompt landed on top of the very comparison that would verify it.
-   *
-   * Returns whether the offer is now in front of the owner.
+   * Persisted first, so a reload in the middle picks the adoption back up
+   * rather than leaving the device holding the group's copy in the library's
+   * stores and its own vault on screen. Scheduled behind the protocol lock and
+   * not awaited: the offer arrives from inside a drain that holds it. A
+   * failure blocks the vault, exactly as a confirmed adoption from the dialog
+   * does.
    */
-  offerReplicaAdoption(offer: PendingReplicaAdoption): boolean {
-    if (isReplicaChannelConfirmedLocally(loadReplicaState(this.vault.id), offer.channelId)) {
-      this.stageReplicaAdoption(offer)
-      return true
-    }
-    const held = this.heldOffers.get(offer.channelId) ?? null
-    this.heldOffers.set(offer.channelId, mergeReplicaSecretReceipt(held, offer))
+  private adoptConsentedOffer(offer: PendingReplicaAdoption): void {
+    if (this.adoptingConsented || this.blockedBy) return
+    savePendingReplicaOffer(this.vault.id, offer)
+    this.adoptingConsented = true
     this.deps.log({
       role: 'owner',
       flow: 'sharing',
-      step: 'replica_offer_held',
-      description: `Mirrored vault v${offer.version} held until this device confirms the fingerprint of channel ${offer.channelId}`,
+      step: 'replica_adoption_consented',
+      description:
+        `Adopting the mirrored vault v${offer.version} from replica ${offer.fromReplicaId}, as agreed ` +
+        "when this device confirmed the fingerprint — this vault's own contents are replaced",
       payload: { channelId: offer.channelId, secretId: offer.secretId, version: offer.version },
     })
-    return false
+    void this.adoptReplica(offer)
+      .then(() => {
+        clearPendingReplicaOffer(this.vault.id)
+        this.effects.refreshReplicas()
+        this.deps.notify.info(`Adopted the replica group's vault (v${offer.version}) on this device`)
+      })
+      .catch(err => {
+        this.deps.notify.error("Adopting the replica group's vault failed", err, {
+          secretId: offer.secretId,
+          version: offer.version,
+        })
+      })
+      .finally(() => {
+        this.adoptingConsented = false
+      })
   }
 
   /**
-   * This device has just confirmed the replica channel `channelId`. Offer
-   * whatever arrived over it while it was unconfirmed.
+   * This device has just confirmed the replica channel `channelId`.
+   *
+   * A copy pushed before this device confirmed was dropped, not held, and
+   * confirming does not replay it: the destination asks the group for it
+   * instead, until it lands — the source may confirm minutes later. What comes
+   * back lands through the ordinary fold, as an offer. A source already holds
+   * the vault, so it is not eligible and nothing starts.
    */
   replicaChannelConfirmed(channelId: string): void {
-    const held = this.heldOffers.get(channelId)
-    if (held) {
-      this.heldOffers.delete(channelId)
-      if (this.offerReplicaAdoption(held)) this.effects.openAdoption()
-    }
-
-    // From SDK 0.0.6 a copy pushed before this device confirmed is dropped
-    // (`MessageIgnored`), not held, and confirming does not replay it: the
-    // destination asks the group for it instead, until it lands — the source
-    // may confirm minutes later. What comes back lands through the ordinary
-    // fold, as an offer. A source already holds the vault, so it is not
-    // eligible and nothing starts.
     const record = loadReplicaState(this.vault.id).channels[channelId]
     if (record?.role !== 'replica_destination') return
     this.catchUp.start(channelId)
@@ -866,10 +959,12 @@ export class VaultRuntime {
   }
 
   /**
-   * Serialise access to the WASM protocol object. Its async methods take
-   * `&mut self`, and two overlapping calls on one instance do not fail: the
-   * second call's borrow fails on a microtask, its promise never settles, and
-   * the flow hangs — see `wasmBorrowGuard.ts` for the mechanism.
+   * Serialise this vault's work on its protocol instance.
+   *
+   * From SDK 0.0.6 the instance queues overlapping calls itself, so this is no
+   * longer what keeps a call from hanging. It still decides what runs as one
+   * step: a drain's whole batch, or a command's read-then-commit of the vault
+   * record, must not interleave with another's — and `quiesce` waits on it.
    *
    * Per-runtime rather than global: two instances run overlapping calls
    * cleanly (`e2e/wasm-concurrency.spec.ts`), so vaults need not wait on each
@@ -899,11 +994,14 @@ export class VaultRuntime {
         ownTransportUri: this.vault.transport.uri,
         communicationInfo: { name: this.vault.name },
         threshold: this.vault.minParticipants,
-        keepVersionsCount: 3,
+        keepList: this.keepList,
         timeoutSecs: config.protocolTimeoutSecs,
         unpairAck: config.unpairAck,
         replicaId: getOrCreateReplicaId(this.vault.id),
         relayActorId: this.vault.id,
+        // See `BuildProtocolOptions.autoReplyTo`: needed to announce a new
+        // endpoint (Edit Identity) the way SDK 0.0.7 documents.
+        autoReplyTo: true,
       })
       const instance = this.protocolInstance
 
@@ -931,8 +1029,12 @@ export class VaultRuntime {
         this.deps.notify.error('Could not clear unfinished pairings', err),
       )
       this.replayOfflineFlags()
+      const consented = this.consentedOfferOnStart
+      this.consentedOfferOnStart = null
+      if (consented) this.adoptConsentedOffer(consented)
       void this.publishContact(instance)
       this.startLoops()
+      void this.autoPair()
     } catch (err) {
       // A vault that cannot build its instance must fail alone. An unhandled
       // throw from the old init effect had nowhere good to go; here it becomes a
@@ -948,6 +1050,10 @@ export class VaultRuntime {
 
   stop(): void {
     this.stopLoops()
+    // An auto-pair cut short by the stop is abandoned, and with it the fast
+    // cadence it held. If none of it got started, `prePairedCount` still asks
+    // for it, and the runtime the vault is next opened with tries again.
+    this.autoPairingIds = []
     for (const timer of this.autoRejectTimers.values()) clearTimeout(timer)
     this.autoRejectTimers.clear()
     this.catchUp.stopAll()
@@ -983,12 +1089,88 @@ export class VaultRuntime {
     this.emit()
   }
 
-  /** Poll at the fast cadence even while idle. The view sets this during auto-pairing. */
-  setFastPolling(on: boolean): void {
-    if (this.fastPolling === on) return
+  // ── Auto-pairing ───────────────────────────────────────────────────────────
+  //
+  // A vault set up with "pre-pair N" pairs with N provisioned participants as
+  // soon as it starts. The engine's job rather than the page's: it needs no
+  // DOM, a vault keeps running off screen, and when the page drove it, leaving
+  // the page mid-pairing left the poll at the fast cadence for good.
+
+  /**
+   * Pair with the participants `prePairedCount` asks for, once per runtime.
+   * `start()` calls it; public so specs can drive it with no WASM.
+   *
+   * `prePairedCount` is cleared once any pairing has started, so reopening the
+   * vault does not pair a second set; if none could start, it stays, and the
+   * runtime the vault is next opened with tries again.
+   */
+  async autoPair(): Promise<void> {
+    if (this.autoPairStarted) return
+    const count = this.vault.prePairedCount ?? 0
+    if (count === 0) return
+    this.autoPairStarted = true
+
+    // Chosen at random, not off the top of the roster: the participant pool is
+    // shared, so taking the first N would hand every browser context the same
+    // few and leave the rest idle.
+    const targets = selectAutoPairTargets(this.vault.participants, count)
+    if (targets.length === 0) return
+    this.setAutoPairing(targets.map(p => p.id))
+
+    const started: PendingPairing[] = []
+    for (const participant of targets) {
+      // Stopped meanwhile: the rest wait for the next start.
+      if (!this.protocolInstance) break
+      try {
+        const contact = await this.io.participantContact(participant.id)
+        const channelId = await this.startPairing(contact, 'owner', participant.name)
+        started.push({ channelId, participantId: participant.id })
+        this.deps.log({
+          role: 'owner',
+          flow: 'pairing',
+          step: 'auto_pair_initiated',
+          description: `Auto-pair initiated for ${participant.name}`,
+          payload: { participantId: participant.id, channelId: channelId.toString() },
+        })
+      } catch (err) {
+        // Stopped while this one was in flight: not a failure worth reporting.
+        if (!this.protocolInstance) break
+        this.deps.notify.error(`Auto-pairing with "${participant.name}" failed`, err, {
+          participantId: participant.id,
+        })
+        // Nothing will ever pair it, so the gate must not wait for it.
+        this.setAutoPairing(this.autoPairingIds.filter(id => id !== participant.id))
+      }
+    }
+
+    if (started.length === 0) return
+    this.commit({
+      ...this.vault,
+      prePairedCount: 0,
+      pendingPairings: [...this.vault.pendingPairings, ...started],
+    })
+  }
+
+  private setAutoPairing(ids: readonly string[]): void {
+    this.replaceAutoPairing(this.autoPairingDoneIn(this.vault, ids) ? [] : ids)
+    this.emit()
+  }
+
+  /** Swap the auto-pairing set, moving the poll to the cadence it now calls for. */
+  private replaceAutoPairing(ids: readonly string[]): void {
     const before = this.pollIntervalMs
-    this.fastPolling = on
+    this.autoPairingIds = ids
     if (this.pollIntervalMs !== before) this.schedulePoll()
+  }
+
+  /** The gate is done once every participant it waits on has paired in `vault`. */
+  private autoPairingDoneIn(vault: Vault, ids = this.autoPairingIds): boolean {
+    return (
+      ids.length > 0 &&
+      ids.every(id =>
+        vault.participants.some(p => p.id === id && p.connectionStatus === 'paired'),
+      )
+    )
   }
 
   // ── Loops ──────────────────────────────────────────────────────────────────
@@ -1003,7 +1185,7 @@ export class VaultRuntime {
    * counterparty-latency simulation, not a constraint.
    */
   private get pollIntervalMs(): number {
-    return this.busy || this.fastPolling || this.catchingUp ? POLL_FAST_MS : POLL_IDLE_MS
+    return this.busy || this.autoPairingIds.length > 0 || this.catchingUp ? POLL_FAST_MS : POLL_IDLE_MS
   }
 
   private startLoops(): void {
@@ -1058,9 +1240,16 @@ export class VaultRuntime {
       try {
         messages = await this.io.pollMailbox(vaultId)
       } catch (err) {
-        this.deps.notify.error('Mailbox poll failed', err, { vaultId })
+        const unreachable = err instanceof NodeUnreachableError
+        this.deps.pollReached?.(!unreachable)
+        // An unreachable node is every vault's problem, reported once for the
+        // node by whoever listens; an answer about this mailbox is this vault's.
+        if (!unreachable || !this.deps.pollReached) {
+          this.deps.notify.error('Mailbox poll failed', err, { vaultId })
+        }
         return
       }
+      this.deps.pollReached?.(true)
 
       // Older, held-back messages go first so the protocol sees them in order.
       if (this.pendingInbound.length > 0) {
@@ -1107,13 +1296,18 @@ export class VaultRuntime {
       }
 
       let events: DeRecEvent[]
+      // A failed message still carries the events `process()` produced before
+      // it failed — the timeouts it settled, never reported again — and they
+      // are folded exactly as a successful call's are. The error is reported
+      // once they have been.
+      let failure: { error: unknown } | null = null
       try {
         events = Array.from(await protocol.process(bytes))
       } catch (err) {
-        this.reportProcessFailure(err, bytes.length)
-        continue
+        failure = { error: err }
+        events = eventsOfFailedProcess(err)
       }
-      if (events.length === 0) {
+      if (events.length === 0 && failure === null) {
         // Not an error — a reply to a request this device no longer tracks,
         // typically one sent before a claim or a reload — but never silent:
         // the console is where a developer looks for the answer that "never
@@ -1135,6 +1329,7 @@ export class VaultRuntime {
             // The mailbox is destructive: keep what follows so it replays once
             // this decision is made.
             this.pendingInbound = messages.slice(mi + 1)
+            if (failure) updated = this.reportProcessFailureInBatch(failure.error, bytes.length, updated)
             this.finishBatch(initial, updated, messages.length)
             return
           }
@@ -1169,6 +1364,17 @@ export class VaultRuntime {
         if (event.type === 'SecretRecovered' || event.type === 'RecoveryShareError') {
           this.setBusy(false)
         }
+        // Every helper asked has answered, and the fold found the shares short:
+        // nothing more is coming, so the flow is over rather than left to the
+        // watchdog.
+        if (
+          (event.type === 'RecoveryShareReceived' ||
+            event.type === 'RecoveryShareRefused' ||
+            event.type === 'RecoveryShareCorrupted') &&
+          updated.recoveryProgress?.error
+        ) {
+          this.setBusy(false)
+        }
 
         // An outgoing unpair either went through or was refused; either way the
         // in-flight marker is no longer accurate.
@@ -1176,9 +1382,25 @@ export class VaultRuntime {
           this.effects.unpairSettled(event.channel_id)
         }
       }
+
+      if (failure) updated = this.reportProcessFailureInBatch(failure.error, bytes.length, updated)
     }
 
     this.finishBatch(initial, updated, messages.length)
+  }
+
+  /**
+   * Report a failed message from inside a batch, and return the record the
+   * batch continues from.
+   *
+   * What the batch folded so far is committed first: reporting can commit on
+   * its own — forgetting a pairing the peer refused — and the batch's own
+   * commit at the end must not then write back a record from before it.
+   */
+  private reportProcessFailureInBatch(err: unknown, messageBytes: number, updated: Vault): Vault {
+    if (updated !== this.vault) this.commit(updated)
+    this.reportProcessFailure(err, messageBytes)
+    return this.vault
   }
 
   private finishBatch(initial: Vault, updated: Vault, messageCount: number): void {
@@ -1379,6 +1601,7 @@ export class VaultRuntime {
           ? withRounds
           : { ...withRounds, pendingVerifications: undefined }
     this.vault = record
+    if (this.autoPairingDoneIn(record)) this.replaceAutoPairing([])
     this.deps.onVaultChange(record)
     this.emit()
   }
@@ -1430,6 +1653,14 @@ export class VaultRuntime {
    * `sender_kind`, and the responder derives the complement from it.
    */
   startPairing(contact: ContactMessage, role: PairingRole, peerName?: string): Promise<bigint> {
+    // A completed pairing publishes the vault to the new peer on the library's
+    // own initiative, which a diverged vault must not do — see `protect`.
+    const conflict = this.vault.replicaConflict
+    if (conflict) {
+      return Promise.reject(
+        new Error(`Pairing would publish this vault. ${replicaConflictBlockReason(conflict)}`),
+      )
+    }
     return this.withLock(async () => {
       const protocol = this.requireProtocol()
       const events = await this.forgetPendingOnFailure(() =>
@@ -1455,10 +1686,11 @@ export class VaultRuntime {
   // A pairing this vault started leaves a `Pending` channel record until the
   // peer answers. One that never will — the send failed, the peer refused, or
   // it never replied — left that record behind for good, out of sight: nothing
-  // lists a `Pending` helper channel. Worse, the library's broadcast flows load
-  // a shared key for every stored channel, and a `Pending` one has none, so a
-  // single leftover aborted Edit Identity and Discover All with
-  // `missing_shared_key`. Each is forgotten here once it is known to be dead.
+  // lists a `Pending` helper channel. Up to SDK 0.0.6 a single leftover also
+  // aborted every broadcast flow with `missing_shared_key`; the library now
+  // targets `Paired` channels only, so this is housekeeping rather than a
+  // workaround — a record that can never complete is still dead weight in the
+  // store. Each is forgotten here once it is known to be dead.
 
   /** The storage namespace this vault's instance reads. */
   private get namespace(): string {
@@ -1572,7 +1804,10 @@ export class VaultRuntime {
    * Returns `null` when the library dispatched no round; that failure is already
    * reported and the pending bag already unwound.
    */
-  protect(secrets: UserSecret[]): Promise<ProtectRoundResult | null> {
+  protect(
+    secrets: UserSecret[],
+    options: { resolvesReplicaConflict?: boolean } = {},
+  ): Promise<ProtectRoundResult | null> {
     // Belt and braces behind the blocked screen: the instance still installed
     // after a failed adoption reads an erased namespace, so protecting a secret
     // here would build a bag against channels that no longer exist.
@@ -1582,6 +1817,14 @@ export class VaultRuntime {
           'This device is blocked: adopting a mirrored vault failed after its own vault was erased.',
         ),
       )
+    }
+    // Every publish comes through here — Add Secret, removing one, Sync now,
+    // the automatic first sync of a new replica, the identity republish — so
+    // this is the one gate that keeps a diverged vault from publishing. The
+    // publish that resolves the conflict is the only one let through.
+    const conflict = this.vault.replicaConflict
+    if (conflict && !options.resolvesReplicaConflict) {
+      return Promise.reject(new Error(replicaConflictBlockReason(conflict)))
     }
     return this.runFlow(async () => {
       const protocol = this.requireProtocol()
@@ -1814,6 +2057,66 @@ export class VaultRuntime {
     return round.version
   }
 
+  // ── Replica conflicts ──────────────────────────────────────────────────────
+  //
+  // The library README's procedure, from the app's side: the vault is marked
+  // diverged when the conflict is reported (`fold/replica.ts`) and `protect`
+  // refuses to publish from then on; the owner fetches the rival copy, merges,
+  // and publishes the result once, here.
+
+  /**
+   * Ask the replica group for its copy of the vault, so the owner has the
+   * rival to merge with. After a `ReplicaSyncRejected` this device holds only
+   * its own copy; the group's arrives as a `ReplicaVersionConflict`, which the
+   * fold records on `replicaConflict.rivalSecrets`.
+   */
+  async fetchReplicaConflictRival(): Promise<void> {
+    if (!this.vault.replicaConflict) return
+    const events = await this.discoverReplicas()
+    this.deps.log({
+      role: 'owner',
+      flow: 'sharing',
+      step: 'replica_conflict_rival_requested',
+      description:
+        "Asked the replica group for its copy of this vault, to merge with this device's — " +
+        'it is offered here when it arrives',
+      payload: { events: events.map(e => e.type) },
+    })
+  }
+
+  /**
+   * Publish the owner's resolution of a replica conflict: `secrets` — this
+   * device's copy, the rival's, or a merge of the two — as one new version.
+   *
+   * That version is newer than both copies, so every member and helper takes
+   * it, and the conflict is over everywhere. The vault stops being diverged as
+   * soon as the round is dispatched; one that never goes out leaves it
+   * diverged. Returns the round's version, or `null` when none was dispatched.
+   */
+  async resolveReplicaConflict(secrets: UserSecret[]): Promise<number | null> {
+    const conflict = this.vault.replicaConflict
+    if (!conflict) throw new Error('There is no replica conflict to resolve on this vault.')
+    if (secrets.length === 0) {
+      throw new Error('Keep at least one secret: a vault with nothing in it cannot be published.')
+    }
+
+    const round = await this.protect(secrets, { resolvesReplicaConflict: true })
+    if (!round) return null
+
+    this.commit({ ...this.vault, replicaConflict: undefined })
+    this.deps.log({
+      role: 'owner',
+      flow: 'sharing',
+      step: 'replica_conflict_resolved',
+      description:
+        `Replica conflict at v${conflict.version} resolved: published v${round.version} with ` +
+        `${secrets.length} secret(s) to ${round.participants.length} participant(s) and ` +
+        `${round.replicaTargets.length} replica(s). Publishing from this vault is resumed.`,
+      payload: { conflictVersion: conflict.version, version: round.version, secretCount: secrets.length },
+    })
+    return round.version
+  }
+
   /**
    * Mirror this vault to every replica destination the library holds `Paired`.
    *
@@ -1879,18 +2182,16 @@ export class VaultRuntime {
       const bag = current.secretBag
       if (!bag) throw new Error('No secret bag — protect a secret first')
 
-      const bagVersion =
-        bag.currentVersion.version === version
-          ? bag.currentVersion
-          : bag.previousVersions.find(v => v.version === version)
+      const bagVersion = bagVersionOf(bag, version)
       if (!bagVersion) throw new Error(`Version ${version} not found in bag`)
       // The library's contract, not a fault: say so before it says it worse.
       if (bagVersion.restoredFromRecovery) throw new Error(restoredVersionReason(version))
 
       // Only participants that confirmed this version are challenged — and only
       // over a channel the library still holds `Paired`. One that is not (a
-      // helper since unpaired or forgotten) is reported as not reached rather
-      // than handed to the library, whose broadcast aborts outright on it.
+      // helper since unpaired or forgotten) is reported as not reached: the
+      // library would drop it from the target without a word (SDK 0.0.7), and
+      // its row would then wait for an answer that cannot come.
       const confirmed = current.participants.filter(
         h => bagVersion.participantIds.includes(h.id) && h.channelId,
       )
@@ -1907,7 +2208,11 @@ export class VaultRuntime {
       // Clear prior results so this run tracks fresh responses.
       this.commit({
         ...current,
-        secretBag: updateBagVersion(bag, version, v => ({ ...v, verifiedParticipantIds: [] })),
+        secretBag: updateBagVersion(bag, version, v => ({
+          ...v,
+          verifiedParticipantIds: [],
+          verifyRejections: undefined,
+        })),
       })
 
       const deadline = Date.now() + VERIFICATION_ANSWER_WINDOW_MS
@@ -1980,8 +2285,9 @@ export class VaultRuntime {
     return this.runFlow(async () => {
       const protocol = this.requireProtocol()
 
-      // Explicit, and paired only — see `announceIdentity` for why a broadcast
-      // must never be left to the library while a pairing is in progress.
+      // Explicit, and paired only — the library does the same filtering itself
+      // (SDK 0.0.7), but the rows asked are marked below, so the list has to be
+      // known here.
       const targets = this.pairedHelperChannelIds('Helper')
       if (targets.length === 0) {
         throw new Error(
@@ -2103,6 +2409,7 @@ export class VaultRuntime {
           version,
           sharesReceived: 0,
           totalRequested: participantChannelIds.length,
+          requestedChannelIds: participantChannelIds.map(id => id.toString()),
           error: null,
         },
         recoveryFailures: removeRecoveryFailure(current.recoveryFailures, secretId, version),
@@ -2147,16 +2454,21 @@ export class VaultRuntime {
       if (started.length > 0) {
         // The library asks every paired helper — `RecoverSecretParams` takes no
         // target list — but only those discovery found holding this version can
-        // answer; a helper without it never replies. Counting the rest would
-        // leave "every answer is in" unreachable, so the progress counts the
-        // holders that were actually asked.
+        // send a share; from SDK 0.0.7 the others answer `RecoveryShareRefused`
+        // (`UNKNOWN_SHARE_VERSION`). The progress counts the holders that were
+        // actually asked, and remembers which they are, so a non-holder's
+        // refusal is not taken for one of their answers.
         const holders = new Set(participantChannelIds.map(id => id.toString()))
-        const askedHolders = started.filter(id => holders.has(id)).length
-        const expected = askedHolders > 0 ? askedHolders : started.length
-        if (this.vault.recoveryProgress && this.vault.recoveryProgress.totalRequested !== expected) {
+        const askedHolders = started.filter(id => holders.has(id))
+        const expected = askedHolders.length > 0 ? askedHolders : started
+        if (this.vault.recoveryProgress && this.vault.recoveryProgress.totalRequested !== expected.length) {
           this.commit({
             ...this.vault,
-            recoveryProgress: { ...this.vault.recoveryProgress, totalRequested: expected },
+            recoveryProgress: {
+              ...this.vault.recoveryProgress,
+              totalRequested: expected.length,
+              requestedChannelIds: expected,
+            },
           })
         }
         return
@@ -2267,6 +2579,16 @@ export class VaultRuntime {
       ...this.vault,
       participants: this.vault.participants.filter(p => p.channelId !== channelId),
     })
+  }
+
+  /** The owner has seen a corrupted-share warning and closed it. */
+  dismissCorruptShareReport(report: CorruptShareReport): void {
+    const reports = this.vault.corruptShareReports ?? []
+    const remaining = reports.filter(
+      r => !(r.channelId === report.channelId && r.version === report.version && r.reason === report.reason),
+    )
+    if (remaining.length === reports.length) return
+    this.commit({ ...this.vault, corruptShareReports: remaining.length > 0 ? remaining : undefined })
   }
 
   /** Fold events a command produced, committing only if something changed. */
@@ -2529,7 +2851,9 @@ export class VaultRuntime {
     const instance = this.protocolInstance
     void (async () => {
       try {
-        // Peers paired at the old address are told too, so their replies follow.
+        // Peers paired at the old address are told too, so their replies follow
+        // — the replica group by a publish, helpers by `UpdateChannelInfo`.
+        if (instance) await this.announceToReplicaGroup(instance, { endpoint: advertised.uri })
         const sent = instance
           ? await this.announceIdentity(instance, { endpoint: advertised.uri })
           : { dispatched: 0, failed: 0 }
@@ -2640,8 +2964,13 @@ export class VaultRuntime {
    * pins that address, so the roster stops moving it. Either change is pushed
    * into the live protocol instance — new contacts carry it — and announced to
    * every helper-type channel with `UpdateChannelInfo`; each peer's answer
-   * lands in `state().identityUpdate`. Replica members are not told: the flow
-   * covers owner↔helper channels only.
+   * lands in `state().identityUpdate`.
+   *
+   * A vault in a replica group publishes a new version first, as the library
+   * README prescribes: `UpdateChannelInfo` reaches helper channels only, and a
+   * member's name and endpoint travel in the group roster instead, refreshed
+   * from this device's configuration on every publish — see
+   * `announceToReplicaGroup`.
    *
    * Returns the update, or `null` when nothing changed.
    */
@@ -2684,10 +3013,12 @@ export class VaultRuntime {
     this.identityInFlight = true
     let sent: { dispatched: number; failed: number }
     try {
-      sent = await this.announceIdentity(instance, {
+      const change = {
         ...(nameChanged ? { name } : {}),
         ...(endpointChanged ? { endpoint: uri } : {}),
-      })
+      }
+      await this.announceToReplicaGroup(instance, change)
+      sent = await this.announceIdentity(instance, change)
       // Merged onto the record as it is *after* the await, never onto the
       // snapshot taken before it: the announcement folds its own events in,
       // and a roster tick may have committed meanwhile. Writing the stale
@@ -2768,7 +3099,7 @@ export class VaultRuntime {
       const result = await this.io.renameOwner(this.vault.id, name)
       if (result.kind === 'unsupported') {
         console.info(
-          `[derec] The node does not support renaming owners (PATCH /owners/${this.vault.id}); its roster keeps the old name.`,
+          `[derec] The node does not support renaming owners (PATCH /api/v1/owners/${this.vault.id}); its roster keeps the old name.`,
         )
         return
       }
@@ -2824,6 +3155,97 @@ export class VaultRuntime {
   }
 
   /**
+   * Tell this vault's replica group about a new name or endpoint — step 1 of
+   * the library README's procedure for a replica member, before helpers are
+   * told with `UpdateChannelInfo`.
+   *
+   * `UpdateChannelInfo` reaches helper channels only. A member's values travel
+   * in the group roster, which the library refreshes from this device's own
+   * configuration each time it publishes; so the new values are set on the
+   * instance and the same secrets are published as a new version. Every
+   * member records the new row, and the helpers receive a roster that is
+   * recoverable with it.
+   *
+   * Never throws: a group that could not be told is reported, and the helpers
+   * are still told. Skipped — and said so — when the vault is in no group,
+   * holds nothing to publish yet (the first publish carries the new values),
+   * or is diverged from its group, which must not publish until resolved.
+   *
+   * The README also asks for `reply_to` on that round, so helpers that still
+   * hold the old endpoint answer at the new one. The web SDK's
+   * `ProtectSecretParams` has no such field; this app's old endpoint is the
+   * same node's mailbox and keeps answering, which is what the README's
+   * "keep the old endpoint serving" asks for anyway.
+   */
+  private async announceToReplicaGroup(
+    instance: ProtocolInstance,
+    change: { name?: string; endpoint?: string },
+  ): Promise<void> {
+    if (change.name === undefined && change.endpoint === undefined) return
+    const ownReplicaId = getOrCreateReplicaId(this.vault.id).toString()
+    const inGroup = listReplicaMembers(this.namespace, this.partition).some(
+      member => member.replicaId !== ownReplicaId,
+    )
+    if (!inGroup) return
+
+    const what = [change.name !== undefined ? 'name' : null, change.endpoint !== undefined ? 'endpoint' : null]
+      .filter(Boolean)
+      .join(' and ')
+    const skip = (reason: string) => {
+      this.deps.log({
+        role: 'owner',
+        flow: 'sharing',
+        step: 'identity_replica_publish_skipped',
+        description: `The replica group was not told about the new ${what}: ${reason}`,
+        payload: { change },
+      })
+    }
+
+    const conflict = this.vault.replicaConflict
+    if (conflict) {
+      skip('publishing is paused until the replica conflict is resolved; the resolving publish carries it')
+      this.deps.notify.error(
+        `The replica group was not told about the new ${what}: ${replicaConflictBlockReason(conflict)} ` +
+          'The publish that resolves it carries the new values.',
+      )
+      return
+    }
+    const secrets = this.rounds.latestSecrets(this.vault.secretBag)
+    if (secrets.length === 0) {
+      skip('this vault holds nothing to publish yet — the first publish carries it')
+      return
+    }
+
+    try {
+      // The roster row is refreshed from the instance's own configuration as
+      // the round is built, so the new values go in before the publish.
+      await this.withLock(async () => {
+        if (change.name !== undefined) await instance.protocol.setCommunicationInfo({ name: change.name })
+        if (change.endpoint !== undefined) {
+          await instance.protocol.setOwnTransports([{ uri: change.endpoint, protocol: 'https' }])
+        }
+      })
+      const round = await this.protect([...secrets])
+      if (!round) {
+        skip('the publish dispatched nothing')
+        return
+      }
+      this.deps.log({
+        role: 'owner',
+        flow: 'sharing',
+        step: 'identity_replica_publish',
+        description:
+          `Published v${round.version} so the replica group's roster carries the new ${what} — ` +
+          `mirrored to ${round.replicaTargets.length} replica(s); helpers are told next`,
+        payload: { version: round.version, change },
+      })
+    } catch (err) {
+      skip(errorText(err))
+      this.deps.notify.error(`The replica group could not be told about the new ${what}`, err)
+    }
+  }
+
+  /**
    * Push a new name and/or endpoint into the live instance and announce it —
    * to every helper-type channel, or to `targets` alone for a resend. Returns
    * how many peers it was dispatched to and how many it could not reach.
@@ -2845,10 +3267,11 @@ export class VaultRuntime {
         if (change.endpoint !== undefined) {
           await instance.protocol.setOwnTransports([{ uri: change.endpoint, protocol: 'https' }])
         }
-        // Always an explicit list of *paired* channels. Left to itself the
-        // library broadcasts to every stored channel and loads a key for each,
-        // and one still `Pending` — a pairing in progress — has none: the
-        // whole update then aborts with `missing_shared_key`.
+        // An explicit list of *paired* channels. The library itself targets
+        // `Paired` channels only (SDK 0.0.7; before that one `Pending` channel
+        // aborted the whole update), but a resend needs a list anyway, and
+        // naming the recipients here is what the per-peer outcomes are
+        // recorded against.
         const recipients = (targets ?? this.pairedHelperChannelIds()).filter(id =>
           this.isPairedHelperChannel(id),
         )

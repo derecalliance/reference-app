@@ -132,6 +132,21 @@ describe('the settings step while the node is still being probed', () => {
   })
 })
 
+describe('a vault the app could not take on', () => {
+  it('leaves the busy state and says why when onReady answers false', async () => {
+    render(async () => false)
+    typeName('Alice')
+    act(() => button('Next →').click())
+    await landDefaults()
+
+    await act(async () => button('Set up').click())
+
+    // Not stuck on "Setting up…": the button is back, and the reason is shown.
+    expect(button('Set up').disabled).toBe(false)
+    expect(host.textContent).toContain('already open in another tab')
+  })
+})
+
 describe('Settings overrides with a name typed before /config returns', () => {
   it('creates the vault from the overridden defaults and records no override', async () => {
     persistDefaultOverrides({ minParticipants: 2, protocolTimeoutSecs: 120 })

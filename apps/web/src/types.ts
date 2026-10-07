@@ -117,6 +117,13 @@ export interface BagVersion {
   participantIds: string[]
   /** IDs of participants whose share passed verification for this version */
   verifiedParticipantIds: string[]
+  /**
+   * Participants that refused the latest verification challenge for this
+   * version (`ShareVerifyRejected`), with their status and memo. Cleared when
+   * a new round of challenges starts, like `verifiedParticipantIds`. Absent on
+   * records saved before SDK 0.0.7 reported refusals.
+   */
+  verifyRejections?: { id: string; status: number; memo: string }[]
   /** Participants that rejected or timed out for this version */
   failedParticipantIds: { id: string; status: number; memo: string }[]
   /** User secrets contained in this version */
@@ -282,8 +289,37 @@ export interface RecoveryProgress {
   sharesReceived: number
   /** Total participants we requested shares from */
   totalRequested: number
+  /**
+   * The channels counted in `totalRequested` — the helpers expected to hold
+   * this version. Lets an answer that is not a share (a refusal, a corrupted
+   * share) count towards "every answer is in" only when it came from one of
+   * them. Absent on records saved before it existed: then every answer counts.
+   */
+  requestedChannelIds?: string[]
+  /** Helpers that refused the request (`RecoveryShareRefused`) — no share from them. */
+  refusals?: { channelId: string; status: number; memo: string }[]
+  /** Helpers whose share was set aside on arrival (`RecoveryShareCorrupted`). */
+  corrupted?: { channelId: string; reason: CorruptionReason }[]
   /** Non-null when recovery failed for a reason other than insufficient shares */
   error: string | null
+}
+
+/** Why the library set a helper's recovery share aside — the SDK's `CorruptionReason`. */
+export type CorruptionReason = 'Malformed' | 'InvalidProof' | 'Inconsistent'
+
+/**
+ * A helper answered a recovery request with a share that cannot be part of the
+ * secret. An honest helper never does, so it is kept until the owner has seen
+ * it and decided — unpair the helper, or dismiss the warning.
+ */
+export interface CorruptShareReport {
+  channelId: string
+  /** The helper's name when it was reported, in case its row is gone since. */
+  peerName: string
+  version: number
+  reason: CorruptionReason
+  /** Epoch ms. */
+  reportedAt: number
 }
 
 /**
@@ -399,6 +435,49 @@ export interface Vault {
    * Absent when none is outstanding.
    */
   pendingVerifications?: PendingVerification[]
+  /**
+   * Helpers that sent a corrupted recovery share, awaiting the owner's
+   * decision. Absent when there are none.
+   */
+  corruptShareReports?: CorruptShareReport[]
+  /**
+   * This vault's copy has diverged from its replica group's, and publishing
+   * from this device is paused until the owner resolves it — see
+   * `ReplicaConflict`. Absent when there is no conflict.
+   */
+  replicaConflict?: ReplicaConflict
+}
+
+/**
+ * Two members of the replica group published different copies of the same
+ * version.
+ *
+ * Every member numbers its next publish from the version it holds, and a newer
+ * version replaces an older one wherever it lands. So from the moment this is
+ * known, a further publish from this device would be a higher version that
+ * every other member applies over its own copy — erasing the change it never
+ * merged. The library reports the collision and merges nothing; resolving it
+ * is the owner's: get the rival copy, merge, publish once.
+ */
+export interface ReplicaConflict {
+  /** The version two members published different copies of. */
+  version: number
+  /**
+   * How this device learned of it: it was offered a rival copy
+   * (`ReplicaVersionConflict`), or its own copy was refused by a member that
+   * holds another (`ReplicaSyncRejected` with `VERSION_CONFLICT`).
+   */
+  detectedVia: 'ReplicaVersionConflict' | 'ReplicaSyncRejected'
+  /** The member holding the rival copy (decimal replica id), when known. */
+  rivalReplicaId: string | null
+  /**
+   * The rival copy's secrets, once this device has received it — `null` until
+   * then. A `ReplicaSyncRejected` says only that a rival exists; a replica
+   * discovery fetches it.
+   */
+  rivalSecrets: UserSecret[] | null
+  /** Epoch ms. */
+  detectedAt: number
 }
 
 /** A dispatched protect round, as persisted on the vault — see `Vault.pendingProtectRounds`. */

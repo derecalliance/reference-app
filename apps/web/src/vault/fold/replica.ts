@@ -13,9 +13,10 @@ import {
   recordPeerReplicaId,
   recordReplicaSync,
   resolveAckChannelId,
+  userSecretsFromWire,
   type PendingReplicaAdoption,
 } from '../../replicaFlows'
-import type { Vault } from '../../types'
+import type { ReplicaConflict, SecretBag, Vault } from '../../types'
 import type { EventHandlers, EventOf, FoldContext } from './context'
 
 /**
@@ -24,11 +25,10 @@ import type { EventHandlers, EventOf, FoldContext } from './context'
  *
  * `ReplicaSecretInstalled` carries the identical payload and differs only in
  * being the *first* sync for a `secret_id` this device held nothing for. Both
- * stage the same offer: the library has written the mirror to its own stores
- * either way, but adopting it — wiping this device's vault and calling
- * `restore` — stays the owner's explicit decision. Staging keeps the newer of
- * what is staged and what arrived, so an at-least-once replay of a stale round
- * cannot regress a fresher offer.
+ * make the same offer: the library has written the mirror to its own stores
+ * either way, and adopting it — wiping this device's vault and calling
+ * `restore` — is what the owner agreed to when confirming the fingerprint (see
+ * `VaultRuntime.offerReplicaAdoption`).
  */
 function receiveMirroredSecret(
   current: Vault,
@@ -78,15 +78,13 @@ function receiveMirroredSecret(
     )
     // Project the new contents straight in. No prompt, no wipe, no `restore`.
     applyMirroredUpdate(offer, ctx)
-    return current
+    return supersededConflict(current, version, ctx)
   }
 
-  // Held back while this device has not confirmed the channel's fingerprint:
-  // until it has, nothing proves the copy came from the peer it names.
-  // Erasing this device's vault is not something to advertise in a banner at
-  // the bottom of the page, so once offered it is raised where it cannot be
-  // missed.
-  if (ctx.offerReplicaAdoption(offer)) ctx.effects.openAdoption()
+  // Only a channel this device has confirmed gets this far: the library ignores
+  // a replica peer until then. Whether it is adopted at once — the person
+  // agreed when confirming — or put in front of them is the runtime's call.
+  ctx.offerReplicaAdoption(offer)
   return current
 }
 
@@ -160,27 +158,23 @@ export const replicaHandlers = {
     return current
   },
 
-  // A member refused a sync. Keyed by `replica_id`, not `channel_id`: every
-  // member answers on the one group channel.
   // Two members published the same version with different contents. The
-  // library kept this device's copy and refused the incoming one; nothing was
-  // written. A fresh publish supersedes both everywhere, so that is the advice.
+  // library kept this device's copy, refused the incoming one and wrote
+  // nothing. From here this device must not publish until the owner has
+  // resolved it — a further version would be applied over every other
+  // member's copy, losing the change it never merged — so the vault is marked
+  // diverged, with the rival copy kept for the owner to merge from.
   ReplicaVersionConflict: (current, event, ctx) => {
     const held = event.held_author_replica_id ?? 'unknown'
     const incoming = event.incoming_author_replica_id ?? 'unknown'
-    ctx.notify.error(
-      `Two replicas published different copies of v${event.version}. This device kept its own; ` +
-        'publish a new version (Sync now, or add or remove a secret) to settle it everywhere.',
-      undefined,
-      { fromReplicaId: event.from_replica_id, version: event.version },
-    )
     ctx.log({
       role: 'owner',
       flow: 'sharing',
       step: 'ReplicaVersionConflict',
       description:
         `Replica ${event.from_replica_id} offered a different v${event.version} ` +
-        `(published by ${incoming}) than the one held here (published by ${held}); kept the held copy`,
+        `(published by ${incoming}) than the one held here (published by ${held}); kept the held copy. ` +
+        'Publishing from this vault is paused until the conflict is resolved.',
       payload: {
         channelId: event.channel_id,
         fromReplicaId: event.from_replica_id,
@@ -190,14 +184,31 @@ export const replicaHandlers = {
         incomingAuthorReplicaId: event.incoming_author_replica_id,
       },
     })
-    return current
+    ctx.notify.error(
+      `Replica ${event.from_replica_id} holds a different copy of v${event.version}. Publishing from ` +
+        'this vault is paused until you resolve the conflict on its page.',
+      undefined,
+      { fromReplicaId: event.from_replica_id, version: event.version },
+    )
+    return withReplicaConflict(current, {
+      version: event.version,
+      detectedVia: 'ReplicaVersionConflict',
+      rivalReplicaId: event.from_replica_id,
+      rivalSecrets: userSecretsFromWire(event.secret.secrets),
+      detectedAt: Date.now(),
+    })
   },
 
+  // A member refused a sync. Keyed by `replica_id`, not `channel_id`: every
+  // member answers on the one group channel. `VERSION_CONFLICT` is the other
+  // side of the collision above: that member holds a different copy of the
+  // version this device published, so this device is diverged too.
   ReplicaSyncRejected: (current, event, ctx) => {
     const conflict = event.status === VERSION_CONFLICT_STATUS
     ctx.notify.error(
       conflict
-        ? `Replica ${event.replica_id} already holds a different v${event.version}. Re-publish at a new version.`
+        ? `Replica ${event.replica_id} already holds a different v${event.version}. Publishing from ` +
+            'this vault is paused until you resolve the conflict on its page.'
         : `Replica ${event.replica_id} refused the sync of v${event.version}: ${event.memo}`,
       undefined,
       { replicaId: event.replica_id, version: event.version, status: event.status },
@@ -216,7 +227,14 @@ export const replicaHandlers = {
         versionConflict: conflict,
       },
     })
-    return current
+    if (!conflict) return current
+    return withReplicaConflict(current, {
+      version: event.version,
+      detectedVia: 'ReplicaSyncRejected',
+      rivalReplicaId: event.replica_id,
+      rivalSecrets: null,
+      detectedAt: Date.now(),
+    })
   },
 
   // Distinct from a rejection: the member never got the message at all.
@@ -391,7 +409,11 @@ function applyMirroredUpdate(update: PendingReplicaAdoption, ctx: FoldContext): 
       const ownReplicaChannels = snapshot.participants.filter(isReplicaChannel)
       const merged = [...participants.filter(p => !isReplicaChannel(p)), ...ownReplicaChannels]
 
-      ctx.commit({ ...snapshot, participants: merged, secretBag })
+      ctx.commit({
+        ...snapshot,
+        participants: merged,
+        secretBag: withEarlierVersions(secretBag, snapshot.secretBag),
+      })
       // The group roster may have gained a member with this round, and it is
       // read from the library rather than carried on `Vault`.
       ctx.effects.refreshReplicas()
@@ -403,4 +425,66 @@ function applyMirroredUpdate(update: PendingReplicaAdoption, ctx: FoldContext): 
       })
     }
   })()
+}
+
+/**
+ * `next`, with the versions this device held before it kept as its history.
+ *
+ * A mirrored update describes only the version it carries. Taking it as the
+ * whole bag erased every earlier version from this device's record — and that
+ * record is what the vault's `keepList` reads when this member next publishes,
+ * so helpers would have been told to drop every version but the newest.
+ */
+function withEarlierVersions(next: SecretBag, held: SecretBag | null): SecretBag {
+  if (!held || held.secretId !== next.secretId) return next
+  const landed = next.currentVersion.version
+  return {
+    ...next,
+    previousVersions: [held.currentVersion, ...held.previousVersions].filter(v => v.version < landed),
+  }
+}
+
+/**
+ * Mark the vault diverged, keeping what is already known about the rival.
+ *
+ * A second report for the same version adds to the first rather than
+ * replacing it: a `ReplicaSyncRejected` arriving after the rival copy did must
+ * not throw the copy away. A newer version's conflict supersedes an older one.
+ */
+function withReplicaConflict(current: Vault, next: ReplicaConflict): Vault {
+  const held = current.replicaConflict
+  if (!held || next.version > held.version) return { ...current, replicaConflict: next }
+  if (next.version < held.version) return current
+  return {
+    ...current,
+    replicaConflict: {
+      ...held,
+      rivalSecrets: next.rivalSecrets ?? held.rivalSecrets,
+      rivalReplicaId: next.rivalSecrets ? next.rivalReplicaId : held.rivalReplicaId ?? next.rivalReplicaId,
+      detectedVia: next.rivalSecrets ? next.detectedVia : held.detectedVia,
+    },
+  }
+}
+
+/**
+ * The group published past the version this vault diverged at, and this
+ * device has applied it: its copy is the group's again, so the conflict is
+ * over — settled by another member's publish rather than here. What this
+ * device held may not be in it, so the owner is told to check.
+ */
+function supersededConflict(current: Vault, version: number, ctx: FoldContext): Vault {
+  const conflict = current.replicaConflict
+  if (!conflict || version <= conflict.version) return current
+  ctx.log({
+    role: 'owner',
+    flow: 'sharing',
+    step: 'replica_conflict_superseded',
+    description: `The group published v${version}, past the conflict at v${conflict.version}; publishing from this vault is resumed`,
+    payload: { conflictVersion: conflict.version, version },
+  })
+  ctx.notify.info(
+    `The replica group moved on to v${version}, settling the conflict at v${conflict.version}. ` +
+      'If a change made on this device is missing from it, add it again.',
+  )
+  return { ...current, replicaConflict: undefined }
 }

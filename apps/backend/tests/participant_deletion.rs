@@ -24,7 +24,7 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use derec_backend::state::AppState;
+use derec_backend::infrastructure::bootstrap::Node;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -50,6 +50,9 @@ fn seed_rows(actor: &str) -> Vec<(&'static str, String)> {
         ("shares", format!(
             "INSERT INTO shares (actor_id, secret_id, channel_id, version, share_secret_id, bytes) \
              VALUES ('{actor}', '1', 'c1', 1, '9', 'b')")),
+        ("sharing_rounds", format!(
+            "INSERT INTO sharing_rounds (actor_id, secret_id, version, committed) \
+             VALUES ('{actor}', '1', 1, 1)")),
         ("state_items", format!(
             "INSERT INTO state_items (actor_id, secret_id, state_key, kind, item) \
              VALUES ('{actor}', '1', 'k', 'kind', 'i')")),
@@ -75,6 +78,13 @@ async fn send(router: &Router, request: Request<Body>) -> (StatusCode, Value) {
         .await
         .expect("response body readable");
     let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    // Success answers travel in the envelope; these tests read its result.
+    let body = match body {
+        Value::Object(mut fields) if fields.contains_key("result") => {
+            fields.remove("result").unwrap_or(Value::Null)
+        }
+        other => other,
+    };
     (status, body)
 }
 
@@ -82,7 +92,7 @@ async fn send(router: &Router, request: Request<Body>) -> (StatusCode, Value) {
 async fn provision(router: &Router, name: &str) -> String {
     let (status, body) = send(
         router,
-        Request::post("/helpers")
+        Request::post("/api/v1/helpers")
             .header("content-type", "application/json")
             .body(Body::from(json!({ "name": name }).to_string()))
             .expect("request builds"),
@@ -95,7 +105,7 @@ async fn provision(router: &Router, name: &str) -> String {
         .to_owned()
 }
 
-async fn row_count(state: &Arc<AppState>, table: &str, actor: &str) -> i64 {
+async fn row_count(state: &Arc<Node>, table: &str, actor: &str) -> i64 {
     let sql = format!("SELECT COUNT(*) FROM {table} WHERE actor_id = '{actor}'");
     sqlx::query_scalar(&sql)
         .fetch_one(&state.pool)
@@ -104,15 +114,15 @@ async fn row_count(state: &Arc<AppState>, table: &str, actor: &str) -> i64 {
 }
 
 // `actix_rt::test`, not `tokio::test`: provisioning spawns an actix actor, and
-// `test_support::app_state()` needs an arbiter to spawn it on.
+// `test_support::node()` needs an arbiter to spawn it on.
 #[actix_rt::test]
 async fn deleting_a_participant_removes_it_from_the_roster() {
-    let state = derec_backend::test_support::app_state().await;
-    let router = derec_backend::build_router(state.clone());
+    let state = derec_backend::infrastructure::test_support::node().await;
+    let router = derec_backend::infrastructure::server::build_router(state.state.clone());
 
     let helper_id = provision(&router, "Alex").await;
 
-    let (_, before) = send(&router, Request::get("/actors").body(Body::empty()).unwrap()).await;
+    let (_, before) = send(&router, Request::get("/api/v1/actors").body(Body::empty()).unwrap()).await;
     assert!(
         before["actors"].as_array().is_some_and(|a| a.iter().any(|x| x["id"] == helper_id.as_str())),
         "provisioned helper should be listed first: {before}"
@@ -120,14 +130,14 @@ async fn deleting_a_participant_removes_it_from_the_roster() {
 
     let (status, _) = send(
         &router,
-        Request::delete(format!("/helpers/{helper_id}"))
+        Request::delete(format!("/api/v1/helpers/{helper_id}"))
             .body(Body::empty())
             .unwrap(),
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
-    let (_, after) = send(&router, Request::get("/actors").body(Body::empty()).unwrap()).await;
+    let (_, after) = send(&router, Request::get("/api/v1/actors").body(Body::empty()).unwrap()).await;
     assert!(
         after["actors"].as_array().is_some_and(|a| a.iter().all(|x| x["id"] != helper_id.as_str())),
         "deleted helper is still listed: {after}"
@@ -136,8 +146,8 @@ async fn deleting_a_participant_removes_it_from_the_roster() {
 
 #[actix_rt::test]
 async fn deleting_a_participant_erases_every_actor_scoped_table() {
-    let state = derec_backend::test_support::app_state().await;
-    let router = derec_backend::build_router(state.clone());
+    let state = derec_backend::infrastructure::test_support::node().await;
+    let router = derec_backend::infrastructure::server::build_router(state.state.clone());
 
     let helper_id = provision(&router, "Alex").await;
 
@@ -152,7 +162,7 @@ async fn deleting_a_participant_erases_every_actor_scoped_table() {
 
     let (status, _) = send(
         &router,
-        Request::delete(format!("/helpers/{helper_id}"))
+        Request::delete(format!("/api/v1/helpers/{helper_id}"))
             .body(Body::empty())
             .unwrap(),
     )
@@ -175,19 +185,19 @@ async fn deleting_a_participant_erases_every_actor_scoped_table() {
 
 #[actix_rt::test]
 async fn deleting_a_participant_drops_its_live_handles() {
-    let state = derec_backend::test_support::app_state().await;
-    let router = derec_backend::build_router(state.clone());
+    let state = derec_backend::infrastructure::test_support::node().await;
+    let router = derec_backend::infrastructure::server::build_router(state.state.clone());
 
     let helper_id = provision(&router, "Alex").await;
     let uuid: uuid::Uuid = helper_id.parse().expect("helper id is a uuid");
     assert!(
-        state.actor_inboxes.contains_key(&uuid),
+        state.inboxes.contains(&uuid),
         "a provisioned helper should have an inbox"
     );
 
     send(
         &router,
-        Request::delete(format!("/helpers/{helper_id}"))
+        Request::delete(format!("/api/v1/helpers/{helper_id}"))
             .body(Body::empty())
             .unwrap(),
     )
@@ -195,23 +205,23 @@ async fn deleting_a_participant_drops_its_live_handles() {
 
     // Without this, messages keep being routed to an actor whose data is gone.
     assert!(
-        !state.actor_inboxes.contains_key(&uuid),
+        !state.inboxes.contains(&uuid),
         "the inbox outlived the participant"
     );
     assert!(
-        !state.helper_channels.contains_key(&uuid),
+        state.helper_channels.get(&uuid).is_none(),
         "the channel index outlived the participant"
     );
 }
 
 #[actix_rt::test]
 async fn deleting_an_unknown_participant_is_not_found() {
-    let router = derec_backend::build_router(derec_backend::test_support::app_state().await);
+    let router = derec_backend::infrastructure::server::build_router(derec_backend::infrastructure::test_support::node().await.state.clone());
     let unknown = uuid::Uuid::new_v4();
 
     let (status, _) = send(
         &router,
-        Request::delete(format!("/helpers/{unknown}"))
+        Request::delete(format!("/api/v1/helpers/{unknown}"))
             .body(Body::empty())
             .unwrap(),
     )
@@ -222,10 +232,10 @@ async fn deleting_an_unknown_participant_is_not_found() {
 
 #[actix_rt::test]
 async fn deleting_the_same_participant_twice_is_not_found_the_second_time() {
-    let router = derec_backend::build_router(derec_backend::test_support::app_state().await);
+    let router = derec_backend::infrastructure::server::build_router(derec_backend::infrastructure::test_support::node().await.state.clone());
     let helper_id = provision(&router, "Alex").await;
 
-    let path = format!("/helpers/{helper_id}");
+    let path = format!("/api/v1/helpers/{helper_id}");
     let (first, _) = send(&router, Request::delete(&path).body(Body::empty()).unwrap()).await;
     let (second, _) = send(&router, Request::delete(&path).body(Body::empty()).unwrap()).await;
 

@@ -118,11 +118,28 @@ function StepVaultName({
   )
 }
 
-/** Owner actors on the node, as claim candidates. */
-function claimableFrom(actors: readonly BEActorWithStatus[]): ClaimableActor[] {
-  return actors
-    .filter(a => a.role === 'owner')
-    .map(a => ({ id: a.id, name: a.name, lastPolledAt: a.last_polled_at ?? null }))
+/**
+ * The node's owner actors as claim candidates, and when this browser read them.
+ *
+ * `readAt` is what "recently polled" is measured against: the list is only as
+ * fresh as that read, and sampling the clock here — rather than during render —
+ * keeps rendering pure.
+ */
+interface ClaimableSnapshot {
+  actors: ClaimableActor[]
+  readAt: number
+}
+
+const NO_CLAIMABLE: ClaimableSnapshot = { actors: [], readAt: 0 }
+
+/** Owner actors on the node, as claim candidates, stamped with the read time. */
+function claimableFrom(actors: readonly BEActorWithStatus[]): ClaimableSnapshot {
+  return {
+    actors: actors
+      .filter(a => a.role === 'owner')
+      .map(a => ({ id: a.id, name: a.name, lastPolledAt: a.last_polled_at ?? null })),
+    readAt: Date.now(),
+  }
 }
 
 const FLOW_STEPS: Record<Flow, StepKey[]> = {
@@ -217,7 +234,7 @@ export default function SetupWizard({
   const [edits, setEdits] = useState<OwnerEdits>({})
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [claimableActors, setClaimableActors] = useState<ClaimableActor[]>([])
+  const [claimable, setClaimable] = useState<ClaimableSnapshot>(NO_CLAIMABLE)
   // Acknowledged that the chosen actor looks live elsewhere. Reset whenever
   // the choice changes: the acknowledgement was for that actor.
   const [confirmedActive, setConfirmedActive] = useState(false)
@@ -301,7 +318,7 @@ export default function SetupWizard({
     apiGetActors()
       .then(actors => {
         if (cancelled) return
-        setClaimableActors(claimableFrom(actors))
+        setClaimable(claimableFrom(actors))
       })
       .catch(err => {
         if (!cancelled) setError(errorText(err))
@@ -397,7 +414,12 @@ export default function SetupWizard({
         },
       })
 
-      await onReady(vault)
+      if (!(await onReady(vault))) {
+        // Only possible if another tab took the new owner's lock first; the
+        // wizard must not sit on "Setting up…" for a vault that never opened.
+        setError(`"${vault.name}" could not be opened — it is already open in another tab.`)
+        setBusy(false)
+      }
     } catch (err) {
       setError(errorText(err))
       setBusy(false)
@@ -426,9 +448,9 @@ export default function SetupWizard({
       // Re-read just before claiming: the list may be minutes old, and the
       // question is whether another browser is draining this mailbox *now*.
       const fresh = claimableFrom(await apiGetActors())
-      setClaimableActors(fresh)
-      const target = fresh.find(a => a.id === actorId)
-      if (actorAppearsActive(target?.lastPolledAt, Date.now()) && !confirmedActive) {
+      setClaimable(fresh)
+      const target = fresh.actors.find(a => a.id === actorId)
+      if (actorAppearsActive(target?.lastPolledAt, fresh.readAt) && !confirmedActive) {
         setError('This owner looks active in another browser. Confirm above to claim it anyway.')
         setBusy(false)
         return
@@ -491,8 +513,8 @@ export default function SetupWizard({
     }
   }
 
-  const selectedClaimable = claimableActors.find(a => a.id === claimActorId.trim())
-  const claimActiveElsewhere = actorAppearsActive(selectedClaimable?.lastPolledAt, Date.now())
+  const selectedClaimable = claimable.actors.find(a => a.id === claimActorId.trim())
+  const claimActiveElsewhere = actorAppearsActive(selectedClaimable?.lastPolledAt, claimable.readAt)
 
   const canProceed =
     step === 'vaultName'
@@ -554,7 +576,7 @@ export default function SetupWizard({
         )}
         {step === 'claimActor' && (
           <StepClaimActor
-            actors={claimableActors}
+            actors={claimable.actors}
             selectedId={claimActorId}
             onChange={v => {
               setClaimActorId(v)

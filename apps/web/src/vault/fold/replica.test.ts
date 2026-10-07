@@ -29,10 +29,11 @@ function context(overrides: Partial<FoldContext> = {}): FoldContext {
     roundResolved: vi.fn(),
     getVault: () => current,
     commit: vi.fn(),
-    offerReplicaAdoption: vi.fn(() => true),
+    offerReplicaAdoption: vi.fn(),
     readChannelInfo: vi.fn(() => null),
     channelInfoOutcome: vi.fn(),
     awaitingIdentityAnswer: vi.fn(() => false),
+    isShareHeld: vi.fn(() => true),
     ...overrides,
   }
 }
@@ -221,5 +222,91 @@ describe('ChannelInfoUpdated', () => {
     expect(ctx.log).toHaveBeenCalledWith(
       expect.objectContaining({ description: expect.stringContaining('re-announced') }),
     )
+  })
+})
+
+describe('a replica version conflict', () => {
+  const rival = {
+    helpers: [],
+    secrets: [
+      { id: new Uint8Array([0xaa]), name: 'Seed', data: new TextEncoder().encode('one two') },
+      { id: new Uint8Array([0xdd]), name: 'FromDest', data: new TextEncoder().encode('y') },
+    ],
+  }
+
+  function conflictEvent(version = 6): DeRecEvent {
+    return {
+      type: 'ReplicaVersionConflict',
+      channel_id: '100',
+      from_replica_id: '22',
+      secret_id: '42',
+      version,
+      held_author_replica_id: '11',
+      incoming_author_replica_id: '22',
+      secret: rival,
+    } as unknown as DeRecEvent
+  }
+
+  function rejectedEvent(status = 13, version = 6): DeRecEvent {
+    return {
+      type: 'ReplicaSyncRejected',
+      replica_id: '22',
+      secret_id: '42',
+      version,
+      status,
+      memo: 'version conflict',
+    } as DeRecEvent
+  }
+
+  it('marks the vault diverged, keeping the rival copy to merge from', () => {
+    const ctx = context()
+    const next = foldEvent(vault(), conflictEvent(), ctx)
+
+    expect(next.replicaConflict).toMatchObject({
+      version: 6,
+      detectedVia: 'ReplicaVersionConflict',
+      rivalReplicaId: '22',
+      rivalSecrets: [
+        { id: 'aa', name: 'Seed', data: 'one two' },
+        { id: 'dd', name: 'FromDest', data: 'y' },
+      ],
+    })
+    expect(ctx.notify.error).toHaveBeenCalledWith(expect.stringMatching(/Publishing from this vault is paused/), undefined, expect.anything())
+  })
+
+  it('marks the publisher diverged too when its copy is refused as a conflict', () => {
+    const next = foldEvent(vault(), rejectedEvent(), context())
+    expect(next.replicaConflict).toMatchObject({ version: 6, detectedVia: 'ReplicaSyncRejected', rivalSecrets: null })
+  })
+
+  it('leaves the vault alone when a member refuses for another reason', () => {
+    const current = vault()
+    expect(foldEvent(current, rejectedEvent(10), context()).replicaConflict).toBeUndefined()
+  })
+
+  it('keeps a rival copy already received when the refusal arrives after it', () => {
+    const withRival = foldEvent(vault(), conflictEvent(), context())
+    const next = foldEvent(withRival, rejectedEvent(), context())
+    expect(next.replicaConflict?.rivalSecrets).toHaveLength(2)
+  })
+
+  it('is over once the group publishes past it and this device applies that version', () => {
+    const diverged = foldEvent(vault(), conflictEvent(6), context())
+    const ctx = context({ getVault: () => diverged })
+
+    const stale = foldEvent(
+      diverged,
+      { type: 'ReplicaSecretReceived', channel_id: '100', from_replica_id: '22', author_replica_id: '22', secret_id: '42', version: 6, secret: { helpers: [], secrets: [] }, shares: [] } as unknown as DeRecEvent,
+      ctx,
+    )
+    expect(stale.replicaConflict).toBeDefined()
+
+    const moved = foldEvent(
+      diverged,
+      { type: 'ReplicaSecretReceived', channel_id: '100', from_replica_id: '22', author_replica_id: '22', secret_id: '42', version: 7, secret: { helpers: [], secrets: [] }, shares: [] } as unknown as DeRecEvent,
+      ctx,
+    )
+    expect(moved.replicaConflict).toBeUndefined()
+    expect(ctx.notify.info).toHaveBeenCalledWith(expect.stringMatching(/settling the conflict at v6/))
   })
 })

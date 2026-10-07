@@ -22,16 +22,13 @@ use std::time::Duration;
 use actix::Addr;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use derec_backend::actor::{
-    build_protocol, ActorProtocol, CreateContactMsg, ProtocolConfig, ProvisionedActor, ShutdownMsg,
-    StartFlowMsg,
-};
-use derec_backend::config::Defaults;
+use derec_backend::infrastructure::actors::provisioned::{CreateContactMsg, ProvisionedActor, ShutdownMsg, StartFlowMsg};
+use derec_backend::infrastructure::actors::protocol::{build_protocol, ActorProtocol, ProtocolConfig};
+use derec_backend::models::Defaults;
 use derec_backend::models::{Actor, Role, Transport, TransportMode, TransportProtocol, UnpairAck};
-use derec_backend::provisioning::{provisioned_actor, register_browser_actor, spawn_provisioned};
-use derec_backend::registry::actors::ActorSettings;
-use derec_backend::sql::channel::SqlChannelStore;
-use derec_backend::state::{ActorInbox, AppState};
+use derec_backend::services::ports::{ActorGateway, InboxDirectory};
+use derec_backend::models::ActorSettings;
+use derec_backend::infrastructure::bootstrap::Node;
 use derec_library::protocol::types::Target;
 use derec_library::protocol::{
     ChannelQuery, ChannelRecord, DeRecChannelStore, DeRecEvent, DeRecFlow,
@@ -58,26 +55,25 @@ fn settings() -> ActorSettings {
 /// `base` builds the node's advertised address from the port it got, so a
 /// test can name the same listener by a different host than its helpers were
 /// created with.
-async fn serve(base: impl Fn(u16) -> String) -> (Arc<AppState>, u16) {
+async fn serve(base: impl Fn(u16) -> String) -> (Arc<Node>, u16) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("an ephemeral port is available");
     let port = listener.local_addr().expect("listener is bound").port();
 
-    let state = Arc::new(AppState::new(
-        base(port),
-        Defaults {
+    let state = Arc::new(Node::new(
+        derec_backend::models::NodeConfig::new(base(port), Defaults {
             grpc_enabled: false,
             ..Defaults::default()
-        },
+        }),
         reqwest::Client::new(),
         actix_rt::Arbiter::current(),
-        derec_backend::db::connect("sqlite::memory:")
+        derec_backend::infrastructure::db::connect("sqlite::memory:")
             .await
             .expect("an in-memory database always connects"),
     ));
 
-    let router = derec_backend::build_router(state.clone());
+    let router = derec_backend::infrastructure::server::build_router(state.state.clone());
     actix_rt::spawn(async move {
         let _ = axum::serve(listener, router).await;
     });
@@ -87,12 +83,12 @@ async fn serve(base: impl Fn(u16) -> String) -> (Arc<AppState>, u16) {
 
 /// Provision an HTTP helper advertising `base_url`, exactly as `POST
 /// /helpers` does but with the address chosen by the test.
-async fn spawn_helper(state: &AppState, base_url: &str) -> (Actor, Addr<ProvisionedActor>) {
-    let helper = provisioned_actor(
+async fn spawn_helper(state: &Node, base_url: &str) -> (Actor, Addr<ProvisionedActor>) {
+    let helper = Actor::mint(
         Role::Helper,
         "Alex",
         base_url,
-        &state.grpc_authority(),
+        &state.config.grpc_authority(),
         TransportMode::Http,
     );
     let settings = settings();
@@ -101,21 +97,13 @@ async fn spawn_helper(state: &AppState, base_url: &str) -> (Actor, Addr<Provisio
         .register(helper.clone(), settings.clone())
         .await
         .expect("the registry is writable");
-    spawn_provisioned(state, &helper, &settings).expect("the helper starts");
+    state.runtime.spawn(&helper, &settings).expect("the helper starts");
     let addr = provisioned(state, helper.id);
     (helper, addr)
 }
 
-fn provisioned(state: &AppState, actor_id: Uuid) -> Addr<ProvisionedActor> {
-    match state
-        .actor_inboxes
-        .get(&actor_id)
-        .expect("a running actor has an inbox")
-        .value()
-    {
-        ActorInbox::Provisioned(addr) => addr.clone(),
-        ActorInbox::Browser => panic!("this actor must be backend-managed"),
-    }
+fn provisioned(state: &Node, actor_id: Uuid) -> Addr<ProvisionedActor> {
+    state.inboxes.provisioned(&actor_id).expect("a running actor has an inbox")
 }
 
 /// A browser-managed owner advertising `transports`, with its protocol held
@@ -126,7 +114,7 @@ struct Owner {
     protocol: ActorProtocol,
 }
 
-async fn register_owner(state: &AppState, transport_uri: impl Fn(Uuid) -> String) -> Owner {
+async fn register_owner(state: &Node, transport_uri: impl Fn(Uuid) -> String) -> Owner {
     let id = Uuid::new_v4();
     let secret_id = rand::random::<u64>();
     let transports = vec![Transport {
@@ -146,7 +134,7 @@ async fn register_owner(state: &AppState, transport_uri: impl Fn(Uuid) -> String
         .register(actor, settings())
         .await
         .expect("the registry is writable");
-    register_browser_actor(state, id);
+    state.inboxes.register_browser(id);
 
     let config = ProtocolConfig {
         secret_id,
@@ -155,12 +143,11 @@ async fn register_owner(state: &AppState, transport_uri: impl Fn(Uuid) -> String
         timeout_secs: TIMEOUT_SECS,
         unpair_ack: UnpairAck::Required,
         threshold: 2,
-        keep_versions_count: 3,
         replica_id: Some(rand::random()),
         http_client: state.http_client.clone(),
         pool: state.pool.clone(),
         actor_id: id,
-        local_node: None,
+        local_delivery: None,
     };
 
     Owner {
@@ -172,7 +159,7 @@ async fn register_owner(state: &AppState, transport_uri: impl Fn(Uuid) -> String
 
 /// Drain the owner's mailbox into its protocol, as the front end's poll loop
 /// does, answering the events that produced.
-async fn pump(state: &AppState, owner: &mut Owner) -> Vec<DeRecEvent> {
+async fn pump(state: &Node, owner: &mut Owner) -> Vec<DeRecEvent> {
     let messages = state
         .mailboxes
         .drain(&owner.id)
@@ -191,7 +178,7 @@ async fn pump(state: &AppState, owner: &mut Owner) -> Vec<DeRecEvent> {
 
 /// Pair `owner` with `helper` over an `InlineKeys` contact and wait until both
 /// sides hold the channel. Returns the long-term channel id.
-async fn pair(state: &AppState, helper: &Addr<ProvisionedActor>, owner: &mut Owner) -> ChannelId {
+async fn pair(state: &Node, helper: &Addr<ProvisionedActor>, owner: &mut Owner) -> ChannelId {
     let contact = helper
         .send(CreateContactMsg {
             contact_mode: derec_proto::ContactMode::InlineKeys,
@@ -251,7 +238,7 @@ async fn after_the_node_moves_a_recovered_helper_tells_its_peers_the_new_address
     let (state, port) = serve(|port| format!("http://localhost:{port}")).await;
     let old_base = format!("http://127.0.0.1:{port}");
     let (helper, helper_addr) = spawn_helper(&state, &old_base).await;
-    let base_url = state.base_url.to_string();
+    let base_url = state.config.base_url.to_string();
     let mut owner = register_owner(&state, |id| format!("{base_url}/derec/{id}")).await;
 
     let channel_id = pair(&state, &helper_addr, &mut owner).await;
@@ -268,9 +255,9 @@ async fn after_the_node_moves_a_recovered_helper_tells_its_peers_the_new_address
         .send(ShutdownMsg)
         .await
         .expect("the helper actor is alive");
-    state.actor_inboxes.remove(&helper.id);
+    state.inboxes.remove(&helper.id);
 
-    let report = derec_backend::recovery::recover(&state).await;
+    let report = derec_backend::infrastructure::recovery::recover(&state).await;
     assert_eq!(report.failed, 0);
     assert_eq!(
         report.announce,
@@ -278,14 +265,14 @@ async fn after_the_node_moves_a_recovered_helper_tells_its_peers_the_new_address
         "the moved helper is queued to announce"
     );
 
-    let summary = derec_backend::recovery::announce_new_addresses(&state, &report.announce).await;
+    let summary = derec_backend::infrastructure::recovery::announce_new_addresses(&state, &report.announce).await;
     assert_eq!(
         summary.peers.announced, 1,
         "the one paired peer is told: {summary:?}"
     );
     assert!(summary.everyone_told(), "{summary:?}");
 
-    let new_uri = format!("{}/derec/{}", state.base_url, helper.id);
+    let new_uri = format!("{}/derec/{}", state.config.base_url, helper.id);
     let mut recorded = Vec::new();
     for _ in 0..POLL_ATTEMPTS {
         pump(&state, &mut owner).await;
@@ -321,7 +308,7 @@ async fn a_same_node_peer_at_an_address_nothing_listens_on_is_still_told() {
     let gone = format!("http://localhost:{}", dead_port().await);
     state
         .addresses
-        .remember(&state.pool, derec_backend::addresses::Listener::Http, &gone)
+        .remember(derec_backend::models::Listener::Http, &gone)
         .await
         .expect("the database is writable");
 
@@ -336,16 +323,16 @@ async fn a_same_node_peer_at_an_address_nothing_listens_on_is_still_told() {
         .send(ShutdownMsg)
         .await
         .expect("the helper actor is alive");
-    state.actor_inboxes.remove(&helper.id);
+    state.inboxes.remove(&helper.id);
 
-    let report = derec_backend::recovery::recover(&state).await;
+    let report = derec_backend::infrastructure::recovery::recover(&state).await;
     assert_eq!(report.announce, vec![helper.id]);
 
-    let summary = derec_backend::recovery::announce_new_addresses(&state, &report.announce).await;
+    let summary = derec_backend::infrastructure::recovery::announce_new_addresses(&state, &report.announce).await;
     assert_eq!(summary.peers.announced, 1, "{summary:?}");
     assert!(summary.everyone_told(), "{summary:?}");
 
-    let new_uri = format!("{}/derec/{}", state.base_url, helper.id);
+    let new_uri = format!("{}/derec/{}", state.config.base_url, helper.id);
     let mut recorded = Vec::new();
     for _ in 0..POLL_ATTEMPTS {
         pump(&state, &mut owner).await;
@@ -365,7 +352,7 @@ type Delay = Arc<AtomicU64>;
 /// queue it in that actor's mailbox. Stands in for a peer that is slow to
 /// answer, which is what keeps a helper's instance borrowed in real use.
 async fn slow_delivery(
-    State((state, delay)): State<(Arc<AppState>, Delay)>,
+    State((state, delay)): State<(Arc<Node>, Delay)>,
     Path(actor_id): Path<Uuid>,
     body: axum::body::Bytes,
 ) -> StatusCode {
@@ -446,11 +433,11 @@ async fn a_message_that_finds_the_instance_busy_waits_for_it_instead_of_being_dr
     );
 
     // Dropped, it never lands; waited for, the helper applies it once free.
-    let store = SqlChannelStore::new(state.pool.clone(), helper.id.to_string());
     let mut peer_name = None;
     for _ in 0..POLL_ATTEMPTS {
-        let records = store
-            .helper_records_all_instances()
+        let records = state
+            .protocol_records
+            .helper_channels(&helper.id)
             .await
             .expect("the helper's channel store is readable");
         peer_name = records

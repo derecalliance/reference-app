@@ -4,11 +4,12 @@
 import type { Locator, Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import {
-  BACKEND_URL,
+  BACKEND_API_URL,
   type ContactMode,
   openTab,
   pairParticipant,
   protectSecret,
+  resultOf,
   setUpOwner,
 } from './app'
 
@@ -67,8 +68,8 @@ async function helperNamesByMode(
   mode: 'grpc' | 'both',
   count: number,
 ): Promise<string[]> {
-  const res = await page.request.get(`${BACKEND_URL}/actors`)
-  const { actors } = (await res.json()) as { actors: BackendActor[] }
+  const res = await page.request.get(`${BACKEND_API_URL}/actors`)
+  const { actors } = await resultOf<{ actors: BackendActor[] }>(res)
   const names = actors
     .filter(a => a.role === 'helper' && modeOf(a) === mode)
     .map(a => a.name)

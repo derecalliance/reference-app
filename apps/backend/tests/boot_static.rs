@@ -9,16 +9,14 @@
 //! throwaway directory, the same way `config_route.rs` drives it with none.
 
 use std::path::PathBuf;
-use std::sync::Arc;
-
 use axum::{
     Router,
     body::Body,
     http::{Request, StatusCode, header},
     response::Response,
 };
-use derec_backend::config::{Defaults, Loaded};
-use derec_backend::state::AppState;
+use derec_backend::models::{Defaults, LoadedConfig};
+use derec_backend::infrastructure::bootstrap::Node;
 use tower::ServiceExt;
 
 /// Big enough that the compression layer, which skips tiny bodies, engages.
@@ -44,23 +42,21 @@ fn static_dir() -> PathBuf {
 }
 
 async fn app(dir: &std::path::Path) -> Router {
-    let pool = derec_backend::db::connect("sqlite::memory:")
+    let pool = derec_backend::infrastructure::db::connect("sqlite::memory:")
         .await
         .expect("an in-memory database always connects");
 
-    let mut loaded = Loaded::default();
+    let mut loaded = LoadedConfig::default();
     loaded.settings.server.static_dir = dir.to_string_lossy().into_owned();
 
-    let state = AppState::new(
-        "http://localhost:5000",
-        Defaults::default(),
+    let state = Node::new(
+        derec_backend::models::NodeConfig::new("http://localhost:5000", Defaults::default()).with_loaded(loaded),
         reqwest::Client::new(),
         actix_rt::Arbiter::current(),
         pool,
-    )
-    .with_config(loaded);
+    );
 
-    derec_backend::build_router(Arc::new(state))
+    derec_backend::infrastructure::server::build_router(state.state.clone())
 }
 
 async fn get(router: &Router, path: &str, accept_encoding: Option<&str>) -> Response {
@@ -82,7 +78,7 @@ fn cache_control(response: &Response) -> Option<&str> {
         .and_then(|value| value.to_str().ok())
 }
 
-// `actix_rt::test`, not `tokio::test`: `AppState` needs a running arbiter,
+// `actix_rt::test`, not `tokio::test`: `Node` needs a running arbiter,
 // which the plain Tokio runtime does not provide.
 #[actix_rt::test]
 async fn index_html_is_revalidated_on_every_load() {
@@ -141,7 +137,7 @@ async fn api_routes_are_not_shadowed_or_rewritten_by_the_static_fallback() {
 
     // The fallback only answers what no route matched; the API keeps its own
     // responses, uncompressed and without the static cache policy.
-    for path in ["/health", "/config"] {
+    for path in ["/health", "/api/v1/config"] {
         let response = get(&router, path, Some("gzip, br")).await;
         assert_eq!(response.status(), StatusCode::OK, "{path}");
         assert!(cache_control(&response).is_none(), "{path}");

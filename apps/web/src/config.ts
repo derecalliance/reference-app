@@ -6,7 +6,7 @@
 // Configuration is owned by the front end: each browser context picks its own
 // settings in the setup wizard and sends them to the backend when provisioning
 // actors. The constants here are the last-resort fallbacks used when the
-// operator-supplied defaults (`GET /config`) cannot be fetched.
+// operator-supplied defaults (`GET /api/v1/config`) cannot be fetched.
 
 /**
  * General protocol timeout, in **seconds**. The one timeout the wizard exposes:
@@ -104,7 +104,7 @@ export const DEFAULT_MIN_PARTICIPANTS = 3
 export const DEFAULT_RECOMMENDED_PARTICIPANTS = 5
 
 /**
- * Starting values for the setup wizard, as served by the backend's `GET /config`.
+ * Starting values for the setup wizard, as served by the backend's `GET /api/v1/config`.
  *
  * The app ships as a Docker image, so an operator can mount a config file to
  * change what a developer sees on first run instead of making them retype the
@@ -146,7 +146,7 @@ export const FALLBACK_SERVER_DEFAULTS: ServerDefaults = {
   grpcRelayEnabled: true,
 }
 
-/** Wire shape of `GET /config` — snake_case, mirroring the backend's TOML keys. */
+/** Wire shape of `GET /api/v1/config` — snake_case, mirroring the backend's TOML keys. */
 export interface ServerDefaultsDto {
   participant_count: number
   pre_paired_count: number

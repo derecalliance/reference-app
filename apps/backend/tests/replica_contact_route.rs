@@ -2,11 +2,11 @@
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
 //! HTTP-level coverage for the `replica_for_owner_secret` query parameter on
-//! `POST /actors/{actor_id}/contact`.
+//! `POST /api/v1/actors/{actor_id}/contact`.
 //!
 //! `replica_contact.rs` exercises `CreateContactMsg` / `EnsureReplicaInstanceMsg`
 //! by sending them straight to the actor, which never touches
-//! `routes::actors::create_contact` — none of the query parsing, the
+//! `handlers::actors::create_contact` — none of the query parsing, the
 //! conditional `EnsureReplicaInstanceMsg` dispatch, or the 400 rejection path
 //! that this task actually adds is covered by those tests. These tests drive
 //! the real `derec_backend::build_router` through `tower::ServiceExt::oneshot`
@@ -22,8 +22,8 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use derec_backend::actor::{InstanceForChannelMsg, ListInstanceSecretsMsg, ProvisionedActor};
-use derec_backend::state::{ActorInbox, AppState};
+use derec_backend::infrastructure::actors::provisioned::{InstanceForChannelMsg, ListInstanceSecretsMsg, ProvisionedActor};
+use derec_backend::infrastructure::bootstrap::Node;
 use serde_json::Value;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -32,9 +32,9 @@ use uuid::Uuid;
 /// mirroring the constant used in `replica_contact.rs`.
 const ALICE_SECRET: u64 = 0x7F;
 
-async fn app() -> (Arc<AppState>, Router) {
-    let state = derec_backend::test_support::app_state().await;
-    let router = derec_backend::build_router(state.clone());
+async fn app() -> (Arc<Node>, Router) {
+    let state = derec_backend::infrastructure::test_support::node().await;
+    let router = derec_backend::infrastructure::server::build_router(state.state.clone());
     (state, router)
 }
 
@@ -42,7 +42,14 @@ async fn body_json(response: axum::response::Response) -> Value {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("response body readable");
-    serde_json::from_slice(&bytes).expect("response body is JSON")
+    let body: Value = serde_json::from_slice(&bytes).expect("response body is JSON");
+    // Success answers travel in the envelope; these tests read its result.
+    match body {
+        Value::Object(mut fields) if fields.contains_key("result") => {
+            fields.remove("result").unwrap_or(Value::Null)
+        }
+        other => other,
+    }
 }
 
 /// Provision a helper through the real route and return its actor id and its
@@ -61,7 +68,7 @@ async fn create_helper_from(router: &Router, body: &'static str) -> (Uuid, u64) 
     let response = router
         .clone()
         .oneshot(
-            Request::post("/helpers")
+            Request::post("/api/v1/helpers")
                 .header("content-type", "application/json")
                 .body(Body::from(body))
                 .expect("request builds"),
@@ -89,23 +96,15 @@ async fn create_helper_from(router: &Router, body: &'static str) -> (Uuid, u64) 
 /// The same routing-index lookup an inbound envelope goes through, used here
 /// purely as a read-only assertion on which instance a route-minted contact
 /// actually landed in. Carries no key material.
-fn provisioned_addr(state: &AppState, actor_id: Uuid) -> Addr<ProvisionedActor> {
-    match state
-        .actor_inboxes
-        .get(&actor_id)
-        .expect("actor registered")
-        .value()
-    {
-        ActorInbox::Provisioned(addr) => addr.clone(),
-        ActorInbox::Browser => panic!("expected a provisioned actor"),
-    }
+fn provisioned_addr(state: &Node, actor_id: Uuid) -> Addr<ProvisionedActor> {
+    state.inboxes.provisioned(&actor_id).expect("actor registered")
 }
 
 async fn post_contact(router: &Router, actor_id: Uuid, query: &str) -> axum::response::Response {
     router
         .clone()
         .oneshot(
-            Request::post(format!("/actors/{actor_id}/contact?{query}"))
+            Request::post(format!("/api/v1/actors/{actor_id}/contact?{query}"))
                 .body(Body::empty())
                 .expect("request builds"),
         )
@@ -279,7 +278,7 @@ async fn replica_instances_per_actor_are_capped() {
     let (_state, router) = app().await;
     let (actor_id, _own_secret) = create_helper(&router).await;
 
-    for secret in 1..=derec_backend::actor::MAX_REPLICA_INSTANCES as u64 {
+    for secret in 1..=derec_backend::infrastructure::actors::MAX_REPLICA_INSTANCES as u64 {
         let response = post_contact(
             &router,
             actor_id,
@@ -297,5 +296,5 @@ async fn replica_instances_per_actor_are_capped() {
     .await;
     assert_eq!(response.status(), StatusCode::CONFLICT);
     let body = body_json(response).await;
-    assert!(body["error"].is_string(), "the refusal uses the shared error shape: {body}");
+    assert!(body["error"]["code"].is_string(), "the refusal uses the shared error shape: {body}");
 }

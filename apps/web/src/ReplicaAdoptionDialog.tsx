@@ -34,6 +34,14 @@ import {
  *
  * Nothing here performs the adoption; `onAdopt` does, and it is only ever
  * called from the confirm handler.
+ *
+ * Raised only for a device that confirmed its replica channel before the app
+ * asked about adoption up front. From SDK 0.0.7 confirming the fingerprint is
+ * itself the decision to adopt, so the fingerprint dialog asks it first and an
+ * agreed offer is adopted without coming here (`VaultRuntime.offerReplicaAdoption`).
+ * For an older confirmation this is still the only question asked — but the
+ * library has already installed the group's copy by then, so rejecting keeps
+ * this vault on screen without taking the device out of the group.
  */
 
 export interface ReplicaAdoptionDialogProps {

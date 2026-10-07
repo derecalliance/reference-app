@@ -115,6 +115,17 @@ describe('applyEvent', () => {
   })
 
   describe('Unpaired', () => {
+    it('says who unpaired — a banner naming the vault, when it is off screen', () => {
+      // Passed to `notify.info`, which the manager tags with the vault's origin
+      // when it is not on screen: the spec's "peer-initiated unpair" banner.
+      const d = deps()
+      const r = new VaultRuntime(vault(), d)
+
+      r.applyEvent(vault({ participants: [participant()] }), event({ type: 'Unpaired', channel_id: '900' }))
+
+      expect(d.notify.info).toHaveBeenCalledWith('Alex unpaired (channel 900)')
+    })
+
     it('drops every local trace of the torn-down channel', () => {
       const r = new VaultRuntime(vault(), deps())
       const before = vault({
@@ -181,43 +192,14 @@ describe('applyEvent', () => {
       expect(d.effects?.openAdoption).toHaveBeenCalledTimes(1)
     })
 
-    it('holds a takeover offer back until this device confirms the channel', () => {
-      // The fingerprint is what proves the channel is not a man in the middle.
-      // Offering to replace this vault with whatever arrived over an unverified
-      // channel would put a destructive prompt in front of the owner on the
-      // strength of a key nobody has checked.
-      const d = deps({ effects: { openAdoption: vi.fn() } })
-      const r = new VaultRuntime(vault({ secretId: '42' }), d)
-
-      r.applyEvent(vault({ secretId: '42' }), event({ ...offer, secret_id: '99' }))
-
-      expect(r.attention()).toEqual([])
-      expect(d.effects?.openAdoption).not.toHaveBeenCalled()
-    })
-
-    it('offers the held copy the moment this device confirms the channel', () => {
-      const d = deps({ effects: { openAdoption: vi.fn() } })
-      const r = new VaultRuntime(vault({ secretId: '42' }), d)
-      r.applyEvent(vault({ secretId: '42' }), event({ ...offer, secret_id: '99' }))
-
-      confirmChannel900()
-      r.replicaChannelConfirmed('900')
-
-      expect(r.attention()).toHaveLength(1)
-      expect(r.attention()[0].payload).toMatchObject({ secretId: '99', version: 4 })
-      expect(d.effects?.openAdoption).toHaveBeenCalledTimes(1)
-    })
-
-    it('keeps the newest of several copies held for one channel', () => {
+    it('keeps the newest of several copies staged for one channel', () => {
       // The mailbox redelivers at least once; a stale round must not replace a
-      // fresher held copy.
+      // fresher offer the owner has not acted on yet.
       const r = new VaultRuntime(vault({ secretId: '42' }), deps())
       r.applyEvent(vault({ secretId: '42' }), event({ ...offer, secret_id: '99', version: 5 }))
       r.applyEvent(vault({ secretId: '42' }), event({ ...offer, secret_id: '99', version: 4 }))
 
-      confirmChannel900()
-      r.replicaChannelConfirmed('900')
-
+      expect(r.attention()).toHaveLength(1)
       expect(r.attention()[0].payload).toMatchObject({ version: 5 })
     })
 
@@ -265,7 +247,7 @@ describe('applyEvent', () => {
       expect(start).not.toHaveBeenCalled()
     })
 
-    it('does nothing on confirmation when no copy is held', () => {
+    it('raises nothing on confirmation by itself', () => {
       const d = deps({ effects: { openAdoption: vi.fn() } })
       const r = new VaultRuntime(vault(), d)
 

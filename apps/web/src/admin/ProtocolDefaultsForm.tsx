@@ -52,7 +52,7 @@ type FieldKey = Exclude<NumericDefault, 'helperTransports'> | TransportModeKey
 
 export interface ProtocolDefaultsFormProps {
   /**
-   * The node's own defaults, as `GET /config` served them.
+   * The node's own defaults, as `GET /api/v1/config` served them.
    *
    * Required rather than defaulted to the built-in fallback: the form only
    * mounts once these have loaded. Seeded from the fallback, an edit made while

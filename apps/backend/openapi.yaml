@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: DeRec reference app — backend
-  version: "0.1.0"
+  version: "0.0.7"
   description: |
     The backend half of the DeRec reference app: an actor registry, a message
     relay, and a debug surface. It runs as a developer's local container and
@@ -20,39 +20,82 @@ info:
       protocol runs in this process). Every actor advertises one or more
       **transports**; peers dial those.
     - **Helper pool** — provisioned helpers belong to the server, not to
-      whoever asked for them. `POST /helpers/ensure` therefore states a
+      whoever asked for them. `POST /api/v1/helpers/ensure` therefore states a
       *target*, and only the shortfall is created.
     - **Transport mode** — what a helper advertises: `http`, `grpc`, or
       `both`. Independent of what it can dial, which is always both.
 
     ## If you are an agent
 
-    Start with `GET /debug/state` for everything that exists right now, and
-    `GET /debug/events` for what has happened, in order, with the transport
+    Start with `GET /api/v1/debug/state` for everything that exists right now,
+    and `GET /api/v1/debug/events` for what has happened, in order, with the transport
     each message travelled over. Those two answer most questions without
     driving the UI. See `AGENTS.md` in the repository root for worked recipes.
 
     Every `u64` — channel ids, secret ids — travels as a **decimal string**,
     because these exceed JavaScript's exact integer range.
 
+    ## Paths
+
+    The API lives under **`/api/v1`**. Two groups stay at fixed, unprefixed
+    paths because other software depends on them: `GET /health` (the image's
+    healthcheck) and the DeRec transport under `/derec/*`, which other
+    implementations post to. Anything else that is not under `/api/v1` is the
+    bundled UI, when the node serves one.
+
+    ## Envelope
+
+    Every `/api/v1` answer travels in one envelope (`SuccessEnvelope`), with
+    the route's own payload as `result`:
+
+    ```json
+    { "result": { "...": "..." }, "timestamp": "2026-10-07T12:00:00.000Z", "request_id": "6f1c…" }
+    ```
+
+    `timestamp` is RFC 3339 UTC with milliseconds; `request_id` is described
+    below. A `204` has no body. The transport routes keep their own success
+    bodies: `POST /derec/{actor_id}` and `POST /derec/relay` answer an empty
+    `202`, `GET /derec/{actor_id}/mailbox` answers `{"messages": […]}`, and
+    `GET /health` an empty `200`.
+
+    ## Request id
+
+    Every response carries an `x-request-id` header. Send your own (1–128
+    characters of letters, digits, `-`, `_`, `.`, `:`) and it is echoed back
+    and tagged on every log line the request produces; send none, or one that
+    does not fit, and the node mints a UUID. The same id is the `request_id`
+    of the envelope, so a failure report can quote it. CORS exposes the header
+    to pages on other origins.
+
     ## Errors
 
-    Every error, on every route, is a JSON object of one shape —
-    `{"error": "<a sentence a caller can act on>"}` (the `Error` schema) —
-    including the ones raised before a handler runs:
+    Every error, on every route — the transport and the fallbacks included —
+    is one envelope (the `Error` schema):
 
-    | Status | When |
-    | --- | --- |
-    | 400 | Malformed input: unparseable JSON, a path id that is not a UUID, a bad query string, or a value the route refuses |
-    | 404 | No such actor, channel or contact — or no such route |
-    | 405 | A known route called with a method it does not serve (`Allow` lists the right ones) |
-    | 409 | The request conflicts with current state |
-    | 413 | The body is over the limit (2 MiB; 4 MiB on `POST /derec/{actor_id}` and for a relayed message, the most the gRPC listener accepts; 16 KiB for a browser contact) |
-    | 415 | A JSON route called without `Content-Type: application/json` |
-    | 422 | Well-formed JSON of the wrong shape: a missing field, a wrong type |
-    | 500 | This node failed — the detail is in its log, not the response |
-    | 502 | A peer this node dialled could not be reached |
-    | 503 | Transient: an actor busy or stopping, a full mailbox, the relay disabled |
+    ```json
+    { "error": { "code": "NOT_FOUND", "message": "no actor with id …" }, "timestamp": "…", "request_id": "…" }
+    ```
+
+    Branch on `code`; show `message`, a sentence that never names an
+    internal type. Errors raised before a handler runs use it too.
+
+    | Code | Status | When |
+    | --- | --- | --- |
+    | `BAD_REQUEST` | 400 | Malformed input: unparseable JSON, a path id that is not a UUID, a bad query string, or a value the route refuses |
+    | `FINGERPRINT_MISMATCH` | 400 | `confirm-fingerprint` was given a different fingerprint — the man-in-the-middle case |
+    | `FORBIDDEN` | 403 | The relay will not dial that target |
+    | `NOT_FOUND` | 404 | No such actor, channel or contact — or no such route |
+    | `METHOD_NOT_ALLOWED` | 405 | A known route called with a method it does not serve (`Allow` lists the right ones) |
+    | `CONFLICT` | 409 | The request conflicts with current state |
+    | `NAME_TAKEN` | 409 | Another helper already has that name |
+    | `PAYLOAD_TOO_LARGE` | 413 | The body is over the limit (2 MiB; 4 MiB on `POST /derec/{actor_id}` and for a relayed message, the most the gRPC listener accepts; 16 KiB for a browser contact) |
+    | `UNSUPPORTED_MEDIA_TYPE` | 415 | A JSON route called without `Content-Type: application/json` |
+    | `UNPROCESSABLE_ENTITY` | 422 | Well-formed JSON of the wrong shape: a missing field, a wrong type |
+    | `INTERNAL_ERROR` | 500 | This node failed — the detail is in its log, not the response |
+    | `BAD_GATEWAY` | 502 | A peer this node dialled could not be reached |
+    | `SERVICE_UNAVAILABLE` | 503 | Transient: an actor busy or stopping; retry shortly |
+    | `MAILBOX_FULL` | 503 | The recipient's mailbox is full until it polls |
+    | `RELAY_DISABLED` | 503 | The relay is switched off on this node; retrying will not help |
 
 servers:
   - url: http://localhost:5000
@@ -78,7 +121,7 @@ paths:
       responses:
         "200": { description: The server is up }
 
-  /config:
+  /api/v1/config:
     get:
       tags: [meta]
       summary: Operator-supplied defaults for the setup wizard
@@ -91,9 +134,15 @@ paths:
           description: Defaults, plus facts about this node
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/ConfigResponse" }
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    required: [result]
+                    properties:
+                      result: { $ref: "#/components/schemas/ConfigResponse" }
 
-  /debug/config:
+  /api/v1/debug/config:
     get:
       tags: [debug]
       summary: Resolved configuration and per-setting provenance
@@ -108,34 +157,40 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [settings, origins, file_found, unknown_env]
-                properties:
-                  settings:
-                    type: object
-                  origins:
-                    type: array
-                    items:
-                      type: object
-                      required: [path, source]
-                      properties:
-                        path:
-                          type: string
-                          example: defaults.participant_count
-                        source:
-                          type: string
-                          enum: [default, file, env]
-                        variable:
-                          type: string
-                          example: DEREC_PARTICIPANT_COUNT
-                  file_found:
-                    type: boolean
-                  unknown_env:
-                    type: array
-                    items:
-                      type: string
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    required: [result]
+                    properties:
+                      result:
+                        type: object
+                        required: [settings, origins, file_found, unknown_env]
+                        properties:
+                          settings:
+                            type: object
+                          origins:
+                            type: array
+                            items:
+                              type: object
+                              required: [path, source]
+                              properties:
+                                path:
+                                  type: string
+                                  example: defaults.participant_count
+                                source:
+                                  type: string
+                                  enum: [default, file, env]
+                                variable:
+                                  type: string
+                                  example: DEREC_PARTICIPANT_COUNT
+                          file_found:
+                            type: boolean
+                          unknown_env:
+                            type: array
+                            items:
+                              type: string
 
-  /debug/state:
+  /api/v1/debug/state:
     get:
       tags: [debug]
       summary: Everything this server currently knows
@@ -152,9 +207,15 @@ paths:
           description: Snapshot
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/StateSnapshot" }
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    required: [result]
+                    properties:
+                      result: { $ref: "#/components/schemas/StateSnapshot" }
 
-  /debug/events:
+  /api/v1/debug/events:
     get:
       tags: [debug]
       summary: What this server did, in order
@@ -179,9 +240,15 @@ paths:
           description: A page of the log
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/EventSnapshot" }
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    required: [result]
+                    properties:
+                      result: { $ref: "#/components/schemas/EventSnapshot" }
 
-  /owners:
+  /api/v1/owners:
     post:
       tags: [actors]
       summary: Register this browser context as an owner, or reclaim one
@@ -208,7 +275,13 @@ paths:
           description: The registered or reclaimed actor
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Actor" }
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    required: [result]
+                    properties:
+                      result: { $ref: "#/components/schemas/Actor" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404":
           description: "`claim_actor_id` names no registered owner"
@@ -220,13 +293,13 @@ paths:
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
         "500": { $ref: "#/components/responses/InternalError" }
 
-  /owners/{owner_id}:
+  /api/v1/owners/{owner_id}:
     patch:
       tags: [actors]
       summary: Rename a browser-managed owner
       description: |
-        Stores a new display name for an owner. `GET /actors` and a later
-        claim of the actor (`POST /owners` with `claim_actor_id`) show it.
+        Stores a new display name for an owner. `GET /api/v1/actors` and a later
+        claim of the actor (`POST /api/v1/owners` with `claim_actor_id`) show it.
         What the page's own protocol tells its peers is the page's concern.
 
         `name` is trimmed and must be 1–64 characters with no control
@@ -248,11 +321,17 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [id, name]
-                properties:
-                  id: { type: string, format: uuid }
-                  name: { type: string }
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    required: [result]
+                    properties:
+                      result:
+                        type: object
+                        required: [id, name]
+                        properties:
+                          id: { type: string, format: uuid }
+                          name: { type: string }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404":
           description: No owner actor has this id
@@ -264,7 +343,7 @@ paths:
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
         "500": { $ref: "#/components/responses/InternalError" }
 
-  /actors:
+  /api/v1/actors:
     get:
       tags: [actors]
       summary: Every actor, in registration order, with live pairing status
@@ -279,15 +358,21 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [actors]
-                properties:
-                  actors:
-                    type: array
-                    items: { $ref: "#/components/schemas/ActorWithStatus" }
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    required: [result]
+                    properties:
+                      result:
+                        type: object
+                        required: [actors]
+                        properties:
+                          actors:
+                            type: array
+                            items: { $ref: "#/components/schemas/ActorWithStatus" }
         "500": { $ref: "#/components/responses/InternalError" }
 
-  /actors/{actor_id}/contact:
+  /api/v1/actors/{actor_id}/contact:
     post:
       tags: [actors]
       summary: Have a provisioned actor mint a ContactMessage
@@ -318,14 +403,20 @@ paths:
           description: The contact
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/ContactMessage" }
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    required: [result]
+                    properties:
+                      result: { $ref: "#/components/schemas/ContactMessage" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/InternalError" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
-  /actors/{actor_id}/start-pairing:
+  /api/v1/actors/{actor_id}/start-pairing:
     post:
       tags: [actors]
       summary: Drive a provisioned actor to pair against a supplied contact
@@ -352,14 +443,20 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [channel_id]
-                properties:
-                  channel_id:
-                    type: string
-                    description: |
-                      The transient pairing id. The handshake rotates to a
-                      long-term id when it completes.
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    required: [result]
+                    properties:
+                      result:
+                        type: object
+                        required: [channel_id]
+                        properties:
+                          channel_id:
+                            type: string
+                            description: |
+                              The transient pairing id. The handshake rotates to a
+                              long-term id when it completes.
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
@@ -374,7 +471,7 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
-  /actors/{actor_id}/fingerprint:
+  /api/v1/actors/{actor_id}/fingerprint:
     get:
       tags: [actors]
       summary: This actor's fingerprint for a channel
@@ -395,22 +492,28 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [fingerprint]
-                properties:
-                  fingerprint: { type: string, example: "1234-5678-9012-3456" }
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    required: [result]
+                    properties:
+                      result:
+                        type: object
+                        required: [fingerprint]
+                        properties:
+                          fingerprint: { type: string, example: "1234-5678-9012-3456" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/InternalError" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
-  /actors/{actor_id}/confirm-fingerprint:
+  /api/v1/actors/{actor_id}/confirm-fingerprint:
     post:
       tags: [actors]
       summary: Confirm a peer's fingerprint, promoting a Pending channel
       description: |
-        A mismatch is `400 {"error": "fingerprint mismatch"}` and leaves the
+        A mismatch is `400` with code `FINGERPRINT_MISMATCH` and leaves the
         channel `Pending` — the man-in-the-middle case. A channel the actor
         holds no record of is `404`; one with no shared key yet is `409`.
       parameters:
@@ -431,10 +534,16 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [confirmed]
-                properties:
-                  confirmed: { type: boolean, const: true }
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    required: [result]
+                    properties:
+                      result:
+                        type: object
+                        required: [confirmed]
+                        properties:
+                          confirmed: { type: boolean, const: true }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
@@ -444,14 +553,15 @@ paths:
         "500": { $ref: "#/components/responses/InternalError" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
-  /helpers:
+  /api/v1/helpers:
     post:
       tags: [helpers]
       summary: Provision one backend-run helper
       description: |
         `name` is trimmed and must be 1–64 characters with no control
         characters, and no other helper may already have it — compared
-        trimmed and case-insensitively — or the request is `409`.
+        trimmed and case-insensitively — or the request is `409` with code
+        `NAME_TAKEN`.
         `protocol_timeout_secs`, when given, must be 1–86400. Asking for a
         gRPC or `both` helper while `grpc_enabled` is false is `400`.
       requestBody:
@@ -472,10 +582,16 @@ paths:
           description: The new helper
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Actor" }
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    required: [result]
+                    properties:
+                      result: { $ref: "#/components/schemas/Actor" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "409":
-          description: Another helper already has this name
+          description: Another helper already has this name (`NAME_TAKEN`)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -484,7 +600,7 @@ paths:
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
         "500": { $ref: "#/components/responses/InternalError" }
 
-  /helpers/ensure:
+  /api/v1/helpers/ensure:
     post:
       tags: [helpers]
       summary: Bring the shared helper pool up to a target composition
@@ -501,7 +617,7 @@ paths:
         then black-holes every reply.
 
         A blank entry in `names` means "number this one"; any other entry is
-        held to the same rules as `POST /helpers`. A created helper never
+        held to the same rules as `POST /api/v1/helpers`. A created helper never
         takes a name another helper has: an offered name already in the pool
         is skipped for the next offered one that is free, and failing that
         the helper is numbered (`Participant N`, past any number in use).
@@ -532,20 +648,26 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [helpers, created]
-                properties:
-                  helpers:
-                    type: array
-                    items: { $ref: "#/components/schemas/Actor" }
-                  created: { type: integer }
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    required: [result]
+                    properties:
+                      result:
+                        type: object
+                        required: [helpers, created]
+                        properties:
+                          helpers:
+                            type: array
+                            items: { $ref: "#/components/schemas/Actor" }
+                          created: { type: integer }
         "400": { $ref: "#/components/responses/BadRequest" }
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
         "500": { $ref: "#/components/responses/InternalError" }
 
-  /helpers/{helper_id}:
+  /api/v1/helpers/{helper_id}:
     delete:
       tags: [helpers]
       summary: Delete a provisioned participant
@@ -568,7 +690,7 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
-  /helpers/{helper_id}/toggle-status:
+  /api/v1/helpers/{helper_id}/toggle-status:
     post:
       tags: [helpers]
       summary: Suspend or resume delivery to a helper
@@ -597,17 +719,23 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [disabled]
-                properties:
-                  disabled: { type: boolean }
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    required: [result]
+                    properties:
+                      result:
+                        type: object
+                        required: [disabled]
+                        properties:
+                          disabled: { type: boolean }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
         "500": { $ref: "#/components/responses/InternalError" }
 
-  /helpers/{helper_id}/channels:
+  /api/v1/helpers/{helper_id}/channels:
     get:
       tags: [helpers]
       summary: The helper channels this actor holds on its own instance
@@ -619,30 +747,36 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [channels]
-                properties:
-                  channels:
-                    type: array
-                    items:
-                      type: object
-                      required: [channel_id, peer_name, role, linked_channel_ids]
-                      properties:
-                        channel_id: { type: string }
-                        peer_name: { type: string }
-                        role:
-                          type: string
-                          enum: [owner, helper]
-                          description: This actor's own role on the channel.
-                        linked_channel_ids:
-                          type: array
-                          items: { type: string }
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    required: [result]
+                    properties:
+                      result:
+                        type: object
+                        required: [channels]
+                        properties:
+                          channels:
+                            type: array
+                            items:
+                              type: object
+                              required: [channel_id, peer_name, role, linked_channel_ids]
+                              properties:
+                                channel_id: { type: string }
+                                peer_name: { type: string }
+                                role:
+                                  type: string
+                                  enum: [owner, helper]
+                                  description: This actor's own role on the channel.
+                                linked_channel_ids:
+                                  type: array
+                                  items: { type: string }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
-  /helpers/{helper_id}/link:
+  /api/v1/helpers/{helper_id}/link:
     post:
       tags: [helpers]
       summary: Record that two channels belong to the same owner identity
@@ -678,10 +812,16 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [linked]
-                properties:
-                  linked: { type: boolean, const: true }
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    required: [result]
+                    properties:
+                      result:
+                        type: object
+                        required: [linked]
+                        properties:
+                          linked: { type: boolean, const: true }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
@@ -690,7 +830,7 @@ paths:
         "500": { $ref: "#/components/responses/InternalError" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
-  /helpers/{helper_id}/browser-contact:
+  /api/v1/helpers/{helper_id}/browser-contact:
     post:
       tags: [helpers]
       summary: Post a browser-managed participant's contact for an owner to fetch
@@ -707,7 +847,17 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/ContactMessage" }
       responses:
-        "200": { description: Stored (empty body) }
+        "200":
+          description: Stored; the `result` is `null`
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    required: [result]
+                    properties:
+                      result: { type: "null" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
@@ -719,10 +869,16 @@ paths:
         - $ref: "#/components/parameters/HelperId"
       responses:
         "200":
-          description: The contact, exactly as it was posted
+          description: The contact as the `result`, exactly as it was posted
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/ContactMessage" }
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    required: [result]
+                    properties:
+                      result: { $ref: "#/components/schemas/ContactMessage" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404":
           description: No such actor, or it has not published a contact
@@ -761,7 +917,7 @@ paths:
         `data` must decode to a DeRec envelope naming a channel, of at most
         4 MiB (what the gRPC listener accepts); anything else is refused before
         any delivery. Every outcome — refusals included, with their reason — is
-        recorded in `/debug/events` with carrier `grpc_via_relay` or
+        recorded in `/api/v1/debug/events` with carrier `grpc_via_relay` or
         `http_via_relay`, and attributed to `actor_id` when the request names
         one.
       responses:
@@ -784,8 +940,9 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "503":
           description: >
-            The relay is disabled (`grpc_relay_enabled = false`), or the
-            recipient on this node has a full mailbox
+            The relay is disabled (`grpc_relay_enabled = false`; code
+            `RELAY_DISABLED`), or the recipient on this node has a full
+            mailbox (`MAILBOX_FULL`)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -805,7 +962,7 @@ paths:
         A browser actor's messages queue in the database until its tab polls.
         Each mailbox holds at most 1000 messages / 16 MiB of message bytes (as
         posted, not as stored); beyond that a new message is refused with
-        `503` and nothing already queued is dropped.
+        `503 MAILBOX_FULL` and nothing already queued is dropped.
       parameters:
         - $ref: "#/components/parameters/ActorId"
       requestBody:
@@ -820,7 +977,7 @@ paths:
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
         "500": { $ref: "#/components/responses/InternalError" }
         "503":
-          description: The recipient's mailbox is full, or could not be written
+          description: The recipient's mailbox is full (`MAILBOX_FULL`), or could not be written
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -862,7 +1019,23 @@ paths:
         "500": { $ref: "#/components/responses/InternalError" }
 
 components:
+  headers:
+    RequestId:
+      description: |
+        The id of this request: the caller's own `x-request-id` when it was a
+        usable token, otherwise a UUID the node minted. Sent on every response.
+      schema: { type: string, example: 0b9a0a4e-3f43-4b51-9a3c-0f1f5e3a2c11 }
+
   parameters:
+    RequestId:
+      name: x-request-id
+      in: header
+      required: false
+      description: |
+        Optional. 1–128 characters of ASCII letters, digits, `-`, `_`, `.` or
+        `:`; echoed in the response header and the envelope's `request_id`.
+        Anything else is replaced with a fresh UUID.
+      schema: { type: string, maxLength: 128 }
     ActorId:
       name: actor_id
       in: path
@@ -882,53 +1055,119 @@ components:
   responses:
     BadRequest:
       description: Malformed or contradictory request
+      headers:
+        x-request-id: { $ref: "#/components/headers/RequestId" }
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     NotFound:
       description: No such actor, channel, or contact
+      headers:
+        x-request-id: { $ref: "#/components/headers/RequestId" }
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Conflict:
       description: The request conflicts with current state
+      headers:
+        x-request-id: { $ref: "#/components/headers/RequestId" }
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     PayloadTooLarge:
       description: The request body is over the limit
+      headers:
+        x-request-id: { $ref: "#/components/headers/RequestId" }
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     UnsupportedMediaType:
       description: "Expected `Content-Type: application/json`"
+      headers:
+        x-request-id: { $ref: "#/components/headers/RequestId" }
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     UnprocessableEntity:
       description: Well-formed JSON of the wrong shape
+      headers:
+        x-request-id: { $ref: "#/components/headers/RequestId" }
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     InternalError:
       description: This node failed; the detail is logged, not returned
+      headers:
+        x-request-id: { $ref: "#/components/headers/RequestId" }
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     ServiceUnavailable:
       description: Transient — the actor is busy or stopping; retry shortly
+      headers:
+        x-request-id: { $ref: "#/components/headers/RequestId" }
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
 
   schemas:
+    SuccessEnvelope:
+      type: object
+      description: |
+        Every `/api/v1` success. Each route documents its own `result`.
+      required: [result, timestamp]
+      properties:
+        result:
+          description: The route's payload.
+        timestamp:
+          type: string
+          format: date-time
+          description: RFC 3339 UTC, with milliseconds, when the answer was built.
+          example: "2026-10-07T12:00:00.000Z"
+        request_id:
+          type: string
+          description: The same id as the `x-request-id` response header.
+
     Error:
       type: object
-      required: [error]
+      description: Every error, on every route.
+      required: [error, timestamp]
       properties:
         error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { $ref: "#/components/schemas/ErrorCode" }
+            message:
+              type: string
+              description: A sentence a caller can act on. Never names an internal type.
+        timestamp:
           type: string
-          description: A sentence a caller can act on. Never names an internal type.
+          format: date-time
+          example: "2026-10-07T12:00:00.000Z"
+        request_id:
+          type: string
+          description: The same id as the `x-request-id` response header.
+
+    ErrorCode:
+      type: string
+      description: Stable, machine-readable; see the table in the introduction.
+      enum:
+        - BAD_REQUEST
+        - FINGERPRINT_MISMATCH
+        - FORBIDDEN
+        - NOT_FOUND
+        - METHOD_NOT_ALLOWED
+        - CONFLICT
+        - NAME_TAKEN
+        - PAYLOAD_TOO_LARGE
+        - UNSUPPORTED_MEDIA_TYPE
+        - UNPROCESSABLE_ENTITY
+        - INTERNAL_ERROR
+        - BAD_GATEWAY
+        - SERVICE_UNAVAILABLE
+        - MAILBOX_FULL
+        - RELAY_DISABLED
 
     TransportMode:
       type: string
@@ -1050,7 +1289,7 @@ components:
         helper_transports: { $ref: "#/components/schemas/TransportBreakdown" }
 
     ConfigResponse:
-      description: What `GET /config` returns — the operator's defaults, flat, plus facts about this node.
+      description: The `result` of `GET /api/v1/config` — the operator's defaults, flat, plus facts about this node.
       allOf:
         - $ref: "#/components/schemas/Defaults"
         - type: object

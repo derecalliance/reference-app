@@ -63,7 +63,7 @@ describe('apiLinkRemoteHelperChannels', () => {
     await apiLinkRemoteHelperChannels({ baseUrl: 'http://other:5500', actorId: ID }, '7', '3')
 
     expect(fetchMock).toHaveBeenCalledWith(
-      `http://other:5500/helpers/${ID}/link`,
+      `http://other:5500/api/v1/helpers/${ID}/link`,
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({ channel_id: '7', link_to_channel_id: '3' }),

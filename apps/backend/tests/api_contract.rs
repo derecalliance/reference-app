@@ -15,14 +15,14 @@ use axum::{
     http::{header, Request, StatusCode},
     Router,
 };
-use derec_backend::state::AppState;
+use derec_backend::infrastructure::bootstrap::Node;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-async fn app() -> (Arc<AppState>, Router) {
-    let state = derec_backend::test_support::app_state().await;
-    let router = derec_backend::build_router(state.clone());
+async fn app() -> (Arc<Node>, Router) {
+    let state = derec_backend::infrastructure::test_support::node().await;
+    let router = derec_backend::infrastructure::server::build_router(state.state.clone());
     (state, router)
 }
 
@@ -45,6 +45,13 @@ async fn send(router: &Router, request: Request<Body>) -> (StatusCode, String, V
         .await
         .expect("response body readable");
     let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    // Success answers travel in the envelope; these tests read its result.
+    let body = match body {
+        Value::Object(mut fields) if fields.contains_key("result") => {
+            fields.remove("result").unwrap_or(Value::Null)
+        }
+        other => other,
+    };
     (status, content_type, body)
 }
 
@@ -62,7 +69,11 @@ fn assert_error_shape(content_type: &str, body: &Value) {
         content_type.starts_with("application/json"),
         "errors must be JSON, got `{content_type}`"
     );
-    let message = body["error"]
+    assert!(
+        body["error"]["code"].is_string(),
+        "no `error.code` in {body}"
+    );
+    let message = body["error"]["message"]
         .as_str()
         .unwrap_or_else(|| panic!("no `error` string in {body}"));
     for leak in [
@@ -80,7 +91,7 @@ fn assert_error_shape(content_type: &str, body: &Value) {
 }
 
 async fn provision(router: &Router, body: Value) -> String {
-    let (status, _, body) = send(router, post_json("/helpers", &body.to_string())).await;
+    let (status, _, body) = send(router, post_json("/api/v1/helpers", &body.to_string())).await;
     assert_eq!(status, StatusCode::CREATED, "provisioning failed: {body}");
     body["id"].as_str().expect("id present").to_owned()
 }
@@ -88,7 +99,7 @@ async fn provision(router: &Router, body: Value) -> String {
 async fn register_owner(router: &Router, name: &str) -> String {
     let (status, _, body) = send(
         router,
-        post_json("/owners", &json!({ "name": name }).to_string()),
+        post_json("/api/v1/owners", &json!({ "name": name }).to_string()),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "registering failed: {body}");
@@ -101,7 +112,7 @@ async fn register_owner(router: &Router, name: &str) -> String {
 async fn a_body_of_the_wrong_shape_is_422_in_the_shared_shape() {
     let (_, router) = app().await;
 
-    let (status, content_type, body) = send(&router, post_json("/helpers", "[]")).await;
+    let (status, content_type, body) = send(&router, post_json("/api/v1/helpers", "[]")).await;
 
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_error_shape(&content_type, &body);
@@ -111,7 +122,7 @@ async fn a_body_of_the_wrong_shape_is_422_in_the_shared_shape() {
 async fn a_body_that_is_not_json_is_400_in_the_shared_shape() {
     let (_, router) = app().await;
 
-    let (status, content_type, body) = send(&router, post_json("/helpers", "{nope")).await;
+    let (status, content_type, body) = send(&router, post_json("/api/v1/helpers", "{nope")).await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_error_shape(&content_type, &body);
@@ -121,7 +132,7 @@ async fn a_body_that_is_not_json_is_400_in_the_shared_shape() {
 async fn a_missing_content_type_is_415_in_the_shared_shape() {
     let (_, router) = app().await;
 
-    let request = Request::post("/helpers")
+    let request = Request::post("/api/v1/helpers")
         .body(Body::from(r#"{"name":"Alex"}"#))
         .expect("request builds");
     let (status, content_type, body) = send(&router, request).await;
@@ -134,7 +145,7 @@ async fn a_missing_content_type_is_415_in_the_shared_shape() {
 async fn a_path_id_that_is_not_a_uuid_is_400_in_the_shared_shape() {
     let (_, router) = app().await;
 
-    let request = Request::delete("/helpers/not-a-uuid")
+    let request = Request::delete("/api/v1/helpers/not-a-uuid")
         .body(Body::empty())
         .expect("request builds");
     let (status, content_type, body) = send(&router, request).await;
@@ -149,7 +160,7 @@ async fn a_body_over_the_limit_is_413_in_the_shared_shape() {
     // Axum's default body limit is 2 MiB.
     let oversized = format!(r#"{{"name":"{}"}}"#, "x".repeat(3 * 1024 * 1024));
 
-    let (status, content_type, body) = send(&router, post_json("/owners", &oversized)).await;
+    let (status, content_type, body) = send(&router, post_json("/api/v1/owners", &oversized)).await;
 
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
     assert_error_shape(&content_type, &body);
@@ -162,11 +173,11 @@ async fn owner_and_helper_names_are_trimmed_required_and_bounded() {
     let (_, router) = app().await;
 
     for (uri, name) in [
-        ("/owners", "".to_owned()),
-        ("/owners", "   ".to_owned()),
-        ("/owners", "x".repeat(65)),
-        ("/helpers", "".to_owned()),
-        ("/helpers", "x".repeat(65)),
+        ("/api/v1/owners", "".to_owned()),
+        ("/api/v1/owners", "   ".to_owned()),
+        ("/api/v1/owners", "x".repeat(65)),
+        ("/api/v1/helpers", "".to_owned()),
+        ("/api/v1/helpers", "x".repeat(65)),
     ] {
         let (status, content_type, body) = send(
             &router,
@@ -184,7 +195,7 @@ async fn owner_and_helper_names_are_trimmed_required_and_bounded() {
 
     let (status, _, body) = send(
         &router,
-        post_json("/owners", &json!({ "name": "  Alice  " }).to_string()),
+        post_json("/api/v1/owners", &json!({ "name": "  Alice  " }).to_string()),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -199,11 +210,11 @@ async fn a_zero_protocol_timeout_is_refused() {
 
     for (uri, body) in [
         (
-            "/helpers",
+            "/api/v1/helpers",
             json!({ "name": "Alex", "protocol_timeout_secs": 0 }),
         ),
         (
-            "/helpers/ensure",
+            "/api/v1/helpers/ensure",
             json!({ "total": 1, "protocol_timeout_secs": 0 }),
         ),
     ] {
@@ -247,7 +258,7 @@ async fn claiming_an_owner_keeps_the_mail_that_queued_for_it() {
     let (status, _, _) = send(
         &router,
         post_json(
-            "/owners",
+            "/api/v1/owners",
             &json!({ "name": "Alice", "claim_actor_id": owner }).to_string(),
         ),
     )
@@ -275,7 +286,7 @@ async fn a_full_mailbox_refuses_new_mail_and_keeps_the_old() {
         .parse()
         .expect("uuid");
 
-    for _ in 0..derec_backend::registry::mailbox::MAX_QUEUED_MESSAGES {
+    for _ in 0..derec_backend::repositories::mailboxes::MAX_QUEUED_MESSAGES {
         state
             .mailboxes
             .enqueue(&owner, &[0x20, 0x07])
@@ -293,7 +304,7 @@ async fn a_full_mailbox_refuses_new_mail_and_keeps_the_old() {
     assert_error_shape(&content_type, &body);
     assert_eq!(
         state.mailboxes.len(&owner).await.expect("readable"),
-        derec_backend::registry::mailbox::MAX_QUEUED_MESSAGES as usize,
+        derec_backend::repositories::mailboxes::MAX_QUEUED_MESSAGES as usize,
         "nothing already queued may be evicted to make room"
     );
 }
@@ -334,7 +345,7 @@ async fn linking_a_channel_the_helper_does_not_hold_is_404() {
     let (status, content_type, body) = send(
         &router,
         post_json(
-            &format!("/helpers/{helper}/link"),
+            &format!("/api/v1/helpers/{helper}/link"),
             &json!({ "channel_id": "1", "link_to_channel_id": "2" }).to_string(),
         ),
     )
@@ -349,7 +360,7 @@ async fn a_fingerprint_for_a_channel_the_actor_does_not_hold_is_404() {
     let (_, router) = app().await;
     let helper = provision(&router, json!({ "name": "Alex" })).await;
 
-    let request = Request::get(format!("/actors/{helper}/fingerprint?channel_id=12345"))
+    let request = Request::get(format!("/api/v1/actors/{helper}/fingerprint?channel_id=12345"))
         .body(Body::empty())
         .expect("request builds");
     let (status, content_type, body) = send(&router, request).await;
@@ -359,7 +370,7 @@ async fn a_fingerprint_for_a_channel_the_actor_does_not_hold_is_404() {
     let (status, content_type, body) = send(
         &router,
         post_json(
-            &format!("/actors/{helper}/confirm-fingerprint"),
+            &format!("/api/v1/actors/{helper}/confirm-fingerprint"),
             &json!({ "channel_id": "12345", "fingerprint": "0000-0000" }).to_string(),
         ),
     )
@@ -378,7 +389,7 @@ async fn a_contact_naming_no_endpoint_is_400() {
     let (status, content_type, body) = send(
         &router,
         post_json(
-            &format!("/actors/{helper}/start-pairing"),
+            &format!("/api/v1/actors/{helper}/start-pairing"),
             &json!({ "channel_id": "1", "nonce": "2" }).to_string(),
         ),
     )
@@ -403,7 +414,7 @@ async fn a_contact_the_sdk_refuses_is_400_not_500() {
     let (status, content_type, body) = send(
         &router,
         post_json(
-            &format!("/actors/{helper}/start-pairing"),
+            &format!("/api/v1/actors/{helper}/start-pairing"),
             &contact.to_string(),
         ),
     )
@@ -434,7 +445,7 @@ async fn a_failed_start_pairing_leaves_no_route_behind() {
     let (status, _, _) = send(
         &router,
         post_json(
-            &format!("/actors/{helper}/start-pairing"),
+            &format!("/api/v1/actors/{helper}/start-pairing"),
             &contact.to_string(),
         ),
     )
@@ -450,7 +461,7 @@ async fn a_failed_start_pairing_leaves_no_route_behind() {
 async fn toggle_status_without_a_body_toggles_and_with_one_sets() {
     let (_, router) = app().await;
     let helper = provision(&router, json!({ "name": "Alex" })).await;
-    let uri = format!("/helpers/{helper}/toggle-status");
+    let uri = format!("/api/v1/helpers/{helper}/toggle-status");
 
     let bare = Request::post(&uri)
         .body(Body::empty())
@@ -478,7 +489,7 @@ async fn toggle_status_without_a_body_toggles_and_with_one_sets() {
 async fn a_browser_contact_round_trips_as_json() {
     let (_, router) = app().await;
     let owner = register_owner(&router, "Bob").await;
-    let uri = format!("/helpers/{owner}/browser-contact");
+    let uri = format!("/api/v1/helpers/{owner}/browser-contact");
 
     let missing = Request::get(&uri)
         .body(Body::empty())
@@ -534,7 +545,7 @@ async fn the_roster_prefers_a_paired_channel_over_a_newer_pending_one() {
         })
     };
     let mut store =
-        derec_backend::sql::channel::SqlChannelStore::new(state.pool.clone(), helper.clone());
+        derec_backend::repositories::sdk::channel::SqlChannelStore::new(state.pool.clone(), helper.clone());
     store
         .save(1, record(100, ChannelStatus::Paired, 10))
         .await
@@ -546,9 +557,9 @@ async fn the_roster_prefers_a_paired_channel_over_a_newer_pending_one() {
     // The index in the order that used to pick the pending one.
     state
         .helper_channels
-        .insert(helper_id, vec!["100".to_owned(), "200".to_owned()]);
+        .replace(helper_id, vec!["100".to_owned(), "200".to_owned()]);
 
-    let request = Request::get("/actors")
+    let request = Request::get("/api/v1/actors")
         .body(Body::empty())
         .expect("request builds");
     let (_, _, body) = send(&router, request).await;
@@ -570,7 +581,7 @@ fn patch_json(uri: &str, body: &str) -> Request<Body> {
 }
 
 async fn roster(router: &Router) -> Vec<Value> {
-    let request = Request::get("/actors")
+    let request = Request::get("/api/v1/actors")
         .body(Body::empty())
         .expect("request builds");
     let (status, _, body) = send(router, request).await;
@@ -596,7 +607,7 @@ async fn renaming_an_owner_stores_the_trimmed_name_and_the_roster_and_claim_show
     let (status, _, body) = send(
         &router,
         patch_json(
-            &format!("/owners/{owner}"),
+            &format!("/api/v1/owners/{owner}"),
             &json!({ "name": "  Alicia " }).to_string(),
         ),
     )
@@ -609,7 +620,7 @@ async fn renaming_an_owner_stores_the_trimmed_name_and_the_roster_and_claim_show
     let (status, _, claimed) = send(
         &router,
         post_json(
-            "/owners",
+            "/api/v1/owners",
             &json!({ "name": "ignored", "claim_actor_id": owner }).to_string(),
         ),
     )
@@ -630,7 +641,7 @@ async fn renaming_an_actor_that_is_not_an_owner_is_404() {
         let (status, content_type, body) = send(
             &router,
             patch_json(
-                &format!("/owners/{id}"),
+                &format!("/api/v1/owners/{id}"),
                 &json!({ "name": "Bob" }).to_string(),
             ),
         )
@@ -650,7 +661,7 @@ async fn renaming_an_actor_that_is_not_an_owner_is_404() {
 async fn an_invalid_new_owner_name_is_refused_in_the_shared_shape() {
     let (_, router) = app().await;
     let owner = register_owner(&router, "Alice").await;
-    let uri = format!("/owners/{owner}");
+    let uri = format!("/api/v1/owners/{owner}");
 
     for name in [
         "".to_owned(),
@@ -725,7 +736,7 @@ async fn a_second_helper_with_the_same_name_is_409_and_not_created() {
     for name in ["Alex", " alex "] {
         let (status, content_type, body) = send(
             &router,
-            post_json("/helpers", &json!({ "name": name }).to_string()),
+            post_json("/api/v1/helpers", &json!({ "name": name }).to_string()),
         )
         .await;
         assert_eq!(
@@ -735,7 +746,7 @@ async fn a_second_helper_with_the_same_name_is_409_and_not_created() {
         );
         assert_error_shape(&content_type, &body);
         assert!(
-            body["error"]
+            body["error"]["message"]
                 .as_str()
                 .unwrap_or_default()
                 .contains("already exists"),
@@ -765,7 +776,7 @@ async fn ensure_never_mints_a_name_the_pool_already_has() {
     let (status, _, body) = send(
         &router,
         post_json(
-            "/helpers/ensure",
+            "/api/v1/helpers/ensure",
             &json!({ "total": 5, "names": ["Alex", "alex", "Richard"] }).to_string(),
         ),
     )
@@ -793,13 +804,13 @@ async fn an_ensure_total_past_the_pool_limit_names_the_limit() {
 
     let (status, content_type, body) = send(
         &router,
-        post_json("/helpers/ensure", &json!({ "total": 300 }).to_string()),
+        post_json("/api/v1/helpers/ensure", &json!({ "total": 300 }).to_string()),
     )
     .await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_error_shape(&content_type, &body);
-    assert_eq!(body["error"], "total must be at most 255 (got 300)");
+    assert_eq!(body["error"]["message"], "total must be at most 255 (got 300)");
     assert!(
         state.actors.all().await.expect("readable").is_empty(),
         "nothing is created"

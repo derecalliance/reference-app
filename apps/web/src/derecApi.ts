@@ -4,7 +4,7 @@
 // ── Config ────────────────────────────────────────────────────────────────────
 
 import { API_BASE } from './apiBase'
-import { responseError } from './httpError'
+import { type ApiRequestError, responseError } from './httpError'
 
 // ── Polled mailbox message ────────────────────────────────────────────────────
 
@@ -55,9 +55,18 @@ async function deliver(url: string, init: RequestInit, action: string): Promise<
   if (!res.ok) {
     const error = await responseError(res, action)
     // A switched-off relay answers 503 too, and no resend turns it on.
-    const transient = isTransientStatus(res.status) && !/disabled/i.test(error.message)
+    const transient = isTransientStatus(res.status) && !isRelayDisabled(error)
     throw new DeliveryError(error.message, transient)
   }
+}
+
+/**
+ * The relay is switched off on the node — by its code, or, from a node that
+ * predates the error envelope, by the wording it answered with.
+ */
+function isRelayDisabled(error: ApiRequestError): boolean {
+  if (error.code !== undefined) return error.code === 'RELAY_DISABLED'
+  return /disabled/i.test(error.message)
 }
 
 /**
@@ -84,7 +93,8 @@ export function sendMessage(uri: string, message: Uint8Array): Promise<void> {
  * attributes the request in the node's debug events. The node's refusal is
  * passed on in its own words: 403 a target outside the allowed hosts, 409 gRPC
  * off, 400 a malformed target, 413 too large, 502 the delivery itself failed,
- * 503 the relay switched off or the recipient's mailbox full.
+ * 503 the relay switched off (`RELAY_DISABLED`, final) or the recipient's
+ * mailbox full (`MAILBOX_FULL`, worth a retry).
  */
 export function relayMessage(uri: string, message: Uint8Array, actorId?: string): Promise<void> {
   return deliver(
@@ -99,15 +109,43 @@ export function relayMessage(uri: string, message: Uint8Array, actorId?: string)
 }
 
 /**
+ * A request that never reached the node: `fetch` rejected, or a proxy in front
+ * of the node answered for it because the node did not.
+ *
+ * Distinct from the node answering "no" (an unknown actor, say), which is about
+ * one vault. This is about every vault at once — they all poll the same node —
+ * so the manager reports it once for the node rather than once per vault.
+ */
+export class NodeUnreachableError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options)
+    this.name = 'NodeUnreachableError'
+  }
+}
+
+/** What a proxy answers with when the node behind it is down or not ready. */
+const GATEWAY_STATUSES: ReadonlySet<number> = new Set([502, 503, 504])
+
+/**
  * Polls an actor's mailbox and returns all pending wire messages, draining the
  * queue.  Each message's `bytes` field is ready to pass to
  * `DeRecProtocolWasm.process()`.
  */
 export async function pollMailbox(actorId: string): Promise<MailboxMessage[]> {
-  const res = await fetch(`${API_BASE}/derec/${actorId}/mailbox`)
+  let res: Response
+  try {
+    res = await fetch(`${API_BASE}/derec/${actorId}/mailbox`)
+  } catch (err) {
+    throw new NodeUnreachableError(
+      `Could not poll the mailbox: the node could not be reached (${err instanceof Error ? err.message : String(err)})`,
+      { cause: err },
+    )
+  }
 
   if (!res.ok) {
-    throw await responseError(res, 'Could not poll the mailbox')
+    const error = await responseError(res, 'Could not poll the mailbox')
+    if (GATEWAY_STATUSES.has(res.status)) throw new NodeUnreachableError(error.message)
+    throw error
   }
 
   const body = (await res.json()) as { messages: { data: string }[] }

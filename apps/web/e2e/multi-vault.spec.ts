@@ -3,12 +3,14 @@
 
 import { test, expect } from './fixtures'
 import {
+  addAndPairReplica,
   backToVaults,
   openVault,
   protectSecret,
   setUpAnotherVault,
   setUpOwner,
   tabCount,
+  uniqueReplicaName,
 } from './app'
 import type { Page } from '@playwright/test'
 
@@ -56,6 +58,47 @@ test('two vaults in one tab keep their state apart', async ({ page }) => {
   await backToVaults(page)
   await expect(vaultRow(page, 'Alpha')).toContainText('Running')
   await expect(vaultRow(page, 'Beta')).toContainText('Running')
+})
+
+/** The list's Bag column for a vault, as a number — `null` while it has no bag. */
+async function listedBagVersion(page: Page, name: string): Promise<number | null> {
+  const text = (await vaultRow(page, name).getByRole('cell').nth(3).innerText()).trim()
+  return text.startsWith('v') ? Number(text.slice(1)) : null
+}
+
+/** The list's Replicas column for a vault. */
+async function listedReplicaCount(page: Page, name: string): Promise<number> {
+  return Number((await vaultRow(page, name).getByRole('cell').nth(4).innerText()).trim())
+}
+
+test('two vaults in one tab keep their bag versions and replica counts apart', async ({ page }) => {
+  // Alpha: a protected secret and a replica. Beta: a protected secret of its
+  // own, and no replica.
+  await setUpOwner(page, { name: 'Alpha', participants: 3, prePaired: 2, minParticipants: 2 })
+  await protectSecret(page, 'Alpha seed', 'alpha-only')
+  await addAndPairReplica(page, uniqueReplicaName('Alpha-replica'))
+
+  await setUpAnotherVault(page, { name: 'Beta', prePaired: 2 })
+  await protectSecret(page, 'Beta seed', 'beta-only')
+
+  await backToVaults(page)
+  await expect.poll(() => listedBagVersion(page, 'Beta'), { timeout: 30_000 }).toBe(1)
+  await expect.poll(() => listedReplicaCount(page, 'Alpha'), { timeout: 30_000 }).toBe(1)
+  expect(await listedReplicaCount(page, 'Beta')).toBe(0)
+  const alphaBefore = await listedBagVersion(page, 'Alpha')
+  expect(alphaBefore).not.toBeNull()
+
+  // A new version of Alpha's bag moves Alpha's number, and only Alpha's.
+  await openVault(page, 'Alpha')
+  await protectSecret(page, 'Alpha second', 'alpha-again')
+  await backToVaults(page)
+
+  await expect
+    .poll(() => listedBagVersion(page, 'Alpha'), { timeout: 30_000 })
+    .toBeGreaterThan(alphaBefore ?? 0)
+  expect(await listedBagVersion(page, 'Beta')).toBe(1)
+  expect(await listedReplicaCount(page, 'Alpha')).toBe(1)
+  expect(await listedReplicaCount(page, 'Beta')).toBe(0)
 })
 
 test('a vault off screen that needs a decision says so without interrupting', async ({ browser }) => {

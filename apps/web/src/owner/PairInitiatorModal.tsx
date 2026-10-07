@@ -3,7 +3,7 @@
 
 import { ModalFrame } from '../ModalFrame'
 import { PairingRoleSelector } from './ShareContactModal'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useConsole } from '../ConsoleContext'
 import { useProtocolTimeoutMs } from '../ProtocolConfig'
 import { QrScanner } from '../QrScanner'
@@ -27,9 +27,49 @@ import { advertisedEndpoints, type ContactMessage } from '@derec-alliance/web'
 type PairInitiatorStep =
   | { kind: 'input' }
   | { kind: 'sending' }
-  | { kind: 'waiting'; channelId: bigint }
+  | WaitingStep
   | { kind: 'success'; channelId: bigint }
   | { kind: 'failed'; reason: string }
+
+/**
+ * Waiting on the peer. The two counters are snapshotted when the request goes
+ * out, so only events *after* it count as this pairing's outcome.
+ */
+interface WaitingStep {
+  kind: 'waiting'
+  channelId: bigint
+  rejectionCountAtStart: number
+  completedSignalAtStart: number
+}
+
+/** The props a waiting request's outcome is read from. */
+interface PairingSignals {
+  pairedChannelIds: Set<string>
+  pairingRejectionCount: number
+  pairingCompletedSignal: number
+}
+
+/**
+ * The step a waiting request moves to given the latest signals, or `null` while
+ * it is still waiting.
+ *
+ * `pairedChannelIds` gains the new channel once PairingCompleted fires. The
+ * completion signal is the fallback for the rekey case, where the long-term id
+ * differs from the transient one the request started with. A rejection wins
+ * over both: it is the more specific news about this request.
+ */
+function settleWaiting(step: WaitingStep, signals: PairingSignals): PairInitiatorStep | null {
+  if (signals.pairingRejectionCount > step.rejectionCountAtStart) {
+    return { kind: 'failed', reason: 'The peer rejected the pairing request.' }
+  }
+  if (
+    signals.pairedChannelIds.has(step.channelId.toString()) ||
+    signals.pairingCompletedSignal > step.completedSignalAtStart
+  ) {
+    return { kind: 'success', channelId: step.channelId }
+  }
+  return null
+}
 
 export function PairInitiatorModal<R extends PairingRole>({
   label,
@@ -119,46 +159,13 @@ export function PairInitiatorModal<R extends PairingRole>({
   // and erases nothing; a denial aborts before `startPairing` is ever called.
   const eraseConsent = useReplicaEraseConsent()
 
-  // Snapshotted when entering the waiting state so we only react to events after the request.
-  const rejectionCountAtWaitRef = useRef(pairingRejectionCount)
-  const completedSignalAtWaitRef = useRef(pairingCompletedSignal)
-
-  // `pairedChannelIds` gains the new channel once PairingCompleted fires, so
-  // success is detectable here. The signal fallback below covers the case
-  // where the long-term id differs from the transient one we started with.
-  useEffect(() => {
-    if (step.kind !== 'waiting') return
-    const channelIdStr = step.channelId.toString()
-    const found = pairedChannelIds.has(channelIdStr)
-
-    if (found) {
-
-       
-      setStep({ kind: 'success', channelId: step.channelId })
-    }
-  }, [step, pairedChannelIds])
-
-  // Fallback for the rekey case (see comment above).
-  // Only the 'waiting' variant carries a channel id; narrow it out here so the
-  // dependency array does not reach for a field the other variants lack.
-  const waitingChannelId = step.kind === 'waiting' ? step.channelId : null
-
-  useEffect(() => {
-    if (waitingChannelId === null) return
-    if (pairingCompletedSignal > completedSignalAtWaitRef.current) {
-
-       
-      setStep({ kind: 'success', channelId: waitingChannelId })
-    }
-  }, [waitingChannelId, pairingCompletedSignal])
-
-  useEffect(() => {
-    if (step.kind !== 'waiting') return
-    if (pairingRejectionCount > rejectionCountAtWaitRef.current) {
-       
-      setStep({ kind: 'failed', reason: 'The peer rejected the pairing request.' })
-    }
-  }, [step.kind, pairingRejectionCount])
+  // Settled while rendering rather than in an effect: the outcome is derived
+  // from the props, and moving on in the same render means the waiting state
+  // never paints once the answer is already in.
+  if (step.kind === 'waiting') {
+    const settled = settleWaiting(step, { pairedChannelIds, pairingRejectionCount, pairingCompletedSignal })
+    if (settled) setStep(settled)
+  }
 
   useEffect(() => {
     if (step.kind !== 'waiting') return
@@ -213,9 +220,12 @@ export function PairInitiatorModal<R extends PairingRole>({
       // row to resolve against, and it is what identifies them once the
       // pairing completes.
       onPairingRequestSent(channelId, resolvedParticipantId, advertisedEndpoints(contact)[0]?.uri)
-      rejectionCountAtWaitRef.current = pairingRejectionCount
-      completedSignalAtWaitRef.current = pairingCompletedSignal
-      setStep({ kind: 'waiting', channelId })
+      setStep({
+        kind: 'waiting',
+        channelId,
+        rejectionCountAtStart: pairingRejectionCount,
+        completedSignalAtStart: pairingCompletedSignal,
+      })
     } catch (err) {
       // A failed send is a reachability problem, and says so.
       setError(`Failed: ${pairingErrorText(err)}`)

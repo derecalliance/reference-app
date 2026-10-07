@@ -55,6 +55,7 @@ export function SecretDataField({
 
 const ROW_DISPLAY: Record<VerifyRowState, { label: string; itemClass: string; statusClass: string }> = {
   verified: { label: 'Verified', itemClass: 'share-progress-item--confirmed', statusClass: 'status--verified' },
+  rejected: { label: 'Rejected', itemClass: 'share-progress-item--failed', statusClass: 'status--failed' },
   failed: { label: 'Challenge not sent', itemClass: 'share-progress-item--failed', statusClass: 'status--failed' },
   'timed-out': { label: 'Verification timed out', itemClass: 'share-progress-item--failed', statusClass: 'status--failed' },
   waiting: { label: 'Waiting…', itemClass: '', statusClass: '' },
@@ -73,6 +74,7 @@ const ROW_DISPLAY: Record<VerifyRowState, { label: string; itemClass: string; st
 export function VerifySharesModal({
   version,
   verifiedParticipantIds,
+  rejections,
   confirmedParticipants,
   onClose,
   onVerify,
@@ -80,6 +82,8 @@ export function VerifySharesModal({
   version: number
   /** Live-updated list of participant IDs that have passed verification for `version`. */
   verifiedParticipantIds: readonly string[]
+  /** Live-updated refusals for `version` — see `BagVersion.verifyRejections`. */
+  rejections?: readonly { id: string; status: number; memo: string }[]
   confirmedParticipants: PairedParticipant[]
   onClose: () => void
   onVerify: (version: number) => Promise<VerifyDispatch>
@@ -118,9 +122,10 @@ export function VerifySharesModal({
     return () => clearTimeout(timer)
   }, [timeoutMs])
 
-  const { rows, verifiedCount, failedCount, allDone, percent } = verifyProgress({
+  const { rows, verifiedCount, rejectedCount, failedCount, allDone, percent } = verifyProgress({
     participants: confirmedParticipants,
     verifiedParticipantIds,
+    rejections,
     failedChannelIds,
     deadlinePassed,
   })
@@ -151,6 +156,7 @@ export function VerifySharesModal({
           </div>
           <p className="share-progress-summary">
             {verifiedCount} of {rows.length} verified
+            {rejectedCount > 0 && ` · ${rejectedCount} rejected`}
             {failedCount > 0 && ` · ${failedCount} failed`}
           </p>
         </div>
@@ -170,8 +176,12 @@ export function VerifySharesModal({
                   )}
                 </span>
                 <span className="share-progress-item-name">{row.name}</span>
-                <span className={`share-progress-item-status ${display.statusClass}`}>
+                <span
+                  className={`share-progress-item-status ${display.statusClass}`}
+                  title={row.detail ?? undefined}
+                >
                   {display.label}
+                  {row.detail && <span className="verify-progress-detail">: {row.detail}</span>}
                 </span>
               </li>
             )

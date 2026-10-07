@@ -111,6 +111,16 @@ describe('removing a replica', () => {
     expect(onConfirm).toHaveBeenCalledWith(request)
   })
 
+  it('states the documented semantics: anyone may remove anyone, the removed device is not warned', () => {
+    const request = removalRequestFor(view({ direction: 'replica_destination', name: 'Alice' }))!
+    act(() => root.render(<ReplicaRemovalDialog request={request} onCancel={() => {}} onConfirm={() => {}} />))
+
+    expect(text()).toContain('Any member may remove any other, the source included')
+    expect(text()).toContain('Alice is not asked and gets no warning')
+    expect(text()).toContain('The first remaining member in this device’s replica list becomes the source')
+    expect(text()).toContain('survives on the remaining members and the helpers')
+  })
+
   it('offers no removal for a member whose replica id is unknown', () => {
     expect(removalRequestFor(view({ peerReplicaId: null }))).toBeNull()
   })
@@ -181,6 +191,7 @@ describe('the fingerprint dialog', () => {
           protocol={protocol}
           protocolTimeoutSecs={300}
           onConfirm={() => {}}
+          onDeclineAdoption={() => {}}
           onRefuse={() => {}}
           onClose={() => {}}
         />,
@@ -204,6 +215,7 @@ describe('the fingerprint dialog', () => {
           protocol={protocol}
           protocolTimeoutSecs={300}
           onConfirm={() => {}}
+          onDeclineAdoption={() => {}}
           onRefuse={onRefuse}
           onClose={onClose}
         />,
@@ -225,6 +237,7 @@ describe('the fingerprint dialog', () => {
           protocol={protocol}
           protocolTimeoutSecs={300}
           onConfirm={() => {}}
+          onDeclineAdoption={() => {}}
           onRefuse={() => {}}
           onClose={() => {}}
         />,
@@ -236,5 +249,144 @@ describe('the fingerprint dialog', () => {
     expect(text()).toContain('the mirror goes out now')
     expect(text()).not.toContain('will not mirror automatically')
     expect(text()).not.toContain('press “Sync now”')
+  })
+
+  it('starts a reopened dialog from a clean attempt and a freshly derived code', async () => {
+    const getFingerprint = vi.fn(async () => '1234567890123456')
+    const freshProtocol = { getFingerprint, verifyFingerprint: vi.fn(async () => true) } as unknown as ReplicaProtocol
+    const renderOpen = (open: boolean) =>
+      act(async () => {
+        root.render(
+          <ReplicaFingerprintDialog
+            open={open}
+            replica={view({ status: 'pending' })}
+            protocol={freshProtocol}
+            protocolTimeoutSecs={300}
+            onConfirm={() => {}}
+            onDeclineAdoption={() => {}}
+            onRefuse={() => {}}
+            onClose={() => {}}
+          />,
+        )
+      })
+
+    await renderOpen(true)
+    await act(async () => button(/Codes match/).click())
+    expect(text()).toContain('Confirmed on this device')
+
+    await renderOpen(false)
+    await renderOpen(true)
+
+    expect(text()).not.toContain('Confirmed on this device')
+    expect(button(/Codes match/).disabled).toBe(false)
+    expect(getFingerprint).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows why the code could not be derived, and derives it again on Retry', async () => {
+    const getFingerprint = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce({ code: 'channel', message: 'channel not found' })
+      .mockResolvedValueOnce('1234567890123456')
+    const flakyProtocol = { getFingerprint, verifyFingerprint: vi.fn(async () => true) } as unknown as ReplicaProtocol
+    await act(async () => {
+      root.render(
+        <ReplicaFingerprintDialog
+          open
+          replica={view({ status: 'pending' })}
+          protocol={flakyProtocol}
+          protocolTimeoutSecs={300}
+          onConfirm={() => {}}
+          onDeclineAdoption={() => {}}
+          onRefuse={() => {}}
+          onClose={() => {}}
+        />,
+      )
+    })
+    expect(text()).toContain('channel not found')
+    expect(button(/Codes match/).disabled).toBe(true)
+
+    await act(async () => button(/Retry/).click())
+
+    expect(text()).not.toContain('channel not found')
+    expect(button(/Codes match/).disabled).toBe(false)
+  })
+
+  describe('on a destination, where confirming adopts the source\'s vault', () => {
+    function renderDestination(handlers: {
+      onConfirm?: () => void
+      onDeclineAdoption?: () => void
+      onClose?: () => void
+      verify?: ReturnType<typeof vi.fn>
+    }) {
+      const verify = handlers.verify ?? vi.fn(async () => true)
+      const destinationProtocol = {
+        getFingerprint: vi.fn(async () => '1234567890123456'),
+        verifyFingerprint: verify,
+      } as unknown as ReplicaProtocol
+      return act(async () => {
+        root.render(
+          <ReplicaFingerprintDialog
+            open
+            replica={view({ status: 'pending', direction: 'replica_destination', name: 'Alice' })}
+            protocol={destinationProtocol}
+            protocolTimeoutSecs={300}
+            onConfirm={handlers.onConfirm ?? (() => {})}
+            onDeclineAdoption={handlers.onDeclineAdoption ?? (() => {})}
+            onRefuse={() => {}}
+            onClose={handlers.onClose ?? (() => {})}
+          />,
+        )
+      })
+    }
+
+    it('asks about adoption before confirming anything', async () => {
+      const verify = vi.fn(async () => true)
+      const onConfirm = vi.fn()
+      await renderDestination({ verify, onConfirm })
+
+      await act(async () => button(/Codes match/).click())
+
+      expect(text()).toContain('Confirming adopts Alice’s vault')
+      expect(verify).not.toHaveBeenCalled()
+      expect(onConfirm).not.toHaveBeenCalled()
+    })
+
+    it('declines by never confirming', async () => {
+      const verify = vi.fn(async () => true)
+      const onDeclineAdoption = vi.fn()
+      const onClose = vi.fn()
+      await renderDestination({ verify, onDeclineAdoption, onClose })
+
+      await act(async () => button(/Codes match/).click())
+      await act(async () => button(/Don’t adopt/).click())
+
+      expect(onDeclineAdoption).toHaveBeenCalledTimes(1)
+      expect(onClose).toHaveBeenCalledTimes(1)
+      expect(verify).not.toHaveBeenCalled()
+    })
+
+    it('confirms, recording the consent, only once adoption is agreed', async () => {
+      const verify = vi.fn(async () => true)
+      const onConfirm = vi.fn()
+      await renderDestination({ verify, onConfirm })
+
+      await act(async () => button(/Codes match/).click())
+      await act(async () => button(/Adopt and confirm/).click())
+
+      expect(verify).toHaveBeenCalledTimes(1)
+      expect(onConfirm).toHaveBeenCalledWith(
+        expect.objectContaining({ local: true, adoptionConsented: true, adoptionDeclined: false }),
+      )
+      expect(text()).toContain('adopted here as soon as it arrives')
+    })
+
+    it('makes not adopting the default answer', async () => {
+      await renderDestination({})
+      await act(async () => button(/Codes match/).click())
+
+      // The filled button is the default; the destructive answer is outlined.
+      expect(button(/Don’t adopt/).className).toContain('MuiButton-contained')
+      expect(button(/Adopt and confirm/).className).toContain('MuiButton-outlined')
+    })
   })
 })

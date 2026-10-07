@@ -33,9 +33,10 @@ import type { ReplicaPairingRole } from './pairingRoles'
  *
  * **Nothing is erased here.** This dialog only decides whether the pairing is
  * accepted; accepting goes through the same `protocol.accept` path a
- * participant pairing takes. The wipe happens later, at first sync, behind
- * `ReplicaAdoptionDialog` — the only place `clearNamespace` and `restore` are
- * reachable from.
+ * participant pairing takes. The decision to adopt is taken later, in the
+ * fingerprint dialog, before this device confirms — confirming is what lets
+ * the library install the source's vault (SDK 0.0.7) — and the wipe follows
+ * when the vault arrives.
  *
  * Reject is the default action: it takes focus, carries the filled styling, and
  * is what Escape and a backdrop click resolve to. Rejecting destroys nothing.
@@ -123,7 +124,7 @@ export function ReplicaPairingRequestDialog({
 
             <Typography variant="body2" color="text.secondary">
               {losesOwnVault
-                ? 'Nothing is erased by accepting. The channel is established first, both sides confirm the fingerprint, and this device is asked once more — against the actual vault being offered — before anything here is replaced.'
+                ? 'Nothing is erased by accepting. The channel is established first; then, when you confirm the fingerprint, you are asked once more whether to adopt the vault. Confirming is that decision — the vault is installed here as soon as it arrives — and declining leaves this vault as it is.'
                 : 'Accepting only establishes the channel. Both sides confirm the fingerprint before this device mirrors anything to the peer.'}
             </Typography>
           </Stack>

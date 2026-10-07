@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
-import { FlowKind } from '@derec-alliance/web'
+import { FlowKind, type ContactMessage } from '@derec-alliance/web'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { BEActorWithStatus } from '../api'
@@ -11,6 +11,8 @@ import {
   replicaChannelRowId,
   type RestoreFailure,
 } from '../replicaFlows'
+import { NodeUnreachableError } from '../derecApi'
+import type { PairedParticipant } from '../types'
 import { VaultRuntime } from './runtime'
 import { deps, stubInstance, vault } from './testVault'
 
@@ -237,6 +239,43 @@ describe('VaultRuntime', () => {
 
       expect(d.notify.error).toHaveBeenCalled()
       expect(r.state().status).not.toBe('failed')
+    })
+
+    it('reports a node it cannot reach to whoever folds every vault into one notice, not as its own error', async () => {
+      const pollReached = vi.fn()
+      const d = deps({
+        pollReached,
+        io: { pollMailbox: async () => { throw new NodeUnreachableError('down') } },
+      })
+      const r = new VaultRuntime(vault(), d)
+      stubInstance(r, { process: async () => [] })
+
+      await r.drainOnce()
+
+      expect(pollReached).toHaveBeenCalledWith(false)
+      expect(d.notify.error).not.toHaveBeenCalled()
+    })
+
+    it('still reports an answer about its own mailbox as its own error, and the node as reached', async () => {
+      const pollReached = vi.fn()
+      const d = deps({ pollReached, io: { pollMailbox: async () => { throw new Error('actor not found') } } })
+      const r = new VaultRuntime(vault(), d)
+      stubInstance(r, { process: async () => [] })
+
+      await r.drainOnce()
+
+      expect(pollReached).toHaveBeenCalledWith(true)
+      expect(d.notify.error).toHaveBeenCalledWith('Mailbox poll failed', expect.any(Error), { vaultId: 'v1' })
+    })
+
+    it('tells the listener the node answered again', async () => {
+      const pollReached = vi.fn()
+      const r = new VaultRuntime(vault(), deps({ pollReached, io: { pollMailbox: async () => [] } }))
+      stubInstance(r, { process: async () => [] })
+
+      await r.drainOnce()
+
+      expect(pollReached).toHaveBeenCalledWith(true)
     })
 
     it('stops draining once blocked by a failed adoption', async () => {
@@ -727,5 +766,106 @@ describe('updating this vault\'s identity', () => {
     await r.drainOnce()
 
     expect(r.state().identityUpdate?.channels['7'].outcome).toBe('updated')
+  })
+})
+
+describe('auto-pairing at setup', () => {
+  function available(n: number): PairedParticipant {
+    return {
+      id: `h${n}`,
+      name: `Helper ${n}`,
+      channelId: '',
+      transport: { protocol: 'https', uri: `http://localhost:5000/derec/h${n}` },
+      secretShares: [],
+      connectionStatus: 'available',
+    }
+  }
+
+  function pairingRuntime(
+    prePairedCount: number,
+    contact: (participantId: string) => Promise<ContactMessage> = async () => ({}) as ContactMessage,
+  ) {
+    let next = 900
+    const start = vi.fn(async () => [{ type: 'PairingStarted', channel_id: String(next++) }])
+    const r = new VaultRuntime(
+      vault({ participants: [available(1), available(2), available(3)], prePairedCount }),
+      deps({ io: { participantContact: contact } }),
+    )
+    stubInstance(r, { start })
+    return { r, start }
+  }
+
+  it('pairs with as many participants as asked, records the pairings, and holds the fast cadence meanwhile', async () => {
+    const { r, start } = pairingRuntime(2)
+
+    await r.autoPair()
+
+    expect(start).toHaveBeenCalledTimes(2)
+    expect(r.state().autoPairing).toHaveLength(2)
+    expect(r.wantsFastCadence()).toBe(true)
+    expect(r.state().vault.prePairedCount).toBe(0)
+    expect(r.state().vault.pendingPairings.map(p => p.participantId).sort()).toEqual(
+      [...r.state().autoPairing].sort(),
+    )
+  })
+
+  it('lets the poll slow down once every one of them has paired', async () => {
+    const { r } = pairingRuntime(2)
+    await r.autoPair()
+    const targets = new Set(r.state().autoPairing)
+
+    r.commit({
+      ...r.state().vault,
+      participants: r.state().vault.participants.map(p =>
+        targets.has(p.id) ? { ...p, connectionStatus: 'paired' as const } : p,
+      ),
+    })
+
+    expect(r.state().autoPairing).toEqual([])
+    expect(r.wantsFastCadence()).toBe(false)
+  })
+
+  it('stops holding the fast cadence when the vault stops mid-pairing', () => {
+    // Leaving the page used to leave the poll fast for good: the page set it
+    // and nothing unset it.
+    const { r } = pairingRuntime(2)
+    void r.autoPair()
+    expect(r.wantsFastCadence()).toBe(true)
+
+    r.stop()
+
+    expect(r.state().autoPairing).toEqual([])
+    expect(r.wantsFastCadence()).toBe(false)
+  })
+
+  it('does not wait on a participant whose pairing could not start', async () => {
+    const { r } = pairingRuntime(1, async () => {
+      throw new Error('node said no')
+    })
+
+    await r.autoPair()
+
+    expect(r.state().autoPairing).toEqual([])
+    expect(r.wantsFastCadence()).toBe(false)
+    // Nothing started, so the next start tries again.
+    expect(r.state().vault.prePairedCount).toBe(1)
+  })
+
+  it('runs once per runtime', async () => {
+    const { r, start } = pairingRuntime(1)
+
+    await r.autoPair()
+    await r.autoPair()
+
+    expect(start).toHaveBeenCalledTimes(1)
+  })
+
+  it('does nothing for a vault that asked for no pre-pairing', async () => {
+    const { r, start } = pairingRuntime(0)
+
+    await r.autoPair()
+
+    expect(start).not.toHaveBeenCalled()
+    expect(r.state().autoPairing).toEqual([])
   })
 })

@@ -17,11 +17,12 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use derec_backend::addresses::Listener;
-use derec_backend::config::{Defaults, Loaded};
-use derec_backend::debug::{Carrier, Direction, Outcome};
+use derec_backend::models::Listener;
+use derec_backend::models::{Defaults, LoadedConfig};
+use derec_backend::models::{Carrier, Direction, Outcome};
 use derec_backend::models::{Role, TransportMode, UnpairAck};
-use derec_backend::state::AppState;
+use derec_backend::infrastructure::bootstrap::Node;
+use derec_backend::services::ports::InboxDirectory;
 use prost::Message as _;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -30,24 +31,22 @@ use uuid::Uuid;
 /// A node moved to a LAN address and republished: it advertised
 /// `localhost:9090` for gRPC and `http://localhost:8080` before, and listens
 /// on neither now.
-async fn moved_node(grpc_enabled: bool, relay_allowed_hosts: &str) -> (Arc<AppState>, Router) {
-    let mut loaded = Loaded::default();
+async fn moved_node(grpc_enabled: bool, relay_allowed_hosts: &str) -> (Arc<Node>, Router) {
+    let mut loaded = LoadedConfig::default();
     loaded.settings.server.relay_allowed_hosts = relay_allowed_hosts.to_owned();
     let state = Arc::new(
-        AppState::new(
-            "http://192.168.0.28:5600",
-            Defaults {
+        Node::new(
+        derec_backend::models::NodeConfig::new("http://192.168.0.28:5600", Defaults {
                 grpc_enabled,
                 grpc_port: 50651,
                 ..Defaults::default()
-            },
-            reqwest::Client::new(),
-            actix_rt::Arbiter::current(),
-            derec_backend::db::connect("sqlite::memory:")
+            }).with_loaded(loaded),
+        reqwest::Client::new(),
+        actix_rt::Arbiter::current(),
+        derec_backend::infrastructure::db::connect("sqlite::memory:")
                 .await
                 .expect("an in-memory database always connects"),
-        )
-        .with_config(loaded),
+    ),
     );
     for (listener, address) in [
         (Listener::Grpc, "localhost:9090"),
@@ -55,17 +54,17 @@ async fn moved_node(grpc_enabled: bool, relay_allowed_hosts: &str) -> (Arc<AppSt
     ] {
         state
             .addresses
-            .remember(&state.pool, listener, address)
+            .remember(listener, address)
             .await
             .expect("the database is writable");
     }
-    let router = derec_backend::build_router(state.clone());
+    let router = derec_backend::infrastructure::server::build_router(state.state.clone());
     (state, router)
 }
 
 /// A browser owner on this node, as `POST /owners` registers one.
-async fn browser_owner(state: &AppState) -> Uuid {
-    let owner = derec_backend::provisioning::provisioned_actor(
+async fn browser_owner(state: &Node) -> Uuid {
+    let owner = derec_backend::models::Actor::mint(
         Role::Owner,
         "Alice",
         "http://localhost:8080",
@@ -76,7 +75,7 @@ async fn browser_owner(state: &AppState) -> Uuid {
         .actors
         .register(
             owner.clone(),
-            derec_backend::registry::actors::ActorSettings {
+            derec_backend::models::ActorSettings {
                 replica_id: rand::random(),
                 timeout_secs: 300,
                 unpair_ack: UnpairAck::Required,
@@ -84,7 +83,7 @@ async fn browser_owner(state: &AppState) -> Uuid {
         )
         .await
         .expect("the registry is writable");
-    derec_backend::provisioning::register_browser_actor(state, owner.id);
+    state.inboxes.register_browser(owner.id);
     owner.id
 }
 
@@ -108,11 +107,19 @@ async fn relay(router: &Router, body: Value) -> (StatusCode, Value) {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("readable");
-    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    // Success answers travel in the envelope; these tests read its result.
+    let body = match body {
+        Value::Object(mut fields) if fields.contains_key("result") => {
+            fields.remove("result").unwrap_or(Value::Null)
+        }
+        other => other,
+    };
+    (status, body)
 }
 
 /// The relay's own outbound events, oldest first.
-fn relay_events(state: &AppState) -> Vec<derec_backend::debug::Event> {
+fn relay_events(state: &Node) -> Vec<derec_backend::models::Event> {
     state
         .events
         .since(0, usize::MAX)
@@ -198,7 +205,7 @@ async fn another_node_is_refused_with_the_setting_to_change_and_the_refusal_is_l
     .await;
 
     assert_eq!(status, StatusCode::FORBIDDEN);
-    let message = body["error"].as_str().expect("error shape");
+    let message = body["error"]["message"].as_str().expect("error shape");
     assert!(message.contains("relay_allowed_hosts"), "{message}");
     assert!(message.contains("DEREC_RELAY_ALLOWED_HOSTS"), "{message}");
 
@@ -238,7 +245,7 @@ async fn with_grpc_disabled_the_relay_says_so_rather_than_unknown_target() {
     .await;
 
     assert_eq!(status, StatusCode::CONFLICT);
-    let message = body["error"].as_str().expect("error shape");
+    let message = body["error"]["message"].as_str().expect("error shape");
     assert!(message.contains("gRPC is disabled"), "{message}");
     assert!(message.contains("DEREC_GRPC_ENABLED"), "{message}");
     assert_eq!(relay_events(&state).len(), 1, "the refusal is logged");
@@ -255,7 +262,7 @@ async fn a_channel_nobody_here_holds_is_502_with_the_reason() {
     .await;
 
     assert_eq!(status, StatusCode::BAD_GATEWAY);
-    let message = body["error"].as_str().expect("error shape");
+    let message = body["error"]["message"].as_str().expect("error shape");
     assert!(message.contains("no actor on this node holds channel 31337"), "{message}");
     assert_eq!(relay_events(&state).len(), 1);
 }
@@ -285,7 +292,7 @@ async fn a_message_as_large_as_the_grpc_listener_accepts_can_be_relayed() {
     let owner = browser_owner(&state).await;
     state.channel_router.pin(9, owner);
 
-    let max = derec_backend::transport::MAX_MESSAGE_BYTES;
+    let max = derec_backend::services::delivery::MAX_MESSAGE_BYTES;
     // The envelope's own fields take a few bytes; fill the rest.
     let wire = envelope(9, max - 16);
     assert!(wire.len() <= max && wire.len() > max - 32);
@@ -305,7 +312,7 @@ async fn a_message_as_large_as_the_grpc_listener_accepts_can_be_relayed() {
     )
     .await;
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
-    assert!(body["error"].as_str().expect("error shape").contains("4 MiB"), "{body}");
+    assert!(body["error"]["message"].as_str().expect("error shape").contains("4 MiB"), "{body}");
 }
 
 #[actix_rt::test]

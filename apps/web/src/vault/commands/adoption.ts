@@ -55,7 +55,7 @@ export async function adoptMirroredVault(
           ownTransportUri: current.transport.uri,
           communicationInfo: { name: current.name },
           threshold: current.minParticipants,
-          keepVersionsCount: 3,
+          keepList: ctx.keepList,
           timeoutSecs: config.protocolTimeoutSecs,
           unpairAck: config.unpairAck,
         },

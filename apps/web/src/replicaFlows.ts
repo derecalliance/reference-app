@@ -30,7 +30,8 @@ import {
 import { dtoToContactMessage, protocolName } from './contactDto'
 import { resolveRosterEntries } from './peerIdentity'
 import { bytesToHex, toBytes } from './bytes'
-import type { BagVersion, PairedParticipant, SecretBag } from './types'
+import type { KeepListSource } from './stores'
+import type { BagVersion, PairedParticipant, SecretBag, UserSecret } from './types'
 
 /** One row of the actor roster, as the backend reports it. */
 type RosterActor = BEActorWithStatus
@@ -466,6 +467,24 @@ export interface ReplicaRecord {
    * prompt. Cleared by a later "Codes match" — a person may have misread.
    */
   refused?: boolean
+  /**
+   * On a destination: the person agreed to adopt the peer's vault, replacing
+   * this one, before this device confirmed the fingerprint.
+   *
+   * Confirming *is* that decision from SDK 0.0.7's point of view — once the
+   * channel is `Paired`, the group's publishes are installed as they arrive,
+   * with no further prompt — so the app asks first and confirms only on a yes.
+   * The mirrored vault is then adopted as soon as it lands, without asking
+   * again: asking twice would make the second answer look like a choice it
+   * no longer is.
+   */
+  adoptionConsented?: boolean
+  /**
+   * On a destination: the person declined to adopt the peer's vault, so the
+   * fingerprint was never confirmed and never will be from that answer. The
+   * channel stays `Pending` until it expires. Cleared by a later consent.
+   */
+  adoptionDeclined?: boolean
 }
 
 /**
@@ -1166,7 +1185,8 @@ export interface ReplicaAdoptionProtocolConfig {
   ownTransportUri: string
   communicationInfo: Record<string, string>
   threshold: number
-  keepVersionsCount: number
+  /** Which versions helpers keep — see `vault/keepList.ts`. */
+  keepList: KeepListSource
   timeoutSecs: number
   unpairAck: 'required' | 'not_required'
 }
@@ -1378,6 +1398,22 @@ export interface AdoptedVaultState {
 }
 
 /**
+ * A replica payload's user secrets, as the vault records them: ids in hex,
+ * contents as text.
+ */
+export function userSecretsFromWire(
+  secrets: ReadonlyArray<{ id: Uint8Array; name: string; data: Uint8Array }>,
+): UserSecret[] {
+  return secrets.map(s => ({
+    id: bytesToHex(toBytes(s.id)),
+    name: s.name,
+    // Payloads are text in this app; decode lossily so a binary surprise
+    // renders as replacement characters instead of throwing.
+    data: new TextDecoder('utf-8', { fatal: false }).decode(toBytes(s.data)),
+  }))
+}
+
+/**
  * Project an adopted snapshot into the roster and bag the owner page renders.
  *
  * The snapshot carries only what travelled on the wire, so helpers are
@@ -1450,13 +1486,7 @@ export function adoptedVaultState(
     participantIds: participants.map(p => p.id),
     verifiedParticipantIds: [],
     failedParticipantIds: [],
-    secrets: adoption.secret.secrets.map(s => ({
-      id: bytesToHex(toBytes(s.id)),
-      name: s.name,
-      // Payloads are text in this app; decode lossily so a binary surprise
-      // renders as replacement characters instead of throwing.
-      data: new TextDecoder('utf-8', { fatal: false }).decode(toBytes(s.data)),
-    })),
+    secrets: userSecretsFromWire(adoption.secret.secrets),
     // Display-only and unread — the library decodes the snapshot itself and no
     // longer surfaces the raw wire bytes.
     rawBytes: '',
@@ -1897,6 +1927,13 @@ export interface ReplicaView {
    * [`ReplicaRecord.refused`]. Never true once this device has confirmed.
    */
   refused: boolean
+  /**
+   * This device is the destination, and its person declined to adopt the
+   * peer's vault, so the channel was never confirmed — see
+   * [`ReplicaRecord.adoptionDeclined`]. Never true once this device has
+   * confirmed. Optional: absent reads as "not declined".
+   */
+  adoptionDeclined?: boolean
 }
 
 /**
@@ -1909,6 +1946,20 @@ export interface ReplicaView {
  */
 export function isReplicaChannelConfirmedLocally(state: ReplicaState, channelId: string): boolean {
   return state.replicas[replicaChannelRowId(channelId)]?.local === true
+}
+
+/**
+ * Whether the person agreed, on this device, to adopt a replica source's vault
+ * — see [`ReplicaRecord.adoptionConsented`].
+ *
+ * Not tied to the channel an offer arrives on: a destination joining an
+ * existing group is mirrored on the group's channel, which need not be the one
+ * it confirmed, and a device belongs to one group at most. Before consent no
+ * offer can arrive at all — the library ignores a channel this device has not
+ * confirmed, and confirming now waits on the consent.
+ */
+export function hasAdoptionConsent(state: ReplicaState): boolean {
+  return Object.values(state.replicas).some(record => record.adoptionConsented === true)
 }
 
 /**
@@ -1985,6 +2036,7 @@ function localChannelView(
     peerReplicaId: channel.peerReplicaId ?? null,
     helperActorId: helper?.id ?? null,
     refused: record.refused === true && !record.local,
+    adoptionDeclined: record.adoptionDeclined === true && !record.local,
   }
 }
 

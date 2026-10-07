@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
-//! What no route handles still answers in the API's one error shape.
+//! What no route handles still answers in the API's error envelope.
 //!
 //! These depend on `build_router` registering
-//! `routes::api_error::route_not_found` as its fallback and
-//! `routes::api_error::method_not_allowed` as its method-not-allowed fallback;
+//! `handlers::errors::route_not_found` as its fallbacks and
+//! `handlers::errors::method_not_allowed` as its method-not-allowed fallbacks;
 //! without them Axum answers both with an empty body.
 
 use axum::{
@@ -16,7 +16,7 @@ use serde_json::Value;
 use tower::ServiceExt;
 
 async fn send(request: Request<Body>) -> (StatusCode, Option<String>, Value) {
-    let router = derec_backend::build_router(derec_backend::test_support::app_state().await);
+    let router = derec_backend::infrastructure::server::build_router(derec_backend::infrastructure::test_support::node().await.state.clone());
     let response = router.oneshot(request).await.expect("router is infallible");
     let status = response.status();
     let allow = response
@@ -45,7 +45,7 @@ async fn an_unknown_path_is_404_in_the_shared_shape() {
 
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(
-        body["error"].is_string(),
+        body["error"]["code"].is_string() && body["error"]["message"].is_string(),
         "expected the shared error shape, got {body}"
     );
 }
@@ -53,7 +53,7 @@ async fn an_unknown_path_is_404_in_the_shared_shape() {
 #[actix_rt::test]
 async fn a_wrong_method_is_405_in_the_shared_shape_and_still_says_what_is_allowed() {
     let (status, allow, body) = send(
-        Request::delete("/actors")
+        Request::delete("/api/v1/actors")
             .body(Body::empty())
             .expect("request builds"),
     )
@@ -61,7 +61,7 @@ async fn a_wrong_method_is_405_in_the_shared_shape_and_still_says_what_is_allowe
 
     assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
     assert!(
-        body["error"].is_string(),
+        body["error"]["code"].is_string() && body["error"]["message"].is_string(),
         "expected the shared error shape, got {body}"
     );
     assert!(

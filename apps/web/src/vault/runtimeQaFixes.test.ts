@@ -208,6 +208,32 @@ describe('verification answers that land after a reload', () => {
     expect(r.state().vault.pendingVerifications).toBeUndefined()
   })
 
+  it('says once, when the last challenge is answered, that the round is verified', async () => {
+    // One banner for the round rather than one per helper — and only a vault
+    // off screen turns it into one (see the manager).
+    const participants = [
+      helper(1, { secretShares: [{ version: 1, status: 'confirmed', verified: false }] }),
+      helper(2, { secretShares: [{ version: 1, status: 'confirmed', verified: false }] }),
+    ]
+    const { r, d } = running(
+      { participants, minParticipants: 1, secretBag: bagAt(1, ['h1', 'h2']) },
+      {
+        start: async () => [
+          event({ type: 'VerifySharesStarted', channel_id: '901', version: 1, trace_id: 't' }),
+          event({ type: 'VerifySharesStarted', channel_id: '902', version: 1, trace_id: 't' }),
+        ],
+      },
+    )
+    await r.verifyShares(1)
+
+    r.commit(r.applyEvent(r.state().vault, event({ type: 'ShareVerified', channel_id: '901', version: 1 })))
+    expect(d.notify.outcome).not.toHaveBeenCalled()
+
+    r.commit(r.applyEvent(r.state().vault, event({ type: 'ShareVerified', channel_id: '902', version: 1 })))
+    expect(d.notify.outcome).toHaveBeenCalledTimes(1)
+    expect(d.notify.outcome).toHaveBeenCalledWith('Verification of v1 complete: 2 shares verified')
+  })
+
   it('reports a holder no longer paired as not reached, without handing it to the library', async () => {
     const participants = [
       helper(1, { secretShares: [{ version: 1, status: 'confirmed', verified: false }] }),

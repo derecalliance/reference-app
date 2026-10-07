@@ -28,6 +28,6 @@ why the example leaves them commented out. The [main README](../README.md#config
 has the precedence table and the full key-to-variable mapping.
 
 The node prints every setting it resolved, and where each value came from, at
-boot; the same data is served as JSON from `GET /debug/config`. A configuration
+boot; the same data is served as JSON from `GET /api/v1/debug/config`. A configuration
 it cannot use stops the boot with a message naming the file or variable at
 fault.

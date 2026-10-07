@@ -153,7 +153,7 @@ describe('vaultLock', () => {
     expect(vaultLockMode()).toBe('web-locks')
   })
 
-  it('survives a query failure without blocking the picker', async () => {
+  it('survives a query failure without blocking the vault list', async () => {
     vi.stubGlobal('navigator', {
       locks: {
         query: () => Promise.reject(new Error('nope')),

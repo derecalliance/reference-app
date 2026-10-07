@@ -9,7 +9,7 @@ import { fitTransportsTo } from './transportMix'
  * Browser-local overrides for the node's protocol defaults.
  *
  * The backend resolves its own set at boot — from its config file and `DEREC_*`
- * variables — and serves them from `GET /config`. It holds no policy about them
+ * variables — and serves them from `GET /api/v1/config`. It holds no policy about them
  * beyond that: the values a node actually runs with are whatever the front end
  * sends on each provisioning request. That is what makes these editable here
  * without an endpoint to write them.

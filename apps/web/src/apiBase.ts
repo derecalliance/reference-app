@@ -36,4 +36,16 @@ export function resolveApiBase(): string {
   return `${window.location.protocol}//${window.location.hostname}:5000`
 }
 
+/** The node this page talks to — its origin, without the API's path prefix. */
 export const API_BASE = resolveApiBase()
+
+/**
+ * Where the versioned API lives on a node. The DeRec transport (`/derec/*`)
+ * and `/health` stay at the node's root, outside it.
+ */
+export const API_PREFIX = '/api/v1'
+
+/** The full URL of `path` (starting with `/`) in a node's versioned API. */
+export function apiUrl(path: string, nodeBase: string = API_BASE): string {
+  return `${nodeBase.replace(/\/+$/, '')}${API_PREFIX}${path}`
+}

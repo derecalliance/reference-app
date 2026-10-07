@@ -10,8 +10,9 @@ import {
 import { DEFAULT_CONTACT_MODE, type ContactModeKey } from './contactModes'
 import type { TransportMix } from './transportMix'
 
-import { API_BASE } from './apiBase'
-import { responseError } from './httpError'
+import { API_BASE, apiUrl } from './apiBase'
+import { readResult } from './apiEnvelope'
+import { type ApiRequestError, responseError } from './httpError'
 
 /** One endpoint an actor advertises, in the actor's own preference order. */
 export interface TransportDto {
@@ -83,7 +84,8 @@ function settingsBody(settings: ProvisioningSettings) {
 }
 
 /**
- * Every call to the backend goes through here.
+ * Every call to the backend goes through here. `path` is relative to the
+ * versioned API (`/actors`, not `/api/v1/actors`).
  *
  * `fetch` rejects with a bare `TypeError: Failed to fetch` when it cannot open
  * a connection — no status, no URL, nothing the reader can act on. Since a
@@ -92,13 +94,29 @@ function settingsBody(settings: ProvisioningSettings) {
  */
 async function request(path: string, init?: RequestInit): Promise<Response> {
   try {
-    return await fetch(`${API_BASE}${path}`, init)
+    return await fetch(apiUrl(path), init)
   } catch (cause) {
     throw new Error(
       `Cannot reach the DeRec server at ${API_BASE}. Is the backend running?`,
       { cause },
     )
   }
+}
+
+/**
+ * A request whose success carries a payload: the envelope's `result`, or an
+ * error reading `"<action>: <the node's reason>"` for any non-2xx answer.
+ */
+async function call<T>(path: string, action: string, init?: RequestInit): Promise<T> {
+  const res = await request(path, init)
+  if (!res.ok) throw await responseError(res, action)
+  return readResult<T>(res)
+}
+
+/** A request whose success says nothing beyond its status. */
+async function perform(path: string, action: string, init?: RequestInit): Promise<void> {
+  const res = await request(path, init)
+  if (!res.ok) throw await responseError(res, action)
 }
 
 /** JSON body headers, repeated on almost every mutating call. */
@@ -160,7 +178,7 @@ export async function apiGetServerDefaults(): Promise<ServerDefaultsResult> {
   try {
     const res = await request(`/config`)
     if (!res.ok) return { defaults: toServerDefaults(null), reachable: true }
-    const dto = (await res.json()) as Partial<ServerDefaultsDto>
+    const dto = await readResult<Partial<ServerDefaultsDto>>(res)
     return { defaults: toServerDefaults(dto), reachable: true }
   } catch {
     return { defaults: toServerDefaults(null), reachable: false }
@@ -184,15 +202,11 @@ export async function apiRegisterOwner(
   name: string,
   claimActorId?: string,
 ): Promise<RegisterOwnerResponse> {
-  const res = await request(`/owners`, {
+  return call<RegisterOwnerResponse>(`/owners`, 'Could not register the owner', {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ name, claim_actor_id: claimActorId }),
   })
-  if (!res.ok) {
-    throw await responseError(res, 'Could not register the owner')
-  }
-  return res.json() as Promise<RegisterOwnerResponse>
 }
 
 // ── Actors ───────────────────────────────────────────────────────────────────
@@ -269,11 +283,7 @@ export interface DebugEvents {
 
 /** GET /debug/state — everything the server currently knows. */
 export async function apiGetDebugState(): Promise<DebugState> {
-  const res = await request(`/debug/state`)
-  if (!res.ok) {
-    throw await responseError(res, 'Could not read the server state')
-  }
-  return res.json() as Promise<DebugState>
+  return call<DebugState>(`/debug/state`, 'Could not read the server state')
 }
 
 /** One setting's value and where it came from, from `GET /debug/config`. */
@@ -307,28 +317,16 @@ export interface DebugConfig {
 }
 
 export async function apiGetDebugConfig(): Promise<DebugConfig> {
-  const res = await request(`/debug/config`)
-  if (!res.ok) {
-    throw await responseError(res, 'Could not read the server configuration')
-  }
-  return res.json() as Promise<DebugConfig>
+  return call<DebugConfig>(`/debug/config`, 'Could not read the server configuration')
 }
 
 /** GET /debug/events — what the server did, in order, after `after`. */
 export async function apiGetDebugEvents(after: number): Promise<DebugEvents> {
-  const res = await request(`/debug/events?after=${after}`)
-  if (!res.ok) {
-    throw await responseError(res, 'Could not read the server events')
-  }
-  return res.json() as Promise<DebugEvents>
+  return call<DebugEvents>(`/debug/events?after=${after}`, 'Could not read the server events')
 }
 
 export async function apiGetActors(): Promise<BEActorWithStatus[]> {
-  const res = await request(`/actors`)
-  if (!res.ok) {
-    throw await responseError(res, 'Could not list the actors on the node')
-  }
-  const body = (await res.json()) as ListActorsResponse
+  const body = await call<ListActorsResponse>(`/actors`, 'Could not list the actors on the node')
   return body.actors
 }
 
@@ -347,14 +345,11 @@ export async function apiCreateActorContact(
   const params = new URLSearchParams({ contact_mode: contactMode })
   if (nonce !== undefined) params.set('nonce', nonce.toString())
 
-  const res = await request(
+  return call<ContactMessageDto>(
     `/actors/${encodeURIComponent(actorId)}/contact?${params.toString()}`,
+    'Could not create a contact for that participant',
     { method: 'POST' },
   )
-  if (!res.ok) {
-    throw await responseError(res, 'Could not create a contact for that participant')
-  }
-  return res.json() as Promise<ContactMessageDto>
 }
 
 /**
@@ -383,14 +378,11 @@ export async function apiCreateReplicaContact(
   })
   if (nonce !== undefined) params.set('nonce', nonce.toString())
 
-  const res = await request(
+  return call<ContactMessageDto>(
     `/actors/${encodeURIComponent(helperId)}/contact?${params.toString()}`,
+    'Could not create a replica contact',
     { method: 'POST' },
   )
-  if (!res.ok) {
-    throw await responseError(res, 'Could not create a replica contact')
-  }
-  return res.json() as Promise<ContactMessageDto>
 }
 
 /** Drive a backend-managed actor into pairing against `contact`.
@@ -408,18 +400,15 @@ export async function apiStartActorPairing(
   contact: ContactMessageDto,
   role: 'owner' | 'helper' = 'helper',
 ): Promise<{ channel_id: string }> {
-  const res = await request(
+  return call<{ channel_id: string }>(
     `/actors/${encodeURIComponent(actorId)}/start-pairing?role=${role}`,
+    'Could not start pairing',
     {
       method: 'POST',
       headers: JSON_HEADERS,
       body: JSON.stringify(contact),
     },
   )
-  if (!res.ok) {
-    throw await responseError(res, 'Could not start pairing')
-  }
-  return res.json() as Promise<{ channel_id: string }>
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -461,38 +450,31 @@ export async function apiEnsureHelpers(
   transports: TransportMix,
   settings: ProvisioningSettings,
 ): Promise<EnsureHelpersResult> {
-  const res = await request(`/helpers/ensure`, {
+  return call<EnsureHelpersResult>(`/helpers/ensure`, 'Could not provision the participant pool', {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ total, names, transports, ...settingsBody(settings) }),
   })
-  if (!res.ok) {
-    throw await responseError(res, 'Could not provision the participant pool')
-  }
-  return res.json() as Promise<EnsureHelpersResult>
 }
 
 export async function apiAddHelper(
   name: string,
   settings: ProvisioningSettings,
 ): Promise<AddHelperResponse> {
-  const res = await request(`/helpers`, {
+  return call<AddHelperResponse>(`/helpers`, 'Could not provision the participant', {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ name, ...settingsBody(settings) }),
   })
-  if (!res.ok) {
-    throw await responseError(res, 'Could not provision the participant')
-  }
-  return res.json() as Promise<AddHelperResponse>
 }
 
 export async function apiToggleParticipantStatus(
   participantId: string,
   disabled?: boolean,
 ): Promise<{ disabled: boolean }> {
-  const res = await request(
+  return call<{ disabled: boolean }>(
     `/helpers/${encodeURIComponent(participantId)}/toggle-status`,
+    'Could not change the participant’s status',
     {
       method: 'POST',
       ...(disabled !== undefined && {
@@ -501,10 +483,6 @@ export async function apiToggleParticipantStatus(
       }),
     },
   )
-  if (!res.ok) {
-    throw await responseError(res, 'Could not change the participant’s status')
-  }
-  return res.json() as Promise<{ disabled: boolean }>
 }
 
 /**
@@ -517,19 +495,16 @@ export async function apiToggleParticipantStatus(
  * is how that channel is cleared.
  */
 export async function apiDeleteParticipant(participantId: string): Promise<void> {
-  const res = await request(`/helpers/${encodeURIComponent(participantId)}`, {
+  await perform(`/helpers/${encodeURIComponent(participantId)}`, 'Could not delete the participant', {
     method: 'DELETE',
   })
-  if (!res.ok) {
-    throw await responseError(res, 'Could not delete the participant')
-  }
 }
 
 /** What renaming an owner on the node came to. */
 export type RenameOwnerResult =
   | { kind: 'renamed'; name: string }
   /**
-   * The node predates `PATCH /owners/{id}` (404 / 405). Not a failure of the
+   * The node predates `PATCH /api/v1/owners/{id}` (404 / 405). Not a failure of the
    * rename — the vault's own name changed and peers were told — only of keeping
    * the node's roster label in step.
    */
@@ -553,7 +528,7 @@ export async function apiRenameOwner(ownerId: string, name: string): Promise<Ren
   if (!res.ok) {
     throw await responseError(res, 'Could not rename the vault on the node')
   }
-  const body = (await res.json()) as { name?: unknown }
+  const body = await readResult<{ name?: unknown }>(res)
   return { kind: 'renamed', name: typeof body.name === 'string' ? body.name : name }
 }
 
@@ -562,17 +537,15 @@ export async function apiPostBrowserContact(
   participantId: string,
   contactJson: string,
 ): Promise<void> {
-  const res = await request(
+  await perform(
     `/helpers/${encodeURIComponent(participantId)}/browser-contact`,
+    'Could not publish the contact',
     {
       method: 'POST',
       headers: JSON_HEADERS,
       body: contactJson,
     },
   )
-  if (!res.ok) {
-    throw await responseError(res, 'Could not publish the contact')
-  }
 }
 
 /** Fetch a peer's published contact. */
@@ -586,7 +559,7 @@ export async function apiGetBrowserContact(
   if (!res.ok) {
     throw await responseError(res, 'Could not fetch the peer’s contact')
   }
-  return res.json() as Promise<ContactMessageDto>
+  return readResult<ContactMessageDto>(res)
 }
 
 // ── Operator-driven channel linking (provisioned helpers) ────────────────────
@@ -611,13 +584,10 @@ export interface ProvisionedChannel {
 export async function apiListParticipantChannels(
   participantId: string,
 ): Promise<ProvisionedChannel[]> {
-  const res = await request(
+  const body = await call<{ channels: ProvisionedChannel[] }>(
     `/helpers/${encodeURIComponent(participantId)}/channels`,
+    'Could not list the participant’s channels',
   )
-  if (!res.ok) {
-    throw await responseError(res, 'Could not list the participant’s channels')
-  }
-  const body = (await res.json()) as { channels: ProvisionedChannel[] }
   return body.channels
 }
 
@@ -628,14 +598,11 @@ export async function apiLinkHelperChannels(
   channelId: string,
   linkToChannelId: string,
 ): Promise<void> {
-  const res = await request(`/helpers/${encodeURIComponent(helperId)}/link`, {
+  await perform(`/helpers/${encodeURIComponent(helperId)}/link`, 'Could not link the channels', {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ channel_id: channelId, link_to_channel_id: linkToChannelId }),
   })
-  if (!res.ok) {
-    throw await responseError(res, 'Could not link the channels')
-  }
 }
 
 // ── Fingerprint confirmation ─────────────────────────────────────────────────
@@ -655,13 +622,10 @@ export async function apiGetActorFingerprint(
   channelId: string,
 ): Promise<string> {
   const params = new URLSearchParams({ channel_id: channelId })
-  const res = await request(
+  const body = await call<{ fingerprint: string }>(
     `/actors/${encodeURIComponent(actorId)}/fingerprint?${params.toString()}`,
+    'Could not read the participant’s fingerprint',
   )
-  if (!res.ok) {
-    throw await responseError(res, 'Could not read the participant’s fingerprint')
-  }
-  const body = (await res.json()) as { fingerprint: string }
   return body.fingerprint
 }
 
@@ -688,12 +652,20 @@ export async function apiConfirmActorFingerprint(
     },
   )
   if (res.ok) {
-    const body = (await res.json()) as { confirmed: boolean }
+    const body = await readResult<{ confirmed: boolean }>(res)
     return body.confirmed
   }
-  // Read from a clone so the error path below still has an unread body.
-  const body = (await res.clone().json().catch(() => ({}))) as { error?: string }
-  if (res.status === 400 && body.error === 'fingerprint mismatch') return false
-  throw await responseError(res, 'Could not confirm the fingerprint')
+  const error = await responseError(res, 'Could not confirm the fingerprint')
+  if (isFingerprintMismatch(error)) return false
+  throw error
+}
+
+/**
+ * The mismatch refusal, by its code — or, from a node that predates the
+ * envelope, by the exact sentence it answered with.
+ */
+function isFingerprintMismatch(error: ApiRequestError): boolean {
+  if (error.status !== 400) return false
+  return error.code === 'FINGERPRINT_MISMATCH' || error.message.endsWith(': fingerprint mismatch')
 }
 

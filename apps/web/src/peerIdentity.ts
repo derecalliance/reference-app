@@ -81,7 +81,7 @@ export interface RosterCandidate {
   name: string
   transport: { uri: string }
   transports?: readonly { uri: string }[]
-  /** The actor's primary channel, as `GET /actors` reports it. */
+  /** The actor's primary channel, as `GET /api/v1/actors` reports it. */
   channel_id?: string
 }
 

@@ -125,15 +125,28 @@ function BagVersionDetails({
           <ul className="participant-tag-list" role="list">
             {confirmedParticipants.map(h => {
               const isVerified = version.verifiedParticipantIds.includes(h.id)
+              // The helper's own refusal of the last challenge, if it refused.
+              const rejection = isVerified
+                ? undefined
+                : version.verifyRejections?.find(r => r.id === h.id)
+              const state = isVerified
+                ? { className: 'participant-tag--verified', icon: '✓', label: 'Verified' }
+                : rejection
+                  ? {
+                      className: 'participant-tag--failed',
+                      icon: '✗',
+                      label: `Rejected verification: ${rejection.memo || `status ${rejection.status}`}`,
+                    }
+                  : { className: '', icon: '○', label: 'Not yet verified' }
               return (
-                <li key={h.id} className={`participant-tag ${isVerified ? 'participant-tag--verified' : ''}`}>
+                <li key={h.id} className={`participant-tag ${state.className}`}>
                   <span>{h.name}</span>
                   <span
                     className="participant-verification-icon"
-                    title={isVerified ? 'Verified' : 'Not yet verified'}
-                    aria-label={isVerified ? 'Verified' : 'Not yet verified'}
+                    title={state.label}
+                    aria-label={state.label}
                   >
-                    {isVerified ? '✓' : '○'}
+                    {state.icon}
                   </span>
                 </li>
               )
@@ -298,6 +311,7 @@ export function SecretBagPanel({
         <VerifySharesModal
           version={verifyingVersion.version}
           verifiedParticipantIds={verifyingVersion.verifiedParticipantIds}
+          rejections={verifyingVersion.verifyRejections}
           confirmedParticipants={participants.filter(h => verifyingVersion.participantIds.includes(h.id))}
           onClose={() => { setVerifying(null); onVerifyClose?.() }}
           onVerify={onVerify}

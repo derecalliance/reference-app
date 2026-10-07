@@ -8,6 +8,8 @@
  * without importing the engine itself.
  */
 
+import type { ContactMessage } from '@derec-alliance/web'
+
 import type { RenameOwnerResult } from '../api'
 import type { ConsoleEntry } from '../ConsoleContext'
 import type { MailboxMessage } from '../derecApi'
@@ -61,6 +63,8 @@ export interface VaultRuntimeIo {
   serverReachable: () => Promise<boolean>
   /** Change the name the node lists this vault's owner actor under. */
   renameOwner: (ownerId: string, name: string) => Promise<RenameOwnerResult>
+  /** Mint a contact for a provisioned participant — what auto-pairing pairs against. */
+  participantContact: (participantId: string) => Promise<ContactMessage>
 }
 
 /**
@@ -201,6 +205,11 @@ export interface VaultRuntimeState {
   replicaAutoSyncOutcome: UnresolvedAutomaticSync | null
   /** The latest identity update this vault sent, and how each peer answered. */
   identityUpdate: IdentityUpdate | null
+  /**
+   * Participants this vault is auto-pairing with at setup, until every one of
+   * them has paired. The view shows a setup gate while it is non-empty.
+   */
+  autoPairing: readonly string[]
 }
 
 export interface VaultRuntimeDeps {
@@ -213,6 +222,14 @@ export interface VaultRuntimeDeps {
   io?: Partial<VaultRuntimeIo>
   /** Defaults to no-ops. */
   effects?: Partial<VaultViewEffects>
+  /**
+   * Told whether each mailbox poll reached the node at all.
+   *
+   * Every vault polls the same node, so when it is down they all fail together;
+   * whoever runs several vaults folds their answers into one notice. Without
+   * it, an unreachable node is reported as this vault's own error.
+   */
+  pollReached?: (reached: boolean) => void
 }
 
 // ── Attention ────────────────────────────────────────────────────────────────

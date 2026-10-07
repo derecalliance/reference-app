@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { navigate } from './routing'
 import { ToastProvider } from './Toast'
-import { reportError, reportInfo } from './toastBus'
+import { clearNotice, reportError, reportInfo, showNotice } from './toastBus'
 
 vi.mock('./routing', () => ({ navigate: vi.fn() }))
 
@@ -65,5 +65,25 @@ describe('ToastProvider', () => {
 
     expect(host.textContent).toContain('Copied')
     expect(Array.from(host.querySelectorAll('button')).map(b => b.textContent)).toEqual(['✕'])
+  })
+
+  it('keeps a standing notice up past the toasts until it is cleared, and shows it once', () => {
+    vi.useFakeTimers()
+    try {
+      act(() => showNotice('node', 'error', 'Cannot reach the node'))
+      act(() => showNotice('node', 'error', 'Cannot reach the node'))
+      // More passing toasts than the stack holds do not push it out.
+      act(() => {
+        for (let i = 0; i < 6; i++) reportInfo(`event ${i}`)
+      })
+      act(() => vi.advanceTimersByTime(60_000))
+
+      expect(host.textContent?.match(/Cannot reach the node/g)).toHaveLength(1)
+
+      act(() => clearNotice('node'))
+      expect(host.textContent).not.toContain('Cannot reach the node')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

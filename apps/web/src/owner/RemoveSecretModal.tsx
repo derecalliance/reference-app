@@ -83,8 +83,8 @@ export function RemoveSecretModal({ secret, participants, threshold, onClose, on
             version without it to every paired participant.
           </p>
           <p className="modal-description">
-            Earlier versions still contain it, and helpers keep their shares of those — recovering
-            an earlier version brings it back.
+            Earlier versions still contain it. Helpers keep the three newest committed versions,
+            so until three newer ones have committed, recovering an earlier version brings it back.
           </p>
 
           {status.kind === 'error' && <p className="field-error">{status.message}</p>}

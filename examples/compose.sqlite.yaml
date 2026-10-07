@@ -26,7 +26,7 @@ services:
     build:
       context: ..
       dockerfile: apps/backend/Dockerfile
-    image: derec/reference-app:0.0.6
+    image: derec/reference-app:0.0.7
 
     # Optional bulk configuration: copy examples/.env.example to `.env` at the
     # repo root. These variables go INTO the container and outrank the config

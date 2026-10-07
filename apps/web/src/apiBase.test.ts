@@ -3,7 +3,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { resolveApiBase } from './apiBase'
+import { apiUrl, resolveApiBase } from './apiBase'
 
 /**
  * `resolveApiBase` decides where every request goes, and each of its three
@@ -65,5 +65,15 @@ describe('resolveApiBase', () => {
     servedFrom('http://example.test:8080')
 
     expect(resolveApiBase()).toBe('https://api.example.test')
+  })
+})
+
+describe('apiUrl', () => {
+  it('puts a path under the versioned API of the given node', () => {
+    expect(apiUrl('/actors', 'http://node:5000')).toBe('http://node:5000/api/v1/actors')
+  })
+
+  it('does not double a trailing slash on the node’s address', () => {
+    expect(apiUrl('/helpers/x/link', 'http://other:5500/')).toBe('http://other:5500/api/v1/helpers/x/link')
   })
 })

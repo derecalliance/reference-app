@@ -97,7 +97,7 @@ The image bundles the built front end and the backend into one container.
 From the repository root run:
 
 ```bash
-docker build -f apps/backend/Dockerfile -t derec/reference-app:0.0.6 .
+docker build -f apps/backend/Dockerfile -t derec/reference-app:0.0.7 .
 ```
 
 See the README's **In Docker** section for running it, persistence and

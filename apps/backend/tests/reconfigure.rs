@@ -20,12 +20,10 @@
 use std::collections::HashMap;
 
 use actix::prelude::*;
-use derec_backend::actor::{
-    build_protocol, ListChannelsMsg, ListInstanceSecretsMsg, ProtocolConfig, ProvisionedActor,
-    ReconfigureMsg,
-};
+use derec_backend::infrastructure::actors::provisioned::{ListChannelsMsg, ListInstanceSecretsMsg, ProvisionedActor, ReconfigureMsg};
+use derec_backend::infrastructure::actors::protocol::{build_protocol, ProtocolConfig};
 use derec_backend::models::{Role, Transport, TransportProtocol, UnpairAck};
-use derec_backend::actor::ActorProtocol;
+use derec_backend::infrastructure::actors::protocol::ActorProtocol;
 use derec_library::protocol::{ChannelRecord, DeRecChannelStore, HelperChannel};
 use derec_library::types::ChannelId;
 
@@ -43,19 +41,18 @@ fn config(pool: sqlx::AnyPool, actor_id: uuid::Uuid) -> ProtocolConfig {
         timeout_secs: 300,
         unpair_ack: UnpairAck::Required,
         threshold: 2,
-        keep_versions_count: 3,
         replica_id: Some(0xAB),
         http_client: reqwest::Client::new(),
         pool,
         actor_id,
-        local_node: None,
+        local_delivery: None,
     }
 }
 
 /// A private in-memory database per test. A shared one would let two tests see
 /// each other's rows.
 async fn pool() -> sqlx::AnyPool {
-    derec_backend::db::connect("sqlite::memory:")
+    derec_backend::infrastructure::db::connect("sqlite::memory:")
         .await
         .expect("an in-memory database always connects")
 }
@@ -72,11 +69,11 @@ async fn spawn(
     pool: sqlx::AnyPool,
     actor_id: uuid::Uuid,
 ) -> Addr<ProvisionedActor> {
-    let state = derec_backend::test_support::app_state().await;
+    let state = derec_backend::infrastructure::test_support::node().await;
 
     // The same `actor_id` the instance's stores were built with. Two different
     // ones would point the rebuild at a partition the seeded channel is not in.
-    ProvisionedActor::new(protocol, config(pool, actor_id), actor_id, Role::Helper, state).start()
+    ProvisionedActor::new(protocol, config(pool, actor_id), actor_id, Role::Helper, state.actor_dependencies()).start()
 }
 
 /// A helper-channel row, as the pairing handshake writes one.

@@ -106,8 +106,8 @@ export function ChannelFingerprintDialog({
    * The callbacks, held so they cannot change this component's effects.
    *
    * They arrive as inline arrows, so every parent render hands over fresh
-   * identities. Depending on them directly made `loadCodes` — and therefore the
-   * effect below — new on every render, and that effect resets `attempt` to
+   * identities. Depending on them directly made the code load — and therefore
+   * the effect below — new on every render, and each run reset `attempt` to
    * `idle`. Pressing "Codes match" set `verifying`, the next render wiped it,
    * and the dialog sat there looking untouched while re-deriving the
    * fingerprint over and over. Refs keep the deps to what actually identifies
@@ -120,24 +120,49 @@ export function ChannelFingerprintDialog({
   useEffect(() => { verifyFingerprintRef.current = verifyFingerprint }, [verifyFingerprint])
   useEffect(() => { onConfirmedRef.current = onConfirmed }, [onConfirmed])
 
-  const loadCodes = useCallback(async () => {
-    setLoading(true)
-    setLoadError(null)
-    try {
-      setOwnCode(await getFingerprintRef.current(BigInt(channelId)))
-      if (peerActorId) setPeerCode(await apiGetActorFingerprint(peerActorId, channelId))
-    } catch (err) {
-      setLoadError(messageOf(err, 'Could not derive the fingerprint.'))
-    } finally {
-      setLoading(false)
+  /**
+   * Opening the dialog — or the channel or peer changing while it is open —
+   * starts from a clean attempt and a fresh load. Adjusted during render rather
+   * than in an effect, so the first frame already shows the loading state.
+   */
+  const loadKey = open ? `${channelId}:${peerActorId ?? ''}` : null
+  const [loadedKey, setLoadedKey] = useState<string | null>(null)
+  if (loadKey !== loadedKey) {
+    setLoadedKey(loadKey)
+    if (loadKey !== null) {
+      setAttempt({ kind: 'idle' })
+      setLoading(true)
+      setLoadError(null)
     }
-  }, [channelId, peerActorId])
+  }
+
+  /**
+   * Derives this device's code, then reads the fixture peer's. Sets state only
+   * once each step settles, so the effect below never renders synchronously.
+   * The own code stays on screen if only the peer's read fails. Never rejects.
+   */
+  const fetchCodes = useCallback(
+    (): Promise<void> =>
+      Promise.resolve()
+        .then(() => getFingerprintRef.current(BigInt(channelId)))
+        .then(own => {
+          setOwnCode(own)
+          if (peerActorId) return apiGetActorFingerprint(peerActorId, channelId).then(setPeerCode)
+        })
+        .catch((err: unknown) => setLoadError(messageOf(err, 'Could not derive the fingerprint.')))
+        .finally(() => setLoading(false)),
+    [channelId, peerActorId],
+  )
 
   useEffect(() => {
-    if (!open) return
-    setAttempt({ kind: 'idle' })
-    void loadCodes()
-  }, [open, loadCodes])
+    if (open) void fetchCodes()
+  }, [open, fetchCodes])
+
+  function retryLoad() {
+    setLoading(true)
+    setLoadError(null)
+    void fetchCodes()
+  }
 
   async function handleConfirm() {
     if (ownCode === null) return
@@ -221,7 +246,7 @@ export function ChannelFingerprintDialog({
             <Alert
               severity="error"
               action={
-                <Button color="inherit" size="small" onClick={() => void loadCodes()}>
+                <Button color="inherit" size="small" onClick={retryLoad}>
                   Retry
                 </Button>
               }

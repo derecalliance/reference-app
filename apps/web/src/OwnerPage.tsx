@@ -2,7 +2,7 @@
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
 import { ModalFrame } from './ModalFrame'
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
+import { memo, useState, useEffect, useRef, useMemo, useCallback, useSyncExternalStore } from 'react'
 import { errorText } from './errorText'
 import { Alert, Button, Stack } from '@mui/material'
 import { advertisedEndpoints, type ContactMessage } from '@derec-alliance/web'
@@ -10,20 +10,15 @@ import './OwnerPage.css'
 import type { Vault, PairedParticipant, RecoveredSecret, UserSecret } from './types'
 import { useConsole, type ConsoleEntryInput } from './ConsoleContext'
 import { reportError, reportInfo } from './toastBus'
-import {
-  protocolTimeoutMs,
-  FALLBACK_SERVER_DEFAULTS,
-  type ServerDefaults,
-} from './config'
+import { protocolTimeoutMs } from './config'
 import { resolveVaultConfig } from './protocolDefaults'
 import type { VaultRuntime } from './vault/runtime'
-import { useVaultManager } from './vault/managerContext'
+import { useServerDefaults, useVaultManager } from './vault/managerContext'
 import type {
   Attention,
   AttentionKind,
   StoreShareRequest,
   UnpairRequest,
-  VaultRuntimeState,
   VerifyShareRequest,
 } from './vault/types'
 import { ProtocolConfigProvider } from './ProtocolConfig'
@@ -38,7 +33,6 @@ import {
   humanNonce,
   type ContactModeKey,
 } from './contactModes'
-import { selectAutoPairTargets } from './autoPairSelection'
 import {
   type ProvisionedChannel,
   type ProvisioningSettings,
@@ -49,7 +43,6 @@ import {
   apiGetBrowserContact,
   apiStartActorPairing,
   apiToggleParticipantStatus,
-  apiGetServerDefaults,
 } from './api'
 import type { PairingRole } from './pairingRoles'
 import { canDrivePeerViaBackend } from './ownerPairing'
@@ -101,6 +94,9 @@ import { OwnerParticipantPanel } from './owner/OwnerParticipantPanel'
 import { PairInitiatorModal } from './owner/PairInitiatorModal'
 import { PairedParticipantsList } from './owner/PairedParticipantsList'
 import { OutgoingUnpairDialog, type OutgoingUnpairConfirmation } from './owner/OutgoingUnpairDialog'
+import { CorruptShareWarnings } from './owner/CorruptShareWarnings'
+import { ReplicaConflictPanel } from './ReplicaConflictPanel'
+import { replicaConflictBlockReason } from './vault/replicaConflict'
 import { committedVersionsOf } from './owner/heldShares'
 import { HeldSharesList, RecoveryPanel } from './owner/RecoveryPanel'
 import { SecretBagPanel } from './owner/SecretBagPanel'
@@ -108,6 +104,7 @@ import { ShareContactModal } from './owner/ShareContactModal'
 import type { ProtocolInstance } from './owner/protocol'
 import { OwnerTabBar, type ActiveTab } from './owner/OwnerTabBar'
 import { useLinkGroups } from './owner/useLinkGroups'
+import { runtimeStateStore } from './vault/runtimeStateStore'
 import { groupMemberRows } from './owner/groupMembers'
 
 interface Props {
@@ -120,18 +117,22 @@ interface Props {
   runtime: VaultRuntime
 }
 
-export default function OwnerPage({ runtime }: Props) {
+/**
+ * Memoised: `App` re-renders whenever any vault's row changes, and this page
+ * renders from its own runtime's state, which it subscribes to directly — so
+ * another vault's row changing has nothing to tell it.
+ */
+export default memo(OwnerPage)
+
+function OwnerPage({ runtime }: Props) {
   /**
    * Follow the engine's state, which is the only writer of it — the vault record
    * included. Subscribing rather than keeping copies is what stops the engine and
    * the view disagreeing about the record, whether a flow is in flight, or which
    * confirmations are open.
    */
-  const [runtimeState, setRuntimeState] = useState<VaultRuntimeState>(() => runtime.state())
-  useEffect(() => {
-    setRuntimeState(runtime.state())
-    return runtime.subscribe(setRuntimeState)
-  }, [runtime])
+  const runtimeStore = useMemo(() => runtimeStateStore(runtime), [runtime])
+  const runtimeState = useSyncExternalStore(runtimeStore.subscribe, runtimeStore.getSnapshot)
   const vault = runtimeState.vault
   const manager = useVaultManager()
 
@@ -143,26 +144,9 @@ export default function OwnerPage({ runtime }: Props) {
     [consoleLog, vault.id],
   )
 
-  // The node's own defaults, the bottom tier of the config merge. Fetched rather
-  // than assumed so a vault that overrides nothing follows a reconfigured node;
-  // the fallback stands in until the request lands.
-  const [serverDefaults, setServerDefaults] = useState<ServerDefaults>(
-    FALLBACK_SERVER_DEFAULTS,
-  )
-  useEffect(() => {
-    let cancelled = false
-    apiGetServerDefaults()
-      .then(({ defaults }) => {
-        if (!cancelled) setServerDefaults(defaults)
-      })
-      .catch(() => {
-        // The fallback is already in place; a vault must still open with the
-        // backend unreachable.
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
+  // The node's own defaults, the bottom tier of the config merge — fetched once
+  // for the whole tab by the provider, which the runtimes read them from too.
+  const serverDefaults = useServerDefaults()
 
   /**
    * What this vault actually runs with: node defaults, this browser's overrides,
@@ -222,8 +206,8 @@ export default function OwnerPage({ runtime }: Props) {
   // different channel ID than PairingCompleted.channel_id (so pairedChannelIds won't match).
   const [pairingCompletedSignal, setPairingCompletedSignal] = useState(0)
 
-  // Non-empty while participants are being auto-paired; shows a setup gate in the UI.
-  const [autoPairingIds, setAutoPairingIds] = useState<string[]>([])
+  // Non-empty while the engine is auto-pairing at setup; shows a setup gate.
+  const autoPairingIds = runtimeState.autoPairing
 
   // Shape and replica/participant discrimination live in `inboundPairing.ts`;
   // both verdicts share this one slot so the accept/reject handlers, and the
@@ -536,9 +520,6 @@ export default function OwnerPage({ runtime }: Props) {
     [runtime],
   )
 
-  /** Publish a new vault record: the engine commits it, and the manager saves it. */
-  const publishVault = useCallback((next: Vault): void => runtime.commit(next), [runtime])
-
   /** The vault's protocol instance, or null before it has started. */
   function ownInstance(): ProtocolInstance | null {
     return runtimeRef.current?.instance() ?? null
@@ -597,86 +578,16 @@ export default function OwnerPage({ runtime }: Props) {
 
   // Reset the pairing modal's view and selection whenever a new confirmation
   // opens. Keyed on the channel so a second pairing does not inherit the first
-  // one's half-finished link choice.
-  useEffect(() => {
+  // one's half-finished link choice. Adjusted during render, so the new
+  // confirmation never paints with the previous one's state.
+  const pairingChannelId = pendingPairingConfirmation?.channelId
+  const [pairingModalChannelId, setPairingModalChannelId] = useState(pairingChannelId)
+  if (pairingModalChannelId !== pairingChannelId) {
+    setPairingModalChannelId(pairingChannelId)
     setPairingModalView('decision')
     setPairingLinkTarget(null)
     setPairingLinkSubmitting(false)
-  }, [pendingPairingConfirmation?.channelId])
-
-  const didAutoPair = useRef(false)
-  useEffect(() => {
-    if (didAutoPair.current) return
-    const count = vault.prePairedCount ?? 0
-    if (count === 0) return
-    didAutoPair.current = true
-
-    // Chosen at random, not off the top of the roster: the participant pool is
-    // shared, so taking the first N would hand every browser context the same
-    // few and leave the rest idle.
-    const participantsToAutoPair = selectAutoPairTargets(vault.participants, count)
-    if (participantsToAutoPair.length === 0) return
-
-    setAutoPairingIds(participantsToAutoPair.map(h => h.id))
-
-    async function autoPair() {
-      if (!runtime.instance()) return
-
-      const newPairings: Array<{ channelId: bigint; participantId: string }> = []
-
-      for (const participant of participantsToAutoPair) {
-        try {
-          const dto = await apiCreateActorContact(participant.id)
-          const contact = dtoToContactMessage(dto)
-          const channelId = await runtime.startPairing(contact, 'owner', participant.name)
-
-          newPairings.push({ channelId, participantId: participant.id })
-
-          log({
-            role: 'owner',
-            flow: 'pairing',
-            step: 'auto_pair_initiated',
-            description: `Auto-pair initiated for ${participant.name}`,
-            payload: { participantId: participant.id, channelId: channelId.toString() },
-          })
-        } catch (err) {
-          reportError(`Auto-pairing with "${participant.name}" failed`, err, {
-            participantId: participant.id,
-          })
-        }
-      }
-
-      if (newPairings.length > 0) {
-        const snapshot = vaultRef.current
-        runtime.commit({
-          ...snapshot,
-          prePairedCount: 0,
-          pendingPairings: [
-            ...snapshot.pendingPairings,
-            ...newPairings.map(({ channelId, participantId }) => ({ channelId, participantId })),
-          ],
-        })
-      }
-    }
-
-    autoPair()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vault.id])
-
-  // Clear the auto-pair gate once all targeted participants have paired.
-  useEffect(() => {
-    if (autoPairingIds.length === 0) return
-    const allPaired = autoPairingIds.every(id =>
-      vault.participants.some(h => h.id === id && h.connectionStatus === 'paired'),
-    )
-    if (allPaired) setAutoPairingIds([])
-  }, [autoPairingIds, vault.participants])
-
-
-  // Poll fast during auto-pair so the setup gate clears quickly.
-  useEffect(() => {
-    runtimeRef.current?.setFastPolling(autoPairingIds.length > 0)
-  }, [autoPairingIds.length])
+  }
 
   // ── Deciding attention items ───────────────────────────────────────────────
   //
@@ -802,8 +713,9 @@ export default function OwnerPage({ runtime }: Props) {
   // Adding and removing a secret both publish a new bag version, so both need
   // enough channels that can actually receive a share.
   const shareTargetCount = vault.participants.filter(isShareTarget).length
-  const publishBlockedReason =
-    shareTargetCount < vault.minParticipants
+  const publishBlockedReason = vault.replicaConflict
+    ? replicaConflictBlockReason(vault.replicaConflict)
+    : shareTargetCount < vault.minParticipants
       ? `Need at least ${vault.minParticipants} paired participant${vault.minParticipants !== 1 ? 's' : ''} (currently ${shareTargetCount})`
       : null
 
@@ -1023,7 +935,7 @@ export default function OwnerPage({ runtime }: Props) {
       ...vaultRef.current,
       participants: vaultRef.current.participants.filter(p => p.channelId !== channelId),
     }
-    publishVault(next)
+    runtime.commit(next)
 
     // The comparison for a channel that is no longer listed has nothing left to
     // confirm, and would otherwise stay on screen over an empty tab.
@@ -1102,6 +1014,24 @@ export default function OwnerPage({ runtime }: Props) {
       flow: 'pairing',
       step: 'fingerprint_refused',
       description: `Reported that the fingerprint for ${replica.name} (channel ${replica.channelId}) does not match — the channel stays unconfirmed on this device`,
+      payload: { channelId: replica.channelId, peerName: replica.name },
+    })
+  }
+
+  /**
+   * Record that the person, on a destination, declined to adopt the peer's
+   * vault. The fingerprint was not confirmed — that is the refusal, as far as
+   * the library is concerned — so this only keeps the row from reading as an
+   * unanswered prompt.
+   */
+  function handleReplicaAdoptionDeclined(replica: ReplicaView): void {
+    recordConfirmation(vault.id, replica.id, { adoptionDeclined: true, adoptionConsented: false })
+    refreshReplicaRows()
+    log({
+      role: 'owner',
+      flow: 'pairing',
+      step: 'replica_adoption_declined',
+      description: `Declined to adopt ${replica.name}'s vault (channel ${replica.channelId}) — the fingerprint was not confirmed, so this vault is unchanged`,
       payload: { channelId: replica.channelId, peerName: replica.name },
     })
   }
@@ -1543,6 +1473,17 @@ export default function OwnerPage({ runtime }: Props) {
             .map(p => p.id),
         )
 
+  // Who holds the rival copy of a diverged vault, by the name this device
+  // knows them under.
+  const replicaConflict = vault.replicaConflict ?? null
+  const conflictRivalId = replicaConflict?.rivalReplicaId ?? null
+  const conflictRivalLabel =
+    conflictRivalId === null
+      ? 'Another member'
+      : (replicaRows.find(view => view.peerReplicaId === conflictRivalId)?.name ??
+        memberRows.find(member => member.replicaId === conflictRivalId)?.name ??
+        `Replica ${conflictRivalId}`)
+
   const adoptionLabel = pendingReplicaAdoption
     ? adoptionSourceLabel(pendingReplicaAdoption, manager.roster())
     : ''
@@ -1645,6 +1586,31 @@ export default function OwnerPage({ runtime }: Props) {
           </Alert>
         </AppMuiTheme>
       )}
+
+      {replicaConflict && (
+        <ReplicaConflictPanel
+          conflict={replicaConflict}
+          mySecrets={vault.secretBag?.currentVersion.secrets ?? []}
+          rivalLabel={conflictRivalLabel}
+          onFetchRival={() => runtime.fetchReplicaConflictRival()}
+          onResolve={secrets => runtime.resolveReplicaConflict(secrets)}
+        />
+      )}
+
+      <CorruptShareWarnings
+        reports={vault.corruptShareReports ?? []}
+        participants={vault.participants}
+        // Always confirmed, whatever the unpair policy: this is a suggestion
+        // the app makes, not a click the owner made on the helper's row.
+        onUnpair={participant =>
+          setOutgoingUnpairConfirmation({
+            participantId: participant.id,
+            peerName: participant.name,
+            channelId: participant.channelId,
+          })
+        }
+        onDismiss={report => runtime.dismissCorruptShareReport(report)}
+      />
 
       {shareOpen && (
         <ShareContactModal
@@ -1888,6 +1854,7 @@ export default function OwnerPage({ runtime }: Props) {
             onConfirm={patch =>
               handleReplicaConfirmed(fingerprintReplica.id, patch, fingerprintReplica.channelId)
             }
+            onDeclineAdoption={() => handleReplicaAdoptionDeclined(fingerprintReplica)}
             onRefuse={() => handleReplicaRefused(fingerprintReplica)}
             // Non-destructive by construction: nothing is written and nothing is
             // cancelled. The channel stays `Pending`, its row keeps a standing

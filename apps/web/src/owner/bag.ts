@@ -5,6 +5,14 @@ import { fromBase64Url } from '../derecApi'
 import type { StoredReplicaMember } from '../stores'
 import type { BagReplicaGroup, BagVersion, SecretBag } from '../types'
 
+/** Version `version` of `bag`, current or previous; `undefined` when it holds no such version. */
+export function bagVersionOf(bag: SecretBag | null, version: number): BagVersion | undefined {
+  if (!bag) return undefined
+  return bag.currentVersion.version === version
+    ? bag.currentVersion
+    : bag.previousVersions.find(v => v.version === version)
+}
+
 export function updateBagVersion(
   bag: SecretBag,
   version: number,

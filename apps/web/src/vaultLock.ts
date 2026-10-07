@@ -5,15 +5,15 @@
  * One tab per vault, enforced.
  *
  * Two tabs driving the same vault is not merely untidy — it fails silently.
- * `POST /owners` rebinds that actor's backend mailbox to the caller, so the
+ * `POST /api/v1/owners` rebinds that actor's backend mailbox to the caller, so the
  * *older* tab keeps polling a receiver nothing writes to any more and simply
  * goes deaf, while both tabs run protocol instances over one set of
  * `derec:vault:{id}:…` stores.
  *
  * The Web Locks API is the right primitive: an exclusive lock is released
  * automatically when its tab closes or crashes, so there are no stale locks to
- * expire and no heartbeat to run. `query()` additionally lets the picker show
- * which vaults are already in use *before* one is chosen.
+ * expire and no heartbeat to run. `query()` additionally lets the vault list
+ * label the vaults another tab is running before anyone tries to open one.
  *
  * A held lock is represented by a promise that never settles on its own; the
  * lock is released by resolving it, which is what [`VaultLock.release`] does.
@@ -70,8 +70,8 @@ export function vaultLockMode(): VaultLockMode {
  * Take the exclusive lock for `vaultId`, or report that another tab holds it.
  *
  * Never waits: a caller that blocked would hang until the other tab closed,
- * with nothing on screen to explain why. `null` means busy, and the caller
- * shows that in the picker.
+ * with nothing on screen to explain why. `null` means busy, and the vault list
+ * shows that vault as open in another tab, with a Claim.
  */
 export async function acquireVaultLock(vaultId: string): Promise<VaultLock | null> {
   const manager = locks()
@@ -121,8 +121,9 @@ export async function acquireVaultLock(vaultId: string): Promise<VaultLock | nul
  * Vault ids currently locked by *some* tab, including this one.
  *
  * Advisory and inherently racy — a vault can be taken between this call and
- * the click it informs — so the picker uses it to label rows, and
- * [`acquireVaultLock`] remains the actual decision.
+ * the click it informs — so the vault list uses it to label rows (see
+ * `VaultManager.syncWithOtherTabs`), and [`acquireVaultLock`] remains the
+ * actual decision.
  */
 export async function heldVaultIds(): Promise<Set<string>> {
   const prefix = lockName('')
@@ -145,7 +146,7 @@ export async function heldVaultIds(): Promise<Set<string>> {
       names.filter(name => name.startsWith(prefix)).map(name => name.slice(prefix.length)),
     )
   } catch {
-    // Query is a convenience; failing it must not block the picker.
+    // Query is a convenience; failing it must not block the vault list.
     return new Set()
   }
 }

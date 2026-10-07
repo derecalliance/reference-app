@@ -2,7 +2,8 @@
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
 import type { ProvisionedChannel } from './api'
-import { API_BASE } from './apiBase'
+import { API_BASE, apiUrl } from './apiBase'
+import { readResult } from './apiEnvelope'
 import { responseError } from './httpError'
 import type { PairedParticipant } from './types'
 
@@ -12,9 +13,10 @@ import type { PairedParticipant } from './types'
  * A recovering owner pairs afresh with each old helper, and the helper then has
  * to be told the new channel belongs to an owner it already holds shares for —
  * the operator "Link" step. For this node's pool that goes through this node's
- * `/helpers/:id/link`. A helper on another node is driven through *that*
- * node's same endpoint, which its mailbox URL names: a helper's HTTPS endpoint
- * is `<node base>/derec/<actor id>`.
+ * `/api/v1/helpers/{id}/link`. A helper on another node is driven through
+ * *that* node's same endpoint, found from its mailbox URL: a helper's HTTPS
+ * endpoint is `<node base>/derec/<actor id>`, and the node's API is
+ * `<node base>/api/v1`.
  */
 
 /** Where a helper's operator endpoints live: its node and its actor id. */
@@ -76,9 +78,9 @@ export async function apiListRemoteHelperChannels({
   baseUrl,
   actorId,
 }: HelperLocation): Promise<ProvisionedChannel[]> {
-  const res = await remoteRequest(`${baseUrl}/helpers/${encodeURIComponent(actorId)}/channels`)
+  const res = await remoteRequest(apiUrl(`/helpers/${encodeURIComponent(actorId)}/channels`, baseUrl))
   if (!res.ok) throw await responseError(res, 'Could not list the helper’s channels on its node')
-  const body = (await res.json()) as { channels: ProvisionedChannel[] }
+  const body = await readResult<{ channels: ProvisionedChannel[] }>(res)
   return body.channels
 }
 
@@ -88,7 +90,7 @@ export async function apiLinkRemoteHelperChannels(
   channelId: string,
   linkToChannelId: string,
 ): Promise<void> {
-  const res = await remoteRequest(`${baseUrl}/helpers/${encodeURIComponent(actorId)}/link`, {
+  const res = await remoteRequest(apiUrl(`/helpers/${encodeURIComponent(actorId)}/link`, baseUrl), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ channel_id: channelId, link_to_channel_id: linkToChannelId }),

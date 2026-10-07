@@ -96,11 +96,15 @@ export async function restoreVault(
       ownTransportUri: current.transport.uri,
       communicationInfo: { name: current.name },
       threshold: current.minParticipants,
-      keepVersionsCount: 3,
+      keepList: ctx.keepList,
       timeoutSecs: config.protocolTimeoutSecs,
       unpairAck: config.unpairAck,
       replicaId: getOrCreateReplicaId(current.id),
       relayActorId: current.id,
+      // The restored instance becomes the vault's live one (`adoptInstance`),
+      // so it carries the same setting as the runtime's — see
+      // `BuildProtocolOptions.autoReplyTo`.
+      autoReplyTo: true,
     })
     // `restore` returns the events from its own recovery-channel teardown, and
     // a `PeerNotRestored` for each roster entry it wrote no channel for (no

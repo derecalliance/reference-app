@@ -12,7 +12,13 @@ import { decodeSecretText } from './recoveredSecret'
 import { findRecoveryFailure } from './recoveryFailures'
 import { isReplicaChannel } from '../ownerPairing'
 import { loadRawShare } from '../stores'
-import type { HeldShare, Vault, PairedParticipant, RecoveredSecret } from '../types'
+import type {
+  HeldShare,
+  Vault,
+  PairedParticipant,
+  RecoveredSecret,
+  RecoveryProgress,
+} from '../types'
 
 /** What a helper's last discovery answer amounted to. */
 type DiscoveryState = 'pending' | 'found' | 'nothing' | 'unreachable'
@@ -574,7 +580,8 @@ function AvailableSecretCard({
         {hiddenCount > 0 && (
           <p className="empty-hint">
             {hiddenCount} rolled-back version{hiddenCount !== 1 ? 's' : ''} not shown — helpers
-            still hold shares of {hiddenCount !== 1 ? 'rounds' : 'a round'} this vault never committed.
+            still hold shares of {hiddenCount !== 1 ? 'rounds' : 'a round'} this vault never committed,
+            until its next published version tells them to drop {hiddenCount !== 1 ? 'them' : 'it'}.
           </p>
         )}
       </div>
@@ -658,6 +665,9 @@ function AvailableVersionRow({
           {recoveryProgress!.sharesReceived !== 1 ? 's' : ''} received…
         </span>
       )}
+      {isThisVersionActive && recoveryProgress && (
+        <RecoveryAnswersWithoutShare progress={recoveryProgress} participants={vault.participants} />
+      )}
       {versionError && (
         <span className="available-version-insufficient" role="alert">
           {versionError}
@@ -679,5 +689,46 @@ function AvailableVersionRow({
         </button>
       )}
     </div>
+  )
+}
+
+/** `StatusEnum.UnknownShareVersion` — the helper holds no share of the version asked for. */
+const UNKNOWN_SHARE_VERSION_STATUS = 6
+
+/**
+ * The helpers that answered the recovery in flight without a usable share:
+ * refused (`RecoveryShareRefused`) or sent one the library set aside
+ * (`RecoveryShareCorrupted`). Neither counts towards the shares received, so
+ * without this a recovery stuck short of its threshold gave no hint why.
+ */
+function RecoveryAnswersWithoutShare({
+  progress,
+  participants,
+}: {
+  progress: RecoveryProgress
+  participants: readonly PairedParticipant[]
+}) {
+  const refusals = progress.refusals ?? []
+  const corrupted = progress.corrupted ?? []
+  if (refusals.length === 0 && corrupted.length === 0) return null
+  const nameOf = (channelId: string) =>
+    participants.find(p => p.channelId === channelId)?.name ?? `Channel ${channelId}`
+
+  return (
+    <ul className="available-version-refusals" aria-label="Helpers that sent no usable share">
+      {refusals.map(r => (
+        <li key={`refused-${r.channelId}`} className="available-version-insufficient">
+          {nameOf(r.channelId)} refused —{' '}
+          {r.status === UNKNOWN_SHARE_VERSION_STATUS
+            ? `it holds no share of v${progress.version}`
+            : r.memo || `status ${r.status}`}
+        </li>
+      ))}
+      {corrupted.map(c => (
+        <li key={`corrupted-${c.channelId}`} className="available-version-insufficient">
+          {nameOf(c.channelId)} sent a share that was set aside ({c.reason})
+        </li>
+      ))}
+    </ul>
   )
 }

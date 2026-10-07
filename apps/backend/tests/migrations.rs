@@ -8,7 +8,8 @@
 //! SQLite in-memory only. The Postgres run is opt-in and arrives in Phase 4
 //! with the SQL stores; nobody should need a Postgres to work on this repo.
 
-use derec_backend::db;
+use derec_backend::infrastructure::db;
+use derec_backend::models::DatabaseUrl;
 
 #[tokio::test]
 async fn migrations_apply_to_an_empty_database() {
@@ -23,6 +24,7 @@ async fn migrations_apply_to_an_empty_database() {
         "secrets",
         "user_secrets",
         "shares",
+        "sharing_rounds",
         "state_items",
         "actors",
         "actor_channels",
@@ -46,7 +48,7 @@ async fn connecting_twice_to_the_same_database_does_not_re_run_migrations() {
     let dir = std::env::temp_dir().join(format!("derec-migr-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
     let path = dir.join("derec.db");
-    let url = db::resolve_url(&path.to_string_lossy());
+    let url = String::from(DatabaseUrl::from(path.to_string_lossy().as_ref()));
 
     let first = db::connect(&url).await.expect("first connect");
     drop(first);

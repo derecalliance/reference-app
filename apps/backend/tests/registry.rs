@@ -1,18 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
-//! The node's registries, on every engine available.
+//! The node's SQL repositories for its own state, on every engine available.
 //!
 //! Follows `tests/sql_stores.rs`: SQLite always, Postgres when
 //! `TEST_DATABASE_URL` names one, serialised by a binary-wide lock because a
 //! shared Postgres would otherwise let one case truncate another's rows.
 
-use derec_backend::db;
-use derec_backend::models::{Actor, Role, TransportBreakdown, TransportMode};
-use derec_backend::models::UnpairAck;
-use derec_backend::registry::actors::{ActorSettings, SqlActorRegistry};
-use derec_backend::registry::flags::{DisabledHelpers, HelperChannels, ParticipantContacts};
-use derec_backend::state::RoleMismatch;
+use std::sync::Arc;
+
+use derec_backend::infrastructure::db;
+use derec_backend::models::{Actor, ActorSettings, NewActor, Role, TransportBreakdown, TransportMode, UnpairAck};
+use derec_backend::repositories::actors::{ActorRepository, SqlActorRepository};
+use derec_backend::repositories::browser_contacts::{BrowserContactRepository, SqlBrowserContactRepository};
+use derec_backend::repositories::disabled_helpers::{DisabledHelperRepository, SqlDisabledHelperRepository};
+use derec_backend::services::helpers::plan_shortfall;
 
 fn engines() -> Vec<(&'static str, String)> {
     let mut out = vec![("sqlite", "sqlite::memory:".to_owned())];
@@ -36,7 +38,7 @@ where
             .await
             .unwrap_or_else(|e| panic!("{label}: connect failed: {e}"));
 
-        for table in ["actors", "actor_channels", "disabled_helpers", "participant_contacts"] {
+        for table in ["actors", "disabled_helpers", "participant_contacts"] {
             sqlx::query(&format!("DELETE FROM {table}"))
                 .execute(&pool)
                 .await
@@ -59,13 +61,35 @@ fn settings() -> ActorSettings {
 }
 
 fn actor(name: &str, role: Role) -> Actor {
-    derec_backend::provisioning::provisioned_actor(
-        role,
-        name,
-        "http://localhost:5000",
-        "localhost:50051",
-        TransportMode::Http,
-    )
+    Actor::mint(role, name, "http://localhost:5000", "localhost:50051", TransportMode::Http)
+}
+
+/// Bring the pool up to `want` through the repository's atomic primitive, the
+/// way the helper service does, naming each new helper `{prefix}{taken}`.
+async fn ensure(
+    registry: &SqlActorRepository,
+    want: TransportBreakdown,
+    prefix: &str,
+) -> (Vec<Actor>, Vec<Actor>) {
+    let plan = |roster: &[Actor]| -> Vec<NewActor> {
+        plan_shortfall(want, roster, |taken, _pool_index, mode, _pool| {
+            let helper = Actor::mint(
+                Role::Helper,
+                &format!("{prefix}{taken}"),
+                "http://localhost:5000",
+                "localhost:50051",
+                mode,
+            );
+            (helper, settings())
+        })
+    };
+    let registration = registry.register_planned(&plan).await.expect("ensure");
+    let pool = registration
+        .roster
+        .into_iter()
+        .filter(|a| a.role == Role::Helper)
+        .collect();
+    (registration.registered, pool)
 }
 
 #[tokio::test]
@@ -74,7 +98,7 @@ async fn registration_order_is_preserved() {
     // reshuffles the roster on every poll. `seq` is what carries this, because
     // `created_at` is too coarse — these three are registered in one second.
     on_every_engine(|pool| async move {
-        let registry = SqlActorRegistry::new(pool);
+        let registry = SqlActorRepository::new(pool);
         for name in ["first", "second", "third"] {
             registry
                 .register(actor(name, Role::Helper), settings())
@@ -97,7 +121,7 @@ async fn registration_order_is_preserved() {
 #[tokio::test]
 async fn an_actor_round_trips_with_its_endpoints() {
     on_every_engine(|pool| async move {
-        let registry = SqlActorRegistry::new(pool);
+        let registry = SqlActorRepository::new(pool);
         let original = actor("Alex", Role::Helper);
         registry.register(original.clone(), settings()).await.expect("register");
 
@@ -127,42 +151,35 @@ async fn an_actor_round_trips_with_its_endpoints() {
 #[tokio::test]
 async fn an_absent_actor_is_none() {
     on_every_engine(|pool| async move {
-        let registry = SqlActorRegistry::new(pool);
+        let registry = SqlActorRepository::new(pool);
         assert!(registry
             .get(&uuid::Uuid::new_v4())
             .await
             .expect("readable")
             .is_none());
-        assert!(!registry
-            .contains(&uuid::Uuid::new_v4())
-            .await
-            .expect("readable"));
     })
     .await;
 }
 
 #[tokio::test]
-async fn a_role_mismatch_is_distinguishable_from_an_absence() {
-    // Callers map these onto different status codes.
+async fn a_rename_only_matches_the_role_it_names() {
+    // The role is part of the statement, so a helper's id can never rename it
+    // through the owner route, however the two requests interleave.
     on_every_engine(|pool| async move {
-        let registry = SqlActorRegistry::new(pool);
+        let registry = SqlActorRepository::new(pool);
         let helper = actor("Alex", Role::Helper);
         registry.register(helper.clone(), settings()).await.expect("register");
 
-        let wrong = registry
-            .get_with_role(&helper.id, Role::Owner)
-            .await
-            .expect("readable");
-        assert!(
-            matches!(wrong, Err(RoleMismatch::WrongRole { .. })),
-            "a helper asked for as an owner is a mismatch, not an absence"
+        assert!(!registry.rename(&helper.id, Role::Owner, "Bob").await.expect("writable"));
+        assert!(registry.rename(&helper.id, Role::Helper, "Bob").await.expect("writable"));
+        assert_eq!(
+            registry.get(&helper.id).await.expect("readable").map(|a| a.name),
+            Some("Bob".to_owned())
         );
-
-        let absent = registry
-            .get_with_role(&uuid::Uuid::new_v4(), Role::Helper)
+        assert!(!registry
+            .rename(&uuid::Uuid::new_v4(), Role::Owner, "Nobody")
             .await
-            .expect("readable");
-        assert!(matches!(absent, Err(RoleMismatch::NotFound)));
+            .expect("writable"));
     })
     .await;
 }
@@ -170,29 +187,16 @@ async fn a_role_mismatch_is_distinguishable_from_an_absence() {
 #[tokio::test]
 async fn ensure_creates_only_the_shortfall() {
     on_every_engine(|pool| async move {
-        let registry = SqlActorRegistry::new(pool);
+        let registry = SqlActorRepository::new(pool);
         let want = TransportBreakdown { http: 3, grpc: 0, both: 0 };
 
-        let first = registry
-            .ensure_participants_by_mode(want, |taken, _pool_index, _mode, _pool| {
-                (actor(&format!("h{taken}"), Role::Helper), settings())
-            })
-            .await
-            .expect("ensure");
-        assert_eq!(first.created.len(), 3);
-        assert_eq!(first.participants.len(), 3);
+        let (created, participants) = ensure(&registry, want, "h").await;
+        assert_eq!(created.len(), 3);
+        assert_eq!(participants.len(), 3);
 
-        let second = registry
-            .ensure_participants_by_mode(want, |taken, _pool_index, _mode, _pool| {
-                (actor(&format!("x{taken}"), Role::Helper), settings())
-            })
-            .await
-            .expect("ensure");
-        assert!(
-            second.created.is_empty(),
-            "the pool is already at the target; nothing to create"
-        );
-        assert_eq!(second.participants.len(), 3);
+        let (created, participants) = ensure(&registry, want, "x").await;
+        assert!(created.is_empty(), "the pool is already at the target; nothing to create");
+        assert_eq!(participants.len(), 3);
     })
     .await;
 }
@@ -201,25 +205,14 @@ async fn ensure_creates_only_the_shortfall() {
 async fn asking_for_fewer_removes_nothing() {
     // Another owner may be paired with one.
     on_every_engine(|pool| async move {
-        let registry = SqlActorRegistry::new(pool);
-        registry
-            .ensure_participants_by_mode(
-                TransportBreakdown { http: 3, grpc: 0, both: 0 },
-                |taken, _p, _m, _pool| (actor(&format!("h{taken}"), Role::Helper), settings()),
-            )
-            .await
-            .expect("ensure");
+        let registry = SqlActorRepository::new(pool);
+        ensure(&registry, TransportBreakdown { http: 3, grpc: 0, both: 0 }, "h").await;
 
-        let fewer = registry
-            .ensure_participants_by_mode(
-                TransportBreakdown { http: 1, grpc: 0, both: 0 },
-                |taken, _p, _m, _pool| (actor(&format!("y{taken}"), Role::Helper), settings()),
-            )
-            .await
-            .expect("ensure");
+        let (created, participants) =
+            ensure(&registry, TransportBreakdown { http: 1, grpc: 0, both: 0 }, "y").await;
 
-        assert!(fewer.created.is_empty());
-        assert_eq!(fewer.participants.len(), 3, "nothing is removed");
+        assert!(created.is_empty());
+        assert_eq!(participants.len(), 3, "nothing is removed");
     })
     .await;
 }
@@ -229,60 +222,76 @@ async fn an_owner_is_not_counted_as_a_participant() {
     // The pool is helpers only; an owner sharing the registry must not satisfy
     // a helper target.
     on_every_engine(|pool| async move {
-        let registry = SqlActorRegistry::new(pool);
+        let registry = SqlActorRepository::new(pool);
         registry
             .register(actor("Alice", Role::Owner), settings())
             .await
             .expect("register");
 
-        let ensured = registry
-            .ensure_participants_by_mode(
-                TransportBreakdown { http: 2, grpc: 0, both: 0 },
-                |taken, _p, _m, _pool| (actor(&format!("h{taken}"), Role::Helper), settings()),
-            )
-            .await
-            .expect("ensure");
+        let (created, participants) =
+            ensure(&registry, TransportBreakdown { http: 2, grpc: 0, both: 0 }, "h").await;
 
-        assert_eq!(ensured.created.len(), 2, "the owner does not count");
-        assert_eq!(ensured.participants.len(), 2, "participants are helpers only");
+        assert_eq!(created.len(), 2, "the owner does not count");
+        assert_eq!(participants.len(), 2, "participants are helpers only");
     })
     .await;
 }
 
-#[tokio::test]
-async fn helper_channels_are_per_actor_and_idempotent() {
-    on_every_engine(|pool| async move {
-        let channels = HelperChannels::new(pool);
-        let a = uuid::Uuid::new_v4();
-        let b = uuid::Uuid::new_v4();
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_requests_for_the_same_size_do_not_double_the_pool() {
+    // The reason the count and the create are one step. Two tabs setting up at
+    // the same moment would otherwise both observe an empty pool and both
+    // fill it.
+    let pool = db::connect("sqlite::memory:").await.expect("connect");
+    let registry = Arc::new(SqlActorRepository::new(pool));
+    let want = TransportBreakdown { http: 7, grpc: 0, both: 0 };
 
-        assert!(channels.get(&a).await.expect("readable").is_empty());
+    let mut tasks = Vec::new();
+    for t in 0..8 {
+        let registry = Arc::clone(&registry);
+        tasks.push(tokio::spawn(async move {
+            ensure(&registry, want, &format!("t{t}-")).await.0.len()
+        }));
+    }
+    let mut total_created = 0;
+    for task in tasks {
+        total_created += task.await.expect("task");
+    }
 
-        channels.push(&a, "111").await.expect("push");
-        channels.push(&a, "222").await.expect("push");
-        // The pairing path can run twice for one channel; the old `Vec` grew a
-        // duplicate where this must not.
-        channels.push(&a, "111").await.expect("push");
+    assert_eq!(total_created, 7, "every participant is created exactly once");
+    let helpers = registry
+        .all()
+        .await
+        .expect("readable")
+        .into_iter()
+        .filter(|a| a.role == Role::Helper)
+        .count();
+    assert_eq!(helpers, 7);
+}
 
-        let mut got = channels.get(&a).await.expect("readable");
-        got.sort();
-        assert_eq!(got, vec!["111", "222"]);
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_requests_for_different_sizes_settle_on_the_largest() {
+    let pool = db::connect("sqlite::memory:").await.expect("connect");
+    let registry = Arc::new(SqlActorRepository::new(pool));
 
-        assert!(
-            channels.get(&b).await.expect("readable").is_empty(),
-            "channels must be per actor"
-        );
+    let mut tasks = Vec::new();
+    for want in [3u8, 9, 5, 7] {
+        let registry = Arc::clone(&registry);
+        tasks.push(tokio::spawn(async move {
+            ensure(&registry, TransportBreakdown { http: want, grpc: 0, both: 0 }, "w").await;
+        }));
+    }
+    for task in tasks {
+        task.await.expect("task");
+    }
 
-        channels.remove(&a, "111").await.expect("remove");
-        assert_eq!(channels.get(&a).await.expect("readable"), vec!["222"]);
-    })
-    .await;
+    assert_eq!(registry.all().await.expect("readable").len(), 9);
 }
 
 #[tokio::test]
 async fn disabling_a_helper_is_a_toggle() {
     on_every_engine(|pool| async move {
-        let disabled = DisabledHelpers::new(pool);
+        let disabled = SqlDisabledHelperRepository::new(pool);
         let id = uuid::Uuid::new_v4();
 
         assert!(!disabled.is_disabled(&id).await.expect("readable"));
@@ -308,7 +317,7 @@ async fn a_participant_contact_is_read_not_taken() {
     // `GET /helpers/:id/browser-contact` may be polled more than once, and the
     // `DashMap::get` it replaces left the entry in place.
     on_every_engine(|pool| async move {
-        let contacts = ParticipantContacts::new(pool);
+        let contacts = SqlBrowserContactRepository::new(pool);
         let id = uuid::Uuid::new_v4();
 
         assert!(contacts.get(&id).await.expect("readable").is_none());

@@ -9,7 +9,7 @@ import type { VaultConfigOverrides } from '../types'
  * actually moved.
  *
  * Kept apart from the defaults rather than copied into one form object. The
- * defaults arrive asynchronously (`GET /config`, then this browser's Settings
+ * defaults arrive asynchronously (`GET /api/v1/config`, then this browser's Settings
  * overrides on top), and a form seeded from the built-in fallback before they
  * land either clobbered what the user typed when they did, or — guarded by "only
  * while the name is empty" — kept the fallback for good: a vault created with a

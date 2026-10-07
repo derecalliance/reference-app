@@ -9,7 +9,7 @@ import { apiGetDebugState, type DebugState } from '../api'
 /**
  * The server's own view of itself, rendered for a human.
  *
- * Deliberately the *same* payload `GET /debug/state` hands an agent: one source
+ * Deliberately the *same* payload `GET /api/v1/debug/state` hands an agent: one source
  * of truth, so what you read on screen and what a script reads over HTTP cannot
  * disagree. That also means the fastest way to automate anything you see here
  * is to call the endpoint named at the bottom of the panel.

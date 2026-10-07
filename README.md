@@ -94,8 +94,10 @@ The left navigation has four sections:
 **View Payload** shows a published version of the secret bag as it is
 distributed — including its replica group, when there is one. **Remove Secret**
 publishes a new version without the secret; it does not reach back into earlier
-versions, which still contain it and which helpers keep their shares of —
-recovering an earlier version brings the secret back.
+versions, which still contain it. Each publish tells helpers which versions to
+keep — the three newest committed ones, plus the one being sent — so until three
+newer versions have committed, recovering an earlier version brings the secret
+back.
 
 ### Vaults
 
@@ -137,7 +139,16 @@ Three places show you what is happening, all reading the same data:
 | --- | --- |
 | **Inspect section** | The server's own view of itself: actors and the endpoints they advertise, which tier of the channel router holds each channel, how many protocol instances each actor runs. Refreshes live. |
 | **Console panel** | What happened, in order — this page's own protocol events *and* the backend's message deliveries, tagged with the transport that actually carried each one. Copy or download the whole log as JSON. |
-| **HTTP** | `GET /debug/state` and `GET /debug/events` return exactly what those two render; `GET /debug/config` returns the resolved configuration. The full API is described in [`apps/backend/openapi.yaml`](apps/backend/openapi.yaml); a test keeps it in step with the router. |
+| **HTTP** | `GET /api/v1/debug/state` and `GET /api/v1/debug/events` return exactly what those two render; `GET /api/v1/debug/config` returns the resolved configuration. The full API is described in [`apps/backend/openapi.yaml`](apps/backend/openapi.yaml); a test keeps it in step with the router. |
+
+The API lives under `/api/v1` and answers in one envelope: `{"result": …,
+"timestamp", "request_id"}` on success, `{"error": {"code", "message"}, …}` on
+failure, with a stable `code` such as `NOT_FOUND` or `RELAY_DISABLED`. Every
+response carries an `x-request-id` header — send your own to find that request
+in the node's logs. `GET /health` and the DeRec transport (`/derec/*`) stay at
+the root with their bodies unchanged. [`AGENTS.md`](AGENTS.md) has the full
+error-code table, and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#backend-layering)
+how the backend is layered.
 
 The transport badge on each channel row is worth knowing about: `HTTPS`,
 `GRPC` or `GRPC+HTTPS` tells you what that peer advertises. A trailing `~`
@@ -163,7 +174,7 @@ registry.
 >
 > It is a developer tool and has none of the protections a service would: no
 > authentication, permissive CORS, and it listens on all interfaces. Anyone who
-> can reach its port can read every actor through `GET /actors` — including
+> can reach its port can read every actor through `GET /api/v1/actors` — including
 > channel shared keys — and can delete or disable the shared helpers everyone
 > else is paired with. The node prints the same warning at boot.
 
@@ -177,9 +188,9 @@ into the binary, `@derec-alliance/web` into the bundled WASM), so a different
 SDK means a different image rather than a different flag:
 
 ```
-docker build -f apps/backend/Dockerfile -t derec/reference-app:0.0.6 .
+docker build -f apps/backend/Dockerfile -t derec/reference-app:0.0.7 .
 docker run -d --name derec -p 5000:5000 -p 50051:50051 \
-  -v derec-data:/var/lib/derec derec/reference-app:0.0.6
+  -v derec-data:/var/lib/derec derec/reference-app:0.0.7
 ```
 
 Then open `http://localhost:5000`. There is no separate front-end server: the
@@ -199,7 +210,7 @@ one, not the one the container listens on:
 docker run -d --name derec -p 8080:5000 -p 8081:50051 \
   -v derec-data:/var/lib/derec \
   -e DEREC_PUBLIC_PORT=8080 -e DEREC_PUBLIC_GRPC_PORT=8081 \
-  derec/reference-app:0.0.6
+  derec/reference-app:0.0.7
 ```
 
 Without them, peers are told `:5000` and `:50051`, and pairing fails once the
@@ -217,7 +228,7 @@ the record survives the very restart that changes the port). A message sent to
 an old one — by a helper here to a browser owner still registered under the old
 port, or by a browser through the relay — is recognised as meant for this node
 and delivered in-process rather than dialled, so a republished container keeps
-working for everyone on it even though the old port is gone. `GET /debug/state`
+working for everyone on it even though the old port is gone. `GET /api/v1/debug/state`
 lists the remembered addresses under `advertised_addresses`.
 
 Pairing across machines needs the LAN address, exactly as it does outside
@@ -235,7 +246,7 @@ applies when it detects a container.
 ```
 docker run -d --name derec -p 5000:5000 -p 50051:50051 \
   -v derec-data:/var/lib/derec \
-  -e DEREC_BASE_URL=http://192.168.0.28 derec/reference-app:0.0.6
+  -e DEREC_BASE_URL=http://192.168.0.28 derec/reference-app:0.0.7
 ```
 
 To configure it with a file, mount one at `/etc/derec/config.toml` — the image
@@ -246,7 +257,7 @@ reads that path by default, so no other setting is needed (see
 docker run -d --name derec -p 5000:5000 -p 50051:50051 \
   -v derec-data:/var/lib/derec \
   -v ./my-config.toml:/etc/derec/config.toml:ro \
-  derec/reference-app:0.0.6
+  derec/reference-app:0.0.7
 ```
 
 #### With compose
@@ -335,7 +346,7 @@ coming up half-working; `docker logs` names the problem:
 
 ### The SDK
 
-Both halves are built against SDK **0.0.6**, and the app's version is the same
+Both halves are built against SDK **0.0.7**, and the app's version is the same
 number.
 
 Both are taken from the registries: `derec-library` and `derec-proto` from
@@ -597,7 +608,7 @@ What the two tables mean:
   address it advertises, its database, the UI it serves. The backend applies
   these directly.
 - **`[defaults]`** is mostly *defaults for the front end*: served from
-  `GET /config`, prefilled into the setup wizard and the Settings section, and
+  `GET /api/v1/config`, prefilled into the setup wizard and the Settings section, and
   still editable there. The protocol settings a node actually runs with are
   whatever the front end sends when it provisions actors. The exception is the
   transport keys — `grpc_enabled`, `grpc_port` and `grpc_relay_enabled` — which
@@ -696,7 +707,7 @@ configuration
 
 Every setting is listed, not only the overridden ones — if you set something
 and nothing happened, seeing that key marked `default` is the answer. The same
-data is available as JSON from `GET /debug/config`, and in the Settings
+data is available as JSON from `GET /api/v1/debug/config`, and in the Settings
 section.
 
 ## Transports
@@ -763,7 +774,7 @@ so it delivers to:
 
 So a browser owner on node A reaching a gRPC-only helper on node B needs B's
 address in A's `relay_allowed_hosts`; without it the relay answers `403` with a
-message naming that setting. Every refusal is recorded in `GET /debug/events`
+message naming that setting. Every refusal is recorded in `GET /api/v1/debug/events`
 with its reason, attributed to the requesting owner when the request carries
 its `actor_id`. With gRPC disabled on this node, a relay to this node's own
 gRPC address is `409` saying so. This is also

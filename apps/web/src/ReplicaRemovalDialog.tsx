@@ -107,27 +107,35 @@ function RemoveBody({
   replicaId: string
   targetIsSource: boolean
 }) {
+  // Worded to the library's documented semantics (SDK 0.0.7): any member may
+  // remove any member, the source included, with no role check; removing the
+  // source promotes the first remaining member in this device's replica list;
+  // and the removed member is not asked and gets no warning.
   return (
     <>
       <p>
         Evict replica <code>{replicaId}</code> ({name}) from the replica group. The rest of
-        the group is told, and stops mirroring to it.
+        the group is told, and stops mirroring to it. Any member may remove any other, the
+        source included — that is how a lost or stolen device is taken out of a group.
       </p>
       {targetIsSource ? (
         <div className="replica-row-notice replica-row-notice--error" role="alert">
           <span className="replica-row-prompt__text">
             <strong>{name} is the source of this group — the device this vault came from.</strong>{' '}
-            Once {name} sees the new roster, the protocol on that device erases its whole
-            copy of the vault: its secrets, helper channels and shares. The group then
-            promotes another member to source, which may be this device — from then on,
-            this device publishes the vault. This cannot be undone from here.
+            {name} is not asked and gets no warning: once it sees the new roster, the protocol
+            on that device erases its whole copy of the vault — its secrets, helper channels
+            and shares. The first remaining member in this device’s replica list becomes the
+            source, which may be this device; from then on, it publishes the vault. The secret
+            itself survives on the remaining members and the helpers. This cannot be undone
+            from here.
           </span>
         </div>
       ) : (
         <p>
-          <strong>This erases {name}’s copy.</strong> Once {name} sees the new roster, the
-          protocol on that device drops everything it holds for this vault. It would have
-          to be paired and mirrored again to come back.
+          <strong>This erases {name}’s copy.</strong> {name} is not asked and gets no warning:
+          once it sees the new roster, the protocol on that device drops everything it holds
+          for this vault. The secret survives on the remaining members and the helpers. {name}{' '}
+          would have to be paired and mirrored again to come back.
         </p>
       )}
     </>

@@ -20,7 +20,7 @@ import { AppHeader } from './AppHeader'
 import { navigate } from './routing'
 import { useHashRoute } from './useHashRoute'
 import { vaultScreen } from './vaultScreen'
-import { reportInfo } from './toastBus'
+import { reportError, reportInfo } from './toastBus'
 import { countLocalDataEntries } from './localData'
 import { resetBrowserData } from './browserReset'
 import { vaultLockMode } from './vaultLock'
@@ -130,6 +130,19 @@ function AppContent() {
     return true
   }
 
+  /** The name to report a vault's failure under. */
+  function nameOf(id: string): string {
+    return entries.find(e => e.id === id)?.name ?? 'the vault'
+  }
+
+  /**
+   * Run a manager action started by a click. Nothing awaits these, so a
+   * failure is reported here or nowhere — it used to be nowhere.
+   */
+  function runAction(action: Promise<unknown>, failure: string): void {
+    action.catch(err => reportError(failure, err))
+  }
+
   /** Start a stopped vault, or claim one another tab let go, then show it. */
   async function openVault(id: string): Promise<void> {
     if (await manager.open(id)) {
@@ -139,11 +152,19 @@ function AppContent() {
     }
   }
 
+  function handleOpen(id: string): void {
+    runAction(openVault(id), `Could not open “${nameOf(id)}”`)
+  }
+
+  function handleRetry(id: string): void {
+    runAction(manager.retry(id), `Could not start “${nameOf(id)}”`)
+  }
+
   /** Go straight to a vault picked in the header. */
   function switchToVault(id: string): void {
     const target = entries.find(e => e.id === id)
     if (target && OPEN_ON_SWITCH.has(target.state)) {
-      void openVault(id)
+      handleOpen(id)
     } else {
       navigate({ kind: 'vault', id })
     }
@@ -183,14 +204,14 @@ function AppContent() {
   /** Stop running the on-screen vault here and free it for another tab. */
   function handleLeaveOnly() {
     setLeaveDialogOpen(false)
-    if (vaultId) void manager.release(vaultId)
+    if (vaultId) runAction(manager.release(vaultId), `Could not stop “${nameOf(vaultId)}” cleanly`)
     navigate({ kind: 'list' })
   }
 
   /** Stop it, erase its stores and forget it. */
   function handleRemoveFromBrowser() {
     setLeaveDialogOpen(false)
-    if (vaultId) void manager.remove(vaultId)
+    if (vaultId) removeVault(vaultId)
     navigate({ kind: 'list' })
   }
 
@@ -199,8 +220,12 @@ function AppContent() {
     const id = removeTargetId
     setRemoveTargetId(null)
     if (!id) return
-    void manager.remove(id)
+    removeVault(id)
     if (vaultId === id) navigate({ kind: 'list' })
+  }
+
+  function removeVault(id: string): void {
+    runAction(manager.remove(id), `Could not remove “${nameOf(id)}” from this browser`)
   }
 
   const list = (notice: string | null) => (
@@ -209,9 +234,9 @@ function AppContent() {
       notice={notice}
       warning={LOCK_WARNING}
       onNew={flow => navigate({ kind: 'new', flow })}
-      onOpen={id => void openVault(id)}
-      onClaim={id => void openVault(id)}
-      onRetry={id => void manager.retry(id)}
+      onOpen={handleOpen}
+      onClaim={handleOpen}
+      onRetry={handleRetry}
       onRemove={setRemoveTargetId}
     />
   )
@@ -247,7 +272,7 @@ function AppContent() {
           <VaultUnavailable
             message={`“${entry?.name}” is open in another tab. Two tabs cannot run one vault — they would split its mailbox. Close it there, then claim it here.`}
             action="Claim"
-            onAction={() => void openVault(route.id)}
+            onAction={() => handleOpen(route.id)}
           />
         )
       case 'failed':
@@ -255,7 +280,7 @@ function AppContent() {
           <VaultUnavailable
             message={`“${entry?.name}” failed to start${screen.failure ? `: ${screen.failure}` : '.'}`}
             action="Retry"
-            onAction={() => void manager.retry(route.id)}
+            onAction={() => handleRetry(route.id)}
             onRemove={() => setRemoveTargetId(route.id)}
           />
         )
@@ -264,7 +289,7 @@ function AppContent() {
           <VaultUnavailable
             message={`“${entry?.name}” is not running in this tab.`}
             action="Open"
-            onAction={() => void openVault(route.id)}
+            onAction={() => handleOpen(route.id)}
             onRemove={() => setRemoveTargetId(route.id)}
           />
         )

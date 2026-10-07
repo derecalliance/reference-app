@@ -28,10 +28,11 @@ function context(overrides: Partial<FoldContext> = {}): FoldContext {
     roundResolved: vi.fn(),
     getVault: () => current,
     commit: vi.fn(),
-    offerReplicaAdoption: vi.fn(() => true),
+    offerReplicaAdoption: vi.fn(),
     readChannelInfo: vi.fn(() => null),
     channelInfoOutcome: vi.fn(),
     awaitingIdentityAnswer: vi.fn(() => false),
+    isShareHeld: vi.fn(() => true),
     ...overrides,
   }
 }

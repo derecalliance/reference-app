@@ -2,12 +2,25 @@
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { apiGetServerDefaults, apiRegisterOwner } from './api'
+import { apiConfirmActorFingerprint, apiGetActors, apiGetServerDefaults, apiRegisterOwner } from './api'
 import { FALLBACK_SERVER_DEFAULTS } from './config'
 
 /** What `fetch` throws when it cannot open a connection at all. */
 function connectionRefused() {
   return Promise.reject(new TypeError('Failed to fetch'))
+}
+
+/** A success in the node's envelope. */
+function ok(result: unknown, status = 200) {
+  return jsonResponse({ result, timestamp: '2026-10-07T12:00:00.000Z', request_id: 'req-1' }, status)
+}
+
+/** A failure in the node's error envelope. */
+function failure(status: number, code: string, message: string) {
+  return jsonResponse(
+    { error: { code, message }, timestamp: '2026-10-07T12:00:00.000Z', request_id: 'req-1' },
+    status,
+  )
 }
 
 function jsonResponse(body: unknown, status = 200) {
@@ -60,7 +73,7 @@ describe('api — reachable backend', () => {
   it('reports the server as reachable and uses its defaults', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(() => jsonResponse({ participant_count: 4, protocol_timeout_secs: 99 })),
+      vi.fn(() => ok({ participant_count: 4, protocol_timeout_secs: 99 })),
     )
 
     const result = await apiGetServerDefaults()
@@ -74,7 +87,7 @@ describe('api — reachable backend', () => {
     // A 500 from /config means the server is up but could not answer. The
     // wizard should not claim it is unreachable — that would send the user
     // hunting for a process that is running fine.
-    vi.stubGlobal('fetch', vi.fn(() => jsonResponse({ error: 'boom' }, 500)))
+    vi.stubGlobal('fetch', vi.fn(() => failure(500, 'INTERNAL_ERROR', 'boom')))
 
     const result = await apiGetServerDefaults()
 
@@ -82,10 +95,41 @@ describe('api — reachable backend', () => {
     expect(result.defaults).toEqual(FALLBACK_SERVER_DEFAULTS)
   })
 
-  it('surfaces the server’s own error message for a failed request', async () => {
-    vi.stubGlobal('fetch', vi.fn(() => jsonResponse({ error: 'claim_actor_id not found' }, 404)))
+  it('surfaces the server’s own error message and code for a failed request', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => failure(404, 'NOT_FOUND', 'claim_actor_id not found')))
 
-    await expect(apiRegisterOwner('Alice', 'nope')).rejects.toThrow('claim_actor_id not found')
+    const err = await apiRegisterOwner('Alice', 'nope').catch((e: unknown) => e)
+
+    expect((err as Error).message).toBe('Could not register the owner: claim_actor_id not found')
+    expect(err).toMatchObject({ status: 404, code: 'NOT_FOUND', requestId: 'req-1' })
+  })
+
+  it('calls the versioned API and hands back the result alone', async () => {
+    const fetchMock = vi.fn(() => ok({ actors: [{ id: 'a1' }] }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const actors = await apiGetActors()
+
+    expect(actors).toEqual([{ id: 'a1' }])
+    expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe('http://localhost:5000/api/v1/actors')
+  })
+
+  it('reads a mismatched fingerprint as an answer, by its code', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => failure(400, 'FINGERPRINT_MISMATCH', 'fingerprint mismatch')))
+
+    await expect(apiConfirmActorFingerprint('a1', '7', '1234')).resolves.toBe(false)
+  })
+
+  it('still throws any other refusal of a fingerprint', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => failure(400, 'BAD_REQUEST', 'channel_id is not a number')))
+
+    await expect(apiConfirmActorFingerprint('a1', 'x', '1234')).rejects.toThrow('channel_id is not a number')
+  })
+
+  it('confirms a matching fingerprint from the result', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => ok({ confirmed: true })))
+
+    await expect(apiConfirmActorFingerprint('a1', '7', '1234')).resolves.toBe(true)
   })
 })
 

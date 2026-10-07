@@ -53,6 +53,35 @@ describe('verifyProgress', () => {
   })
 })
 
+describe('verifyProgress with refusals (SDK 0.0.7 ShareVerifyRejected)', () => {
+  it('resolves a refusing helper to Rejected, with its memo, and counts it as answered', () => {
+    const progress = verifyProgress({
+      participants,
+      verifiedParticipantIds: ['h1', 'h2', 'h3'],
+      rejections: [{ id: 'h4', status: 10, memo: 'Rejected by user' }],
+      failedChannelIds: new Set(),
+      deadlinePassed: false,
+    })
+
+    expect(progress.rows[3]).toMatchObject({ state: 'rejected', detail: 'Rejected by user' })
+    expect(progress.rejectedCount).toBe(1)
+    expect(progress.failedCount).toBe(0)
+    expect(progress.allDone).toBe(true)
+    expect(progress.percent).toBe(100)
+  })
+
+  it('names the status when the helper gave no memo', () => {
+    const progress = verifyProgress({
+      participants: participants.slice(0, 1),
+      verifiedParticipantIds: [],
+      rejections: [{ id: 'h1', status: 6, memo: '' }],
+      failedChannelIds: new Set(),
+      deadlinePassed: false,
+    })
+    expect(progress.rows[0].detail).toBe('status 6')
+  })
+})
+
 describe('verifyBlockedReason', () => {
   const round = { version: 5, protocolSecretId: '42', bag: {} as SecretBag, channelIds: [] } satisfies PendingProtectRound
 

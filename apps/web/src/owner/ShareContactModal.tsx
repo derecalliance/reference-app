@@ -3,7 +3,7 @@
 
 import { ModalFrame } from '../ModalFrame'
 import { TransportBlock } from './TransportTag'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import { useConsole } from '../ConsoleContext'
 import { CONTACT_MODE_OPTIONS, type ContactModeKey, DEFAULT_CONTACT_MODE } from '../contactModes'
 import { errorText } from '../errorText'
@@ -22,6 +22,15 @@ type ShareContactStep =
   | { kind: 'loading' }
   | { kind: 'error'; message: string }
   | { kind: 'ready'; channelId: bigint; qrPayload: string; rawHex: string }
+
+/**
+ * What the latest contact request left behind. The `ready` step is derived from
+ * the contact rather than stored alongside it, so the two cannot disagree.
+ */
+type ContactOutcome =
+  | { kind: 'loading' }
+  | { kind: 'error'; message: string }
+  | { kind: 'ready'; contact: ContactMessage }
 
 /**
  * Role picker for a pairing.
@@ -145,33 +154,65 @@ export function ShareContactModal({
   onPairingCreated?: (channelId: bigint) => void
 }) {
   const { log } = useConsole()
-  const [step, setStep] = useState<ShareContactStep>({ kind: 'loading' })
-  const [contact, setContact] = useState<ContactMessage | null>(null)
+  const [outcome, setOutcome] = useState<ContactOutcome>({ kind: 'loading' })
   const [mode, setMode] = useState<ContactModeKey>(DEFAULT_CONTACT_MODE)
-  const [refreshing, setRefreshing] = useState(false)
+  // The first contact is requested on mount, so the modal opens refreshing.
+  const [refreshing, setRefreshing] = useState(true)
   /**
-   * The mode a contact has already been requested for.
+   * The mode a contact was last requested for — which is always the mode
+   * selected, because a request goes out exactly when the mode is set.
    *
-   * `StrictMode` runs effects twice in development, and this effect's side
-   * effect is a *remote* one: it asks the peer to mint a contact, which creates
-   * a real pending channel on the server. The cleanup flag stops the second
-   * result being applied, but cannot un-send the request — so without this the
-   * modal mints two channels every time it opens, and two concurrent
-   * `create_contact` messages to the same actor can make one of them fail.
+   * It does two jobs. A resolved request is applied only while its mode is
+   * still this one, so a result superseded by a newer *mode* is dropped. And it
+   * keeps the mount request from going out twice: `StrictMode` runs effects
+   * twice in development, and asking the peer to mint a contact creates a real
+   * pending channel on the server — two concurrent `create_contact` messages to
+   * the same actor can make one of them fail. A per-run `cancelled` flag could
+   * not do either: `StrictMode`'s immediate cleanup would mark the only request
+   * cancelled, leaving no contact ever appearing.
    */
   const requestedModeRef = useRef<ContactModeKey | null>(null)
-  /**
-   * The mode currently selected, readable from inside an in-flight request.
-   *
-   * Written during render rather than from an effect so it is already correct
-   * when the effect below compares against it. This is what decides whether a
-   * resolved request is still wanted — a per-run `cancelled` flag cannot,
-   * because `StrictMode`'s immediate cleanup would mark the *first* run
-   * cancelled and the second run skips as a duplicate, leaving nothing to
-   * apply and no contact ever appearing.
-   */
-  const latestModeRef = useRef<ContactModeKey>(mode)
-  latestModeRef.current = mode
+
+  const step = useMemo<ShareContactStep>(
+    () => (outcome.kind === 'ready' ? readyStep(outcome.contact) : outcome),
+    [outcome],
+  )
+
+  /** Asks the peer to mint a contact in `next`, applying it only if still wanted. */
+  function requestContact(next: ContactModeKey) {
+    requestedModeRef.current = next
+    createContact(next)
+      .then(c => {
+        if (requestedModeRef.current !== next) return
+        setOutcome({ kind: 'ready', contact: c })
+        onPairingCreated?.(BigInt(c.channel_id))
+        log({
+          role: 'owner',
+          flow: 'pairing',
+          step: 'create_contact',
+          description: `Contact created for ${transport.uri} (${next})`,
+          payload: {
+            channelId: c.channel_id.toString(),
+            transportUri: transport.uri,
+            contactMode: next,
+          },
+        })
+      })
+      .catch((err: unknown) => {
+        if (requestedModeRef.current !== next) return
+        setOutcome({ kind: 'error', message: errorText(err) })
+      })
+      .finally(() => {
+        // A superseded request must not clear the flag out from under the newer one.
+        if (requestedModeRef.current === next) setRefreshing(false)
+      })
+  }
+
+  const requestInitialContact = useEffectEvent(() => requestContact(mode))
+  useEffect(() => {
+    if (requestedModeRef.current !== null) return
+    requestInitialContact()
+  }, [])
 
   // Re-mints the contact whenever the mode changes: the mode is baked into the
   // contact at creation, so it cannot be applied to one already generated. The
@@ -182,50 +223,12 @@ export function ShareContactModal({
   // unmounting the QR, the copy row and the transport block collapses the modal
   // to its header and springs it back a moment later, which reads as a flicker.
   // The layout stays put and is marked stale instead.
-  useEffect(() => {
-    if (requestedModeRef.current === mode) return
-    requestedModeRef.current = mode
-
+  function handleModeChange(next: ContactModeKey) {
+    setMode(next)
+    if (requestedModeRef.current === next) return
     setRefreshing(true)
-
-    createContact(mode)
-      .then(c => {
-        // Superseded only by a newer *mode*, not by a re-run of this effect.
-        if (latestModeRef.current !== mode) return
-        setContact(c)
-        onPairingCreated?.(BigInt(c.channel_id))
-        log({
-          role: 'owner',
-          flow: 'pairing',
-          step: 'create_contact',
-          description: `Contact created for ${transport.uri} (${mode})`,
-          payload: {
-            channelId: c.channel_id.toString(),
-            transportUri: transport.uri,
-            contactMode: mode,
-          },
-        })
-      })
-      .catch((err: unknown) => {
-        if (latestModeRef.current !== mode) return
-        setStep({ kind: 'error', message: errorText(err) })
-      })
-      .finally(() => {
-        // A superseded run must not clear the flag out from under the newer one.
-        if (latestModeRef.current === mode) setRefreshing(false)
-      })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode])
-
-  useEffect(() => {
-    if (!contact) return
-    setStep({
-      kind: 'ready',
-      channelId: BigInt(contact.channel_id),
-      qrPayload: serializeContact(contact),
-      rawHex: contact.channel_id.toString(),
-    })
-  }, [contact])
+    requestContact(next)
+  }
 
   return (
     <ModalFrame
@@ -242,7 +245,7 @@ export function ShareContactModal({
       <div className="modal-body">
         <ContactModeSelector
           value={mode}
-          onChange={setMode}
+          onChange={handleModeChange}
           idPrefix="share-contact"
         />
 
@@ -296,4 +299,13 @@ export function ShareContactModal({
       </div>
     </ModalFrame>
   )
+}
+
+function readyStep(contact: ContactMessage): ShareContactStep {
+  return {
+    kind: 'ready',
+    channelId: BigInt(contact.channel_id),
+    qrPayload: serializeContact(contact),
+    rawHex: contact.channel_id.toString(),
+  }
 }

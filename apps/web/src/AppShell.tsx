@@ -3,6 +3,7 @@
 
 import { lazy, Suspense, useEffect, useState, type ComponentType, type ReactNode } from 'react'
 import GroupsIcon from '@mui/icons-material/Groups'
+import HelpOutlineIcon from '@mui/icons-material/HelpOutline'
 import MenuIcon from '@mui/icons-material/Menu'
 import PersonIcon from '@mui/icons-material/Person'
 import SettingsIcon from '@mui/icons-material/Settings'
@@ -10,6 +11,7 @@ import TroubleshootIcon from '@mui/icons-material/Troubleshoot'
 import {
   Box,
   CircularProgress,
+  Divider,
   Drawer,
   IconButton,
   List,
@@ -18,6 +20,7 @@ import {
   ListItemText,
   Typography,
   useMediaQuery,
+  alpha,
   useTheme,
 } from '@mui/material'
 
@@ -32,22 +35,30 @@ const ParticipantsPane = lazy(() =>
   import('./admin/ParticipantsPane').then(m => ({ default: m.ParticipantsPane })),
 )
 const SettingsPane = lazy(() => import('./admin/SettingsPane').then(m => ({ default: m.SettingsPane })))
+// Help carries its Markdown renderer and every topic's text; none of it is
+// needed until the section is first opened.
+const HelpPane = lazy(() => import('./help/HelpPane').then(m => ({ default: m.HelpPane })))
 
 const DRAWER_WIDTH = 216
 
 /** The width at which the stylesheets switch to the phone layout. */
 const PHONE_QUERY = '@media (max-width: 640px)'
 
-const NAV: ReadonlyArray<{
+interface NavItem {
   section: AppSection
   label: string
   icon: ComponentType
-}> = [
+}
+
+const NAV: readonly NavItem[] = [
   { section: 'owner', label: 'Owner', icon: PersonIcon },
   { section: 'participants', label: 'Participants', icon: GroupsIcon },
   { section: 'settings', label: 'Settings', icon: SettingsIcon },
   { section: 'inspect', label: 'Inspect', icon: TroubleshootIcon },
 ]
+
+/** Pinned to the foot of the rail, apart from the sections it explains. */
+const HELP_ITEM: NavItem = { section: 'help', label: 'Help', icon: HelpOutlineIcon }
 
 export interface AppShellProps {
   /**
@@ -82,7 +93,8 @@ export function AppShell({ children }: AppShellProps) {
   // rail's 216px squeezes it enough to truncate its tab bar. Collapsing to a
   // hamburger gives that page the full width it had before the shell existed.
   const permanent = useMediaQuery(theme.breakpoints.up('lg'))
-  const currentLabel = NAV.find(item => item.section === section)?.label ?? ''
+  const currentLabel =
+    [...NAV, HELP_ITEM].find(item => item.section === section)?.label ?? ''
 
   function select(next: AppSection) {
     setSection(next)
@@ -104,27 +116,63 @@ export function AppShell({ children }: AppShellProps) {
     return () => window.removeEventListener('hashchange', onRoute)
   }, [])
 
+  const navButton = ({ section: value, label, icon: Icon }: NavItem) => {
+    const current = section === value
+    return (
+      <ListItemButton
+        key={value}
+        selected={current}
+        // Selection is state, not decoration: the highlight alone leaves it
+        // unavailable to anyone not looking at the colour.
+        aria-current={current ? 'page' : undefined}
+        onClick={() => select(value)}
+      >
+        <ListItemIcon sx={{ minWidth: 40 }}>
+          <Icon />
+        </ListItemIcon>
+        <ListItemText primary={label} />
+      </ListItemButton>
+    )
+  }
+
+  // One landmark holding both lists: the sections at the top, Help pinned to
+  // the bottom. Help is set apart and tinted with the accent so a developer
+  // who has not found their way yet notices it, without competing with the
+  // selected section's own highlight.
+  const helpCurrent = section === HELP_ITEM.section
   const nav = (
-    <List component="nav" aria-label="App sections" sx={{ pt: { xs: 1, lg: 2 } }}>
-      {NAV.map(({ section: value, label, icon: Icon }) => {
-        const current = section === value
-        return (
-          <ListItemButton
-            key={value}
-            selected={current}
-            // Selection is state, not decoration: the highlight alone leaves it
-            // unavailable to anyone not looking at the colour.
-            aria-current={current ? 'page' : undefined}
-            onClick={() => select(value)}
-          >
-            <ListItemIcon sx={{ minWidth: 40 }}>
-              <Icon />
-            </ListItemIcon>
-            <ListItemText primary={label} />
-          </ListItemButton>
-        )
-      })}
-    </List>
+    <Box
+      component="nav"
+      aria-label="App sections"
+      sx={{ display: 'flex', flexDirection: 'column', flexGrow: 1, minHeight: 0 }}
+    >
+      <List sx={{ pt: { xs: 1, lg: 2 } }}>{NAV.map(navButton)}</List>
+      <Box sx={{ flexGrow: 1 }} />
+      <Divider />
+      <List sx={{ py: 1 }}>
+        <ListItemButton
+          selected={helpCurrent}
+          aria-current={helpCurrent ? 'page' : undefined}
+          onClick={() => select(HELP_ITEM.section)}
+          sx={t => ({
+            mx: 1,
+            borderRadius: 1,
+            border: 1,
+            borderColor: alpha(t.palette.primary.main, 0.4),
+            bgcolor: alpha(t.palette.primary.main, 0.08),
+            '&:hover': { bgcolor: alpha(t.palette.primary.main, 0.16) },
+            '&.Mui-selected, &.Mui-selected:hover': {
+              bgcolor: alpha(t.palette.primary.main, 0.22),
+            },
+          })}
+        >
+          <ListItemIcon sx={{ minWidth: 40, color: 'primary.main' }}>
+            <HELP_ITEM.icon />
+          </ListItemIcon>
+          <ListItemText primary={HELP_ITEM.label} />
+        </ListItemButton>
+      </List>
+    </Box>
   )
 
   // Admin sections get a common frame. They were written for — or in
@@ -209,7 +257,7 @@ export function AppShell({ children }: AppShellProps) {
             // Kept mounted so the nav is in the DOM for assistive technology
             // and for tests, rather than appearing only once opened.
             ModalProps={{ keepMounted: true }}
-            sx={{ '& .MuiDrawer-paper': { width: DRAWER_WIDTH } }}
+            sx={{ '& .MuiDrawer-paper': { width: DRAWER_WIDTH, height: '100%' } }}
           >
             {nav}
           </Drawer>
@@ -235,6 +283,7 @@ export function AppShell({ children }: AppShellProps) {
         {section === 'participants' && adminFrame(<ParticipantsPane />)}
         {section === 'settings' && adminFrame(<SettingsPane />)}
         {section === 'inspect' && adminFrame(<InspectTab />)}
+        {section === 'help' && adminFrame(<HelpPane />)}
       </Box>
     </Box>
   )

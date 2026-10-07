@@ -54,8 +54,10 @@ describe('eraseVaultLocalData', () => {
     localStorage.clear()
   })
 
-  it('removes the vault’s stores and the records kept beside them, replica id included', () => {
+  it('removes the vault’s stores and the records kept beside them, replica id and adoption block included', () => {
     localStorage.setItem('derec:vault:v1:42:channel:helper:7', 'x')
+    localStorage.setItem('derec:replica-adoption-block:v1', '{}')
+    localStorage.setItem('derec:replica-adoption-block:v2', '{}')
     localStorage.setItem('derec:replica-state:v1', '{}')
     localStorage.setItem('derec:replica-offer:v1', '{}')
     localStorage.setItem('derec:replica-id:v1', '123')
@@ -69,5 +71,7 @@ describe('eraseVaultLocalData', () => {
     expect(localStorage.getItem('derec:replica-offer:v1')).toBeNull()
     expect(localStorage.getItem('derec:replica-id:v1')).toBeNull()
     expect(localStorage.getItem('derec:replica-id:v2')).toBe('456')
+    expect(localStorage.getItem('derec:replica-adoption-block:v1')).toBeNull()
+    expect(localStorage.getItem('derec:replica-adoption-block:v2')).toBe('{}')
   })
 })

@@ -6,6 +6,7 @@ import type { DeRecEvent } from '@derec-alliance/web'
 import type { ServerDefaults } from '../../config'
 import type { ProtocolInstance } from '../../owner/protocol'
 import type { RestoreFailure } from '../../replicaFlows'
+import type { KeepListSource } from '../../stores'
 import type { Vault } from '../../types'
 import type { VaultLogger, VaultNotifier } from '../types'
 
@@ -34,6 +35,12 @@ export interface CommandContext {
    * both rebuild state under the recovered `secret_id` in a fresh instance.
    */
   adoptInstance(instance: ProtocolInstance): void
+  /**
+   * The vault's retention policy, for every instance a command builds — see
+   * `vault/keepList.ts`. Read from the record at the moment a round asks, so
+   * an instance built mid-restore answers for the record it ends up under.
+   */
+  readonly keepList: KeepListSource
 }
 
 /** Adoption can also block the vault. */

@@ -11,6 +11,7 @@ import {
   makeStateStore,
   makeTransport,
   makeUserSecretStore,
+  type KeepListSource,
 } from '../stores'
 
 // ── Protocol instance registry ───────────────────────────────────────────────
@@ -64,9 +65,10 @@ export const PENDING_CHANNEL_TTL_SECS = 3600
 
 /**
  * `StatusEnum.VERSION_CONFLICT` — two members published the same version with
- * different content, and the round has to be resolved and republished at a new
- * version. Identical bytes are accepted as idempotent, so this only ever means
- * a genuine divergence.
+ * different content. The device must not publish again until the owner has
+ * merged the two copies; see `Vault.replicaConflict`. An identical copy is
+ * accepted as a re-send — from SDK 0.0.7 even when the held one records no
+ * author — so this only ever means a genuine divergence.
  */
 export const VERSION_CONFLICT_STATUS = 13
 
@@ -85,7 +87,13 @@ interface BuildProtocolOptions {
   ownTransportUri: string
   communicationInfo: Record<string, string>
   threshold: number
-  keepVersionsCount: number
+  /**
+   * Which versions helpers keep after each round — the owner's `keepList`.
+   * Required, so no instance that can act as an owner is built without a
+   * retention policy: from SDK 0.0.7 an absent list means helpers keep every
+   * version forever. See `vault/keepList.ts`.
+   */
+  keepList: KeepListSource
   timeoutSecs: number
   unpairAck: 'required' | 'not_required'
   replicaId: bigint
@@ -98,20 +106,24 @@ interface BuildProtocolOptions {
   /**
    * When `true`, every outbound request from this instance stamps
    * `replyTo = ownTransport`, overriding the channel's stored peer endpoint
-   * for that exchange. Needed only by a replica destination that has just
-   * adopted a source's vault: the helpers it drives still have the
-   * *source's* endpoint on file, and without this every response would be
-   * delivered there instead of here. Default `false` — the ordinary owner
-   * and helper instances pair directly with their peers, whose stored
-   * endpoint is already correct, so forcing this on for them would be an
-   * unrequested change to the wire format of every request they send.
+   * for that exchange, so answers come back to wherever this instance is now.
+   *
+   * On for every vault instance (runtime, restore, adoption). An adopted
+   * replica needs it outright — its helpers still have the *source's*
+   * endpoint on file — and since SDK 0.0.7 it is also the documented way to
+   * announce a new endpoint: `setOwnTransports` first, then a publish whose
+   * requests carry the new address as `reply_to`, so helpers that still hold
+   * the old one answer on the new (there is no per-round `reply_to` on
+   * `ProtectSecret`). While the endpoint is unchanged, `reply_to` names the
+   * same address the helper already has, so nothing else changes.
+   * Default `false` for any other caller.
    */
   autoReplyTo?: boolean
 }
 
 export function buildProtocolInstance(opts: BuildProtocolOptions): ProtocolInstance {
   const channelStore = makeChannelStore(opts.namespace)
-  const shareStore = makeShareStore(opts.namespace)
+  const shareStore = makeShareStore(opts.namespace, { keepList: opts.keepList })
 
   const builder = new DeRecProtocolBuilder(BigInt(opts.secretId))
     .withChannelStore(channelStore)
@@ -136,7 +148,6 @@ export function buildProtocolInstance(opts: BuildProtocolOptions): ProtocolInsta
     // message naming the flag.
     .withUnsafeConnection(!opts.ownTransportUri.startsWith('https://'))
     .withThreshold(opts.threshold)
-    .withKeepVersionsCount(opts.keepVersionsCount)
     .withTimeouts({
       // The wizard's single "protocol timeout" is the replay window, which is
       // the meaning it has always carried: how stale an inbound envelope may

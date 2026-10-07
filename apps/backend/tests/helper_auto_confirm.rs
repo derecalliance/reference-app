@@ -23,16 +23,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use actix::prelude::*;
-use derec_backend::actor::{
-    ChannelStatusMsg, CreateContactMsg, EnsureReplicaInstanceMsg, GetFingerprintMsg,
-    InstanceForChannelMsg, PendingChannelIdsMsg, ProtocolConfig, ProvisionedActor,
-    VerifyFingerprintMsg, build_protocol,
-};
-use derec_backend::config::Defaults;
+use derec_backend::infrastructure::actors::provisioned::{ChannelStatusMsg, CreateContactMsg, EnsureReplicaInstanceMsg, GetFingerprintMsg, InstanceForChannelMsg, PendingChannelIdsMsg, ProvisionedActor, VerifyFingerprintMsg};
+use derec_backend::infrastructure::actors::protocol::{ProtocolConfig, build_protocol};
+use derec_backend::models::Defaults;
 use derec_backend::models::{Role, TransportMode, UnpairAck};
-use derec_backend::provisioning::{provisioned_actor, register_browser_actor, spawn_provisioned};
-use derec_backend::state::{ActorInbox, AppState};
-use derec_backend::actor::ActorProtocol;
+use derec_backend::models::Actor;
+use derec_backend::services::ports::{ActorGateway, InboxDirectory};
+use derec_backend::infrastructure::bootstrap::Node;
+use derec_backend::infrastructure::actors::protocol::ActorProtocol;
 use derec_library::protocol::{
     ChannelQuery, ChannelRecord, ChannelStatus, DeRecChannelStore, DeRecFlow,
 };
@@ -41,8 +39,8 @@ use derec_library::types::ChannelId;
 use uuid::Uuid;
 
 /// Stock protocol settings for a fixture actor.
-fn test_settings() -> derec_backend::registry::actors::ActorSettings {
-    derec_backend::registry::actors::ActorSettings {
+fn test_settings() -> derec_backend::models::ActorSettings {
+    derec_backend::models::ActorSettings {
         replica_id: rand::random::<u64>(),
         timeout_secs: TIMEOUT_SECS,
         unpair_ack: UnpairAck::Required,
@@ -56,26 +54,25 @@ const TIMEOUT_SECS: u32 = 300;
 const POLL_ATTEMPTS: usize = 400;
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-/// Bring up the real router on an ephemeral port and return an `AppState` whose
+/// Bring up the real router on an ephemeral port and return an `Node` whose
 /// `base_url` points at it, so every actor minted from it gets a transport URI
 /// its peers can actually post to.
-async fn serve() -> Arc<AppState> {
+async fn serve() -> Arc<Node> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("an ephemeral port is available");
     let port = listener.local_addr().expect("listener is bound").port();
 
-    let state = Arc::new(AppState::new(
-        format!("http://127.0.0.1:{port}"),
-        Defaults::default(),
+    let state = Arc::new(Node::new(
+        derec_backend::models::NodeConfig::new(format!("http://127.0.0.1:{port}"), Defaults::default()),
         reqwest::Client::new(),
         actix_rt::Arbiter::current(),
-        derec_backend::db::connect("sqlite::memory:")
+        derec_backend::infrastructure::db::connect("sqlite::memory:")
             .await
             .expect("an in-memory database always connects"),
     ));
 
-    let router = derec_backend::build_router(state.clone());
+    let router = derec_backend::infrastructure::server::build_router(state.state.clone());
     actix_rt::spawn(async move {
         let _ = axum::serve(listener, router).await;
     });
@@ -84,33 +81,25 @@ async fn serve() -> Arc<AppState> {
 }
 
 /// Provision a hosted helper exactly as `POST /helpers` does.
-async fn spawn_helper(state: &Arc<AppState>, name: &str) -> (Uuid, Addr<ProvisionedActor>) {
+async fn spawn_helper(state: &Arc<Node>, name: &str) -> (Uuid, Addr<ProvisionedActor>) {
     spawn_actor(state, Role::Helper, name).await
 }
 
 async fn spawn_actor(
-    state: &Arc<AppState>,
+    state: &Arc<Node>,
     role: Role,
     name: &str,
 ) -> (Uuid, Addr<ProvisionedActor>) {
     let actor =
-        provisioned_actor(role, name, &state.base_url, &state.grpc_authority(), TransportMode::Http);
+        Actor::mint(role, name, &state.config.base_url, &state.config.grpc_authority(), TransportMode::Http);
     state
         .actors
         .register(actor.clone(), test_settings())
         .await
         .expect("the registry is writable");
-    spawn_provisioned(state, &actor, &test_settings()).expect("the actor starts");
+    state.runtime.spawn(&actor, &test_settings()).expect("the actor starts");
 
-    let addr = match state
-        .actor_inboxes
-        .get(&actor.id)
-        .expect("spawning registers an inbox")
-        .value()
-    {
-        ActorInbox::Provisioned(addr) => addr.clone(),
-        ActorInbox::Browser => panic!("this actor must be backend-managed"),
-    };
+    let addr = state.inboxes.provisioned(&actor.id).expect("spawning registers an inbox");
 
     (actor.id, addr)
 }
@@ -123,7 +112,7 @@ struct Owner {
     protocol: ActorProtocol,
 }
 
-async fn register_owner(state: &Arc<AppState>, name: &str) -> Owner {
+async fn register_owner(state: &Arc<Node>, name: &str) -> Owner {
     build_owner(state, name, true).await
 }
 
@@ -133,16 +122,16 @@ async fn register_owner(state: &Arc<AppState>, name: &str) -> Owner {
 /// `deliver_message` answers `404` and `HttpTransport::send` turns that into an
 /// error. See `the_tick_backstop_confirms_a_channel_the_event_path_missed` for
 /// why a test wants that.
-async fn register_unreachable_owner(state: &Arc<AppState>, name: &str) -> Owner {
+async fn register_unreachable_owner(state: &Arc<Node>, name: &str) -> Owner {
     build_owner(state, name, false).await
 }
 
-async fn build_owner(state: &Arc<AppState>, name: &str, reachable: bool) -> Owner {
-    let actor = provisioned_actor(
+async fn build_owner(state: &Arc<Node>, name: &str, reachable: bool) -> Owner {
+    let actor = Actor::mint(
         Role::Owner,
         name,
-        &state.base_url,
-        &state.grpc_authority(),
+        &state.config.base_url,
+        &state.config.grpc_authority(),
         TransportMode::Http,
     );
     let secret_id: u64 = actor.secret_id.parse().expect("secret id is a u64");
@@ -155,7 +144,7 @@ async fn build_owner(state: &Arc<AppState>, name: &str, reachable: bool) -> Owne
         // A browser inbox, so the helper's replies are buffered rather than
         // handed to an in-process actor. `pump` below drains it, standing in
         // for the front end's poll loop.
-        register_browser_actor(state, actor.id);
+        state.inboxes.register_browser(actor.id);
     }
 
     let config = ProtocolConfig {
@@ -165,12 +154,11 @@ async fn build_owner(state: &Arc<AppState>, name: &str, reachable: bool) -> Owne
         timeout_secs: TIMEOUT_SECS,
         unpair_ack: UnpairAck::Required,
         threshold: 2,
-        keep_versions_count: 3,
         replica_id: Some(rand::random()),
         http_client: state.http_client.clone(),
         pool: state.pool.clone(),
         actor_id: actor.id,
-        local_node: None,
+        local_delivery: None,
     };
 
     Owner {
@@ -182,7 +170,7 @@ async fn build_owner(state: &Arc<AppState>, name: &str, reachable: bool) -> Owne
 
 /// Drain the owner's mailbox into its protocol, as the front end's poll loop
 /// does. A no-op when the mailbox is empty.
-async fn pump(state: &AppState, owner: &mut Owner) {
+async fn pump(state: &Node, owner: &mut Owner) {
     let messages = state
         .mailboxes
         .drain(&owner.id)
@@ -200,7 +188,7 @@ async fn pump(state: &AppState, owner: &mut Owner) {
 /// The helper records every completed pairing's long-term channel id in
 /// `helper_channels`, which is the first externally visible sign the handshake
 /// landed on that side. Waits for it and returns it.
-async fn await_helper_channel(state: &AppState, helper_id: Uuid, owner: &mut Owner) -> u64 {
+async fn await_helper_channel(state: &Node, helper_id: Uuid, owner: &mut Owner) -> u64 {
     for _ in 0..POLL_ATTEMPTS {
         pump(state, owner).await;
         if let Some(channel_id) = state
@@ -241,7 +229,7 @@ async fn await_one_pending_channel(actor: &Addr<ProvisionedActor>) -> u64 {
 /// Poll the helper's own view of the channel until it reaches `want`, returning
 /// whatever it last reported so a failure can say what it actually saw.
 async fn await_helper_status(
-    state: &AppState,
+    state: &Node,
     helper: &Addr<ProvisionedActor>,
     owner: &mut Owner,
     channel_id: u64,

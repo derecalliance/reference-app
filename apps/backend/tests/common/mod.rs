@@ -15,14 +15,16 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use actix::prelude::*;
-use derec_backend::actor::{ChannelStatusMsg, CreateContactMsg, ProtocolConfig, ProvisionedActor, build_protocol};
-use derec_backend::config::Defaults;
-use derec_backend::grpc::GrpcIngress;
-use derec_backend::grpc::pb::de_rec_transport_server::DeRecTransportServer;
+use derec_backend::infrastructure::actors::provisioned::{ChannelStatusMsg, CreateContactMsg, ProvisionedActor};
+use derec_backend::infrastructure::actors::protocol::{ProtocolConfig, build_protocol};
+use derec_backend::models::Defaults;
+use derec_backend::infrastructure::grpc::GrpcIngress;
+use derec_backend::infrastructure::grpc::pb::de_rec_transport_server::DeRecTransportServer;
 use derec_backend::models::{Role, TransportMode, UnpairAck};
-use derec_backend::provisioning::{provisioned_actor, register_browser_actor, spawn_provisioned};
-use derec_backend::state::{ActorInbox, AppState};
-use derec_backend::actor::ActorProtocol;
+use derec_backend::models::Actor;
+use derec_backend::services::ports::{ActorGateway, InboxDirectory};
+use derec_backend::infrastructure::bootstrap::Node;
+use derec_backend::infrastructure::actors::protocol::ActorProtocol;
 use derec_library::protocol::types::Target;
 use derec_library::protocol::{ChannelStatus, DeRecFlow};
 use derec_library::types::ChannelId;
@@ -32,8 +34,8 @@ use tonic::transport::server::TcpIncoming;
 use uuid::Uuid;
 
 /// Stock protocol settings for a fixture actor.
-fn test_settings() -> derec_backend::registry::actors::ActorSettings {
-    derec_backend::registry::actors::ActorSettings {
+fn test_settings() -> derec_backend::models::ActorSettings {
+    derec_backend::models::ActorSettings {
         replica_id: rand::random::<u64>(),
         timeout_secs: TIMEOUT_SECS,
         unpair_ack: UnpairAck::Required,
@@ -55,7 +57,7 @@ pub struct Owner {
 /// Everything one test needs: a paired owner/helper channel, plus a handle to
 /// shut down the peer's gRPC listener on demand. The server backing all of
 /// this stays alive for as long as the axum router's serve task is running —
-/// that task owns the only `Arc<AppState>` this fixture needs to keep around.
+/// that task owns the only `Arc<Node>` this fixture needs to keep around.
 pub struct Rig {
     pub owner: Owner,
     pub secret_id: u64,
@@ -93,9 +95,9 @@ impl GrpcHandle {
 }
 
 /// Bring up the real HTTP router and a real gRPC ingress listener, each on an
-/// ephemeral port, and wire `Defaults` so `AppState::grpc_authority` names
+/// ephemeral port, and wire `Defaults` so `Node::grpc_authority` names
 /// the live one.
-async fn serve() -> (Arc<AppState>, GrpcHandle) {
+async fn serve() -> (Arc<Node>, GrpcHandle) {
     let http_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("an ephemeral port is available");
@@ -107,17 +109,16 @@ async fn serve() -> (Arc<AppState>, GrpcHandle) {
 
     let defaults = Defaults { grpc_enabled: true, grpc_port: grpc_addr.port(), ..Defaults::default() };
 
-    let state = Arc::new(AppState::new(
-        format!("http://127.0.0.1:{http_port}"),
-        defaults,
+    let state = Arc::new(Node::new(
+        derec_backend::models::NodeConfig::new(format!("http://127.0.0.1:{http_port}"), defaults),
         reqwest::Client::new(),
         actix_rt::Arbiter::current(),
-        derec_backend::db::connect("sqlite::memory:")
+        derec_backend::infrastructure::db::connect("sqlite::memory:")
             .await
             .expect("an in-memory database always connects"),
     ));
 
-    let router = derec_backend::build_router(state.clone());
+    let router = derec_backend::infrastructure::server::build_router(state.state.clone());
     actix_rt::spawn(async move {
         let _ = axum::serve(http_listener, router).await;
     });
@@ -126,7 +127,7 @@ async fn serve() -> (Arc<AppState>, GrpcHandle) {
     let grpc_state = state.clone();
     actix_rt::spawn(async move {
         let _ = Server::builder()
-            .add_service(DeRecTransportServer::new(GrpcIngress::new(grpc_state)))
+            .add_service(DeRecTransportServer::new(GrpcIngress::new(grpc_state.state.delivery.clone())))
             .serve_with_incoming_shutdown(incoming, async move {
                 let _ = shutdown_rx.await;
             })
@@ -139,27 +140,19 @@ async fn serve() -> (Arc<AppState>, GrpcHandle) {
 /// Provision a hosted helper in the requested transport mode, exactly as
 /// `POST /helpers` does.
 async fn spawn_helper(
-    state: &Arc<AppState>,
+    state: &Arc<Node>,
     mode: TransportMode,
 ) -> (Uuid, Addr<ProvisionedActor>) {
     let actor =
-        provisioned_actor(Role::Helper, "Helper", &state.base_url, &state.grpc_authority(), mode);
+        Actor::mint(Role::Helper, "Helper", &state.config.base_url, &state.config.grpc_authority(), mode);
     state
         .actors
         .register(actor.clone(), test_settings())
         .await
         .expect("the registry is writable");
-    spawn_provisioned(state, &actor, &test_settings()).expect("the helper starts");
+    state.runtime.spawn(&actor, &test_settings()).expect("the helper starts");
 
-    let addr = match state
-        .actor_inboxes
-        .get(&actor.id)
-        .expect("spawning registers an inbox")
-        .value()
-    {
-        ActorInbox::Provisioned(addr) => addr.clone(),
-        ActorInbox::Browser => panic!("this actor must be backend-managed"),
-    };
+    let addr = state.inboxes.provisioned(&actor.id).expect("spawning registers an inbox");
 
     (actor.id, addr)
 }
@@ -168,12 +161,12 @@ async fn spawn_helper(
 /// *helper* advertises, and the owner's replies travelling over HTTP is
 /// already exercised elsewhere — nothing here needs the owner itself to speak
 /// gRPC.
-async fn register_owner(state: &Arc<AppState>) -> Owner {
-    let actor = provisioned_actor(
+async fn register_owner(state: &Arc<Node>) -> Owner {
+    let actor = Actor::mint(
         Role::Owner,
         "Owner",
-        &state.base_url,
-        &state.grpc_authority(),
+        &state.config.base_url,
+        &state.config.grpc_authority(),
         TransportMode::Http,
     );
     let secret_id: u64 = actor.secret_id.parse().expect("secret id is a u64");
@@ -182,7 +175,7 @@ async fn register_owner(state: &Arc<AppState>) -> Owner {
         .register(actor.clone(), test_settings())
         .await
         .expect("the registry is writable");
-    register_browser_actor(state, actor.id);
+    state.inboxes.register_browser(actor.id);
 
     let config = ProtocolConfig {
         secret_id,
@@ -191,12 +184,11 @@ async fn register_owner(state: &Arc<AppState>) -> Owner {
         timeout_secs: TIMEOUT_SECS,
         unpair_ack: UnpairAck::Required,
         threshold: 2,
-        keep_versions_count: 3,
         replica_id: Some(rand::random()),
         http_client: state.http_client.clone(),
         pool: state.pool.clone(),
         actor_id: actor.id,
-        local_node: None,
+        local_delivery: None,
     };
 
     Owner { id: actor.id, secret_id, protocol: build_protocol(&config).expect("the owner's protocol builds") }
@@ -204,7 +196,7 @@ async fn register_owner(state: &Arc<AppState>) -> Owner {
 
 /// Drain the owner's mailbox into its protocol, as the front end's poll loop
 /// does. A no-op when the mailbox is empty.
-async fn pump(state: &AppState, owner: &mut Owner) {
+async fn pump(state: &Node, owner: &mut Owner) {
     let messages = state.mailboxes.drain(&owner.id).await.expect("the mailbox is readable");
     for bytes in messages {
         owner.protocol.process(&bytes).await.expect("the owner processes the helper's reply");
@@ -213,7 +205,7 @@ async fn pump(state: &AppState, owner: &mut Owner) {
 
 /// Poll the helper's own view of the channel until it reaches `want`.
 async fn await_helper_status(
-    state: &AppState,
+    state: &Node,
     helper: &Addr<ProvisionedActor>,
     owner: &mut Owner,
     channel_id: u64,
@@ -234,7 +226,7 @@ async fn await_helper_status(
 /// The helper records every completed pairing's long-term channel id in
 /// `helper_channels`, which is the first externally visible sign the
 /// handshake landed on that side. Waits for it and returns it.
-async fn await_helper_channel(state: &AppState, helper_id: Uuid, owner: &mut Owner) -> u64 {
+async fn await_helper_channel(state: &Node, helper_id: Uuid, owner: &mut Owner) -> u64 {
     for _ in 0..POLL_ATTEMPTS {
         pump(state, owner).await;
         if let Some(channel_id) = state

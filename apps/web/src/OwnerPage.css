@@ -2045,6 +2045,14 @@ button.secondary.remove-secret-btn:hover:not(:disabled) {
   font-style: italic;
 }
 
+/* Helpers that answered without a usable share. A full-width line of its own,
+   so a long list never squeezes the row's status and action. */
+.available-version-refusals {
+  flex-basis: 100%;
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
 /* Push the action to the right edge of the row. */
 .available-version-recover-btn {
   margin-left: auto;

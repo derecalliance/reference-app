@@ -21,9 +21,10 @@ import { AppMuiTheme } from './AppMuiTheme'
  *
  * Picking `replica_destination` is the moment the user commits this device to
  * giving up its own vault, so it is the moment to say so. **Nothing is erased
- * here** — this dialog only decides whether the pairing is dispatched. The wipe
- * happens later, at first sync, behind `ReplicaAdoptionDialog`, which asks
- * again against the concrete offer.
+ * here** — this dialog only decides whether the pairing is dispatched. The
+ * fingerprint dialog asks again before this device confirms, because
+ * confirming is the decision to adopt (SDK 0.0.7); the wipe follows when the
+ * source's vault arrives.
  *
  * Cancel is the default action: it takes focus, carries the filled styling, and
  * is what Escape and a backdrop click resolve to. Cancelling starts no pairing
@@ -72,9 +73,9 @@ export function ReplicaPairingWarningDialog({
             </DialogContentText>
 
             <Typography variant="body2" color="text.secondary">
-              Nothing is erased by continuing. The pairing is set up first, and you are
-              asked to confirm once more — against the actual vault being offered —
-              before anything on this device is replaced.
+              Nothing is erased by continuing. The pairing is set up first; when you
+              confirm the fingerprint you are asked once more whether to adopt the other
+              vault, and nothing on this device is replaced unless you agree.
             </Typography>
           </Stack>
         </DialogContent>

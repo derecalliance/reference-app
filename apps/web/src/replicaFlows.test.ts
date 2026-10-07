@@ -553,7 +553,7 @@ describe('adoptReplicaSecret', () => {
     ownTransportUri: 'https://example.test/mailbox',
     communicationInfo: { name: 'This device' },
     threshold: 2,
-    keepVersionsCount: 3,
+    keepList: () => null,
     timeoutSecs: 300,
     unpairAck: 'required',
   }

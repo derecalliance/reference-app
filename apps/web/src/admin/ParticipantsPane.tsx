@@ -88,14 +88,20 @@ export function ParticipantsPane() {
   const [deleting, setDeleting] = useState(false)
   const [ensuring, setEnsuring] = useState(false)
 
-  const refresh = useCallback(async () => {
-    try {
-      setActors(await apiGetActors())
-      setPollError(null)
-    } catch (err) {
-      setPollError(errorText(err))
-    }
-  }, [])
+  // State is set only in the settled callbacks, never synchronously, so the
+  // poll effect below subscribes to the node rather than cascading renders.
+  // Never rejects: a failure lands in `pollError`.
+  const refresh = useCallback(
+    (): Promise<void> =>
+      apiGetActors().then(
+        list => {
+          setActors(list)
+          setPollError(null)
+        },
+        (err: unknown) => setPollError(errorText(err)),
+      ),
+    [],
+  )
 
   useEffect(() => {
     void refresh()

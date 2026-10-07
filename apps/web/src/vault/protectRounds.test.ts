@@ -52,7 +52,9 @@ function event(e: Record<string, unknown>): DeRecEvent {
 
 /** A runtime over four helpers, threshold 2, with v1 = [S1] committed. */
 function runtime(overrides: Partial<Vault> = {}) {
-  const d = deps()
+  // Reachable by fiat: the default probe would call a real node on port 5000,
+  // which made these specs depend on whether one happened to be running.
+  const d = deps({ io: { serverReachable: async () => true } })
   const r = new VaultRuntime(
     vault({
       minParticipants: 2,

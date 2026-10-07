@@ -36,21 +36,35 @@ fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// The `derec-proto` version this crate depends on, read from the manifest so
-/// bumping the dependency cannot leave this test checking the old release.
-fn pinned_version() -> String {
+/// Where the `derec-proto` this crate builds against comes from, read from the
+/// manifest so changing the dependency cannot leave this test checking the old
+/// one.
+enum Pinned {
+    /// A registry release, found in the registry cache.
+    Release(String),
+    /// A local checkout (`path = ...`), used while validating an unreleased
+    /// SDK. Its protos are what the build uses, so they are what must match.
+    Path(PathBuf),
+}
+
+fn pinned() -> Pinned {
     let manifest = std::fs::read_to_string(manifest_dir().join("Cargo.toml"))
         .expect("read Cargo.toml");
     let parsed: toml::Value = manifest.parse().expect("parse Cargo.toml");
     let dep = &parsed["dependencies"]["derec-proto"];
 
     if let Some(version) = dep.as_str() {
-        return version.to_owned();
+        return Pinned::Release(version.to_owned());
     }
-    dep.get("version")
-        .and_then(toml::Value::as_str)
-        .expect("derec-proto needs a version")
-        .to_owned()
+    if let Some(path) = dep.get("path").and_then(toml::Value::as_str) {
+        return Pinned::Path(manifest_dir().join(path));
+    }
+    Pinned::Release(
+        dep.get("version")
+            .and_then(toml::Value::as_str)
+            .expect("derec-proto needs a version or a path")
+            .to_owned(),
+    )
 }
 
 /// Find the extracted crate source under any registry directory.
@@ -76,14 +90,21 @@ fn read(root: &Path, relative: &str) -> String {
 
 #[test]
 fn vendored_protos_match_the_pinned_release() {
-    let version = pinned_version();
-
-    let Some(upstream) = upstream_root(&version) else {
-        eprintln!(
-            "SKIPPED: no derec-proto-{version} under any registry src directory. \
-             Run `cargo fetch` first, or ignore if this is a vendored build."
-        );
-        return;
+    let (upstream, version) = match pinned() {
+        Pinned::Path(path) => {
+            let label = format!("the checkout at {}", path.display());
+            (path, label)
+        }
+        Pinned::Release(version) => {
+            let Some(upstream) = upstream_root(&version) else {
+                eprintln!(
+                    "SKIPPED: no derec-proto-{version} under any registry src directory. \
+                     Run `cargo fetch` first, or ignore if this is a vendored build."
+                );
+                return;
+            };
+            (upstream, version)
+        }
     };
 
     let local = manifest_dir().join("proto");

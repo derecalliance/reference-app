@@ -449,7 +449,7 @@ export function OwnerParticipantPanel({
    */
   removedFromNodeIds: ReadonlySet<string>
   /**
-   * Whether the node relays gRPC for browsers (`GET /config`). Without it a
+   * Whether the node relays gRPC for browsers (`GET /api/v1/config`). Without it a
    * gRPC-only participant cannot be reached from here, and Pair is disabled
    * with the reason. Defaults to on: a node that predates the field relays.
    */

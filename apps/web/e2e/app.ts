@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
-import { expect, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test'
+import { expect, type APIResponse, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test'
 
 /**
  * Helpers for driving the app from an end-to-end test.
@@ -22,6 +22,15 @@ import { expect, type Browser, type BrowserContext, type Locator, type Page } fr
  */
 export const BACKEND_PORT = 5100
 export const BACKEND_URL = `http://localhost:${BACKEND_PORT}`
+
+/** The node's versioned API, where everything but the DeRec transport lives. */
+export const BACKEND_API_URL = `${BACKEND_URL}/api/v1`
+
+/** The `result` of an API answer, which travels in the node's envelope. */
+export async function resultOf<T>(response: APIResponse): Promise<T> {
+  const body = (await response.json()) as { result: T }
+  return body.result
+}
 
 /** Pool size for a spec that does not name one — enough for a threshold of 2. */
 const DEFAULT_POOL_SIZE = 3
@@ -155,10 +164,10 @@ async function runSetupWizard(page: Page, options: OwnerSetupOptions): Promise<v
 
 /** How many participants this node runs right now. */
 export async function poolSize(page: Page): Promise<number> {
-  const response = await page.request.get(`${BACKEND_URL}/actors`)
-  const body = (await response.json()) as {
+  const response = await page.request.get(`${BACKEND_API_URL}/actors`)
+  const body = await resultOf<{
     actors: { role: string; browser_managed?: boolean }[]
-  }
+  }>(response)
   return body.actors.filter(a => a.role === 'helper' && !a.browser_managed).length
 }
 
@@ -179,7 +188,7 @@ async function ensurePool(page: Page, options: OwnerSetupOptions): Promise<void>
   if (total <= 0) return
 
   const transports = options.transports ?? { http: total, grpc: 0, both: 0 }
-  const response = await page.request.post(`${BACKEND_URL}/helpers/ensure`, {
+  const response = await page.request.post(`${BACKEND_API_URL}/helpers/ensure`, {
     data: {
       total,
       // Unique per call: the pool is shared and only the shortfall is

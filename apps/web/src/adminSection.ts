@@ -13,7 +13,7 @@
  * The cost of not being a route is real and worth knowing: no deep links, and
  * the back button does not move between sections.
  */
-export type AppSection = 'owner' | 'participants' | 'settings' | 'inspect'
+export type AppSection = 'owner' | 'participants' | 'settings' | 'inspect' | 'help'
 
 /** Every section, in nav order. */
 export const APP_SECTIONS: readonly AppSection[] = [
@@ -21,6 +21,7 @@ export const APP_SECTIONS: readonly AppSection[] = [
   'participants',
   'settings',
   'inspect',
+  'help',
 ]
 
 const STORAGE_KEY = 'derec.section'

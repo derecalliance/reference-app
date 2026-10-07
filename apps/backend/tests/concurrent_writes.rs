@@ -13,10 +13,11 @@
 
 use std::sync::Arc;
 
-use derec_backend::db;
-use derec_backend::models::{Role, TransportMode, UnpairAck};
-use derec_backend::provisioning::provisioned_actor;
-use derec_backend::registry::actors::{ActorSettings, SqlActorRegistry};
+use derec_backend::infrastructure::db;
+use derec_backend::models::DatabaseUrl;
+use derec_backend::models::{Actor, Role, TransportMode, UnpairAck};
+use derec_backend::models::ActorSettings;
+use derec_backend::repositories::actors::{ActorRepository, SqlActorRepository};
 
 const WRITERS: usize = 24;
 
@@ -24,10 +25,10 @@ const WRITERS: usize = 24;
 async fn concurrent_registrations_on_a_file_database_all_succeed() {
     let dir = std::env::temp_dir().join(format!("derec-concurrent-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
-    let url = db::resolve_url(&dir.join("derec.db").to_string_lossy());
+    let url = String::from(DatabaseUrl::from(dir.join("derec.db").to_string_lossy().as_ref()));
 
     let pool = db::connect(&url).await.expect("connect");
-    let registry = Arc::new(SqlActorRegistry::new(pool.clone()));
+    let registry = Arc::new(SqlActorRepository::new(pool.clone()));
 
     // All released together, so the transactions genuinely overlap.
     let start = Arc::new(tokio::sync::Barrier::new(WRITERS));
@@ -36,7 +37,7 @@ async fn concurrent_registrations_on_a_file_database_all_succeed() {
         let registry = Arc::clone(&registry);
         let start = Arc::clone(&start);
         writers.push(tokio::spawn(async move {
-            let owner = provisioned_actor(
+            let owner = Actor::mint(
                 Role::Owner,
                 &format!("Tab {i}"),
                 "http://localhost:5000",

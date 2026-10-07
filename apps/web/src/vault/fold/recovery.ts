@@ -4,7 +4,73 @@
 import { snapshotFromEvent } from '../../owner/recoveredSecret'
 import { removeRecoveryFailure, upsertRecoveryFailure } from '../../owner/recoveryFailures'
 import { describeStorageFailure } from '../../stores'
-import type { EventHandlers } from './context'
+import type { CorruptionReason, RecoveryProgress, Vault } from '../../types'
+import type { EventHandlers, FoldContext } from './context'
+
+/** How each `RecoveryShareCorrupted` reason reads in a sentence. */
+const CORRUPTION_TEXT: Record<CorruptionReason, string> = {
+  Malformed: 'an unreadable recovery share (no decodable share for this secret and version)',
+  InvalidProof: 'a recovery share that fails its own proof',
+  Inconsistent: 'a recovery share that disagrees with the shares the secret was rebuilt from',
+}
+
+/** The helper on `channelId` by name, for a sentence. */
+function helperName(vault: Vault, channelId: string): string {
+  return vault.participants.find(p => p.channelId === channelId)?.name ?? `The helper on channel ${channelId}`
+}
+
+/**
+ * The helpers asked that have answered so far, with a share or without one.
+ *
+ * A refusal or a set-aside share counts only when it came from a helper the
+ * progress was expecting: the library asks every paired helper, and one that
+ * never held this version refuses too, without having been counted in.
+ */
+function answeredCount(progress: RecoveryProgress): number {
+  const expected = progress.requestedChannelIds ? new Set(progress.requestedChannelIds) : null
+  const withoutShare = new Set(
+    [...(progress.refusals ?? []), ...(progress.corrupted ?? [])]
+      .map(answer => answer.channelId)
+      .filter(channelId => expected === null || expected.has(channelId)),
+  )
+  return progress.sharesReceived + withoutShare.size
+}
+
+/**
+ * Apply `next` as the recovery's progress, and end it as insufficient once
+ * every helper asked has answered and no secret came of it.
+ *
+ * The library keeps a recovery open while shares are short, waiting for more —
+ * it never reports "insufficient" itself — so the app has to notice that no
+ * more answers are coming. Refusals and set-aside shares are answers too:
+ * without them a recovery whose last helper refused waited for the watchdog.
+ */
+function settleIfEveryAnswerIsIn(current: Vault, next: RecoveryProgress, ctx: FoldContext): Vault {
+  if (next.error !== null || answeredCount(next) < next.totalRequested) {
+    return { ...current, recoveryProgress: next }
+  }
+  const withoutShare = (next.refusals?.length ?? 0) + (next.corrupted?.length ?? 0)
+  const error =
+    'Not enough shares to reconstruct the secret' +
+    (withoutShare > 0
+      ? ` — ${withoutShare} helper${withoutShare === 1 ? '' : 's'} answered without a usable share`
+      : '') +
+    '. Pair with more helpers and try again.'
+  ctx.log({
+    role: 'owner',
+    flow: 'recovery',
+    step: 'recovery_insufficient',
+    description: `Every helper asked has answered (${next.sharesReceived} share(s), ${withoutShare} without one) — insufficient, giving up`,
+    payload: { sharesReceived: next.sharesReceived, withoutShare, totalRequested: next.totalRequested },
+  })
+  // A terminal "insufficient" goes on the per-version failure list, so it
+  // survives later Recover clicks on other versions.
+  return {
+    ...current,
+    recoveryProgress: { ...next, error },
+    recoveryFailures: upsertRecoveryFailure(current.recoveryFailures, next.secretId, next.version, error),
+  }
+}
 
 /** Discovery and secret-recovery events. */
 export const recoveryHandlers = {
@@ -75,35 +141,94 @@ export const recoveryHandlers = {
     if (!progress) return current
 
     const sharesReceived = event.shares_received ?? progress.sharesReceived
-
-    // The library emits RecoveryShareReceived (not RecoveryShareError) on
-    // InsufficientShares — it keeps the bucket open waiting for more. So the
-    // app has to notice when every requested response is in and reconstruction
-    // still failed, and surface the error itself.
-    const allResponsesIn = sharesReceived >= progress.totalRequested
-    const error = allResponsesIn
-      ? 'Not enough shares to reconstruct the secret. Pair with more helpers and try again.'
-      : null
+    const next = { ...progress, sharesReceived }
 
     ctx.log({
       role: 'owner',
       flow: 'recovery',
       step: 'RecoveryShareReceived',
-      description: `Share received (${sharesReceived}/${progress.totalRequested})${allResponsesIn ? ' — insufficient, giving up' : ''}`,
+      description: `Share received (${sharesReceived}/${progress.totalRequested})`,
       payload: { channelId: event.channel_id, sharesReceived, totalRequested: progress.totalRequested },
     })
 
-    // A terminal "insufficient" goes on the per-version failure list, so it
-    // survives later Recover clicks on other versions.
-    const failures = error
-      ? upsertRecoveryFailure(current.recoveryFailures, progress.secretId, progress.version, error)
-      : current.recoveryFailures
+    return settleIfEveryAnswerIsIn(current, next, ctx)
+  },
 
-    return {
-      ...current,
-      recoveryProgress: { ...progress, sharesReceived, error },
-      recoveryFailures: failures,
+  // A helper answered with a refusal instead of a share — typically
+  // `UNKNOWN_SHARE_VERSION`, a helper that never held, or has since dropped,
+  // the version asked for. Not a share, so it never counts towards the
+  // threshold, but it is that helper's answer: shown on the progress, and
+  // counted when deciding whether every answer is in.
+  RecoveryShareRefused: (current, event, ctx) => {
+    const { channel_id: channelId, version, status, memo } = event
+    const who = helperName(current, channelId)
+    ctx.log({
+      role: 'owner',
+      flow: 'recovery',
+      step: 'RecoveryShareRefused',
+      description: `${who} refused to send its share of v${version} (status=${status}${memo ? `, memo=${memo}` : ''})`,
+      payload: { channelId, version, status, memo },
+    })
+
+    const progress = current.recoveryProgress
+    if (!progress || progress.version !== version) return current
+    if ((progress.refusals ?? []).some(r => r.channelId === channelId)) return current
+    const next = { ...progress, refusals: [...(progress.refusals ?? []), { channelId, status, memo }] }
+    return settleIfEveryAnswerIsIn(current, next, ctx)
+  },
+
+  // A helper answered with a share that cannot be part of the secret. An
+  // honest helper never does, so beyond setting the share aside — which the
+  // library has done — the owner is told which helper and why, and offered to
+  // unpair it. `Inconsistent` arrives alongside `SecretRecovered`, after the
+  // recovery has already succeeded without it, so only the arrival-time
+  // reasons count as an answer on the progress.
+  RecoveryShareCorrupted: (current, event, ctx) => {
+    const { channel_id: channelId, version, reason } = event
+    const peerName = helperName(current, channelId)
+    ctx.log({
+      role: 'owner',
+      flow: 'recovery',
+      step: 'RecoveryShareCorrupted',
+      description: `${peerName} sent ${CORRUPTION_TEXT[reason]} for v${version} — set aside (${reason})`,
+      payload: { channelId, version, reason },
+    })
+    ctx.notify.error(
+      `${peerName} sent ${CORRUPTION_TEXT[reason]} for v${version}. It was set aside and did not ` +
+        'count towards the recovery. An honest helper never does this — the helper may be damaged ' +
+        'or compromised; consider unpairing it.',
+      undefined,
+      { channelId, version, reason },
+    )
+
+    const reports = current.corruptShareReports ?? []
+    const known = reports.some(
+      r => r.channelId === channelId && r.version === version && r.reason === reason,
+    )
+    let next: Vault = known
+      ? current
+      : {
+          ...current,
+          corruptShareReports: [
+            ...reports,
+            { channelId, peerName, version, reason, reportedAt: Date.now() },
+          ],
+        }
+
+    const progress = next.recoveryProgress
+    if (
+      reason !== 'Inconsistent' &&
+      progress &&
+      progress.version === version &&
+      !(progress.corrupted ?? []).some(c => c.channelId === channelId)
+    ) {
+      next = settleIfEveryAnswerIsIn(
+        next,
+        { ...progress, corrupted: [...(progress.corrupted ?? []), { channelId, reason }] },
+        ctx,
+      )
     }
+    return next
   },
 
   RecoveryShareError: (current, event, ctx) => {

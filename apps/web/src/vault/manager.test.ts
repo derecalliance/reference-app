@@ -25,6 +25,7 @@ function fakeRuntime(v: Vault, deps: VaultRuntimeDeps, outcome: VaultStatus = 'r
     replicaSyncing: [],
     replicaAutoSyncOutcome: null,
     identityUpdate: null,
+    autoPairing: [],
   }
   const set = (patch: Partial<VaultRuntimeState>) => {
     state = { ...state, ...patch }
@@ -454,7 +455,9 @@ describe('VaultManager', () => {
     expect(manager.entries()).toBe(manager.entries())
   })
 
-  it('releases every lock on releaseAll', async () => {
+  it('releases every lock on releaseAll, and its rows read stopped', async () => {
+    // Left "running" with no runtime, a row restored from the back/forward
+    // cache offered nothing to click and showed nothing when opened.
     const locks = fakeLocks()
     const { manager } = setup([alpha, beta], { locks })
     await manager.boot()
@@ -462,6 +465,104 @@ describe('VaultManager', () => {
     await manager.releaseAll()
 
     expect(locks.released.sort()).toEqual(['alpha', 'beta'])
+    expect(manager.entries().map(e => e.state)).toEqual(['stopped', 'stopped'])
+  })
+
+  it('ignores a replaced runtime that still emits', async () => {
+    // A stopped runtime can emit on its way out; its row now belongs to the
+    // runtime that replaced it.
+    const { manager, runtimes } = setup([alpha])
+    await manager.boot()
+    const old = runtimes.get('alpha')!
+    await manager.release('alpha')
+    await manager.open('alpha')
+
+    old.raise('stale')
+    old.commit({ ...alpha, name: 'Stale' })
+
+    expect(manager.entries()[0]).toMatchObject({ name: 'Alpha', attention: 0, state: 'running' })
+  })
+
+  it('claims once when Open or Claim is pressed twice in a row', async () => {
+    // The second press used to send its own `acquire` while the first held the
+    // lock, and was told the vault was open in another tab.
+    const locks = fakeLocks()
+    const acquire = vi.spyOn(locks, 'acquire')
+    const { manager } = setup([alpha], { locks })
+    await manager.boot()
+    await manager.release('alpha')
+    acquire.mockClear()
+
+    const [first, second] = await Promise.all([manager.open('alpha'), manager.open('alpha')])
+
+    expect([first, second]).toEqual([true, true])
+    expect(acquire).toHaveBeenCalledTimes(1)
+    expect(manager.entries()[0].state).toBe('running')
+  })
+
+  it('tells subscribers only when a row changes, and keeps unchanged rows as they were', async () => {
+    // Runtimes emit on every busy toggle and commit; each notification
+    // re-renders the app, so one that changes no row must not be sent.
+    const { manager, runtimes } = setup([alpha, beta])
+    await manager.boot()
+    const before = manager.entries()
+    const seen = vi.fn()
+    manager.subscribe(seen)
+
+    runtimes.get('alpha')?.commit({ ...alpha })
+    expect(seen).not.toHaveBeenCalled()
+    expect(manager.entries()).toBe(before)
+
+    runtimes.get('alpha')?.raise()
+    expect(seen).toHaveBeenCalledTimes(1)
+    const after = manager.entries()
+    expect(after.find(e => e.id === 'alpha')?.attention).toBe(1)
+    expect(after.find(e => e.id === 'beta')).toBe(before.find(e => e.id === 'beta'))
+  })
+
+  describe('an unreachable node', () => {
+    function withNodeNotice() {
+      const nodeUnreachable = vi.fn()
+      const env = setup([alpha, beta], {
+        notify: { error: vi.fn(), info: vi.fn(), nodeUnreachable },
+      })
+      return { ...env, nodeUnreachable }
+    }
+
+    it('raises one notice for every vault, and clears it once the last one gets through', async () => {
+      const { manager, runtimes, nodeUnreachable } = withNodeNotice()
+      await manager.boot()
+      const alphaPoll = runtimes.get('alpha')!.deps.pollReached!
+      const betaPoll = runtimes.get('beta')!.deps.pollReached!
+
+      alphaPoll(false)
+      betaPoll(false)
+      alphaPoll(false)
+      expect(nodeUnreachable.mock.calls).toEqual([[true]])
+
+      alphaPoll(true)
+      expect(nodeUnreachable.mock.calls).toEqual([[true]])
+
+      betaPoll(true)
+      expect(nodeUnreachable.mock.calls).toEqual([[true], [false]])
+    })
+
+    it('clears the notice when the only vault that could not reach the node stops', async () => {
+      const { manager, runtimes, nodeUnreachable } = withNodeNotice()
+      await manager.boot()
+
+      runtimes.get('alpha')!.deps.pollReached!(false)
+      await manager.release('alpha')
+
+      expect(nodeUnreachable.mock.calls).toEqual([[true], [false]])
+    })
+
+    it('leaves each vault to report its own failed polls when nothing shows a node notice', async () => {
+      const { manager, runtimes } = setup([alpha])
+      await manager.boot()
+
+      expect(runtimes.get('alpha')!.deps.pollReached).toBeUndefined()
+    })
   })
 
   describe('the shared roster', () => {

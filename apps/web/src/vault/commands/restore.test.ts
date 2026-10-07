@@ -77,6 +77,7 @@ function context(current: Vault) {
     }),
     getServerDefaults: () => FALLBACK_SERVER_DEFAULTS,
     instance: () => null,
+    keepList: () => null,
     withLock: fn => fn(),
     fold: c => c,
     adoptInstance: vi.fn(),

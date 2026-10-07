@@ -45,6 +45,37 @@ test.describe('secret lifecycle', () => {
     expect(pageErrors).toEqual([])
   })
 
+  /**
+   * The vault decides which versions helpers keep (SDK 0.0.7 `keepList`): the
+   * latest three committed ones, plus the one being sent. So the fifth round
+   * tells every helper to drop the first — and a helper asked to prove a
+   * share it no longer holds refuses, which the verification view shows as a
+   * rejection rather than waiting on an answer that is not coming.
+   */
+  test('helpers drop versions the vault no longer keeps, and refuse to verify them', async ({
+    page,
+    pageErrors,
+  }) => {
+    // Five publishing rounds, each waited out to its commit.
+    test.setTimeout(300_000)
+    await setUpOwner(page, { name: 'Alice', participants: 3, prePaired: 0, minParticipants: 2 })
+    await pairParticipant(page, { index: 0, mode: 'Inline keys' })
+    await pairParticipant(page, { index: 1, mode: 'Inline keys' })
+    for (let i = 1; i <= 5; i++) await protectSecret(page, `Secret ${i}`, `value-${i}`)
+
+    await openTab(page, 'Secrets')
+    await page.getByRole('button', { name: /Show Previous Versions/ }).click()
+    // Previous versions are listed newest first, so the last Verify is the
+    // oldest version — the one no helper keeps any more.
+    await page.getByRole('button', { name: 'Verify Shares' }).last().click()
+
+    const modal = page.locator('.verify-modal--progress')
+    await expect(modal).toContainText('0 of 2 verified · 2 rejected', { timeout: 90_000 })
+    await expect(modal.locator('.share-progress-item-status', { hasText: 'Rejected' })).toHaveCount(2)
+    await expect(modal.getByRole('button', { name: 'Done' })).toBeVisible()
+    expect(pageErrors).toEqual([])
+  })
+
   test('discovery finds the secret versions helpers are holding', async ({ page, pageErrors }) => {
     await setUpOwner(page, { name: 'Alice', participants: 3, prePaired: 0, minParticipants: 2 })
     await pairParticipant(page, { index: 0, mode: 'Inline keys' })

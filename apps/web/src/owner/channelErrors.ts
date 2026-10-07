@@ -9,6 +9,8 @@
  * be fast-refreshed.
  */
 
+import type { DeRecEvent } from '@derec-alliance/web'
+
 export interface NonOkStatus {
   status: number
   memo: string
@@ -54,4 +56,21 @@ export function asNonOkStatus(err: unknown): NonOkStatus | null {
     }
   }
   return null
+}
+
+/**
+ * The events a failed `process()` produced before it failed.
+ *
+ * From SDK 0.0.7 `process()` settles expired sharing-round and unpair
+ * deadlines — and saves the result — before it handles the message, and when
+ * the message then fails the thrown `DeRecError` carries those events in
+ * `events`. They are never reported again, so dropping them left a round that
+ * timed out open forever. Empty for any other error.
+ */
+export function eventsOfFailedProcess(err: unknown): DeRecEvent[] {
+  if (typeof err !== 'object' || err === null) return []
+  const events = (err as { events?: unknown }).events
+  // The WASM boundary hands back plain objects; `DeRecError.events` is typed
+  // `DeRecEvent[]` by the SDK, so the array is taken at its declared type.
+  return Array.isArray(events) ? (events as DeRecEvent[]) : []
 }

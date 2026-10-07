@@ -3,7 +3,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { navigate } from './routing'
-import { subscribeToasts, type Toast } from './toastBus'
+import { subscribeNotices, subscribeToasts, type Notice, type Toast } from './toastBus'
 import './Toast.css'
 
 const AUTO_DISMISS_MS = 7000
@@ -24,7 +24,12 @@ interface VisibleToast extends Toast {
  */
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<VisibleToast[]>([])
+  const [notices, setNotices] = useState<readonly Notice[]>([])
   const timers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+
+  // Standing notices sit above the toasts and outside their cap: one is a
+  // condition still in force, and must not be pushed out by passing events.
+  useEffect(() => subscribeNotices(setNotices), [])
 
   useEffect(() => {
     const arm = (id: string) => {
@@ -84,6 +89,15 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     <>
       {children}
       <div className="toast-viewport" role="region" aria-label="Notifications">
+        {notices.map(n => (
+          <div
+            key={n.key}
+            className={`toast toast--${n.level}`}
+            role={n.level === 'error' ? 'alert' : 'status'}
+          >
+            <span className="toast-message">{n.message}</span>
+          </div>
+        ))}
         {toasts.map(t => (
           <div
             key={t.id}

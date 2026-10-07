@@ -58,12 +58,8 @@ export interface FoldContext {
    */
   getVault(): Vault
   commit(next: Vault): void
-  /**
-   * Put a mirrored vault in front of the owner as an adoption offer — or hold it
-   * back, if this device has not yet confirmed the channel it arrived on.
-   * Returns whether it is now in front of the owner.
-   */
-  offerReplicaAdoption(offer: PendingReplicaAdoption): boolean
+  /** Put a mirrored vault in front of the owner as an adoption offer. */
+  offerReplicaAdoption(offer: PendingReplicaAdoption): void
   /**
    * The name and endpoints the store now holds for a helper-type channel —
    * where `UpdateChannelInfo` leaves what a peer announced, since the event
@@ -82,4 +78,11 @@ export interface FoldContext {
    * rather than its own announcement.
    */
   awaitingIdentityAnswer(channelId: string): boolean
+  /**
+   * Whether this vault, as a helper, still stores the share it received on
+   * `channelId` at `version`. The library deletes the versions an owner's
+   * `keepList` leaves out while it stores a new one, through the share store
+   * and without an event of its own.
+   */
+  isShareHeld(channelId: string, version: number): boolean
 }

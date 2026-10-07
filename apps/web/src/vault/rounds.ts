@@ -271,6 +271,14 @@ export class RoundTracker {
     this.verifications.delete(channelId)
   }
 
+  /** Whether any challenge for `version` is still awaiting its answer. */
+  isVerifying(version: number, now = Date.now()): boolean {
+    for (const challenge of this.verifications.values()) {
+      if (challenge.version === version && challenge.deadline > now) return true
+    }
+    return false
+  }
+
   /** The challenges still awaiting an answer, as the vault record persists them. */
   snapshotVerifications(now = Date.now()): PendingVerification[] {
     return [...this.verifications.entries()]

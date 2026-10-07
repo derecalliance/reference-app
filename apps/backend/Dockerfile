@@ -6,7 +6,7 @@
 # Build from the REPO ROOT, not from this directory — the web build needs
 # `apps/web` and the backend needs the vendored protos:
 #
-#   docker build -f apps/backend/Dockerfile -t derec/reference-app:0.0.6 .
+#   docker build -f apps/backend/Dockerfile -t derec/reference-app:0.0.7 .
 #
 # CI also passes `--build-arg REVISION=$(git rev-parse HEAD)` for the OCI
 # labels below; a local build leaves it as "unknown".
@@ -107,7 +107,7 @@ RUN touch src/main.rs src/lib.rs && cargo build --release
 FROM debian:bookworm-slim AS runtime
 
 # Overridable at build time; see the build command at the top.
-ARG VERSION=0.0.6
+ARG VERSION=0.0.7
 ARG REVISION=unknown
 
 LABEL org.opencontainers.image.title="DeRec reference app" \

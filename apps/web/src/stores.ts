@@ -844,7 +844,27 @@ export function loadRawShare(
 
 // ── Share store ──────────────────────────────────────────────────────────────
 
-export function makeShareStore(namespace: string) {
+/**
+ * The owner's answer to `ShareStore.keepList`: the versions every helper keeps
+ * once the round distributing `version` lands, or `null` to send no list (the
+ * helpers then keep everything they hold).
+ *
+ * Injected rather than computed here: only the vault knows which versions
+ * committed, and the store has no view of the vault record. See
+ * `vault/keepList.ts` for the policy the app plugs in.
+ */
+export type KeepListSource = (secretId: string, version: number) => number[] | null
+
+export interface ShareStoreOptions {
+  /**
+   * Defaults to "no list" — helpers keep every version. That is the library's
+   * own safe default, and the right one for an instance that never acts as an
+   * owner (a probe, a test).
+   */
+  keepList?: KeepListSource
+}
+
+export function makeShareStore(namespace: string, options: ShareStoreOptions = {}) {
   // Read one share from storage, or null if absent. The secret id is the
   // partition key, so it needs no separate metadata record.
   function readShare(secretId: string, channelId: string, version: number): Share | null {
@@ -959,6 +979,43 @@ export function makeShareStore(namespace: string) {
         (c) => c !== channelId,
       )
       storeItem(shareChannelsKey(namespace, secretId), JSON.stringify(remaining))
+    },
+
+    /**
+     * Drop the shares stored under `(secretId, channelId)` at each of
+     * `versions` — how a helper applies the owner's `keepList`. Idempotent: a
+     * version not stored is skipped, and an empty list does nothing. Other
+     * channels and partitions are never touched.
+     */
+    async removeVersions(secretId: string, channelId: string, versions: number[]): Promise<void> {
+      if (versions.length === 0) return
+      const doomed = new Set(versions)
+      for (const v of doomed) {
+        localStorage.removeItem(shareDataKey(namespace, secretId, channelId, v))
+        localStorage.removeItem(shareMetaKey(namespace, secretId, channelId, v))
+      }
+
+      const cKey = channelVersionsKey(namespace, secretId, channelId)
+      const stored = loadNumberArray(cKey)
+      const kept = stored.filter(v => !doomed.has(v))
+      if (kept.length === stored.length) return
+      if (kept.length > 0) {
+        storeItem(cKey, JSON.stringify(kept))
+        return
+      }
+      // Nothing left on the channel: drop it from the index too, exactly as
+      // `removeChannel` leaves it, so `latestVersion` and discovery do not walk
+      // an empty entry.
+      localStorage.removeItem(cKey)
+      const channels = loadStringArray(shareChannelsKey(namespace, secretId)).filter(
+        (c) => c !== channelId,
+      )
+      storeItem(shareChannelsKey(namespace, secretId), JSON.stringify(channels))
+    },
+
+    /** Owner only — see `KeepListSource`. Asked once per sharing round. */
+    async keepList(secretId: string, version: number): Promise<number[] | null> {
+      return options.keepList?.(secretId, version) ?? null
     },
   }
 }

@@ -68,6 +68,12 @@ export interface VaultStorage {
 export interface VaultManagerNotifier {
   error: (message: string, cause?: unknown, context?: Record<string, unknown>, origin?: ToastOrigin) => void
   info: (message: string, origin?: ToastOrigin) => void
+  /**
+   * The node stopped or resumed answering mailbox polls — one standing notice
+   * for every vault, rather than one error per vault per poll. Optional:
+   * without it, each vault reports its own failed polls.
+   */
+  nodeUnreachable?: (unreachable: boolean) => void
 }
 
 export interface VaultManagerDeps {
@@ -128,6 +134,12 @@ export class VaultManager {
   private readonly slots = new Map<string, Slot>()
   private readonly listeners = new Set<() => void>()
   private cachedEntries: readonly VaultEntry[] = []
+  /** Each slot's last row, kept so an unchanged row stays the same object. */
+  private readonly entryCache = new Map<string, VaultEntry>()
+  /** Claims in flight, by vault id — a second Open or Claim joins the first. */
+  private readonly claims = new Map<string, Promise<boolean>>()
+  /** Vaults whose last mailbox poll did not reach the node. */
+  private readonly unreachable = new Set<string>()
   private booted = false
   /** The vault the view shows; `null` on the list or the wizard. */
   private onScreen: string | null = null
@@ -164,7 +176,9 @@ export class VaultManager {
       loaded.push(slot)
     }
     this.booted = true
-    this.changed()
+    // Notified even with no rows: being booted is itself news to a route that
+    // was waiting to tell "still loading" from "missing".
+    this.changed({ notify: true })
     await Promise.all(loaded.map(slot => this.claimAndStart(slot)))
   }
 
@@ -234,10 +248,13 @@ export class VaultManager {
     this.deps.announce?.()
   }
 
-  /** Release everything this tab holds — `pagehide`. */
+  /** Release everything this tab holds — `pagehide`. Its rows read stopped. */
   async releaseAll(): Promise<void> {
     this.stopRoster()
-    await Promise.all([...this.slots.values()].map(slot => this.stopAndUnlock(slot)))
+    const held = [...this.slots.values()].filter(slot => slot.runtime || slot.lock)
+    await Promise.all(held.map(slot => this.stopAndUnlock(slot)))
+    for (const slot of held) slot.state = 'stopped'
+    this.changed()
     this.deps.announce?.()
   }
 
@@ -421,7 +438,21 @@ export class VaultManager {
     }
   }
 
-  private async claimAndStart(slot: Slot): Promise<boolean> {
+  /**
+   * Lock a vault and start it. Idempotent while in flight: a double-click on
+   * Claim used to send a second `acquire` while the first still held the lock
+   * request, and the second was told — truthfully, and wrongly for the user —
+   * that the vault was held elsewhere.
+   */
+  private claimAndStart(slot: Slot): Promise<boolean> {
+    const inFlight = this.claims.get(slot.id)
+    if (inFlight) return inFlight
+    const claim = this.claim(slot).finally(() => this.claims.delete(slot.id))
+    this.claims.set(slot.id, claim)
+    return claim
+  }
+
+  private async claim(slot: Slot): Promise<boolean> {
     const lock = slot.lock ?? (await this.deps.locks.acquire(slot.id))
     if (!lock) {
       slot.state = 'elsewhere'
@@ -444,9 +475,14 @@ export class VaultManager {
       onVaultChange: next => {
         if (this.slots.get(slot.id) === slot && slot.runtime === runtime) this.persist(slot, next)
       },
+      pollReached: this.deps.notify.nodeUnreachable
+        ? reached => {
+            if (slot.runtime === runtime) this.pollReached(slot.id, reached)
+          }
+        : undefined,
     })
     slot.runtime = runtime
-    slot.unsubscribe = runtime.subscribe(state => this.follow(slot, state))
+    slot.unsubscribe = runtime.subscribe(state => this.follow(slot, runtime, state))
     await this.startRuntime(slot, runtime)
   }
 
@@ -455,7 +491,7 @@ export class VaultManager {
     slot.failure = null
     this.changed()
     await runtime.start()
-    this.follow(slot, runtime.state())
+    this.follow(slot, runtime, runtime.state())
   }
 
   /**
@@ -497,9 +533,13 @@ export class VaultManager {
     for (const id of slot.announced) if (!open.has(id)) slot.announced.delete(id)
   }
 
-  /** Mirror a runtime's state into its row. */
-  private follow(slot: Slot, state: VaultRuntimeState): void {
-    if (slot.runtime === null) return
+  /**
+   * Mirror a runtime's state into its row — only while that runtime is still
+   * the slot's: a stopped one can still emit on its way out, and must not
+   * overwrite the row of whatever replaced it.
+   */
+  private follow(slot: Slot, runtime: VaultRuntime, state: VaultRuntimeState): void {
+    if (slot.runtime !== runtime) return
     slot.vault = state.vault
     slot.attention = state.attention.length
     this.announceAttention(slot, state.attention)
@@ -507,10 +547,24 @@ export class VaultManager {
     if (state.status === 'failed') slot.state = 'failed'
     else if (state.status === 'blocked') slot.state = 'blocked'
     else if (state.status === 'running') slot.state = 'running'
-    this.changed()
+    this.changed({ only: slot })
+  }
+
+  /**
+   * Fold one vault's poll into the node-level notice: raised when the first
+   * vault stops reaching the node, cleared when the last one reaches it again.
+   */
+  private pollReached(id: string, reached: boolean): void {
+    const wasUnreachable = this.unreachable.size > 0
+    if (reached) this.unreachable.delete(id)
+    else this.unreachable.add(id)
+    const unreachable = this.unreachable.size > 0
+    if (unreachable !== wasUnreachable) this.deps.notify.nodeUnreachable?.(unreachable)
   }
 
   private async stopAndUnlock(slot: Slot): Promise<void> {
+    // A vault no longer polling has no say in whether the node is reachable.
+    this.pollReached(slot.id, true)
     slot.unsubscribe?.()
     slot.unsubscribe = null
     slot.runtime?.stop()
@@ -538,10 +592,34 @@ export class VaultManager {
     )
   }
 
-  private changed(): void {
-    this.cachedEntries = [...this.slots.values()]
-      .map(slot => this.entry(slot))
+  /**
+   * Bring the rows up to date and tell subscribers — only if a row changed.
+   *
+   * Runtimes emit far more often than their rows change (every busy toggle,
+   * every commit), and every notification re-renders the app. So `only`
+   * rebuilds just that vault's row, an unchanged row keeps its object, and a
+   * list whose rows are all unchanged is not announced at all.
+   */
+  private changed(options: { only?: Slot; notify?: boolean } = {}): void {
+    const rebuild = options.only ? [options.only] : [...this.slots.values()]
+    for (const slot of rebuild) {
+      const next = this.entry(slot)
+      const previous = this.entryCache.get(slot.id)
+      if (!previous || !sameEntry(previous, next)) this.entryCache.set(slot.id, next)
+    }
+    for (const id of this.entryCache.keys()) if (!this.slots.has(id)) this.entryCache.delete(id)
+
+    const entries = [...this.slots.keys()]
+      .flatMap(id => {
+        const entry = this.entryCache.get(id)
+        return entry ? [entry] : []
+      })
       .sort((a, b) => a.name.localeCompare(b.name))
+    const same =
+      entries.length === this.cachedEntries.length &&
+      entries.every((entry, i) => entry === this.cachedEntries[i])
+    if (same && !options.notify) return
+    if (!same) this.cachedEntries = entries
     for (const listener of this.listeners) listener()
   }
 
@@ -561,4 +639,17 @@ export class VaultManager {
       attention: slot.attention,
     }
   }
+}
+
+function sameEntry(a: VaultEntry, b: VaultEntry): boolean {
+  return (
+    a.id === b.id &&
+    a.name === b.name &&
+    a.state === b.state &&
+    a.failure === b.failure &&
+    a.pairedCount === b.pairedCount &&
+    a.bagVersion === b.bagVersion &&
+    a.replicaCount === b.replicaCount &&
+    a.attention === b.attention
+  )
 }

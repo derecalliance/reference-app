@@ -103,6 +103,35 @@ describe('AppShell', () => {
     }
   })
 
+  it('pins Help to the bottom of the navigation, after every section', () => {
+    mount(null)
+
+    const labels = navButtons().map((b) => b.textContent?.trim())
+    expect(labels).toEqual(['Owner', 'Participants', 'Settings', 'Inspect', 'Help'])
+    // Set apart from the sections by its own list, below a divider.
+    const help = navButton('Help')
+    expect(help.closest('ul')).not.toBe(navButton('Inspect').closest('ul'))
+    expect(document.querySelector('nav hr')).not.toBeNull()
+  })
+
+  it('opens Help and names it in the narrow-screen bar', async () => {
+    mount(<p>owner content</p>)
+
+    act(() => navButton('Help').click())
+    expect(navButton('Help').getAttribute('aria-current')).toBe('page')
+    expect(host.textContent).not.toContain('owner content')
+    expect(host.textContent).toContain('Help')
+
+    // Lazy-loaded: the pane arrives once its chunk resolves.
+    await act(async () => {
+      await import('./help/HelpPane')
+    })
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(host.querySelector('input[type="search"]')).not.toBeNull()
+  })
+
   it('remembers the section across a remount', () => {
     mount(<p>owner content</p>)
     act(() => navButton('Settings').click())

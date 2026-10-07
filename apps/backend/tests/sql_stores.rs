@@ -11,13 +11,14 @@
 //! Each case gets a fresh database. The conformance functions assume an empty
 //! store and leave it dirty, so sharing one would make results depend on order.
 
-use derec_backend::conformance;
-use derec_backend::db;
-use derec_backend::sql::{
+use derec_backend::repositories::sdk::conformance;
+use derec_backend::repositories::sharing_rounds::{SharingRoundRepository, SqlSharingRoundRepository};
+use derec_backend::infrastructure::db;
+use derec_backend::repositories::sdk::{
     channel::SqlChannelStore, secret::SqlSecretStore, share::SqlShareStore, state::SqlStateStore,
     user_secret::SqlUserSecretStore,
 };
-use derec_library::protocol::StateItem;
+use derec_library::protocol::{CollectedShare, DeRecShareStore, DeRecStateStore, StateItem};
 use derec_library::types::ChannelId;
 
 /// A distinct `PendingVerification` item per `n` — the same factory
@@ -90,6 +91,7 @@ async fn reset(pool: &sqlx::AnyPool) {
         "secrets",
         "user_secrets",
         "shares",
+        "sharing_rounds",
         "state_items",
     ] {
         sqlx::query(&format!("DELETE FROM {table}"))
@@ -154,6 +156,128 @@ async fn two_instances_over_one_database_do_not_see_each_other() {
         let mut first = SqlChannelStore::new(pool.clone(), "actor-a");
         let mut second = SqlChannelStore::new(pool, "actor-b");
         conformance::channel_stores_are_isolated_per_instance(&mut first, &mut second).await;
+    })
+    .await;
+}
+
+/// `keep_list` answers from the round outcomes the actor recorded, and from
+/// nothing else.
+///
+/// The decision rule itself is unit-tested beside `keep_list_from_rounds`; this
+/// covers the part only an engine can get wrong — ids above `i64::MAX`, the
+/// upsert, the `version <` bound and the per-actor partition.
+#[tokio::test]
+async fn the_sql_share_store_keeps_the_versions_it_saw_commit() {
+    on_every_engine(|pool| async move {
+        let secret = conformance::HIGH_ID;
+        // Outcomes are the app's record, written by the actor through the
+        // sharing-round repository; the store reads them back.
+        let actor_a = uuid::Uuid::new_v4();
+        let store = SqlShareStore::new(pool.clone(), actor_a.to_string());
+        let other_actor = SqlShareStore::new(pool.clone(), "actor-b");
+        let rounds = SqlSharingRoundRepository::new(pool);
+
+        assert_eq!(
+            store.keep_list(secret, 1).await.expect("readable"),
+            None,
+            "with no recorded round, helpers keep everything"
+        );
+
+        for (version, committed) in [(1, true), (2, false), (3, true)] {
+            rounds
+                .record(&actor_a, secret, version, committed)
+                .await
+                .expect("record");
+        }
+        assert_eq!(
+            store.keep_list(secret, 4).await.expect("readable"),
+            Some(vec![1, 3]),
+            "every committed version is kept, the abandoned one is not"
+        );
+
+        // A second outcome for a version replaces the first.
+        rounds
+            .record(&actor_a, secret, 3, false)
+            .await
+            .expect("record");
+        assert_eq!(
+            store.keep_list(secret, 4).await.expect("readable"),
+            Some(vec![1])
+        );
+
+        // Version 4 was never distributed here — another member's, say — so
+        // whether it committed is unknown.
+        assert_eq!(store.keep_list(secret, 5).await.expect("readable"), None);
+
+        assert_eq!(
+            other_actor.keep_list(secret, 4).await.expect("readable"),
+            None,
+            "one actor's rounds must not decide another's keep list"
+        );
+    })
+    .await;
+}
+
+/// `PendingRecovery` records the channel each collected share came from
+/// (SDK 0.0.7), and a row saved before that field existed still loads — as a
+/// recovery with nothing collected, which re-collects its shares.
+#[tokio::test]
+async fn a_pending_recovery_keeps_its_share_channels_and_an_older_row_still_loads() {
+    on_every_engine(|pool| async move {
+        let mut store = SqlStateStore::new(pool.clone(), "actor-a");
+        let channel = ChannelId(conformance::HIGH_ID);
+        let item = StateItem::PendingRecovery {
+            secret_id: conformance::SECRET_A,
+            version: 3,
+            shares: vec![CollectedShare {
+                channel_id: channel,
+                response: derec_proto::GetShareResponseMessage::default(),
+            }],
+        };
+        let key = item.key();
+        store.save(conformance::SECRET_A, item).await.expect("save");
+
+        match store
+            .load(conformance::SECRET_A, key.clone())
+            .await
+            .expect("readable")
+        {
+            Some(StateItem::PendingRecovery { shares, .. }) => assert_eq!(
+                shares.iter().map(|s| s.channel_id).collect::<Vec<_>>(),
+                vec![channel],
+                "the share's channel must round-trip"
+            ),
+            other => panic!("expected a pending recovery, got {other:?}"),
+        }
+
+        // Rewrite the row the way a 0.0.6 backend wrote it.
+        let (json,): (String,) =
+            sqlx::query_as("SELECT item FROM state_items WHERE actor_id = 'actor-a'")
+                .fetch_one(&pool)
+                .await
+                .expect("the row exists");
+        let mut record: serde_json::Value = serde_json::from_str(&json).expect("the row is JSON");
+        let removed = record
+            .as_object_mut()
+            .and_then(|fields| fields.remove("share_channels"));
+        assert!(removed.is_some(), "the current shape carries share_channels: {json}");
+        sqlx::query("UPDATE state_items SET item = $1 WHERE actor_id = 'actor-a'")
+            .bind(record.to_string())
+            .execute(&pool)
+            .await
+            .expect("rewrite");
+
+        match store
+            .load(conformance::SECRET_A, key)
+            .await
+            .expect("an older row must still load")
+        {
+            Some(StateItem::PendingRecovery { version, shares, .. }) => {
+                assert_eq!(version, 3);
+                assert!(shares.is_empty(), "an older row re-collects its shares");
+            }
+            other => panic!("expected a pending recovery, got {other:?}"),
+        }
     })
     .await;
 }

@@ -53,6 +53,57 @@ test('nothing runs off the side of the page at phone width', async ({ page }) =>
   expect(await horizontalOverflow(page)).toBeLessThanOrEqual(0)
 })
 
+test('Help opens from the phone drawer, searches, and fits the page', async ({ page }) => {
+  await page.setViewportSize({ width: 400, height: 800 })
+  await openApp(page)
+
+  await page.getByRole('button', { name: 'Open sections' }).click()
+  await page.getByRole('navigation', { name: 'App sections' }).getByRole('button', { name: 'Help' }).click()
+
+  // The section bar names where the menu went, and the pane opens on its first topic.
+  await expect(page.getByRole('heading', { name: 'Getting started', level: 1 })).toBeVisible()
+  const search = page.getByRole('searchbox', { name: 'Search help' })
+  await expect(search).toBeVisible()
+  expect(await horizontalOverflow(page)).toBeLessThanOrEqual(0)
+
+  // A search lists its results above the topic; Enter opens the best one.
+  await search.fill('relay_allowed_hosts')
+  await expect(page.getByRole('status').filter({ hasText: /^\d+ topics? match/ })).toBeVisible()
+  await search.press('Enter')
+  await expect(page.getByRole('article').getByRole('heading', { level: 1 })).not.toHaveText('Getting started')
+
+  // A table-heavy topic scrolls its tables, not the page.
+  await search.fill('every setting the node reads')
+  await search.press('Enter')
+  await expect(page.getByRole('heading', { name: 'Node configuration', level: 1 })).toBeVisible()
+  expect(await horizontalOverflow(page)).toBeLessThanOrEqual(0)
+
+  // Escape clears; a query that matches nothing says so.
+  await search.fill('zzzz-no-such-thing')
+  await expect(page.getByText('No topics match “zzzz-no-such-thing”')).toBeVisible()
+  await search.press('Escape')
+  await expect(search).toHaveValue('')
+})
+
+test('Help sits at the bottom of the rail on a wide screen', async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 })
+  await openApp(page)
+
+  const nav = page.getByRole('navigation', { name: 'App sections' })
+  const inspect = await nav.getByRole('button', { name: 'Inspect' }).boundingBox()
+  const help = nav.getByRole('button', { name: 'Help' })
+  const helpBox = await help.boundingBox()
+  const navBox = await nav.boundingBox()
+  if (!inspect || !helpBox || !navBox) throw new Error('navigation not laid out')
+  // Pinned to the foot of the rail, well clear of the sections above it.
+  expect(helpBox.y - (inspect.y + inspect.height)).toBeGreaterThan(100)
+  expect(navBox.y + navBox.height - (helpBox.y + helpBox.height)).toBeLessThan(40)
+
+  await help.click()
+  await expect(help).toHaveAttribute('aria-current', 'page')
+  await expect(page.getByRole('navigation', { name: 'Help topics' })).toBeVisible()
+})
+
 test('a vault claimed in another tab is shown as open there', async ({ page }) => {
   await setUpOwner(page, { name: 'Alice', participants: 3, prePaired: 0, minParticipants: 2 })
   await page.getByRole('button', { name: 'Leave' }).click()

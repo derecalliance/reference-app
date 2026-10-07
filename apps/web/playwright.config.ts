@@ -94,7 +94,9 @@ export default defineConfig({
     {
       command: 'cargo run',
       cwd: '../backend',
-      url: `http://localhost:${BACKEND_PORT}/config`,
+      // `/health` rather than an API route: it is the unversioned liveness
+      // probe, so the harness does not move when the API's prefix does.
+      url: `http://localhost:${BACKEND_PORT}/health`,
       // Never adopted, always started: the whole point of the throwaway
       // database below is that no run inherits another's rows, and reusing a
       // process this config did not start inherits whatever it was given.

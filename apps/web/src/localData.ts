@@ -19,6 +19,7 @@
  * belong to tabs that are still running.
  */
 
+import { clearReplicaAdoptionBlock } from './replicaAdoptionBlock'
 import { clearReplicaState } from './replicaFlows'
 import { resetReplicaId } from './replicaIdentity'
 import { clearPendingReplicaOffer } from './replicaOfferStore'
@@ -58,17 +59,18 @@ export function clearAllLocalData(): number {
 /**
  * Erase everything one vault left in this browser — "Remove from browser".
  *
- * The vault's protocol stores sit under its namespace, but three records sit
+ * The vault's protocol stores sit under its namespace, but four records sit
  * beside it on purpose, keyed by vault id so they survive an adoption that
- * wipes the namespace: the replica bookkeeping, the pending adoption offer and
- * the vault's replica identity. Removal is not adoption — the vault is gone —
- * so all three go too. Left behind, `derec:replica-id:<vaultId>` outlived the
- * vault it identified.
+ * wipes the namespace: the replica bookkeeping, the pending adoption offer,
+ * the vault's replica identity and the block a failed adoption raised.
+ * Removal is not adoption — the vault is gone — so all four go too. Left
+ * behind, `derec:replica-id:<vaultId>` outlived the vault it identified.
  */
 export function eraseVaultLocalData(vaultId: string): void {
   clearNamespace(`vault:${vaultId}`)
   clearReplicaState(vaultId)
   clearPendingReplicaOffer(vaultId)
+  clearReplicaAdoptionBlock(vaultId)
   try {
     resetReplicaId(vaultId)
   } catch {

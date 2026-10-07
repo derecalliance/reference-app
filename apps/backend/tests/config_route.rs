@@ -18,7 +18,7 @@ use serde_json::Value;
 use tower::ServiceExt;
 
 async fn app() -> Router {
-    derec_backend::build_router(derec_backend::test_support::app_state().await)
+    derec_backend::infrastructure::server::build_router(derec_backend::infrastructure::test_support::node().await.state.clone())
 }
 
 async fn get(router: &Router, path: &str) -> (StatusCode, Value) {
@@ -37,15 +37,23 @@ async fn get(router: &Router, path: &str) -> (StatusCode, Value) {
         .await
         .expect("response body readable");
 
-    (status, serde_json::from_slice(&bytes).expect("body is JSON"))
+    let body: Value = serde_json::from_slice(&bytes).expect("body is JSON");
+    // Success answers travel in the envelope; these tests read its result.
+    let body = match body {
+        Value::Object(mut fields) if fields.contains_key("result") => {
+            fields.remove("result").unwrap_or(Value::Null)
+        }
+        other => other,
+    };
+    (status, body)
 }
 
-// `actix_rt::test`, not `tokio::test`: `test_support::app_state()` needs a
+// `actix_rt::test`, not `tokio::test`: `test_support::node()` needs a
 // running arbiter, which the plain Tokio runtime does not provide. The other
 // route tests use the same attribute for the same reason.
 #[actix_rt::test]
 async fn debug_config_reports_values_and_origins() {
-    let (status, body) = get(&app().await, "/debug/config").await;
+    let (status, body) = get(&app().await, "/api/v1/debug/config").await;
     assert_eq!(status, StatusCode::OK);
 
     assert!(body["settings"]["defaults"]["participant_count"].is_number());
@@ -66,18 +74,18 @@ async fn debug_config_reports_values_and_origins() {
         .find(|o| o["path"] == "defaults.participant_count")
         .expect("participant_count origin");
 
-    // `test_support::app_state()` loads no file and reads no environment, so
+    // `test_support::node()` loads no file and reads no environment, so
     // everything is a built-in default and no `variable` key is emitted.
     assert_eq!(participant["source"], "default");
     assert!(participant["variable"].is_null());
 }
 
-// `actix_rt::test`, not `tokio::test`: `test_support::app_state()` needs a
+// `actix_rt::test`, not `tokio::test`: `test_support::node()` needs a
 // running arbiter, which the plain Tokio runtime does not provide. The other
 // route tests use the same attribute for the same reason.
 #[actix_rt::test]
 async fn plain_config_keeps_its_flat_shape() {
-    let (status, body) = get(&app().await, "/config").await;
+    let (status, body) = get(&app().await, "/api/v1/config").await;
     assert_eq!(status, StatusCode::OK);
 
     // Flat, no nesting, no provenance — the front end reads these keys directly.

@@ -135,6 +135,8 @@ function statusLabel(
   // A refusal outranks the pending prompt: nothing is waiting for an answer —
   // the answer was no.
   if (view?.refused) return { text: 'Codes didn’t match', className: 'expired' }
+  // Declining to adopt is the same kind of answer: nothing is waiting on it.
+  if (view?.adoptionDeclined) return { text: 'Adoption declined', className: 'expired' }
   if (catchingUp) return { text: 'Syncing…', className: 'syncing' }
   if (behind) return { text: 'Behind', className: 'available' }
   if (view?.status === 'paired') return { text: 'Verified', className: 'paired' }
@@ -329,7 +331,20 @@ export function ReplicaChannelRow({
         </div>
       )}
 
-      {awaitingConfirmation && !view?.refused && (
+      {awaitingConfirmation && !view?.refused && view?.adoptionDeclined && (
+        <div className="replica-row-notice replica-row-notice--error" role="status">
+          <span className="replica-row-prompt__text">
+            You declined to adopt {name}’s vault, so this device has not confirmed the channel and
+            this vault is unchanged. {name} is not told. Remove the row, or confirm after all to
+            adopt their vault.
+          </span>
+          <button className="channel-link-btn" onClick={onOpenFingerprint}>
+            Reconsider
+          </button>
+        </div>
+      )}
+
+      {awaitingConfirmation && !view?.refused && !view?.adoptionDeclined && (
         <div className="replica-row-prompt" role="status">
           <span className="replica-row-prompt__text">
             Not confirmed yet. Compare the code on both devices — until this device confirms,

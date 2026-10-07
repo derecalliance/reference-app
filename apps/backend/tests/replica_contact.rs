@@ -7,10 +7,8 @@
 use std::collections::HashMap;
 
 use actix::prelude::*;
-use derec_backend::actor::{
-    build_protocol, CreateContactMsg, InstanceForChannelMsg, ListInstanceSecretsMsg,
-    ProtocolConfig, ProvisionedActor,
-};
+use derec_backend::infrastructure::actors::provisioned::{CreateContactMsg, InstanceForChannelMsg, ListInstanceSecretsMsg, ProvisionedActor};
+use derec_backend::infrastructure::actors::protocol::{build_protocol, ProtocolConfig};
 use derec_backend::models::{Role, Transport, TransportProtocol, UnpairAck};
 
 const OWN_SECRET: u64 = 0xA1;
@@ -27,12 +25,11 @@ fn config(secret_id: u64, pool: sqlx::AnyPool, actor_id: uuid::Uuid) -> Protocol
         timeout_secs: 300,
         unpair_ack: UnpairAck::Required,
         threshold: 2,
-        keep_versions_count: 3,
         replica_id: Some(0xAB),
         http_client: reqwest::Client::new(),
         pool,
         actor_id,
-        local_node: None,
+        local_delivery: None,
     }
 }
 
@@ -40,20 +37,20 @@ async fn spawn() -> Addr<ProvisionedActor> {
     // The actor's stores and the state share one pool, as they do in
     // production — provisioning builds every `ProtocolConfig` from
     // `state.pool`.
-    let state = derec_backend::test_support::app_state().await;
+    let state = derec_backend::infrastructure::test_support::node().await;
     // One id for both: the stores are keyed by it, and the actor must be the
     // same actor its own stores were built for.
     let actor_id = uuid::Uuid::new_v4();
     let cfg = config(OWN_SECRET, state.pool.clone(), actor_id);
     let protocol = build_protocol(&cfg).expect("protocol builds");
-    ProvisionedActor::new(protocol, cfg, actor_id, Role::Helper, state).start()
+    ProvisionedActor::new(protocol, cfg, actor_id, Role::Helper, state.actor_dependencies()).start()
 }
 
 #[actix_rt::test]
 async fn a_replica_mode_contact_is_minted_from_the_owners_instance() {
     let addr = spawn().await;
 
-    addr.send(derec_backend::actor::EnsureReplicaInstanceMsg {
+    addr.send(derec_backend::infrastructure::actors::provisioned::EnsureReplicaInstanceMsg {
         owner_secret_id: ALICE_SECRET,
     })
     .await

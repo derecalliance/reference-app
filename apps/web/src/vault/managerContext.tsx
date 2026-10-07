@@ -14,7 +14,7 @@ import { apiGetServerDefaults } from '../api'
 import { FALLBACK_SERVER_DEFAULTS, type ServerDefaults } from '../config'
 import { useConsole } from '../ConsoleContext'
 import { eraseVaultLocalData } from '../localData'
-import { reportError, reportInfo } from '../toastBus'
+import { clearNotice, reportError, reportInfo, showNotice } from '../toastBus'
 import { followReset } from '../browserReset'
 import { onTabMessage, postTabMessage } from '../tabSync'
 import { acquireVaultLock, heldVaultIds, vaultLockMode } from '../vaultLock'
@@ -22,6 +22,12 @@ import { deleteVault, listVaultIds, loadVaultById, persistVault } from '../vault
 import { VaultManager, type VaultEntry } from './manager'
 
 const ManagerContext = createContext<VaultManager | null>(null)
+const ServerDefaultsContext = createContext<ServerDefaults>(FALLBACK_SERVER_DEFAULTS)
+
+/** The standing notice shown while no vault's mailbox poll reaches the node. */
+const NODE_UNREACHABLE_NOTICE = 'node-unreachable'
+const NODE_UNREACHABLE_MESSAGE =
+  'Cannot reach the DeRec node — no vault is receiving messages. Retrying automatically.'
 
 /**
  * Builds the tab's one `VaultManager`, boots it, and releases every lock when
@@ -34,9 +40,12 @@ const ManagerContext = createContext<VaultManager | null>(null)
 export function VaultManagerProvider({ children }: { children: ReactNode }) {
   // Stable for the provider's life — `ConsoleProvider` memoises it.
   const { log } = useConsole()
-  // The node's own defaults, the bottom tier of every vault's config. A plain
-  // holder, filled in once fetched; the runtimes read it when they need it.
-  const [serverDefaults] = useState<{ value: ServerDefaults }>(() => ({
+  // The node's own defaults, the bottom tier of every vault's config, fetched
+  // once for the tab. Held twice on purpose: as state for the views, which
+  // must re-render when they land, and in a plain holder for the runtimes,
+  // which read it when they need it and outlive any render.
+  const [serverDefaults, setServerDefaults] = useState<ServerDefaults>(FALLBACK_SERVER_DEFAULTS)
+  const [serverDefaultsHolder] = useState<{ value: ServerDefaults }>(() => ({
     value: FALLBACK_SERVER_DEFAULTS,
   }))
 
@@ -44,8 +53,15 @@ export function VaultManagerProvider({ children }: { children: ReactNode }) {
     () =>
       new VaultManager({
         log,
-        notify: { error: reportError, info: reportInfo },
-        getServerDefaults: () => serverDefaults.value,
+        notify: {
+          error: reportError,
+          info: reportInfo,
+          nodeUnreachable: unreachable =>
+            unreachable
+              ? showNotice(NODE_UNREACHABLE_NOTICE, 'error', NODE_UNREACHABLE_MESSAGE)
+              : clearNotice(NODE_UNREACHABLE_NOTICE),
+        },
+        getServerDefaults: () => serverDefaultsHolder.value,
         locks: { acquire: acquireVaultLock, held: heldVaultIds },
         announce: () => postTabMessage({ kind: 'vaults-changed' }),
         storage: {
@@ -62,7 +78,9 @@ export function VaultManagerProvider({ children }: { children: ReactNode }) {
     let cancelled = false
     void apiGetServerDefaults()
       .then(({ defaults }) => {
-        if (!cancelled) serverDefaults.value = defaults
+        if (cancelled) return
+        serverDefaultsHolder.value = defaults
+        setServerDefaults(defaults)
       })
       .catch(() => {
         // The fallback stands in; a vault must still run with the backend down.
@@ -73,12 +91,23 @@ export function VaultManagerProvider({ children }: { children: ReactNode }) {
     // but releasing explicitly makes the vaults claimable in another open tab at
     // once rather than whenever the browser gets to it.
     const release = () => void manager.releaseAll()
+    // A page that went into the back/forward cache comes back with every vault
+    // released — runtimes stopped, locks given up — and the world moved on
+    // while it was frozen: another tab may have claimed a vault, created or
+    // removed one, or reset the browser's data. Reloading takes everything up
+    // again through the one path that already handles all of that, boot,
+    // rather than a second resume path that would have to reconcile it.
+    const restore = (event: PageTransitionEvent) => {
+      if (event.persisted) window.location.reload()
+    }
     window.addEventListener('pagehide', release)
+    window.addEventListener('pageshow', restore)
     return () => {
       cancelled = true
       window.removeEventListener('pagehide', release)
+      window.removeEventListener('pageshow', restore)
     }
-  }, [manager, serverDefaults])
+  }, [manager, serverDefaultsHolder])
 
   useFollowOtherTabs(manager)
 
@@ -98,7 +127,11 @@ export function VaultManagerProvider({ children }: { children: ReactNode }) {
     })
   }, [log])
 
-  return <ManagerContext.Provider value={manager}>{children}</ManagerContext.Provider>
+  return (
+    <ManagerContext.Provider value={manager}>
+      <ServerDefaultsContext.Provider value={serverDefaults}>{children}</ServerDefaultsContext.Provider>
+    </ManagerContext.Provider>
+  )
 }
 
 /** How long to let a burst of storage writes from another tab settle before re-reading. */
@@ -159,6 +192,15 @@ export function useVaultManager(): VaultManager {
   const manager = useContext(ManagerContext)
   if (!manager) throw new Error('useVaultManager must be used within a VaultManagerProvider')
   return manager
+}
+
+/**
+ * The node's own defaults — the fallback until the tab's one fetch lands.
+ * The same values every runtime resolves its configuration against.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function useServerDefaults(): ServerDefaults {
+  return useContext(ServerDefaultsContext)
 }
 
 /** The list's rows, re-rendering when any vault's row changes. */

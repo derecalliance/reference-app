@@ -9,24 +9,24 @@
 
 use std::sync::Arc;
 
-use derec_backend::addresses::Listener;
-use derec_backend::config::Defaults;
-use derec_backend::state::AppState;
-use derec_backend::transport::{CompositeTransport, GrpcTransport, HttpTransport};
+use derec_backend::models::Listener;
+use derec_backend::models::Defaults;
+use derec_backend::infrastructure::bootstrap::Node;
+use derec_backend::services::ports::InboxDirectory;
+use derec_backend::infrastructure::transport::{CompositeTransport, GrpcTransport, HttpTransport};
 use derec_library::protocol::DeRecTransport as _;
 use prost::Message as _;
 use uuid::Uuid;
 
-async fn node() -> Arc<AppState> {
-    let state = Arc::new(AppState::new(
-        "http://192.168.0.28:5600",
-        Defaults {
+async fn node() -> Arc<Node> {
+    let state = Arc::new(Node::new(
+        derec_backend::models::NodeConfig::new("http://192.168.0.28:5600", Defaults {
             grpc_port: 50651,
             ..Defaults::default()
-        },
+        }),
         reqwest::Client::new(),
         actix_rt::Arbiter::current(),
-        derec_backend::db::connect("sqlite::memory:")
+        derec_backend::infrastructure::db::connect("sqlite::memory:")
             .await
             .expect("an in-memory database always connects"),
     ));
@@ -37,7 +37,7 @@ async fn node() -> Arc<AppState> {
     ] {
         state
             .addresses
-            .remember(&state.pool, listener, address)
+            .remember(listener, address)
             .await
             .expect("the database is writable");
     }
@@ -45,12 +45,12 @@ async fn node() -> Arc<AppState> {
 }
 
 /// The transport an actor `sender` on `node` sends with.
-fn transport_of(node: &Arc<AppState>, sender: Uuid) -> CompositeTransport {
+fn transport_of(node: &Arc<Node>, sender: Uuid) -> CompositeTransport {
     CompositeTransport::new(
         HttpTransport::new(reqwest::Client::new()),
         GrpcTransport::for_actor(sender),
     )
-    .delivering_locally_on(Arc::clone(node))
+    .delivering_locally_on(Arc::clone(&node.local_delivery))
 }
 
 fn endpoint(uri: &str, protocol: derec_proto::Protocol) -> derec_proto::TransportProtocol {
@@ -68,9 +68,9 @@ fn envelope(channel_id: u64) -> Vec<u8> {
     .encode_to_vec()
 }
 
-fn browser_actor(state: &AppState) -> Uuid {
+fn browser_actor(state: &Node) -> Uuid {
     let id = Uuid::new_v4();
-    derec_backend::provisioning::register_browser_actor(state, id);
+    state.inboxes.register_browser(id);
     id
 }
 
@@ -139,7 +139,7 @@ async fn another_node_is_still_dialled() {
 async fn a_full_mailbox_here_fails_over_to_the_next_endpoint_rather_than_dialling_itself() {
     let state = node().await;
     let (full, spare) = (browser_actor(&state), browser_actor(&state));
-    for _ in 0..derec_backend::registry::mailbox::MAX_QUEUED_MESSAGES {
+    for _ in 0..derec_backend::repositories::mailboxes::MAX_QUEUED_MESSAGES {
         state.mailboxes.enqueue(&full, &[1]).await.expect("room");
     }
 
@@ -155,4 +155,78 @@ async fn a_full_mailbox_here_fails_over_to_the_next_endpoint_rather_than_diallin
         .expect("the second endpoint takes it");
 
     assert_eq!(state.mailboxes.drain(&spare).await.expect("readable").len(), 1);
+}
+
+/// Register an actor advertising `mode` and give it a mailbox, so whatever is
+/// delivered to it can be read back.
+async fn registered_actor(state: &Node, mode: derec_backend::models::TransportMode) -> Uuid {
+    let actor = derec_backend::models::Actor::mint(
+        derec_backend::models::Role::Helper,
+        "Fixture",
+        &state.config.base_url,
+        &state.config.grpc_authority(),
+        mode,
+    );
+    state
+        .actors
+        .register(
+            actor.clone(),
+            derec_backend::models::ActorSettings {
+                replica_id: rand::random(),
+                timeout_secs: 300,
+                unpair_ack: derec_backend::models::UnpairAck::Required,
+            },
+        )
+        .await
+        .expect("the registry is writable");
+    state.inboxes.register_browser(actor.id);
+    actor.id
+}
+
+#[actix_rt::test]
+async fn a_relayed_grpc_message_skips_an_http_only_claimant_of_its_channel() {
+    // A replica's instance holds copies of the source's helper channels, so an
+    // HTTP-only replica claims the same id as the gRPC helper serving it. The
+    // source's own message to that helper — relayed, since a browser cannot
+    // dial gRPC — is the helper's: nobody dials the replica over gRPC.
+    let state = node().await;
+    let source = browser_actor(&state);
+    let helper = registered_actor(&state, derec_backend::models::TransportMode::Both).await;
+    let replica = registered_actor(&state, derec_backend::models::TransportMode::Http).await;
+    state.channel_router.bind(88, helper);
+    state.channel_router.bind(88, replica);
+
+    transport_of(&state, source)
+        .send(
+            &[endpoint("grpc://localhost:9090", derec_proto::Protocol::Grpc)],
+            envelope(88),
+        )
+        .await
+        .expect("delivered to the gRPC helper");
+
+    assert_eq!(state.mailboxes.drain(&helper).await.expect("readable"), vec![envelope(88)]);
+    assert!(state.mailboxes.drain(&replica).await.expect("readable").is_empty());
+}
+
+#[actix_rt::test]
+async fn a_channel_two_grpc_actors_claim_is_still_refused_without_a_sender() {
+    // Narrowing by transport only removes claimants nobody could have dialled;
+    // two that both serve gRPC stay a tie, and a tie is refused, not guessed.
+    let state = node().await;
+    let source = browser_actor(&state);
+    let first = registered_actor(&state, derec_backend::models::TransportMode::Grpc).await;
+    let second = registered_actor(&state, derec_backend::models::TransportMode::Grpc).await;
+    state.channel_router.bind(89, first);
+    state.channel_router.bind(89, second);
+
+    let outcome = transport_of(&state, source)
+        .send(
+            &[endpoint("grpc://localhost:9090", derec_proto::Protocol::Grpc)],
+            envelope(89),
+        )
+        .await;
+
+    assert!(outcome.is_err());
+    assert!(state.mailboxes.drain(&first).await.expect("readable").is_empty());
+    assert!(state.mailboxes.drain(&second).await.expect("readable").is_empty());
 }

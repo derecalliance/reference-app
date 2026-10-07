@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   Alert,
+  AlertTitle,
   Button,
   CircularProgress,
   Dialog,
@@ -62,12 +63,23 @@ export interface ReplicaFingerprintDialogProps {
   /** Persist a confirmation for one or both sides of this replica. */
   onConfirm: (patch: Partial<ReplicaRecord>) => void
   /**
+   * On a destination: the person declined to adopt the peer's vault, so the
+   * fingerprint is not confirmed. Recorded on this device only.
+   */
+  onDeclineAdoption: () => void
+  /**
    * The person says the codes do not match. Recorded on this device only —
    * the protocol has no message for a refusal, so the peer is never told.
    */
   onRefuse: () => void
   onClose: () => void
 }
+
+/**
+ * Which question the dialog is asking. A destination answers two — the codes
+ * match, and it adopts the peer's vault — and confirms only after both.
+ */
+type Stage = 'compare' | 'adopt'
 
 /** Outcome of the last attempt. `idle` before the first one. */
 type AttemptState =
@@ -111,7 +123,7 @@ function messageOf(err: unknown, fallback: string): string {
  */
 function afterConfirmText(direction: ReplicaPairingRole, name: string, peerIsHelper: boolean): string {
   if (direction !== 'replica_source') {
-    return `Confirmed on this device. ${name} still has to confirm on theirs before their vault can be offered here.`
+    return `Confirmed on this device. ${name}’s vault is adopted here as soon as it arrives — once ${name} has confirmed on theirs.`
   }
   return peerIsHelper
     ? `Confirmed on this device. ${name} confirms itself as a helper, so the mirror goes out now — their row shows the version once they acknowledge it.`
@@ -121,7 +133,7 @@ function afterConfirmText(direction: ReplicaPairingRole, name: string, peerIsHel
 /** What confirming this channel unlocks, from this device's side of the mirror. */
 function mirrorDirectionText(direction: ReplicaPairingRole, peerIsHelper: boolean): string {
   if (direction !== 'replica_source') {
-    return 'the peer will not offer its vault to this device until you confirm here.'
+    return 'confirming is also agreeing to adopt the peer’s vault in place of this one, and you are asked about that before anything is confirmed.'
   }
   const base = 'this device will not mirror its vault to the replica until you confirm here'
   // For a helper peer, what happens on its end is already covered above — it
@@ -129,6 +141,17 @@ function mirrorDirectionText(direction: ReplicaPairingRole, peerIsHelper: boolea
   return peerIsHelper
     ? `${base}.`
     : `${base}, and the replica will not accept the copy until it confirms on its own screen.`
+}
+
+/** What a fingerprint load is for; a new one resets the dialog. */
+interface LoadTarget {
+  channelId: ReplicaView['channelId']
+  protocol: ReplicaProtocol
+}
+
+function sameLoadTarget(a: LoadTarget | null, b: LoadTarget | null): boolean {
+  if (a === null || b === null) return a === b
+  return a.channelId === b.channelId && a.protocol === b.protocol
 }
 
 /** The code is the whole content of this dialog, so it is set like it. */
@@ -147,10 +170,17 @@ export function ReplicaFingerprintDialog({
   protocol,
   protocolTimeoutSecs,
   onConfirm,
+  onDeclineAdoption,
   onRefuse,
   onClose,
 }: ReplicaFingerprintDialogProps) {
   const { channelId } = replica
+  // On a destination, confirming the fingerprint is the decision to adopt the
+  // source's vault: from SDK 0.0.7 its publishes are installed as they arrive,
+  // with no further prompt. So the adoption question comes first, and a "no"
+  // is given by never confirming.
+  const adoptsPeerVault = replica.direction === 'replica_destination'
+  const [stage, setStage] = useState<Stage>('compare')
   // Opened on a channel this device already confirmed — "View fingerprint".
   // Captured once: a confirmation made *in* this dialog lands in `local-only`,
   // which has its own wording, rather than flipping the dialog into this mode.
@@ -166,28 +196,50 @@ export function ReplicaFingerprintDialog({
   const [loading, setLoading] = useState(false)
   const [attempt, setAttempt] = useState<AttemptState>({ kind: 'idle' })
 
+  /**
+   * Opening the dialog — or the channel or protocol changing while it is open —
+   * starts from a clean attempt and a fresh load. Adjusted during render rather
+   * than in an effect, so the first frame already shows the loading state.
+   */
+  const loadTarget: LoadTarget | null = open ? { channelId, protocol } : null
+  const [loadedFor, setLoadedFor] = useState<LoadTarget | null>(null)
+  if (!sameLoadTarget(loadTarget, loadedFor)) {
+    setLoadedFor(loadTarget)
+    if (loadTarget !== null) {
+      setAttempt({ kind: 'idle' })
+      if (channelId) {
+        setLoading(true)
+        setLoadError(null)
+      }
+    }
+  }
+
   // Only this device's code. Every peer now confirms on its own protocol
   // instance — a helper auto-confirms server-side, another browser device
   // confirms on its own screen — so there is no second code to fetch and
   // nothing here may assert the peer's decision on its behalf.
-  const loadCode = useCallback(async () => {
+  // State is set only once the derivation settles, so the effect below never
+  // renders synchronously. Never rejects.
+  const fetchCode = useCallback(
+    (id: string): Promise<void> =>
+      fetchFingerprint(protocol, id)
+        .then(setOwnCode, (err: unknown) =>
+          setLoadError(messageOf(err, 'Could not derive the fingerprint.')),
+        )
+        .finally(() => setLoading(false)),
+    [protocol],
+  )
+
+  useEffect(() => {
+    if (open && channelId) void fetchCode(channelId)
+  }, [open, channelId, fetchCode])
+
+  function retryLoad() {
     if (!channelId) return
     setLoading(true)
     setLoadError(null)
-    try {
-      setOwnCode(await fetchFingerprint(protocol, channelId))
-    } catch (err) {
-      setLoadError(messageOf(err, 'Could not derive the fingerprint.'))
-    } finally {
-      setLoading(false)
-    }
-  }, [channelId, protocol])
-
-  useEffect(() => {
-    if (!open) return
-    setAttempt({ kind: 'idle' })
-    void loadCode()
-  }, [open, loadCode])
+    void fetchCode(channelId)
+  }
 
   /**
    * The operator says the codes match. Records this device's side.
@@ -222,7 +274,11 @@ export function ReplicaFingerprintDialog({
     // Only ever *add* a confirmation — writing `peer: 'none'` would clobber one
     // earned on an earlier attempt.
     // A refusal recorded earlier was a misreading, by the person's own account.
-    onConfirm({ local: true, refused: false })
+    onConfirm(
+      adoptsPeerVault
+        ? { local: true, refused: false, adoptionConsented: true, adoptionDeclined: false }
+        : { local: true, refused: false },
+    )
 
     // The peer's confirmation happens on the peer, against its own protocol
     // instance. Nothing here can observe it, and nothing here may assert it on
@@ -237,6 +293,7 @@ export function ReplicaFingerprintDialog({
   const settled = attempt.kind === 'local-only' || alreadyConfirmed
   // The code has to be on screen before anyone can claim to have compared it.
   const canConfirm = !!channelId && !loading && !verifying && !settled && ownCode !== null
+  const askingAdoption = stage === 'adopt' && !settled
 
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm" aria-labelledby="replica-fp-title">
@@ -284,7 +341,7 @@ export function ReplicaFingerprintDialog({
             <Alert
               severity="error"
               action={
-                <Button color="inherit" size="small" onClick={() => void loadCode()}>
+                <Button color="inherit" size="small" onClick={retryLoad}>
                   Retry
                 </Button>
               }
@@ -305,6 +362,17 @@ export function ReplicaFingerprintDialog({
             </Alert>
           )}
 
+          {askingAdoption && (
+            <Alert severity="warning" role="alert">
+              <AlertTitle>Confirming adopts {replica.name}’s vault</AlertTitle>
+              Once this device confirms, {replica.name}’s vault is installed here as soon as it
+              arrives, without asking again: every secret, helper channel and share this vault
+              holds on this device is erased and replaced. Other vaults in this browser are not
+              affected, and it cannot be undone from this app. If you do not want that, do not
+              adopt — the channel stays unconfirmed and this vault is unchanged.
+            </Alert>
+          )}
+
           {attempt.kind === 'error' && <Alert severity="error">{attempt.message}</Alert>}
         </Stack>
       </DialogContent>
@@ -317,6 +385,31 @@ export function ReplicaFingerprintDialog({
           <Button variant="contained" onClick={onClose} autoFocus>
             {alreadyConfirmed ? 'Close' : 'Done'}
           </Button>
+        ) : askingAdoption ? (
+          <>
+            {/* Not adopting is the default: filled and focused, so a stray
+                Enter never reaches the destructive answer. It confirms
+                nothing, which is how the library is told "no". */}
+            <Button
+              variant="contained"
+              autoFocus
+              disabled={verifying}
+              onClick={() => {
+                onDeclineAdoption()
+                onClose()
+              }}
+            >
+              Don’t adopt
+            </Button>
+            <Button
+              variant="outlined"
+              color="error"
+              onClick={() => void handleConfirm()}
+              disabled={!canConfirm}
+            >
+              {verifying ? 'Confirming…' : 'Adopt and confirm'}
+            </Button>
+          </>
         ) : (
           <>
             {/* Refusing is the other half of the comparison, so it is a stated
@@ -334,7 +427,7 @@ export function ReplicaFingerprintDialog({
             </Button>
             <Button
               variant="contained"
-              onClick={() => void handleConfirm()}
+              onClick={() => (adoptsPeerVault ? setStage('adopt') : void handleConfirm())}
               disabled={!canConfirm}
             >
               {verifying ? 'Confirming…' : 'Codes match'}

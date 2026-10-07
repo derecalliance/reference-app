@@ -687,6 +687,72 @@ describe('helper channel housekeeping', () => {
   })
 })
 
+describe('share store: retention (SDK 0.0.7)', () => {
+  afterEach(() => localStorage.clear())
+
+  const share = (version: number, byte = version) => ({
+    secretId: '99',
+    version,
+    bytes: new Uint8Array([byte]),
+  })
+
+  it('removes exactly the named versions on one channel, and nothing on another', async () => {
+    const shares = makeShareStore(NS)
+    for (const v of [1, 2, 3]) await shares.save(SECRET, '7', share(v))
+    await shares.save(SECRET, '8', share(1))
+
+    await shares.removeVersions(SECRET, '7', [1, 2])
+
+    expect((await shares.load(SECRET, '7', [])).map(s => s.version)).toEqual([3])
+    expect((await shares.load(SECRET, '8', [])).map(s => s.version)).toEqual([1])
+    // The record keeps the owner's secret id, not the partition's.
+    expect((await shares.load(SECRET, '7', [3]))[0].secretId).toBe('99')
+  })
+
+  it('is idempotent: unknown versions, repeats and an empty list change nothing', async () => {
+    const shares = makeShareStore(NS)
+    await shares.save(SECRET, '7', share(4))
+
+    await shares.removeVersions(SECRET, '7', [])
+    await shares.removeVersions(SECRET, '7', [1, 2])
+    await shares.removeVersions(SECRET, '9', [4])
+    await shares.removeVersions(SECRET, '7', [1, 2])
+
+    expect((await shares.load(SECRET, '7', [])).map(s => s.version)).toEqual([4])
+  })
+
+  it('leaves no empty index behind when a channel loses its last version', async () => {
+    const shares = makeShareStore(NS)
+    await shares.save(SECRET, '7', share(1))
+    await shares.save(SECRET, '8', share(5))
+
+    await shares.removeVersions(SECRET, '7', [1])
+
+    expect(await shares.loadAll(SECRET, ['7', '8'])).toHaveLength(1)
+    expect(await shares.latestVersion(SECRET)).toBe(5)
+    await shares.removeVersions(SECRET, '8', [5])
+    expect(await shares.latestVersion(SECRET)).toBeNull()
+  })
+
+  it('does not reach another partition', async () => {
+    const shares = makeShareStore(NS)
+    await shares.save(SECRET, '7', share(1))
+    await shares.save('43', '7', share(1))
+
+    await shares.removeVersions(SECRET, '7', [1])
+
+    expect(await shares.load('43', '7', [])).toHaveLength(1)
+  })
+
+  it('answers keepList from the injected policy, and with no list when there is none', async () => {
+    const policy = vi.fn(() => [3, 2])
+    expect(await makeShareStore(NS, { keepList: policy }).keepList(SECRET, 4)).toEqual([3, 2])
+    expect(policy).toHaveBeenCalledWith(SECRET, 4)
+
+    expect(await makeShareStore(NS).keepList(SECRET, 4)).toBeNull()
+  })
+})
+
 describe('storage quota', () => {
   afterEach(() => vi.restoreAllMocks())
 

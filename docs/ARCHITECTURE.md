@@ -38,14 +38,65 @@ Pages under `/reference-app/`), pointing at any reachable backend.
   provisioned actor for hosted helpers. When a protocol decision looks wrong,
   the answer is in the library, not here.
 - **Thin backend.** Transport, an actor registry, store-and-forward mailboxes,
-  hosted helpers and the debug surface. Handlers stay thin; provisioning,
-  deletion and recovery live in their own modules.
+  hosted helpers and the debug surface. Handlers stay thin; the rules live in
+  services (see [Backend layering](#backend-layering)).
 - **Polling, not push.** Browsers poll their mailbox. There are no websockets.
 - **Idempotent message handling.** A message may be delivered more than once;
   provisioning requests state targets rather than quantities.
 - **Built to be inspected.** There is no authentication. Exposing internals is
   the point — which is also why it must only run on a trusted machine or LAN
   (see the README's security note).
+
+## Backend layering
+
+`apps/backend/src` is layered, and dependencies point one way — inward:
+
+```
+handlers/        HTTP interface: one file per endpoint (handlers/<entity>/<verb>.rs)
+  ↓              parses input, calls exactly one service, maps to a DTO
+middlewares/     around every handler: the request id
+services/        the rules: one trait + `…Impl` per entity (Owner, Actor, Helper,
+  ↓              Delivery, Diagnostics, Configuration); typed `ServiceError`
+repositories/    storage only: one trait + `Sql…` implementation per store
+models/          the business models every layer shares, configuration included
+utils/           pure helpers with no business meaning: clock, timestamps, serde
+infrastructure/  the adapters and the process: config loading, the database,
+                 the actix actor runtime, transports, gRPC, boot (`Node::new`
+                 wires each service as `Arc<dyn …>`), the router and server
+```
+
+- **Handlers** take one service from the state (`State<Arc<dyn OwnerService>>`),
+  never the whole state, and translate with `From`/`Into` between their DTOs
+  (`handlers/<entity>/dtos.rs`) and the service's models. `handlers/mod.rs`
+  lists every route.
+- **Services** depend on repository traits and on the ports in
+  `services/ports.rs`, never on `infrastructure`; the actor runtime, the gRPC
+  router and the event log reach them through those ports.
+- **Models** live in `models/`, one file per business entity or concept —
+  `actor.rs` holds `Actor`, `Role`, `ActorSettings`, `ActorListing` and the
+  rest of what describes an actor; `config.rs` every configuration type — never
+  one file per type or per endpoint. Every type a service takes or returns,
+  and every data type a port or repository exchanges with a service, is a
+  model. `models/mod.rs` re-exports them all (`crate::models::Actor`). Models
+  hold no free helper functions: validation and parsing are behaviour of a
+  type, through `From`/`TryFrom` where one fits (`DisplayName`, `DatabaseUrl`,
+  `EnvelopeMeta`), and helpers with no business meaning live in `utils/`.
+  Layer errors, DTOs, implementations and traits stay in their own layers.
+- **Errors** are typed at each layer (`RepositoryError` → `ServiceError` →
+  `ApiError`), each conversion a `From` impl, and the HTTP layer alone decides
+  statuses and error codes.
+
+### The API's shape
+
+The API lives under `/api/v1`. Every answer there is an envelope —
+`{"result", "timestamp", "request_id"}` on success, `{"error": {"code",
+"message"}, "timestamp", "request_id"}` on failure — and every response carries
+an `x-request-id` header the middleware assigns (or takes from the caller) and
+attaches to the request's log lines. Two groups stay at the root because other
+software depends on their exact paths and bodies: `GET /health`, the image's
+healthcheck, and the DeRec transport under `/derec/*` that other
+implementations post to. Their success bodies are unchanged; their errors use
+the same envelope. Anything else outside `/api/v1` is the bundled UI.
 
 ## The actor registry
 
@@ -56,11 +107,11 @@ tabs at, and every actor anyone creates is visible to everyone.
 
 An actor has a role:
 
-- **Owner** — registered by a browser vault through `POST /owners`. Its
+- **Owner** — registered by a browser vault through `POST /api/v1/owners`. Its
   protocol instance lives in the page, with keys the server never sees; the
   server only gives it an address and a mailbox.
-- **Helper** — provisioned on the server through `POST /helpers` or
-  `POST /helpers/ensure`. The backend runs its protocol instance itself
+- **Helper** — provisioned on the server through `POST /api/v1/helpers` or
+  `POST /api/v1/helpers/ensure`. The backend runs its protocol instance itself
   (an Actix actor around `derec-library`), answering pairing, share storage,
   verification and recovery requests unattended. Hosted helpers auto-confirm
   their own pairing fingerprint, since they have no operator to read a code
@@ -75,10 +126,10 @@ Provisioned helpers belong to the **server**, not to the owner that asked for
 them; every owner pairs with the same fixtures.
 
 - The helper count in the setup wizard and the Participants section is a
-  **target for the pool**, not an order to create. `POST /helpers/ensure`
+  **target for the pool**, not an order to create. `POST /api/v1/helpers/ensure`
   provisions only the shortfall, per transport mode (`http`, `grpc`, `both`).
 - Asking for fewer than exist removes nothing — another owner may be paired
-  with one. Removal is explicit (`DELETE /helpers/{id}`), and unwinds the
+  with one. Removal is explicit (`DELETE /api/v1/helpers/{id}`), and unwinds the
   actor, its rows and its routing handles together.
 - The count-and-create runs under a single registry lock, so two tabs setting
   up at the same moment cannot each fill an empty pool.
@@ -86,7 +137,7 @@ them; every owner pairs with the same fixtures.
   `replica_for_owner_secret`, in **replica mode**. Replica is a pairing mode
   any helper can serve, not a distinct kind of actor; a helper mirroring an
   owner runs an extra protocol instance bound to that owner's secret.
-- A helper can be toggled offline (`POST /helpers/{id}/toggle-status`) to
+- A helper can be toggled offline (`POST /api/v1/helpers/{id}/toggle-status`) to
   simulate an unreachable peer: it discards what it receives rather than
   queueing it.
 
@@ -94,7 +145,7 @@ them; every owner pairs with the same fixtures.
 
 Protocol settings (threshold, timeouts, unpair acknowledgement, auto-accept
 policies…) travel on each provisioning request. The backend serves
-operator-supplied **defaults** from `GET /config` — read at boot from built-in
+operator-supplied **defaults** from `GET /api/v1/config` — read at boot from built-in
 values, an optional TOML file and `DEREC_*` environment variables — and the
 front end prefills from them, but the backend holds no protocol policy of its
 own. The exceptions are the node's own process settings (`[server]`) and its
@@ -135,9 +186,12 @@ Protocol instances are rebuilt from those stores on load.
 
 Every actor has an HTTP endpoint, `POST /derec/{actor_id}`. A message for a
 hosted helper is handed straight to its actor. A message for a browser owner is
-held in that owner's **mailbox** — store-and-forward, in memory — until the
-page drains it with `GET /derec/{actor_id}/mailbox`. Draining is destructive,
-so the page keeps undelivered messages until it has processed them.
+held in that owner's **mailbox** — store-and-forward, and durable: undelivered
+messages are stored in the database, so they survive a restart and a claim —
+until the page drains it with `GET /derec/{actor_id}/mailbox`. A mailbox holds
+at most 1000 messages or 16 MiB; past that, delivery is refused and nothing
+queued is dropped. Draining is destructive, so the page keeps undelivered
+messages until it has processed them.
 
 Outbound, a browser posts protocol messages directly to the peer's advertised
 HTTP transport URI.
@@ -196,7 +250,7 @@ Three views of the same data:
 - **Console panel** — this page's protocol events and the backend's message
   deliveries, in order, tagged with the transport that actually carried each
   one. Exportable as JSON.
-- **HTTP** — `GET /debug/state`, `GET /debug/events` and `GET /debug/config`
+- **HTTP** — `GET /api/v1/debug/state`, `GET /api/v1/debug/events` and `GET /api/v1/debug/config`
   return what those render, plus the resolved configuration and where each
   value came from. The API is described in `apps/backend/openapi.yaml`.
 
