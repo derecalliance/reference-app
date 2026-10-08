@@ -39,7 +39,7 @@ The backend deliberately implements **no protocol logic** — see
 
 Before building the project, install the required development tools:
 
-- Rust (1.88 or newer)
+- Rust (1.89 or newer)
 - `protoc` (Protocol Buffers compiler), for the backend's vendored transport protos
 - Node.js (22 or newer) and npm
 - Google Chrome, for the end-to-end tests
@@ -94,13 +94,16 @@ cargo fmt
 
 The image bundles the built front end and the backend into one container.
 
-From the repository root run:
+Users pull the published image (`ghcr.io/derecalliance/reference-app`). To run
+your own changes, build it from the repository root:
 
 ```bash
-docker build -f apps/backend/Dockerfile -t derec/reference-app:0.0.7 .
+docker build -f apps/backend/Dockerfile -t derec/reference-app:dev .
+# or, with the node started and waited on:
+./start.sh --build
 ```
 
-See the README's **In Docker** section for running it, persistence and
+See [docs/DOCKER.md](docs/DOCKER.md) for running it, persistence and
 configuration.
 
 ---
@@ -189,7 +192,90 @@ cargo fmt
 # Release Process
 
 The app's version follows the DeRec SDK it is built against, and the Docker
-image is tagged with it. Changes are recorded in `CHANGELOG.md`.
+image is tagged with it. Changes are recorded in `CHANGELOG.md`, under the
+entry for the version being prepared.
+
+## Versions
+
+The app's version is declared once, as `version` in
+[`apps/backend/Cargo.toml`](apps/backend/Cargo.toml), next to the SDK it pins.
+It is the SDK version, optionally with a pre-release suffix:
+
+```
+0.0.8-alpha.1 → 0.0.8-alpha.2 → … → 0.0.8-rc.1 → 0.0.8
+```
+
+Every other copy (the web package, the API spec, the Dockerfile, the compose
+files, the image tags in the docs, the CHANGELOG heading) follows it.
+[`scripts/version.sh`](scripts/version.sh) keeps them in step:
+
+```bash
+scripts/version.sh                     # print it
+scripts/version.sh check               # every copy agrees, and the base is the SDK's
+scripts/version.sh set 0.0.8-alpha.2   # change it everywhere
+```
+
+`set` refuses a version whose base is not the pinned SDK: moving to a new SDK
+means bumping `derec-library`, `derec-proto` and `@derec-alliance/web` first.
+
+## Publishing the image
+
+Releases go to `ghcr.io/derecalliance/reference-app` with
+[`scripts/publish-image.sh`](scripts/publish-image.sh). It publishes the
+version above, built from its release commit, for `linux/amd64` and
+`linux/arm64`. A pre-release is pushed under its own tag only; a release also
+moves `latest`. A version already published is never overwritten.
+
+1. **Set the version** and commit the result:
+
+   ```bash
+   scripts/version.sh set 0.0.8-alpha.1
+   ```
+
+2. **Tag the release commit and push the tag.** The image's `revision` label
+   points at this commit, so it must be on GitHub:
+
+   ```bash
+   git tag -a v0.0.8-alpha.1 -m "Release 0.0.8-alpha.1"
+   git push origin v0.0.8-alpha.1
+   ```
+
+3. **Log in to GHCR** (once per machine) with a GitHub token that has
+   `write:packages`:
+
+   ```bash
+   echo "$GITHUB_TOKEN" | docker login ghcr.io -u <github-user> --password-stdin
+   ```
+
+4. **Publish:**
+
+   ```bash
+   scripts/publish-image.sh
+   ```
+
+   It checks that the tree is clean, HEAD is the pushed tag, every copy of the
+   version agrees, you are logged in, the builder handles both platforms and
+   the version is not yet published. It then shows the plan and asks before
+   pushing. After the push it confirms both platforms are in the registry and
+   prints the digest. `--dry-run` runs the checks and prints the build without
+   pushing; `--yes` skips the question.
+
+5. **First publish only:** GHCR creates the package private. Make it public in
+   the package's settings on GitHub, or nobody else can pull it.
+
+**Rehearse first** with `--local`. It pushes to a registry on your own machine
+(`localhost:5055`, started if needed) and turns the source checks into
+warnings, so it also works on uncommitted changes. Nothing leaves the machine:
+
+```bash
+scripts/publish-image.sh --local
+DEREC_IMAGE=localhost:5055/derecalliance/reference-app ./start.sh --fresh
+docker rm -f derec-registry           # when done
+```
+
+Building the platform your machine does not run natively is emulated, so its
+Rust build is slow (on Apple Silicon, `linux/amd64`). How to run the image,
+and every setting it takes, is in [docs/DOCKER.md](docs/DOCKER.md).
 
 ---
 

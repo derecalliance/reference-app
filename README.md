@@ -22,14 +22,22 @@ That is all it takes with [Docker](https://docs.docker.com/get-docker/)
 (Compose v2.24 or newer) — no Node or Rust needed. Then open the address it
 prints and set up your first vault.
 
+Without cloning anything, the published image runs on its own:
+
+```
+docker run -d --name derec -p 5000:5000 -p 50051:50051 \
+  -v derec-data:/var/lib/derec ghcr.io/derecalliance/reference-app:0.0.8-alpha.1
+```
+
 ### Run it in Docker
 
-`./start.sh` builds the image from your checkout, starts the node, waits until
-it answers and prints the address: `http://localhost:5000`, or the next free
-port if 5000 is taken (on macOS the AirPlay Receiver usually is). The first
-build takes several minutes; later runs take seconds. Run it again whenever you
-like: it stops whatever it started before and starts it fresh, keeping your
-data.
+`./start.sh` pulls the published image (`ghcr.io/derecalliance/reference-app`),
+starts the node, waits until it answers and prints the address:
+`http://localhost:5000`, or the next free port if 5000 is taken (on macOS the
+AirPlay Receiver usually is). Run it again whenever you like: it stops whatever
+it started before and starts it fresh, keeping your data. If the image cannot be
+pulled — offline, or a version not published yet — it builds it from your
+checkout instead, which takes several minutes the first time.
 
 | | |
 | --- | --- |
@@ -37,19 +45,21 @@ data.
 | `./start.sh --lan` | also reachable from phones and other machines on your network |
 | `./start.sh --fresh` | erase all stored data first — then use **Reset browser data** in the app, in each browser you used |
 | `./start.sh --port 8080` | a fixed port instead of the first free one |
+| `./start.sh --build` | build the image from your checkout instead of pulling it — to run local changes |
 | `./start.sh --stop` | stop it |
 
 Plain Compose works too: `docker compose up` in the repo root runs the same
-SQLite node on `http://localhost:5000` (set `DEREC_HOST_PORT` to move it). The
-compose files are [`examples/compose.sqlite.yaml`](examples/compose.sqlite.yaml)
-and [`examples/compose.postgres.yaml`](examples/compose.postgres.yaml); see
-[In Docker](#in-docker) for the details, and
+SQLite node on `http://localhost:5000` (set `DEREC_HOST_PORT` to move it), from
+the published image like any other service image. The compose files are
+[`examples/compose.sqlite.yaml`](examples/compose.sqlite.yaml) and
+[`examples/compose.postgres.yaml`](examples/compose.postgres.yaml); see
+[docs/DOCKER.md](docs/DOCKER.md) for the details, and
 [Reaching it from a phone](#reaching-it-from-a-phone-on-the-same-network) for
 the browser settings a phone needs.
 
 ### Run it from source
 
-For working on the code. Needs [Rust](https://rustup.rs) 1.88+ and
+For working on the code. Needs [Rust](https://rustup.rs) 1.89+ and
 [Node.js](https://nodejs.org) 22+, and two terminals:
 
 ```
@@ -180,173 +190,29 @@ registry.
 
 ### In Docker
 
-One image serves the UI and the API on the same origin, and keeps its state.
-
-Nothing is published yet, so build it first, from the repository root. The tag
-names the SDK it was built against — the SDK is compiled in (`derec-library`
-into the binary, `@derec-alliance/web` into the bundled WASM), so a different
-SDK means a different image rather than a different flag:
-
-```
-docker build -f apps/backend/Dockerfile -t derec/reference-app:0.0.7 .
-docker run -d --name derec -p 5000:5000 -p 50051:50051 \
-  -v derec-data:/var/lib/derec derec/reference-app:0.0.7
-```
-
-Then open `http://localhost:5000`. There is no separate front-end server: the
-page is served by the backend and calls back to the same origin.
-
-Publish **both** ports. 5000 carries the UI, the API and HTTP protocol traffic;
-50051 is the gRPC listener. Helpers in `grpc` or `both` mode advertise
-`grpc://<host>:<public gRPC port>`, so leaving 50051 unpublished leaves those
-helpers advertising an address no peer outside the container can reach.
-
-Publishing on other host ports takes one more setting per port. The page itself
-works anywhere, but the node also stamps an address into every transport URI it
-hands a peer, and a peer must be told the port *it* can reach — the published
-one, not the one the container listens on:
-
-```
-docker run -d --name derec -p 8080:5000 -p 8081:50051 \
-  -v derec-data:/var/lib/derec \
-  -e DEREC_PUBLIC_PORT=8080 -e DEREC_PUBLIC_GRPC_PORT=8081 \
-  derec/reference-app:0.0.7
-```
-
-Without them, peers are told `:5000` and `:50051`, and pairing fails once the
-first reply is sent to a port nothing on the host answers. The settings can be
-changed later: on boot, actors created under an old address are re-advertised
-at the current one. Provisioned helpers then announce the new address to the
-peers they are paired with (the protocol's `UpdateChannelInfo`), once the node
-is serving; the boot log summarises who was told. A browser-run owner must
-announce its own address from its tab, replica-group members are not covered
-by the announcement, and a peer on another node that could not be told keeps
-the old address until it pairs again.
-
-The node also remembers every address it has advertised (in its database, so
-the record survives the very restart that changes the port). A message sent to
-an old one — by a helper here to a browser owner still registered under the old
-port, or by a browser through the relay — is recognised as meant for this node
-and delivered in-process rather than dialled, so a republished container keeps
-working for everyone on it even though the old port is gone. `GET /api/v1/debug/state`
-lists the remembered addresses under `advertised_addresses`.
-
-Pairing across machines needs the LAN address, exactly as it does outside
-Docker — it is stamped into every transport URI handed to a peer. **So does
-pairing across containers**, including two nodes on one host: inside a
-container, `localhost` is that container, so a second node told
-`http://localhost:…` dials itself and reaches nothing. Give each node the
-host's LAN address and its own published ports (`DEREC_PUBLIC_PORT`,
-`DEREC_PUBLIC_GRPC_PORT`), or put both on one Docker network and use the
-container names. Two nodes run natively with `cargo run` on one machine can
-use loopback, on different ports — only containers and other devices cannot.
-The boot log warns about a loopback `DEREC_BASE_URL`, and says which of these
-applies when it detects a container.
+One image serves the UI and the API on the same origin and keeps its state in a
+volume. It is published as `ghcr.io/derecalliance/reference-app` for
+`linux/amd64` and `linux/arm64`:
 
 ```
 docker run -d --name derec -p 5000:5000 -p 50051:50051 \
-  -v derec-data:/var/lib/derec \
-  -e DEREC_BASE_URL=http://192.168.0.28 derec/reference-app:0.0.7
+  -v derec-data:/var/lib/derec ghcr.io/derecalliance/reference-app:0.0.8-alpha.1
 ```
 
-To configure it with a file, mount one at `/etc/derec/config.toml` — the image
-reads that path by default, so no other setting is needed (see
-[Configuring it](#configuring-it)):
+**[docs/DOCKER.md](docs/DOCKER.md) is the image's reference:** tags and
+versions, ports, volumes, every setting with its default, environment files,
+Compose, and recipes for LAN use, other ports and two nodes.
 
-```
-docker run -d --name derec -p 5000:5000 -p 50051:50051 \
-  -v derec-data:/var/lib/derec \
-  -v ./my-config.toml:/etc/derec/config.toml:ro \
-  derec/reference-app:0.0.7
-```
-
-#### With compose
-
-[`./start.sh`](start.sh) is the shortest path (see [Getting started](#getting-started));
-these are the files it runs, and they work on their own:
-
-```
-docker compose up -d                                       # SQLite, from the repo root
-docker compose -f examples/compose.postgres.yaml up -d     # PostgreSQL
-```
-
-The root [`compose.yaml`](compose.yaml) includes
-[`examples/compose.sqlite.yaml`](examples/compose.sqlite.yaml);
-[`examples/compose.postgres.yaml`](examples/compose.postgres.yaml) adds a
-Postgres service the node waits on. Both build the image on first `up`, keep
-their data in a named volume (`derec-data`, `derec-pgdata`), and share the
-project name `derec`, so one replaces the other. `docker compose -p derec down`
-stops either; add `-v` to erase its data.
-
-Ports and addresses are variables, read from your shell or an optional
-repo-root `.env` (copy [`examples/.env.example`](examples/.env.example)):
-`DEREC_HOST_PORT` and `DEREC_HOST_GRPC_PORT` move the published ports *and* the
-ports the node advertises, together; `LAN_IP` sets the address peers are told.
-For a config file, copy [`examples/config.example.toml`](examples/config.example.toml)
-to `apps/backend/config.toml` and uncomment the mount in the compose file. Only
-`.env` and `apps/backend/config.toml` are git-ignored.
-
-#### State
-
-It survives a restart. Helpers you provisioned come back with the identities
-and settings they had — including the `replica_id` every replica-group
-membership references — and their channels and shares are still there:
-
-```
-$ docker restart derec
-$ docker logs derec | grep recovered
-INFO derec_backend::recovery: node recovered from the database helpers=3 …
-```
-
-What that costs you, and what it does not:
-
-| Invocation | Survives `docker restart` | Survives `docker rm` + recreate |
-| --- | --- | --- |
-| no `-v` | yes, on an anonymous volume | no |
-| `-v derec-data:/var/lib/derec` | yes | yes |
-| `-e DEREC_DATABASE_URL=sqlite::memory:` | no — scratch sessions only, see below | no |
-
-**`sqlite::memory:` is for scratch sessions only.** Everything is lost when the
-process stops — and can be lost mid-run too: an in-memory database lives in its
-one underlying connection, so if that connection is ever replaced the node is
-left with an empty database. A browser still holding channel state for actors
-the node no longer has will then fail in ways that look like protocol bugs. The
-node prints a warning at boot when it is configured this way.
-
-**Prefer a named volume to a bind mount.** SQLite's locking over bind-mounted
-host filesystems is unreliable on macOS and Windows, where the mount crosses
-gRPC-FUSE or virtiofs, and it presents as intermittent `database is locked`
-rather than as anything naming the mount.
-
-To look inside the database, use the `sqlite3` shipped in the image, as the
-uid that owns the data:
-
-```
-docker exec -it -u 10001 derec sqlite3 /var/lib/derec/derec.db
-```
-
-#### Failing fast
-
-The container runs as a non-root user (uid 10001). Its healthcheck is
-`derec-backend healthcheck`, which resolves the port exactly as the server does
-— file, environment, default — and asks `/health`, so it stays right however the
-port was set. `docker stop` gives in-flight requests up to 5 seconds and then
-exits cleanly, inside Docker's 10-second limit, so the database closes cleanly.
-Calls to peers time out (5 s to connect, 15 s per HTTP request, 10 s per gRPC
-call), so one unreachable peer cannot hold a helper up. A node that cannot run correctly refuses to start rather than
-coming up half-working; `docker logs` names the problem:
-
-- **Invalid configuration** — an unreadable or unparsable file, a misspelled
-  key, a value that fails validation — aborts the boot with a message naming the
-  setting and where it came from (file or variable).
-- **A read-only or unwritable data directory** aborts the boot rather than
-  failing on the first write.
-- **A port already in use** (HTTP or gRPC) aborts the boot with a message naming
-  the port.
+From a checkout, `./start.sh` runs the same image (see
+[Getting started](#getting-started)), and the root
+[`compose.yaml`](compose.yaml) and [`compose.postgres.yaml`](compose.postgres.yaml)
+run it with plain Compose. Add `-f compose.build.yaml`, or use
+`./start.sh --build`, to build the image from your checkout instead (tagged
+`derec/reference-app:dev`).
 
 ### The SDK
 
-Both halves are built against SDK **0.0.7**, and the app's version is the same
+Both halves are built against SDK **0.0.8**, and the app's version is the same
 number.
 
 Both are taken from the registries: `derec-library` and `derec-proto` from
@@ -581,7 +447,7 @@ documented inline, nothing to look up:
 | --- | --- | --- |
 | `examples/config.example.toml` | `apps/backend/config.toml` | the TOML file |
 | `examples/.env.example` | `.env` | environment variables |
-| `examples/compose.sqlite.yaml`, `examples/compose.postgres.yaml` | run in place (see [With compose](#with-compose)) | running it in Docker |
+| `examples/compose.sqlite.yaml`, `examples/compose.postgres.yaml` | run in place (see [docs/DOCKER.md](docs/DOCKER.md#docker-compose)) | running it in Docker |
 
 **Where the file is read from.** `DEREC_CONFIG_PATH` names it. Unset, the node
 reads its default path — `config.toml` in the working directory under
@@ -634,35 +500,11 @@ How the environment is assembled, highest first:
 Tiers 3 and 4 look the same to the app — both are just the environment by the
 time it starts, and compose resolves that precedence itself.
 
-Variable names are flat and prefixed; the table a key lives in does not appear:
-
-| File key | Variable |
-| --- | --- |
-| `server.base_url` | `DEREC_BASE_URL` |
-| `server.port` | `DEREC_PORT` |
-| `server.database_url` | `DEREC_DATABASE_URL` |
-| `server.static_dir` | `DEREC_STATIC_DIR` |
-| `server.public_port` | `DEREC_PUBLIC_PORT` |
-| `server.public_grpc_port` | `DEREC_PUBLIC_GRPC_PORT` |
-| `server.relay_allowed_hosts` | `DEREC_RELAY_ALLOWED_HOSTS` |
-| `defaults.participant_count` | `DEREC_PARTICIPANT_COUNT` |
-| `defaults.pre_paired_count` | `DEREC_PRE_PAIRED_COUNT` |
-| `defaults.min_participants` | `DEREC_MIN_PARTICIPANTS` |
-| `defaults.recommended_participants` | `DEREC_RECOMMENDED_PARTICIPANTS` |
-| `defaults.protocol_timeout_secs` | `DEREC_PROTOCOL_TIMEOUT_SECS` |
-| `defaults.authentication_method` | `DEREC_AUTHENTICATION_METHOD` |
-| `defaults.unpair_ack` | `DEREC_UNPAIR_ACK` |
-| `defaults.auto_accept_unpair_requests` | `DEREC_AUTO_ACCEPT_UNPAIR_REQUESTS` |
-| `defaults.auto_accept_store_share_requests` | `DEREC_AUTO_ACCEPT_STORE_SHARE_REQUESTS` |
-| `defaults.auto_accept_verify_share_requests` | `DEREC_AUTO_ACCEPT_VERIFY_SHARE_REQUESTS` |
-| `defaults.grpc_enabled` | `DEREC_GRPC_ENABLED` |
-| `defaults.grpc_port` | `DEREC_GRPC_PORT` |
-| `defaults.grpc_relay_enabled` | `DEREC_GRPC_RELAY_ENABLED` |
-| `defaults.helper_transports.http` | `DEREC_HELPER_TRANSPORTS_HTTP` |
-| `defaults.helper_transports.grpc` | `DEREC_HELPER_TRANSPORTS_GRPC` |
-| `defaults.helper_transports.both` | `DEREC_HELPER_TRANSPORTS_BOTH` |
-
-`DEREC_CONFIG_PATH` names the config file and is not itself a setting.
+Every setting, with its variable, default and meaning, is listed in
+[docs/DOCKER.md](docs/DOCKER.md#reference). The defaults there are the
+image's; under `cargo run` only three differ: the database is `derec.db` in
+the working directory, `static_dir` is empty (no UI, so the Vite dev server is
+not shadowed) and the config file is `config.toml` in the working directory.
 
 `public_port` and `public_grpc_port` default to the listener ports (`port` and
 `grpc_port`); set them only when something in between remaps the ports, as

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,12 +15,13 @@ use derec_library::protocol::{
     ProcessError,
 };
 use derec_library::types::ChannelId;
+use derec_proto::SenderKind;
 
 use super::instances::InstanceMap;
-use super::protocol::{ActorProtocol, ProtocolConfig, build_protocol, rebuild_with_stores};
+use super::protocol::{build_protocol, rebuild_with_stores, ActorProtocol, ProtocolConfig};
 use super::{MAX_REPLICA_INSTANCES, PENDING_CHANNEL_TTL_SECS};
 use crate::infrastructure::routing::ChannelRouter;
-use crate::models::{ChannelSummary, EnvelopeMeta, Role, UnpairAck};
+use crate::models::{ChannelSummary, EnvelopeMeta, Role, Side, UnpairAck};
 use crate::repositories::helper_channels::HelperChannelIndex;
 use crate::repositories::sharing_rounds::SharingRoundRepository;
 
@@ -54,12 +55,26 @@ const AUTO_CONFIRM_ATTEMPTS: u8 = 8;
 /// many the channel is left to the sweep, said once.
 const AUTO_CONFIRM_MAX_FAILURES: u8 = 3;
 
-/// Every channel id an instance currently holds, or `None` if the enumeration
+/// Every channel an instance holds, as [`held_channels_of`] read them.
+#[derive(Debug, Default)]
+struct HeldChannels {
+    /// Every id, sorted and deduplicated.
+    ids: Vec<u64>,
+    /// Those of `ids` the instance holds only as the *owner's* side of a
+    /// helper channel (`peer_role == Helper`) and in no other record. In a
+    /// replica instance these are the source's helper channels the roster
+    /// hydrated: copies, not channels the replica is an end of.
+    owner_side: HashSet<u64>,
+}
+
+/// Every channel an instance currently holds, or `None` if the enumeration
 /// was incomplete.
 ///
 /// Both halves matter: `helpers()` lists channels where this instance is one
 /// side of an Owner↔Helper relationship, and `replicas()` lists replica-group
-/// members. A message may arrive on either, so routing needs both.
+/// members. A message may arrive on either, so routing needs both. Which side
+/// of a helper channel the instance is on is kept too, for the server-wide
+/// router: see [`ProvisionedActor::reconcile_instance`].
 ///
 /// A partial result is not returned: if either read fails, this returns
 /// `None` rather than the ids the other half found. `InstanceMap::reconcile`
@@ -69,16 +84,28 @@ const AUTO_CONFIRM_MAX_FAILURES: u8 = 3;
 /// entirely on `None`, leaving the previous index in place for the next
 /// reconcile to repair — a stale index is recoverable, a pruned one drops
 /// live routes until something re-creates the channel.
-async fn channel_ids_of(protocol: &ActorProtocol, secret_id: u64) -> Option<Vec<u64>> {
+async fn held_channels_of(protocol: &ActorProtocol, secret_id: u64) -> Option<HeldChannels> {
     let mut ok = true;
     let mut ids = Vec::new();
+    let mut owner_side = HashSet::new();
+    let mut endpoint = HashSet::new();
 
     match protocol
         .channel_store
         .helpers(secret_id, HelperFilter::default())
         .await
     {
-        Ok(channels) => ids.extend(channels.iter().map(|c| c.channel_id.0)),
+        Ok(channels) => {
+            for channel in &channels {
+                let id = channel.channel_id.0;
+                ids.push(id);
+                if channel.peer_role == SenderKind::Helper {
+                    owner_side.insert(id);
+                } else {
+                    endpoint.insert(id);
+                }
+            }
+        }
         Err(e) => {
             ok = false;
             warn!(secret_id = secret_id, error = %e, "helper channel read failed during reconcile");
@@ -90,7 +117,12 @@ async fn channel_ids_of(protocol: &ActorProtocol, secret_id: u64) -> Option<Vec<
         .replicas(secret_id, ReplicaFilter::default())
         .await
     {
-        Ok(members) => ids.extend(members.iter().map(|m| m.channel_id.0)),
+        Ok(members) => {
+            for member in &members {
+                ids.push(member.channel_id.0);
+                endpoint.insert(member.channel_id.0);
+            }
+        }
         Err(e) => {
             ok = false;
             warn!(secret_id = secret_id, error = %e, "replica member read failed during reconcile");
@@ -103,12 +135,13 @@ async fn channel_ids_of(protocol: &ActorProtocol, secret_id: u64) -> Option<Vec<
 
     ids.sort_unstable();
     ids.dedup();
-    Some(ids)
+    owner_side.retain(|id| !endpoint.contains(id));
+    Some(HeldChannels { ids, owner_side })
 }
 
 /// Channel ids on `secret_id` still awaiting fingerprint confirmation.
 ///
-/// Unlike [`channel_ids_of`], a partial read is returned rather than
+/// Unlike [`held_channels_of`], a partial read is returned rather than
 /// suppressed. Nothing is pruned from this answer — it only ever *adds* a
 /// confirmation attempt, and the attempt is idempotent — so the worst a missing
 /// half can do is defer a channel to the next tick, where a `None` would defer
@@ -300,10 +333,27 @@ impl ProvisionedActor {
     /// router routes gRPC ingress *to* it. Both are derived, never persisted,
     /// so both are re-read from the store here — which is what lets a node
     /// that restarted route gRPC for channels paired before it went down.
-    fn reconcile_instance(&mut self, secret_id: u64, channel_ids: &[u64]) {
-        self.instances.reconcile(secret_id, channel_ids);
-        for &channel_id in channel_ids {
-            self.deps.channel_router.bind(channel_id, self.actor_id);
+    ///
+    /// The router also learns which side of each channel this actor is on. A
+    /// replica instance holds its source's helper channels — the owner's view
+    /// of each, hydrated from the roster — and the helpers serving them may
+    /// live on this node too. Those copies are bound as [`Side::Mirror`], so
+    /// a peer's message on one reaches the helper rather than tying with it.
+    /// Everything else, and every channel of the own instance, is an
+    /// [`Side::Endpoint`]: a provisioned actor holding the owner's side there
+    /// started that pairing itself.
+    fn reconcile_instance(&mut self, secret_id: u64, held: &HeldChannels) {
+        self.instances.reconcile(secret_id, &held.ids);
+        let replica_instance = secret_id != self.instances.own_secret_id();
+        for &channel_id in &held.ids {
+            let side = if replica_instance && held.owner_side.contains(&channel_id) {
+                Side::Mirror
+            } else {
+                Side::Endpoint
+            };
+            self.deps
+                .channel_router
+                .bind(channel_id, self.actor_id, side);
         }
     }
 
@@ -759,7 +809,7 @@ impl Handler<TickMsg> for ProvisionedActor {
                     let swept = protocol
                         .remove_expired_channels(PENDING_CHANNEL_TTL_SECS)
                         .await;
-                    let channel_ids = channel_ids_of(&protocol, secret_id).await;
+                    let channel_ids = held_channels_of(&protocol, secret_id).await;
                     let pending = if auto_confirms {
                         pending_channel_ids(&protocol, secret_id).await
                     } else {
@@ -1348,8 +1398,9 @@ impl ProvisionedActor {
         Box::pin(
             async move {
                 let result = protocol.process(&bytes).await;
-                record_round_outcomes(rounds.as_ref(), &actor_id, secret_id, events_of(&result)).await;
-                let channel_ids = channel_ids_of(&protocol, secret_id).await;
+                record_round_outcomes(rounds.as_ref(), &actor_id, secret_id, events_of(&result))
+                    .await;
+                let channel_ids = held_channels_of(&protocol, secret_id).await;
                 (protocol, result, channel_ids)
             }
             .into_actor(self)
@@ -1514,7 +1565,9 @@ impl Handler<CreateContactMsg> for ProvisionedActor {
                 async move {
                     tokio::time::sleep(CONTACT_BORROW_RETRY_DELAY).await;
                     addr.send(next).await.unwrap_or(Err(ActorError::Protocol(
-                        derec_library::Error::Invariant("actor stopped while waiting to mint a contact"),
+                        derec_library::Error::Invariant(
+                            "actor stopped while waiting to mint a contact",
+                        ),
                     )))
                 }
                 .into_actor(self),
@@ -1529,7 +1582,7 @@ impl Handler<CreateContactMsg> for ProvisionedActor {
                     .create_contact(None, contact_mode, nonce)
                     .await
                     .map_err(ActorError::from);
-                let channel_ids = channel_ids_of(&protocol, secret_id).await;
+                let channel_ids = held_channels_of(&protocol, secret_id).await;
                 (protocol, result, channel_ids)
             }
             .into_actor(self)
@@ -1539,7 +1592,7 @@ impl Handler<CreateContactMsg> for ProvisionedActor {
                     actor.reconcile_instance(secret_id, &channel_ids);
                 }
                 // `create_contact` persists to the secret store only — never
-                // to the channel store — so `channel_ids_of` above cannot see
+                // to the channel store — so `held_channels_of` above cannot see
                 // this channel yet, and reconcile has nothing to bind it to.
                 // Pin it directly. Pinning after reconcile means ordering
                 // cannot matter: even if the store somehow already reported
@@ -1573,7 +1626,7 @@ impl Handler<StartFlowMsg> for ProvisionedActor {
                 if let Ok(events) = &result {
                     record_round_outcomes(rounds.as_ref(), &actor_id, secret_id, events).await;
                 }
-                let channel_ids = channel_ids_of(&protocol, secret_id).await;
+                let channel_ids = held_channels_of(&protocol, secret_id).await;
                 (protocol, result, channel_ids)
             }
             .into_actor(self)
@@ -1650,7 +1703,11 @@ impl Handler<AutoConfirmFingerprintMsg> for ProvisionedActor {
     type Result = ResponseActFuture<Self, ()>;
 
     fn handle(&mut self, msg: AutoConfirmFingerprintMsg, ctx: &mut Context<Self>) -> Self::Result {
-        let AutoConfirmFingerprintMsg { secret_id, channel_id, attempts_left } = msg;
+        let AutoConfirmFingerprintMsg {
+            secret_id,
+            channel_id,
+            attempts_left,
+        } = msg;
         let actor_id = self.actor_id;
 
         let Some(mut protocol) = self.instances.take(secret_id) else {
@@ -2095,8 +2152,7 @@ mod tests {
             secret_id: SECRET_ID,
             own_transports: vec![Transport {
                 protocol: TransportProtocol::Https,
-                uri: "http://localhost:5000/derec/00000000-0000-0000-0000-000000000001"
-                    .to_owned(),
+                uri: "http://localhost:5000/derec/00000000-0000-0000-0000-000000000001".to_owned(),
             }],
             communication_info: HashMap::from([("name".to_owned(), "Alex".to_owned())]),
             timeout_secs: 300,

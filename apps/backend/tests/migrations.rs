@@ -53,7 +53,9 @@ async fn connecting_twice_to_the_same_database_does_not_re_run_migrations() {
     let first = db::connect(&url).await.expect("first connect");
     drop(first);
 
-    let second = db::connect(&url).await.expect("second connect must succeed");
+    let second = db::connect(&url)
+        .await
+        .expect("second connect must succeed");
     drop(second);
 
     std::fs::remove_dir_all(&dir).ok();

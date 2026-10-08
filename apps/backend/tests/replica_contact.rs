@@ -7,8 +7,10 @@
 use std::collections::HashMap;
 
 use actix::prelude::*;
-use derec_backend::infrastructure::actors::provisioned::{CreateContactMsg, InstanceForChannelMsg, ListInstanceSecretsMsg, ProvisionedActor};
 use derec_backend::infrastructure::actors::protocol::{build_protocol, ProtocolConfig};
+use derec_backend::infrastructure::actors::provisioned::{
+    CreateContactMsg, InstanceForChannelMsg, ListInstanceSecretsMsg, ProvisionedActor,
+};
 use derec_backend::models::{Role, Transport, TransportProtocol, UnpairAck};
 
 const OWN_SECRET: u64 = 0xA1;
@@ -43,16 +45,25 @@ async fn spawn() -> Addr<ProvisionedActor> {
     let actor_id = uuid::Uuid::new_v4();
     let cfg = config(OWN_SECRET, state.pool.clone(), actor_id);
     let protocol = build_protocol(&cfg).expect("protocol builds");
-    ProvisionedActor::new(protocol, cfg, actor_id, Role::Helper, state.actor_dependencies()).start()
+    ProvisionedActor::new(
+        protocol,
+        cfg,
+        actor_id,
+        Role::Helper,
+        state.actor_dependencies(),
+    )
+    .start()
 }
 
 #[actix_rt::test]
 async fn a_replica_mode_contact_is_minted_from_the_owners_instance() {
     let addr = spawn().await;
 
-    addr.send(derec_backend::infrastructure::actors::provisioned::EnsureReplicaInstanceMsg {
-        owner_secret_id: ALICE_SECRET,
-    })
+    addr.send(
+        derec_backend::infrastructure::actors::provisioned::EnsureReplicaInstanceMsg {
+            owner_secret_id: ALICE_SECRET,
+        },
+    )
     .await
     .expect("actor alive")
     .expect("instance creation succeeds");
@@ -72,7 +83,9 @@ async fn a_replica_mode_contact_is_minted_from_the_owners_instance() {
     // instance, not the helper's own. If it resolved to OWN_SECRET the peer's
     // reply would be handed to the wrong vault.
     let owner = addr
-        .send(InstanceForChannelMsg { channel_id: contact.channel_id })
+        .send(InstanceForChannelMsg {
+            channel_id: contact.channel_id,
+        })
         .await
         .expect("actor alive");
 
@@ -95,13 +108,17 @@ async fn an_ordinary_contact_still_mints_from_the_own_instance() {
         .expect("contact minted");
 
     let owner = addr
-        .send(InstanceForChannelMsg { channel_id: contact.channel_id })
+        .send(InstanceForChannelMsg {
+            channel_id: contact.channel_id,
+        })
         .await
         .expect("actor alive");
 
     assert_eq!(owner, Some(OWN_SECRET));
     assert_eq!(
-        addr.send(ListInstanceSecretsMsg).await.expect("actor alive"),
+        addr.send(ListInstanceSecretsMsg)
+            .await
+            .expect("actor alive"),
         vec![OWN_SECRET],
         "an ordinary contact must not create a second instance"
     );

@@ -30,6 +30,10 @@
 **/*.db-wal
 **/*.db-shm
 **/*.db-journal
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/*.db-journal
 
 # Local environment and config, which are supplied at run time — and may hold
 # credentials (a Postgres DATABASE_URL) that must never end up in a layer.

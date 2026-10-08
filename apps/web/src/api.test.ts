@@ -61,6 +61,7 @@ describe('api — unreachable backend', () => {
     const result = await apiGetServerDefaults()
 
     expect(result.reachable).toBe(false)
+    expect(result.fromServer).toBe(false)
     expect(result.defaults).toEqual(FALLBACK_SERVER_DEFAULTS)
   })
 })
@@ -79,6 +80,7 @@ describe('api — reachable backend', () => {
     const result = await apiGetServerDefaults()
 
     expect(result.reachable).toBe(true)
+    expect(result.fromServer).toBe(true)
     expect(result.defaults.participantCount).toBe(4)
     expect(result.defaults.protocolTimeoutSecs).toBe(99)
   })
@@ -92,6 +94,7 @@ describe('api — reachable backend', () => {
     const result = await apiGetServerDefaults()
 
     expect(result.reachable).toBe(true)
+    expect(result.fromServer).toBe(false)
     expect(result.defaults).toEqual(FALLBACK_SERVER_DEFAULTS)
   })
 

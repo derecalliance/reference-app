@@ -6,12 +6,13 @@
 # Build from the REPO ROOT, not from this directory — the web build needs
 # `apps/web` and the backend needs the vendored protos:
 #
-#   docker build -f apps/backend/Dockerfile -t derec/reference-app:0.0.7 .
+#   docker build -f apps/backend/Dockerfile -t derec/reference-app:dev .
 #
-# CI also passes `--build-arg REVISION=$(git rev-parse HEAD)` for the OCI
-# labels below; a local build leaves it as "unknown".
+# Releases are built and pushed by scripts/publish-image.sh, which also passes
+# VERSION, REVISION and CREATED for the OCI labels below; a local build leaves
+# them at their defaults. See docs/DOCKER.md for running the image.
 #
-# The tag names the SDK the image was built against. The SDK is compiled in —
+# The version names the SDK the image was built against. The SDK is compiled in —
 # `derec-library` into the binary, `@derec-alliance/web` into the bundled WASM —
 # so it is deliberately not a build argument: with one, any image-to-SDK
 # combination could be produced and only the default would ever be exercised.
@@ -45,10 +46,13 @@ RUN npm run build -- --base=/ \
 
 # ── Backend builder ─────────────────────────────────────────────────────────
 #
-# The Rust pin is not arbitrary: both SDK crates declare `rust-version =
-# "1.88"`. `protoc` is still needed — not for the SDK, which ships generated
-# types, but for the vendored transport protos this app compiles itself.
-FROM rust:1.88-bookworm AS backend
+# The Rust pin is the oldest toolchain the locked dependency tree builds with,
+# and matches `rust-version` in Cargo.toml. The SDK crates declare 1.88, but
+# their own dependencies (`aes` 0.9 through `aes-gcm`, `enum-ordinalize`
+# through the `ark` crates) need 1.89, as does `uuid`. `protoc` is still
+# needed — not for the SDK, which ships generated types, but for the vendored
+# transport protos this app compiles itself.
+FROM rust:1.89-bookworm AS backend
 
 # `libprotobuf-dev` as well as the compiler: it ships the well-known types
 # (`google/protobuf/timestamp.proto` and friends) under /usr/include, which the
@@ -106,16 +110,22 @@ RUN touch src/main.rs src/lib.rs && cargo build --release
 # same way the server does.
 FROM debian:bookworm-slim AS runtime
 
-# Overridable at build time; see the build command at the top.
-ARG VERSION=0.0.7
+# Set by scripts/publish-image.sh; VERSION follows apps/backend/Cargo.toml
+# (scripts/version.sh keeps them in step).
+ARG VERSION=0.0.8-alpha.1
 ARG REVISION=unknown
+ARG CREATED=unknown
 
 LABEL org.opencontainers.image.title="DeRec reference app" \
       org.opencontainers.image.description="Reference DeRec Owner and Helper for interoperability testing: web UI and backend in one image. A development tool with no authentication." \
+      org.opencontainers.image.vendor="DeRec Alliance" \
+      org.opencontainers.image.url="https://github.com/derecalliance/reference-app" \
       org.opencontainers.image.source="https://github.com/derecalliance/reference-app" \
+      org.opencontainers.image.documentation="https://github.com/derecalliance/reference-app/blob/main/docs/DOCKER.md" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.version="${VERSION}" \
-      org.opencontainers.image.revision="${REVISION}"
+      org.opencontainers.image.revision="${REVISION}" \
+      org.opencontainers.image.created="${CREATED}"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates sqlite3 \

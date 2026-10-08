@@ -94,7 +94,7 @@ function counts(): string[] {
 
 async function landDefaults(overrides: Partial<typeof FALLBACK_SERVER_DEFAULTS> = {}) {
   await act(async () => {
-    resolveDefaults({ defaults: { ...FALLBACK_SERVER_DEFAULTS, ...overrides }, reachable: true })
+    resolveDefaults({ defaults: { ...FALLBACK_SERVER_DEFAULTS, ...overrides }, reachable: true, fromServer: true })
   })
 }
 
@@ -190,7 +190,7 @@ describe('the unreachable-server notice', () => {
   it('names both ways of running the backend', async () => {
     render()
     await act(async () => {
-      resolveDefaults({ defaults: FALLBACK_SERVER_DEFAULTS, reachable: false })
+      resolveDefaults({ defaults: FALLBACK_SERVER_DEFAULTS, reachable: false, fromServer: false })
     })
 
     expect(host.textContent).toContain('cargo run')

@@ -6,6 +6,7 @@ import {
   confirmFingerprint,
   expandParticipant,
   pairParticipant,
+  protectAndReadConfirmations,
   setUpOwner,
   tabCount,
 } from './app'
@@ -71,6 +72,21 @@ test.describe('contact modes', () => {
 
     await expect(row.locator('.status-tag')).not.toHaveText('Paired')
     expect(await tabCount(page, 'Channels')).toBe(0)
+  })
+
+  test('a refused helper is not counted as a recipient of a protect round', async ({ page, pageErrors }) => {
+    await setUpOwner(page, { name: 'Alice', participants: 3, prePaired: 0, minParticipants: 2 })
+    await pairParticipant(page, { index: 0, mode: 'Inline keys' })
+    await pairParticipant(page, { index: 1, mode: 'Inline keys' })
+    await pairParticipant(page, { index: 2, mode: 'No keys', expectPaired: false })
+    await confirmFingerprint(page, false)
+
+    // The library holds the refused channel `Pending` and sends it nothing, so
+    // the round is two of two — not "1 no answer … 1 helper did not store it".
+    const summary = await protectAndReadConfirmations(page, 'Passphrase', 'hunter2')
+    expect(summary).toContain('2 of 2 confirmed')
+    expect(summary).not.toMatch(/no answer|did not store/)
+    expect(pageErrors).toEqual([])
   })
 
   test('one owner can mix modes across participants', async ({ page, pageErrors }) => {

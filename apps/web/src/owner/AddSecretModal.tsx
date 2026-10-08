@@ -8,9 +8,9 @@ import { ModalFrame } from '../ModalFrame'
 import { ModalCloseButton } from './primitives'
 import { ProtectRoundProgress } from './ProtectRoundProgress'
 import { roundProgress } from './roundProgress'
-import { isShareTarget } from '../ownerPairing'
+import { publishTargets } from '../ownerPairing'
 import { bagBytes, bagSizeProblem, formatBytes, MAX_BAG_SIZE_LABEL } from './secretLimits'
-import type { PairedParticipant, SecretBag } from '../types'
+import type { PairedParticipant, PublishedRound, SecretBag } from '../types'
 
 type AddSecretStatus =
   | { kind: 'idle' }
@@ -20,19 +20,25 @@ type AddSecretStatus =
 
 export function AddSecretModal({
   participants,
+  pendingChannelIds,
   secretBag,
   threshold,
   onClose,
   onAddSecret,
 }: {
   participants: PairedParticipant[]
+  /** Channels the library holds `Pending`, which a round sends nothing — see `publishTargets`. */
+  pendingChannelIds: ReadonlySet<string>
   secretBag: SecretBag | null
   threshold: number
   onClose: () => void
-  onAddSecret: (name: string, data: string) => Promise<number | null>
+  onAddSecret: (name: string, data: string) => Promise<PublishedRound | null>
 }) {
-  // Only owner-role channels receive shares — see `isShareTarget`.
-  const pairedParticipants = participants.filter(isShareTarget)
+  // Exactly the participants the round will target: owner-role channels the
+  // library does not hold `Pending` — see `publishTargets`. A helper whose
+  // fingerprint was refused is sent nothing, so listing it here promised a
+  // share the round never sends.
+  const pairedParticipants = publishTargets(participants, pendingChannelIds)
 
   const [form, setForm] = useState({ name: '', data: '' })
   const [status, setStatus] = useState<AddSecretStatus>({ kind: 'idle' })
@@ -51,8 +57,8 @@ export function AddSecretModal({
 
     setStatus({ kind: 'sending' })
     try {
-      const version = await onAddSecret(draft.name, draft.data)
-      if (version === null) {
+      const round = await onAddSecret(draft.name, draft.data)
+      if (round === null) {
         setStatus({
           kind: 'error',
           message: 'No round was started, so the bag is unchanged. Check the Console for the reason, then try again.',
@@ -65,7 +71,11 @@ export function AddSecretModal({
       // and every `ShareConfirmed` then files against a round nobody is
       // watching, leaving this dialog stuck at "0 of N confirmed" while the
       // round underneath it completes normally.
-      setStatus({ kind: 'confirming', participantIds: pairedParticipants.map(h => h.id), version })
+      //
+      // Followed for the participants the round was actually sent to, as the
+      // library reported them, rather than the list above: the two agree
+      // unless a channel changed state between listing and sending.
+      setStatus({ kind: 'confirming', participantIds: round.recipientIds, version: round.version })
     } catch (err) {
       setStatus({ kind: 'error', message: errorText(err) })
     }

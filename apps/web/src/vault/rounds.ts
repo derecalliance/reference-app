@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
+import type { DeRecEvent } from '@derec-alliance/web'
+
 import { updateBagParticipant, updateBagVersion } from '../owner/bag'
+import { isShareTarget } from '../ownerPairing'
 import type {
   PairedParticipant,
   PendingProtectRound,
@@ -369,4 +372,32 @@ export function settleUnansweredShares(
         }
       : p,
   )
+}
+
+/**
+ * The participants a `ProtectSecret` round at `version` was sent to.
+ *
+ * The library picks its own targets — every `Paired` helper channel — and
+ * reports each one as a `ProtectSecretStarted`, or a `ProtectSecretFailed` when
+ * the request could not be delivered. Those events are the recipient set; the
+ * participant rows only say who they are. A row the library did not target —
+ * most often a helper whose fingerprint was refused, so its channel is still
+ * `Pending` — was sent nothing and is not waited on.
+ *
+ * `isShareTarget` stays as a second gate, so a replica or owner-role channel
+ * can never be listed even if an event named it.
+ */
+export function roundRecipients(
+  participants: readonly PairedParticipant[],
+  events: readonly DeRecEvent[],
+  version: number,
+): PairedParticipant[] {
+  const targeted = new Set(
+    events.flatMap(e =>
+      (e.type === 'ProtectSecretStarted' || e.type === 'ProtectSecretFailed') && e.version === version
+        ? [String(e.channel_id)]
+        : [],
+    ),
+  )
+  return participants.filter(p => isShareTarget(p) && targeted.has(p.channelId))
 }

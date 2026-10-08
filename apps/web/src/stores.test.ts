@@ -16,6 +16,7 @@ import {
   makeShareStore,
   makeStateStore,
   makeTransport,
+  openSharingRoundVersions,
   readHelperChannelInfo,
 } from './stores'
 
@@ -426,6 +427,17 @@ describe('state store', () => {
 
     expect(await store.remove(SECRET, encode({ kind: 3, version: 1 }))).toBe(true)
     expect(await store.loadAll(SECRET, 3)).toHaveLength(1)
+  })
+
+  it('lists the versions of the rounds the library holds open, and only those', async () => {
+    const store = makeStateStore(NS)
+    await store.save(SECRET, encode({ kind: 3, version: 3, targets: ['a'] }))
+    await store.save(SECRET, encode({ kind: 3, version: 5, targets: ['b'] }))
+    await store.save(SECRET, encode({ kind: 4, version: 9 }))
+    await store.remove(SECRET, encode({ kind: 3, version: 5 }))
+
+    expect(openSharingRoundVersions(NS, SECRET)).toEqual([3])
+    expect(openSharingRoundVersions(NS, 'another-secret')).toEqual([])
   })
 
   it('enumerates PendingReplicaDiscovery rows under kind 4', async () => {

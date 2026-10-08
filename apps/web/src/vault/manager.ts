@@ -4,6 +4,7 @@
 import { apiGetActors, type BEActorWithStatus } from '../api'
 import type { ServerDefaults } from '../config'
 import { isReplicaChannel } from '../ownerPairing'
+import { resolveVaultConfig } from '../protocolDefaults'
 import { loadReplicaState } from '../replicaFlows'
 import type { ToastOrigin } from '../toastBus'
 import type { Vault } from '../types'
@@ -275,6 +276,53 @@ export class VaultManager {
     for (const runtime of runtimes) runtime.stop()
     await Promise.all(runtimes.map(runtime => runtime.quiesce()))
     await Promise.all(slots.map(slot => this.stopAndUnlock(slot)))
+  }
+
+  /**
+   * The node's defaults arrived after vaults had started on the built-in
+   * fallback (the node was down when the page loaded).
+   *
+   * Most of a vault's configuration is read when it is used — the watchdog,
+   * the auto-accept answers, every timer's protocol timeout — through
+   * `getServerDefaults`, so those follow the node from now on with nothing to
+   * do here. Two values are fixed into a protocol instance when it is built:
+   * the replay window (`inbound_message_secs`) and the unpair-acknowledgement
+   * policy. Rebuilding the instance under a vault that may be mid-round or
+   * mid-pairing is not safe, so those keep their fallback values until the
+   * vault next starts, and each vault where they differ is named in the
+   * console rather than left to disagree silently.
+   */
+  serverDefaultsArrived(previous: ServerDefaults, next: ServerDefaults): void {
+    for (const slot of this.slots.values()) {
+      const status = slot.runtime?.state().status
+      if (status !== 'running' && status !== 'starting') continue
+
+      const startedWith = resolveVaultConfig(slot.vault.configOverrides, previous)
+      const nodeWants = resolveVaultConfig(slot.vault.configOverrides, next)
+      const fixed: string[] = []
+      if (startedWith.protocolTimeoutSecs !== nodeWants.protocolTimeoutSecs) {
+        fixed.push(`replay window ${startedWith.protocolTimeoutSecs}s (node: ${nodeWants.protocolTimeoutSecs}s)`)
+      }
+      if (startedWith.unpairAck !== nodeWants.unpairAck) {
+        fixed.push(`unpair acknowledgement "${startedWith.unpairAck}" (node: "${nodeWants.unpairAck}")`)
+      }
+      if (fixed.length === 0) continue
+
+      this.deps.log({
+        role: 'owner',
+        flow: 'setup',
+        step: 'server_defaults_late',
+        description:
+          `"${slot.vault.name}" started before the node's defaults could be fetched. Its timers and ` +
+          `auto-accept settings follow the node now, but its running protocol instance keeps ` +
+          `${fixed.join(' and ')} until the vault next starts — reload the page to apply them.`,
+        payload: {
+          vaultId: slot.id,
+          startedWith: { protocolTimeoutSecs: startedWith.protocolTimeoutSecs, unpairAck: startedWith.unpairAck },
+          node: { protocolTimeoutSecs: nodeWants.protocolTimeoutSecs, unpairAck: nodeWants.unpairAck },
+        },
+      })
+    }
   }
 
   /**

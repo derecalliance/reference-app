@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::models::{
     Actor, ActorSettings, ChannelSummary, ContactRequest, Event, EventSnapshot, InboxKind,
-    Listener, NewEvent, OwnTarget, PlannedRegistration, Resolution, Role, Route, Transport,
+    Listener, NewEvent, OwnTarget, PlannedRegistration, Role, Route, Side, Tier, Transport,
     UnpairAck, UnpairedContact,
 };
 use crate::repositories::actors::{ActorRepository, RegistrationPlan};
@@ -557,13 +557,13 @@ impl ActorGateway for FakeGateway {
     }
 }
 
-/// Records pins, unpins and removals; resolves from what it was told.
+/// Records pins, unpins and removals; answers claims from what it was told.
 #[derive(Default)]
 pub struct FakeRoutes {
     pins: Mutex<Vec<(u64, Uuid)>>,
     unpins: Mutex<Vec<(u64, Uuid)>>,
     removed: Mutex<Vec<Uuid>>,
-    resolutions: Mutex<HashMap<u64, Resolution>>,
+    claims: Mutex<Vec<Route>>,
 }
 
 impl FakeRoutes {
@@ -579,8 +579,14 @@ impl FakeRoutes {
         lock(&self.removed).clone()
     }
 
-    pub fn resolve_to(&self, channel_id: u64, resolution: Resolution) {
-        lock(&self.resolutions).insert(channel_id, resolution);
+    /// A bound claim by `actor_id` on `channel_id`, from `side`.
+    pub fn bind(&self, channel_id: u64, actor_id: Uuid, side: Side) {
+        lock(&self.claims).push(Route {
+            channel_id,
+            actor_id,
+            tier: Tier::Bound,
+            side,
+        });
     }
 }
 
@@ -593,11 +599,12 @@ impl ChannelRoutes for FakeRoutes {
         lock(&self.unpins).push((channel_id, actor_id));
     }
 
-    fn resolve_from(&self, channel_id: u64, _: Option<Uuid>) -> Resolution {
-        lock(&self.resolutions)
-            .get(&channel_id)
+    fn claims(&self, channel_id: u64, sender: Option<Uuid>) -> Vec<Route> {
+        lock(&self.claims)
+            .iter()
+            .filter(|r| r.channel_id == channel_id && Some(r.actor_id) != sender)
             .cloned()
-            .unwrap_or(Resolution::Unknown)
+            .collect()
     }
 
     fn remove_actor(&self, actor_id: Uuid) -> usize {

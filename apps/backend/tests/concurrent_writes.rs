@@ -14,9 +14,9 @@
 use std::sync::Arc;
 
 use derec_backend::infrastructure::db;
+use derec_backend::models::ActorSettings;
 use derec_backend::models::DatabaseUrl;
 use derec_backend::models::{Actor, Role, TransportMode, UnpairAck};
-use derec_backend::models::ActorSettings;
 use derec_backend::repositories::actors::{ActorRepository, SqlActorRepository};
 
 const WRITERS: usize = 24;
@@ -25,7 +25,9 @@ const WRITERS: usize = 24;
 async fn concurrent_registrations_on_a_file_database_all_succeed() {
     let dir = std::env::temp_dir().join(format!("derec-concurrent-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
-    let url = String::from(DatabaseUrl::from(dir.join("derec.db").to_string_lossy().as_ref()));
+    let url = String::from(DatabaseUrl::from(
+        dir.join("derec.db").to_string_lossy().as_ref(),
+    ));
 
     let pool = db::connect(&url).await.expect("connect");
     let registry = Arc::new(SqlActorRepository::new(pool.clone()));
@@ -71,7 +73,11 @@ async fn concurrent_registrations_on_a_file_database_all_succeed() {
     );
 
     let listed = registry.all().await.expect("list");
-    assert_eq!(listed.len(), WRITERS, "every registration must be persisted");
+    assert_eq!(
+        listed.len(),
+        WRITERS,
+        "every registration must be persisted"
+    );
 
     pool.close().await;
     std::fs::remove_dir_all(&dir).ok();

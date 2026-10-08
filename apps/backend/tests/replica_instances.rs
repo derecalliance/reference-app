@@ -10,8 +10,11 @@
 use std::collections::HashMap;
 
 use actix::prelude::*;
-use derec_backend::infrastructure::actors::provisioned::{CreateContactMsg, EnsureReplicaInstanceMsg, InstanceForChannelMsg, ListInstanceSecretsMsg, ProvisionedActor};
 use derec_backend::infrastructure::actors::protocol::{build_protocol, ProtocolConfig};
+use derec_backend::infrastructure::actors::provisioned::{
+    CreateContactMsg, EnsureReplicaInstanceMsg, InstanceForChannelMsg, ListInstanceSecretsMsg,
+    ProvisionedActor,
+};
 use derec_backend::models::{Role, Transport, TransportProtocol, UnpairAck};
 
 const OWN_SECRET: u64 = 0xA1;
@@ -47,14 +50,24 @@ async fn spawn() -> Addr<ProvisionedActor> {
     let actor_id = uuid::Uuid::new_v4();
     let cfg = config(OWN_SECRET, state.pool.clone(), actor_id);
     let protocol = build_protocol(&cfg).expect("protocol builds");
-    ProvisionedActor::new(protocol, cfg, actor_id, Role::Helper, state.actor_dependencies()).start()
+    ProvisionedActor::new(
+        protocol,
+        cfg,
+        actor_id,
+        Role::Helper,
+        state.actor_dependencies(),
+    )
+    .start()
 }
 
 #[actix_rt::test]
 async fn an_actor_starts_with_only_its_own_instance() {
     let addr = spawn().await;
 
-    let secrets = addr.send(ListInstanceSecretsMsg).await.expect("actor alive");
+    let secrets = addr
+        .send(ListInstanceSecretsMsg)
+        .await
+        .expect("actor alive");
 
     assert_eq!(secrets, vec![OWN_SECRET]);
 }
@@ -63,12 +76,17 @@ async fn an_actor_starts_with_only_its_own_instance() {
 async fn a_replica_instance_is_added_alongside_the_own_instance() {
     let addr = spawn().await;
 
-    addr.send(EnsureReplicaInstanceMsg { owner_secret_id: ALICE_SECRET })
-        .await
-        .expect("actor alive")
-        .expect("instance creation succeeds");
+    addr.send(EnsureReplicaInstanceMsg {
+        owner_secret_id: ALICE_SECRET,
+    })
+    .await
+    .expect("actor alive")
+    .expect("instance creation succeeds");
 
-    let secrets = addr.send(ListInstanceSecretsMsg).await.expect("actor alive");
+    let secrets = addr
+        .send(ListInstanceSecretsMsg)
+        .await
+        .expect("actor alive");
 
     assert_eq!(secrets.len(), 2, "own instance plus one replica instance");
     assert!(secrets.contains(&OWN_SECRET), "own instance survives");
@@ -90,7 +108,9 @@ async fn ensuring_the_same_owner_twice_is_a_no_op() {
     let mut created = Vec::new();
     for _ in 0..2 {
         let was_created = addr
-            .send(EnsureReplicaInstanceMsg { owner_secret_id: ALICE_SECRET })
+            .send(EnsureReplicaInstanceMsg {
+                owner_secret_id: ALICE_SECRET,
+            })
             .await
             .expect("actor alive")
             .expect("instance creation succeeds");
@@ -99,7 +119,10 @@ async fn ensuring_the_same_owner_twice_is_a_no_op() {
 
     assert_eq!(created, [true, false], "first call creates, second reuses");
 
-    let secrets = addr.send(ListInstanceSecretsMsg).await.expect("actor alive");
+    let secrets = addr
+        .send(ListInstanceSecretsMsg)
+        .await
+        .expect("actor alive");
     assert_eq!(secrets.len(), 2, "asking twice must not add an instance");
 }
 
@@ -129,10 +152,12 @@ async fn a_contact_is_minted_from_the_selected_replica_instance() {
          fall back to the own instance"
     );
 
-    addr.send(EnsureReplicaInstanceMsg { owner_secret_id: ALICE_SECRET })
-        .await
-        .expect("actor alive")
-        .expect("instance creation succeeds");
+    addr.send(EnsureReplicaInstanceMsg {
+        owner_secret_id: ALICE_SECRET,
+    })
+    .await
+    .expect("actor alive")
+    .expect("instance creation succeeds");
 
     let after = addr
         .send(contact(Some(ALICE_SECRET)))
@@ -158,10 +183,12 @@ async fn a_minted_contacts_channel_routes_back_to_the_instance_that_minted_it() 
     // still resolve the replica's channel, just to the wrong protocol.
     let addr = spawn().await;
 
-    addr.send(EnsureReplicaInstanceMsg { owner_secret_id: ALICE_SECRET })
-        .await
-        .expect("actor alive")
-        .expect("instance creation succeeds");
+    addr.send(EnsureReplicaInstanceMsg {
+        owner_secret_id: ALICE_SECRET,
+    })
+    .await
+    .expect("actor alive")
+    .expect("instance creation succeeds");
 
     let mint = |replica_for_owner_secret| CreateContactMsg {
         contact_mode: derec_proto::ContactMode::InlineKeys,
@@ -209,13 +236,18 @@ async fn one_actor_replicates_for_two_owners_at_once() {
     let addr = spawn().await;
 
     for owner in [ALICE_SECRET, CAROL_SECRET] {
-        addr.send(EnsureReplicaInstanceMsg { owner_secret_id: owner })
-            .await
-            .expect("actor alive")
-            .expect("instance creation succeeds");
+        addr.send(EnsureReplicaInstanceMsg {
+            owner_secret_id: owner,
+        })
+        .await
+        .expect("actor alive")
+        .expect("instance creation succeeds");
     }
 
-    let secrets = addr.send(ListInstanceSecretsMsg).await.expect("actor alive");
+    let secrets = addr
+        .send(ListInstanceSecretsMsg)
+        .await
+        .expect("actor alive");
 
     assert_eq!(secrets.len(), 3);
     assert!(secrets.contains(&ALICE_SECRET));

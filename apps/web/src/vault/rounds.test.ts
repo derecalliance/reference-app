@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
+import type { DeRecEvent } from '@derec-alliance/web'
 import { describe, expect, it } from 'vitest'
 
 import type { BagVersion, PairedParticipant, SecretBag, UserSecret } from '../types'
-import { RoundTracker, commitRoundVersion, settleUnansweredShares } from './rounds'
+import { RoundTracker, commitRoundVersion, roundRecipients, settleUnansweredShares } from './rounds'
 
 function bagVersion(version: number, secrets: UserSecret[] = []): BagVersion {
   return {
@@ -207,5 +208,40 @@ describe('settleUnansweredShares', () => {
       // Recorded as a silence, not a refusal — see `owner/shareFailure.ts`.
       { version: 2, status: 'rejected', verified: false, failure: { status: 0, memo: 'No answer before the round closed' } },
     ])
+  })
+})
+
+describe('roundRecipients', () => {
+  const row = (id: string, channelId: string, peerRole: PairedParticipant['peerRole'] = 'helper'): PairedParticipant => ({
+    id,
+    name: id,
+    channelId,
+    transport: { protocol: 'https', uri: `http://localhost:5000/derec/${id}` },
+    secretShares: [],
+    connectionStatus: 'paired',
+    peerRole,
+  })
+  const ev = (e: Record<string, unknown>) => e as unknown as DeRecEvent
+
+  it('is the channels the library sent the round to, not every paired row', () => {
+    // `refused` is paired but its fingerprint was rejected: the library holds
+    // it `Pending`, targets only `Paired` channels, and reports nothing for it.
+    const participants = [row('a', '1'), row('b', '2'), row('refused', '3')]
+    const events = [
+      ev({ type: 'ProtectSecretStarted', channel_id: '1', version: 4, trace_id: 't' }),
+      ev({ type: 'ProtectSecretFailed', channel_id: '2', version: 4, error: 'relay off' }),
+    ]
+
+    expect(roundRecipients(participants, events, 4).map(p => p.id)).toEqual(['a', 'b'])
+  })
+
+  it('ignores another round’s events and channels that are no share target', () => {
+    const participants = [row('a', '1'), row('replica', '9', 'replica_destination')]
+    const events = [
+      ev({ type: 'ProtectSecretStarted', channel_id: '1', version: 3, trace_id: 't' }),
+      ev({ type: 'ProtectSecretStarted', channel_id: '9', version: 4, trace_id: 't' }),
+    ]
+
+    expect(roundRecipients(participants, events, 4)).toEqual([])
   })
 })

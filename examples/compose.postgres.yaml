@@ -39,10 +39,11 @@ services:
     restart: unless-stopped
 
   node:
-    build:
-      context: ..
-      dockerfile: apps/backend/Dockerfile
-    image: derec/reference-app:0.0.7
+    # The published image; see compose.sqlite.yaml. To build it from your
+    # checkout, use the repo-root compose.postgres.yaml with -f compose.build.yaml.
+    # DEREC_IMAGE points it at another registry — e.g. a local one used to try
+    # an image before publishing it (`scripts/publish-image.sh --local`).
+    image: ${DEREC_IMAGE:-ghcr.io/derecalliance/reference-app}:0.0.8-alpha.1
 
     env_file:
       - path: ../.env

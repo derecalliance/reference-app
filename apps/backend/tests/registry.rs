@@ -10,10 +10,16 @@
 use std::sync::Arc;
 
 use derec_backend::infrastructure::db;
-use derec_backend::models::{Actor, ActorSettings, NewActor, Role, TransportBreakdown, TransportMode, UnpairAck};
+use derec_backend::models::{
+    Actor, ActorSettings, NewActor, Role, TransportBreakdown, TransportMode, UnpairAck,
+};
 use derec_backend::repositories::actors::{ActorRepository, SqlActorRepository};
-use derec_backend::repositories::browser_contacts::{BrowserContactRepository, SqlBrowserContactRepository};
-use derec_backend::repositories::disabled_helpers::{DisabledHelperRepository, SqlDisabledHelperRepository};
+use derec_backend::repositories::browser_contacts::{
+    BrowserContactRepository, SqlBrowserContactRepository,
+};
+use derec_backend::repositories::disabled_helpers::{
+    DisabledHelperRepository, SqlDisabledHelperRepository,
+};
 use derec_backend::services::helpers::plan_shortfall;
 
 fn engines() -> Vec<(&'static str, String)> {
@@ -61,7 +67,13 @@ fn settings() -> ActorSettings {
 }
 
 fn actor(name: &str, role: Role) -> Actor {
-    Actor::mint(role, name, "http://localhost:5000", "localhost:50051", TransportMode::Http)
+    Actor::mint(
+        role,
+        name,
+        "http://localhost:5000",
+        "localhost:50051",
+        TransportMode::Http,
+    )
 }
 
 /// Bring the pool up to `want` through the repository's atomic primitive, the
@@ -123,7 +135,10 @@ async fn an_actor_round_trips_with_its_endpoints() {
     on_every_engine(|pool| async move {
         let registry = SqlActorRepository::new(pool);
         let original = actor("Alex", Role::Helper);
-        registry.register(original.clone(), settings()).await.expect("register");
+        registry
+            .register(original.clone(), settings())
+            .await
+            .expect("register");
 
         let loaded = registry
             .get(&original.id)
@@ -168,12 +183,25 @@ async fn a_rename_only_matches_the_role_it_names() {
     on_every_engine(|pool| async move {
         let registry = SqlActorRepository::new(pool);
         let helper = actor("Alex", Role::Helper);
-        registry.register(helper.clone(), settings()).await.expect("register");
+        registry
+            .register(helper.clone(), settings())
+            .await
+            .expect("register");
 
-        assert!(!registry.rename(&helper.id, Role::Owner, "Bob").await.expect("writable"));
-        assert!(registry.rename(&helper.id, Role::Helper, "Bob").await.expect("writable"));
+        assert!(!registry
+            .rename(&helper.id, Role::Owner, "Bob")
+            .await
+            .expect("writable"));
+        assert!(registry
+            .rename(&helper.id, Role::Helper, "Bob")
+            .await
+            .expect("writable"));
         assert_eq!(
-            registry.get(&helper.id).await.expect("readable").map(|a| a.name),
+            registry
+                .get(&helper.id)
+                .await
+                .expect("readable")
+                .map(|a| a.name),
             Some("Bob".to_owned())
         );
         assert!(!registry
@@ -188,14 +216,21 @@ async fn a_rename_only_matches_the_role_it_names() {
 async fn ensure_creates_only_the_shortfall() {
     on_every_engine(|pool| async move {
         let registry = SqlActorRepository::new(pool);
-        let want = TransportBreakdown { http: 3, grpc: 0, both: 0 };
+        let want = TransportBreakdown {
+            http: 3,
+            grpc: 0,
+            both: 0,
+        };
 
         let (created, participants) = ensure(&registry, want, "h").await;
         assert_eq!(created.len(), 3);
         assert_eq!(participants.len(), 3);
 
         let (created, participants) = ensure(&registry, want, "x").await;
-        assert!(created.is_empty(), "the pool is already at the target; nothing to create");
+        assert!(
+            created.is_empty(),
+            "the pool is already at the target; nothing to create"
+        );
         assert_eq!(participants.len(), 3);
     })
     .await;
@@ -206,10 +241,27 @@ async fn asking_for_fewer_removes_nothing() {
     // Another owner may be paired with one.
     on_every_engine(|pool| async move {
         let registry = SqlActorRepository::new(pool);
-        ensure(&registry, TransportBreakdown { http: 3, grpc: 0, both: 0 }, "h").await;
+        ensure(
+            &registry,
+            TransportBreakdown {
+                http: 3,
+                grpc: 0,
+                both: 0,
+            },
+            "h",
+        )
+        .await;
 
-        let (created, participants) =
-            ensure(&registry, TransportBreakdown { http: 1, grpc: 0, both: 0 }, "y").await;
+        let (created, participants) = ensure(
+            &registry,
+            TransportBreakdown {
+                http: 1,
+                grpc: 0,
+                both: 0,
+            },
+            "y",
+        )
+        .await;
 
         assert!(created.is_empty());
         assert_eq!(participants.len(), 3, "nothing is removed");
@@ -228,8 +280,16 @@ async fn an_owner_is_not_counted_as_a_participant() {
             .await
             .expect("register");
 
-        let (created, participants) =
-            ensure(&registry, TransportBreakdown { http: 2, grpc: 0, both: 0 }, "h").await;
+        let (created, participants) = ensure(
+            &registry,
+            TransportBreakdown {
+                http: 2,
+                grpc: 0,
+                both: 0,
+            },
+            "h",
+        )
+        .await;
 
         assert_eq!(created.len(), 2, "the owner does not count");
         assert_eq!(participants.len(), 2, "participants are helpers only");
@@ -244,7 +304,11 @@ async fn concurrent_requests_for_the_same_size_do_not_double_the_pool() {
     // fill it.
     let pool = db::connect("sqlite::memory:").await.expect("connect");
     let registry = Arc::new(SqlActorRepository::new(pool));
-    let want = TransportBreakdown { http: 7, grpc: 0, both: 0 };
+    let want = TransportBreakdown {
+        http: 7,
+        grpc: 0,
+        both: 0,
+    };
 
     let mut tasks = Vec::new();
     for t in 0..8 {
@@ -258,7 +322,10 @@ async fn concurrent_requests_for_the_same_size_do_not_double_the_pool() {
         total_created += task.await.expect("task");
     }
 
-    assert_eq!(total_created, 7, "every participant is created exactly once");
+    assert_eq!(
+        total_created, 7,
+        "every participant is created exactly once"
+    );
     let helpers = registry
         .all()
         .await
@@ -278,7 +345,16 @@ async fn concurrent_requests_for_different_sizes_settle_on_the_largest() {
     for want in [3u8, 9, 5, 7] {
         let registry = Arc::clone(&registry);
         tasks.push(tokio::spawn(async move {
-            ensure(&registry, TransportBreakdown { http: want, grpc: 0, both: 0 }, "w").await;
+            ensure(
+                &registry,
+                TransportBreakdown {
+                    http: want,
+                    grpc: 0,
+                    both: 0,
+                },
+                "w",
+            )
+            .await;
         }));
     }
     for task in tasks {
@@ -307,7 +383,10 @@ async fn disabling_a_helper_is_a_toggle() {
         assert!(!disabled.is_disabled(&id).await.expect("readable"));
 
         // Clearing an absent one is not an error.
-        disabled.set_disabled(&id, false).await.expect("clear again");
+        disabled
+            .set_disabled(&id, false)
+            .await
+            .expect("clear again");
     })
     .await;
 }

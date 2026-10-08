@@ -29,17 +29,17 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use figment::{
-    Figment, Metadata, Profile, Provider,
     providers::{Format, Toml},
     value::{Dict, Map, Value},
+    Figment, Metadata, Profile, Provider,
 };
 use serde::Deserialize;
 
 // The configuration's data types live in `models` so services can read them
 // without depending on this loader.
 use crate::models::{
-    AuthenticationMethod, ConfigOrigin, ConfigSource, DEFAULT_DATABASE_URL, DatabaseUrl, Defaults,
-    LoadedConfig, RelayAllowlist, ServerSettings, Settings, UnpairAck,
+    AuthenticationMethod, ConfigOrigin, ConfigSource, DatabaseUrl, Defaults, LoadedConfig,
+    RelayAllowlist, ServerSettings, Settings, UnpairAck, DEFAULT_DATABASE_URL,
 };
 
 /// Where to look for the config file when `DEREC_CONFIG_PATH` is unset.
@@ -91,7 +91,9 @@ enum Kind {
     Text,
     Bool,
     /// An unsigned integer no larger than `max`.
-    Uint { max: u64 },
+    Uint {
+        max: u64,
+    },
 }
 
 const U8: Kind = Kind::Uint {
@@ -251,7 +253,6 @@ struct RawServer {
     relay_allowed_hosts: Option<String>,
 }
 
-
 impl Default for ServerSettings {
     fn default() -> Self {
         Self {
@@ -289,7 +290,6 @@ impl ServerSettings {
         }
     }
 
-
     fn validate(&self) -> Result<(), Violation> {
         if self.port == 0 {
             return Err(Violation::new(
@@ -322,7 +322,6 @@ impl ServerSettings {
         Ok(())
     }
 }
-
 
 /// Settle the harmless spelling differences in a `base_url`, so every URI
 /// built from it is in the one form the rest of the node compares against.
@@ -439,7 +438,10 @@ fn validate_base_url(base_url: &str) -> Result<(), String> {
 /// warning ("reachable only from this machine") was wrong in exactly that
 /// case, which is the one two-node Docker setups hit.
 pub fn loopback_base_url_warning(base_url: &str, in_container: bool) -> Option<String> {
-    let host = reqwest::Url::parse(base_url).ok()?.host_str()?.to_ascii_lowercase();
+    let host = reqwest::Url::parse(base_url)
+        .ok()?
+        .host_str()?
+        .to_ascii_lowercase();
     let loopback = host == "localhost" || host == "[::1]" || host.starts_with("127.");
     if !loopback {
         return None;
@@ -464,7 +466,6 @@ pub fn loopback_base_url_warning(base_url: &str, in_container: bool) -> Option<S
         )
     })
 }
-
 
 // Hand-written rather than derived: a derived `Default` would leave `origins`
 // empty, and an empty origins list is a lie — it would make `/debug/config`
@@ -514,7 +515,6 @@ struct RawDefaults {
     helper_transports: Option<crate::models::TransportBreakdown>,
     grpc_relay_enabled: Option<bool>,
 }
-
 
 /// Why configuration could not be loaded. Every variant's message names the
 /// file or variable at fault and, where there is one, the usual fix — a boot
@@ -572,7 +572,12 @@ impl Violation {
 
     /// Render for a boot abort: the rule, then each involved setting with its
     /// value and the layer that supplied it.
-    fn describe(&self, origins: &[ConfigOrigin], values: &[(String, String)], file: &Path) -> String {
+    fn describe(
+        &self,
+        origins: &[ConfigOrigin],
+        values: &[(String, String)],
+        file: &Path,
+    ) -> String {
         let mut out = format!("  - {}", self.message);
         for key in &self.keys {
             let value = values
@@ -661,16 +666,14 @@ impl Defaults {
                 .unwrap_or(base.auto_accept_verify_share_requests),
             grpc_enabled: raw.grpc_enabled.unwrap_or(base.grpc_enabled),
             grpc_port: raw.grpc_port.unwrap_or(base.grpc_port),
-            helper_transports: raw.helper_transports.unwrap_or(
-                crate::models::TransportBreakdown {
+            helper_transports: raw
+                .helper_transports
+                .unwrap_or(crate::models::TransportBreakdown {
                     http: participant_count,
                     grpc: 0,
                     both: 0,
-                },
-            ),
-            grpc_relay_enabled: raw
-                .grpc_relay_enabled
-                .unwrap_or(base.grpc_relay_enabled),
+                }),
+            grpc_relay_enabled: raw.grpc_relay_enabled.unwrap_or(base.grpc_relay_enabled),
         }
     }
 
@@ -688,7 +691,10 @@ impl Defaults {
             ));
         }
         if self.min_participants == 0 {
-            return Err(Violation::new("min_participants must be at least 1", &[MIN]));
+            return Err(Violation::new(
+                "min_participants must be at least 1",
+                &[MIN],
+            ));
         }
         if self.protocol_timeout_secs == 0 {
             return Err(Violation::new(
@@ -1268,7 +1274,6 @@ fn read_hint(path: &Path, error: &std::io::Error) -> String {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -1365,7 +1370,10 @@ mod tests {
         let parsed = parse("protocol_timeout_secs = 45").unwrap();
 
         assert_eq!(parsed.protocol_timeout_secs, 45);
-        assert_eq!(parsed.participant_count, Defaults::default().participant_count);
+        assert_eq!(
+            parsed.participant_count,
+            Defaults::default().participant_count
+        );
         assert_eq!(parsed.unpair_ack, Defaults::default().unpair_ack);
     }
 
@@ -1453,7 +1461,11 @@ mod tests {
         assert_eq!(parsed.pre_paired_count, 2);
         assert_eq!(
             parsed.helper_transports,
-            crate::models::TransportBreakdown { http: 2, grpc: 0, both: 0 }
+            crate::models::TransportBreakdown {
+                http: 2,
+                grpc: 0,
+                both: 0
+            }
         );
         assert_eq!(parsed.validate(), Ok(()));
     }
@@ -1482,7 +1494,10 @@ mod tests {
     fn a_recommended_count_below_the_minimum_is_rejected() {
         let contents = "participant_count = 9\nmin_participants = 5\nrecommended_participants = 2";
 
-        assert!(matches!(parse(contents).unwrap_err(), ConfigError::Invalid { .. }));
+        assert!(matches!(
+            parse(contents).unwrap_err(),
+            ConfigError::Invalid { .. }
+        ));
     }
 
     #[test]
@@ -1504,7 +1519,10 @@ mod tests {
         let contents =
             "participant_count = 9\nhelper_transports = { http = 5, grpc = 0, both = 0 }";
 
-        assert!(matches!(parse(contents).unwrap_err(), ConfigError::Invalid { .. }));
+        assert!(matches!(
+            parse(contents).unwrap_err(),
+            ConfigError::Invalid { .. }
+        ));
     }
 
     #[test]
@@ -1514,12 +1532,18 @@ mod tests {
         // every reply.
         let contents = "participant_count = 9\ngrpc_enabled = false\nhelper_transports = { http = 5, grpc = 4, both = 0 }";
 
-        assert!(matches!(parse(contents).unwrap_err(), ConfigError::Invalid { .. }));
+        assert!(matches!(
+            parse(contents).unwrap_err(),
+            ConfigError::Invalid { .. }
+        ));
     }
 
     #[test]
     fn a_zero_grpc_port_is_rejected() {
-        assert!(matches!(parse("grpc_port = 0").unwrap_err(), ConfigError::Invalid { .. }));
+        assert!(matches!(
+            parse("grpc_port = 0").unwrap_err(),
+            ConfigError::Invalid { .. }
+        ));
     }
 
     #[test]
@@ -1568,7 +1592,10 @@ mod tests {
 
     #[test]
     fn the_config_path_variable_decides_whether_a_file_is_required() {
-        let named = with_env(&[("DEREC_CONFIG_PATH", "/etc/derec/mine.toml")], ConfigFile::from_env);
+        let named = with_env(
+            &[("DEREC_CONFIG_PATH", "/etc/derec/mine.toml")],
+            ConfigFile::from_env,
+        );
         assert_eq!(named, explicit("/etc/derec/mine.toml"));
 
         // Empty means unset — what compose produces for an undefined `${VAR}`.
@@ -1587,7 +1614,8 @@ mod tests {
         // The example is documentation a developer will copy verbatim; if it
         // drifts out of sync with the schema, `deny_unknown_fields` turns that
         // into a boot failure for them rather than a test failure for us.
-        let loaded = with_env(&[], || load(&explicit(example_path()))).expect("the example must load");
+        let loaded =
+            with_env(&[], || load(&explicit(example_path()))).expect("the example must load");
 
         assert!(loaded.file_found);
     }
@@ -1653,7 +1681,11 @@ mod tests {
             "server.database_url",
             "server.static_dir",
         ] {
-            let origin = loaded.origins.iter().find(|o| o.path == path).expect("origin");
+            let origin = loaded
+                .origins
+                .iter()
+                .find(|o| o.path == path)
+                .expect("origin");
             assert_eq!(origin.source, ConfigSource::File, "{path}");
         }
     }
@@ -1730,7 +1762,10 @@ mod tests {
 
     #[test]
     fn server_settings_come_from_their_own_table() {
-        let loaded = settings_from("[server]\nbase_url = \"http://10.0.0.5\"\nport = 6000\n", &[]);
+        let loaded = settings_from(
+            "[server]\nbase_url = \"http://10.0.0.5\"\nport = 6000\n",
+            &[],
+        );
 
         assert_eq!(loaded.settings.server.base_url, "http://10.0.0.5");
         assert_eq!(loaded.settings.server.port, 6000);
@@ -1739,7 +1774,10 @@ mod tests {
     #[test]
     fn public_ports_follow_the_listeners_unless_set() {
         // Unset: peers dial the ports the server listens on, as before.
-        let loaded = settings_from("[server]\nport = 6000\n[defaults]\ngrpc_port = 60051\n", &[]);
+        let loaded = settings_from(
+            "[server]\nport = 6000\n[defaults]\ngrpc_port = 60051\n",
+            &[],
+        );
         assert_eq!(loaded.settings.server.public_port, 6000);
         assert_eq!(loaded.settings.server.public_grpc_port, 60051);
 
@@ -1747,7 +1785,10 @@ mod tests {
         // published, not what the container listens on.
         let loaded = settings_from(
             "",
-            &[("DEREC_PUBLIC_PORT", "8080"), ("DEREC_PUBLIC_GRPC_PORT", "8081")],
+            &[
+                ("DEREC_PUBLIC_PORT", "8080"),
+                ("DEREC_PUBLIC_GRPC_PORT", "8081"),
+            ],
         );
         assert_eq!(loaded.settings.server.port, 5000);
         assert_eq!(loaded.settings.server.public_port, 8080);
@@ -1823,10 +1864,17 @@ mod tests {
 
     #[test]
     fn a_loopback_base_url_warning_says_what_cannot_reach_it() {
-        assert_eq!(loopback_base_url_warning("http://192.168.0.28:5000", false), None);
+        assert_eq!(
+            loopback_base_url_warning("http://192.168.0.28:5000", false),
+            None
+        );
         assert_eq!(loopback_base_url_warning("http://node-a:5000", true), None);
 
-        for base in ["http://localhost:5000", "http://127.0.0.1:5000", "http://[::1]:5000"] {
+        for base in [
+            "http://localhost:5000",
+            "http://127.0.0.1:5000",
+            "http://[::1]:5000",
+        ] {
             let native = loopback_base_url_warning(base, false).expect("loopback warns");
             assert!(native.contains("another device"), "{native}");
             assert!(native.contains("in a container"), "{native}");
@@ -1867,7 +1915,10 @@ mod tests {
         let allowlist = loaded.settings.server.relay_allowlist();
         assert!(allowlist.allows("node-b", 50051));
         assert!(!allowlist.allows("node-b", 50052), "the port was pinned");
-        assert!(allowlist.allows("192.168.0.30", 1), "no port means any port");
+        assert!(
+            allowlist.allows("192.168.0.30", 1),
+            "no port means any port"
+        );
         assert!(!allowlist.allows("192.168.0.31", 50051));
 
         let loaded = settings_from("", &[("DEREC_RELAY_ALLOWED_HOSTS", "NODE-B [::1]:9")]);
@@ -1879,13 +1930,19 @@ mod tests {
             .iter()
             .find(|o| o.path == "server.relay_allowed_hosts")
             .expect("origin recorded");
-        assert_eq!(origin.source, ConfigSource::Env("DEREC_RELAY_ALLOWED_HOSTS"));
+        assert_eq!(
+            origin.source,
+            ConfigSource::Env("DEREC_RELAY_ALLOWED_HOSTS")
+        );
     }
 
     #[test]
     fn a_star_allows_any_host_but_only_on_its_own() {
         let loaded = settings_from("", &[("DEREC_RELAY_ALLOWED_HOSTS", "*")]);
-        assert_eq!(loaded.settings.server.relay_allowlist(), RelayAllowlist::Any);
+        assert_eq!(
+            loaded.settings.server.relay_allowlist(),
+            RelayAllowlist::Any
+        );
 
         let message = error_from("", &[("DEREC_RELAY_ALLOWED_HOSTS", "*, node-b")]);
         assert!(message.contains("relay_allowed_hosts"), "{message}");
@@ -1893,10 +1950,17 @@ mod tests {
 
     #[test]
     fn a_relay_allowlist_entry_that_is_not_a_host_is_refused_at_boot() {
-        for bad in ["grpc://node-b:50051", "node-b/x", "user@node-b", "node-b:", "node-b:99999"] {
+        for bad in [
+            "grpc://node-b:50051",
+            "node-b/x",
+            "user@node-b",
+            "node-b:",
+            "node-b:99999",
+        ] {
             let message = error_from("", &[("DEREC_RELAY_ALLOWED_HOSTS", bad)]);
             assert!(
-                message.contains("relay_allowed_hosts") && message.contains("env DEREC_RELAY_ALLOWED_HOSTS"),
+                message.contains("relay_allowed_hosts")
+                    && message.contains("env DEREC_RELAY_ALLOWED_HOSTS"),
                 "{bad:?}: {message}"
             );
         }
@@ -1937,7 +2001,10 @@ mod tests {
         // `true` is still not a URL, but the refusal is about the URL, not a
         // type the developer never chose.
         let message = error_from("", &[("DEREC_BASE_URL", "true")]);
-        assert!(message.contains("base_url must be a scheme and host"), "{message}");
+        assert!(
+            message.contains("base_url must be a scheme and host"),
+            "{message}"
+        );
         assert!(message.contains("env DEREC_BASE_URL"), "{message}");
         assert!(!message.contains("invalid type"), "{message}");
     }
@@ -1972,8 +2039,14 @@ mod tests {
         ] {
             let message = error_from("", &[(variable, value)]);
             assert!(message.contains(variable), "{variable}={value}: {message}");
-            assert!(!message.contains("default."), "{variable}={value}: {message}");
-            assert!(!message.contains("config.toml"), "{variable}={value}: {message}");
+            assert!(
+                !message.contains("default."),
+                "{variable}={value}: {message}"
+            );
+            assert!(
+                !message.contains("config.toml"),
+                "{variable}={value}: {message}"
+            );
         }
     }
 
@@ -2023,7 +2096,10 @@ mod tests {
     fn an_unknown_env_variable_warns_rather_than_aborting() {
         let loaded = settings_from("", &[("DEREC_PARTICIPNT_COUNT", "4")]);
 
-        assert_eq!(loaded.unknown_env, vec!["DEREC_PARTICIPNT_COUNT".to_owned()]);
+        assert_eq!(
+            loaded.unknown_env,
+            vec!["DEREC_PARTICIPNT_COUNT".to_owned()]
+        );
         assert_eq!(
             loaded.settings.defaults.participant_count,
             Defaults::default().participant_count
@@ -2040,7 +2116,11 @@ mod tests {
             ],
         );
 
-        assert!(loaded.unknown_env.is_empty(), "got {:?}", loaded.unknown_env);
+        assert!(
+            loaded.unknown_env.is_empty(),
+            "got {:?}",
+            loaded.unknown_env
+        );
     }
 
     #[test]
@@ -2049,8 +2129,16 @@ mod tests {
         let mut paths = HashSet::new();
 
         for key in ENV_KEYS {
-            assert!(names.insert(key.variable), "duplicate variable name: {}", key.variable);
-            assert!(paths.insert(key.path), "duplicate config path: {}", key.path);
+            assert!(
+                names.insert(key.variable),
+                "duplicate variable name: {}",
+                key.variable
+            );
+            assert!(
+                paths.insert(key.path),
+                "duplicate config path: {}",
+                key.path
+            );
             assert!(
                 key.variable.starts_with(ENV_PREFIX),
                 "{} is missing the {ENV_PREFIX} prefix",
@@ -2089,7 +2177,10 @@ mod tests {
             ConfigSource::Env("DEREC_PARTICIPANT_COUNT")
         );
         assert_eq!(origin("defaults.unpair_ack"), ConfigSource::File);
-        assert_eq!(origin("defaults.protocol_timeout_secs"), ConfigSource::Default);
+        assert_eq!(
+            origin("defaults.protocol_timeout_secs"),
+            ConfigSource::Default
+        );
         assert_eq!(origin("server.port"), ConfigSource::Default);
     }
 
@@ -2213,12 +2304,18 @@ mod tests {
     fn the_banner_never_prints_a_database_password() {
         let loaded = settings_from(
             "",
-            &[("DEREC_DATABASE_URL", "postgres://derec:hunter2@db:5432/derec")],
+            &[(
+                "DEREC_DATABASE_URL",
+                "postgres://derec:hunter2@db:5432/derec",
+            )],
         );
 
         let banner = report(&loaded, Path::new("config.toml"));
         assert!(!banner.contains("hunter2"), "{banner}");
-        assert!(banner.contains("postgres://derec:***@db:5432/derec"), "{banner}");
+        assert!(
+            banner.contains("postgres://derec:***@db:5432/derec"),
+            "{banner}"
+        );
     }
 
     #[test]

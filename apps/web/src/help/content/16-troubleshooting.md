@@ -109,3 +109,4 @@ First stops for anything not listed: the **Console** (expand it, filter to the v
 | *… is this node's gRPC address, but gRPC is disabled here* (`409`) | `grpc_enabled = false`. | Enable gRPC or use HTTP helpers. |
 | *the recipient's mailbox is full; it has not polled for a while* (`503 MAILBOX_FULL`) | A browser owner's mailbox hit 1000 messages / 16 MiB. | Open that vault so it drains. |
 | `outcome: "dropped"` | The target helper is offline. | **Bring online** under Participants. |
+| An inbound gRPC message `refused` although its channel is listed in `routes` | Several routes claim the channel with the same `side` and tier (for example two replicas mirroring one source), so the node will not pick one. | Check `routes` in `/api/v1/debug/state`: delivery prefers a bound `endpoint`, then a bound `mirror`, then a pin, and skips claimants with no gRPC endpoint. Remove the duplicate replica, or pair over HTTP. |

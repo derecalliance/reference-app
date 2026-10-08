@@ -169,3 +169,33 @@ test('closing the modal mid-scan releases the camera', async ({ page }) => {
     )
     .toBe(0)
 })
+
+test('a scan still decodes when the discarded session’s camera opens last', async ({ page }) => {
+  // React's StrictMode mounts, unmounts and remounts the scanner in
+  // development, so two sessions share one `<video>`. Under load the discarded
+  // session's camera could open *after* the live one's, attach its stream and
+  // interrupt the live `play()` — the scanner then sat on "The camera could
+  // not be started" and `#qr-payload` never came back. Forced here, so the
+  // ordering that used to need a loaded machine happens every run.
+  await stubDetector(page, '{"channel_id":"4242"}')
+  await page.addInitScript(() => {
+    const real = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices)
+    let calls = 0
+    let releaseFirst: () => void = () => {}
+    const firstOpened = new Promise<void>(resolve => (releaseFirst = resolve))
+    navigator.mediaDevices.getUserMedia = async constraints => {
+      const call = calls++
+      const stream = await real(constraints)
+      if (call === 0) await firstOpened
+      else setTimeout(releaseFirst, 0)
+      return stream
+    }
+  })
+  await setUpOwner(page, { name: 'Alice', participants: 3, prePaired: 0, minParticipants: 2 })
+
+  const modal = await openPairInitiator(page)
+  await modal.getByRole('button', { name: 'Scan QR' }).click()
+
+  await expect(modal.locator('#qr-payload')).toHaveValue('{"channel_id":"4242"}', { timeout: 30_000 })
+  await expect(modal.getByText('The camera could not be started')).toBeHidden()
+})

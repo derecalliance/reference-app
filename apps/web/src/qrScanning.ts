@@ -146,23 +146,27 @@ export interface QrScanSession {
  * The caller owns the `<video>`; this attaches a stream to it and drives a
  * decode loop until something is found or {@link QrScanSession.stop} is called.
  *
+ * The session is returned at once, before the camera is open, so `stop()`
+ * works from the first moment — including while the permission prompt is up
+ * or `getUserMedia` is still resolving. That is load-bearing: two sessions can
+ * share one `<video>` (`StrictMode` mounts, unmounts and remounts the scanner),
+ * and a discarded session that could not be stopped until its camera opened
+ * would then attach its own stream to the element and interrupt the live
+ * session's `play()` — which reports "the camera could not be started" and
+ * leaves the scanner stuck on the error. A stopped session never touches the
+ * element and never reports a failure.
+ *
  * Releasing the camera matters more than usual here: a page that keeps the
  * stream open leaves the recording indicator lit, which for an app about
  * protecting secrets reads as something worse than a leak. `stop()` is
  * therefore safe to call repeatedly and is called on every exit path —
  * success, failure, and unmount.
  */
-export async function startQrScan(
+export function startQrScan(
   video: HTMLVideoElement,
   onResult: (value: string) => void,
   onFailure: (failure: QrScanFailure) => void,
-): Promise<QrScanSession> {
-  const ctor = detectorConstructor()
-  if (!ctor) {
-    onFailure('unavailable')
-    return { stop: () => {} }
-  }
-
+): QrScanSession {
   let stream: MediaStream | null = null
   let frame = 0
   let stopped = false
@@ -172,69 +176,84 @@ export async function startQrScan(
     stopped = true
     if (frame) cancelAnimationFrame(frame)
     stream?.getTracks().forEach(track => track.stop())
-    // Detach only if this session still owns the element. Two sessions can
-    // briefly share one `<video>` — `StrictMode` runs the effect that starts
-    // them twice — and blindly nulling `srcObject` would tear the stream out
-    // from under the *newer* session, which then fails to play and reports the
-    // camera as unstartable.
+    // Detach only if this session still owns the element — see above.
     if (stream && video.srcObject === stream) video.srcObject = null
     stream = null
   }
 
-  try {
-    // `environment` is a preference, not a requirement — a laptop only has a
-    // front camera and must still work, so this must not be `exact`.
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment' },
-    })
-  } catch (error) {
-    onFailure(classifyCameraError(error))
-    return { stop }
-  }
-
-  if (stopped) {
-    // Unmounted while the permission prompt was up.
-    stream.getTracks().forEach(track => track.stop())
-    return { stop }
-  }
-
-  // Set imperatively rather than relying on the JSX props: React applies
-  // `muted` as an *attribute*, which Chrome's autoplay policy does not honour —
-  // `play()` then rejects with `NotAllowedError` and the preview never starts.
-  video.muted = true
-  video.playsInline = true
-  video.srcObject = stream
-
-  try {
-    await video.play()
-  } catch {
-    stop()
-    onFailure('unavailable')
-    return { stop }
-  }
-
-  const detector = new ctor({ formats: ['qr_code'] })
-
-  const tick = async () => {
+  const fail = (failure: QrScanFailure) => {
     if (stopped) return
-    // A frame with no dimensions yet cannot be decoded, and passing one to
-    // `detect` throws on some builds.
-    if (video.readyState >= 2 && video.videoWidth > 0) {
-      try {
-        const found = await detector.detect(video)
-        const value = found.find(f => f.rawValue)?.rawValue
-        if (value) {
-          stop()
-          onResult(value)
-          return
-        }
-      } catch {
-        // A single undecodable frame is the normal case, not an error.
-      }
-    }
-    if (!stopped) frame = requestAnimationFrame(() => void tick())
+    stop()
+    onFailure(failure)
   }
 
-  frame = requestAnimationFrame(() => void tick())
+  const run = async () => {
+    const ctor = detectorConstructor()
+    if (!ctor) {
+      fail('unavailable')
+      return
+    }
+
+    let opened: MediaStream
+    try {
+      // `environment` is a preference, not a requirement — a laptop only has a
+      // front camera and must still work, so this must not be `exact`.
+      opened = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment' },
+      })
+    } catch (error) {
+      fail(classifyCameraError(error))
+      return
+    }
+
+    if (stopped) {
+      // Stopped while the camera was opening: release it without ever
+      // touching the element another session may be using.
+      opened.getTracks().forEach(track => track.stop())
+      return
+    }
+    stream = opened
+
+    // Set imperatively rather than relying on the JSX props: React applies
+    // `muted` as an *attribute*, which Chrome's autoplay policy does not honour —
+    // `play()` then rejects with `NotAllowedError` and the preview never starts.
+    video.muted = true
+    video.playsInline = true
+    video.srcObject = opened
+
+    try {
+      await video.play()
+    } catch {
+      fail('unavailable')
+      return
+    }
+    if (stopped) return
+
+    const detector = new ctor({ formats: ['qr_code'] })
+
+    const tick = async () => {
+      if (stopped) return
+      // A frame with no dimensions yet cannot be decoded, and passing one to
+      // `detect` throws on some builds.
+      if (video.readyState >= 2 && video.videoWidth > 0) {
+        try {
+          const found = await detector.detect(video)
+          const value = found.find(f => f.rawValue)?.rawValue
+          if (value && !stopped) {
+            stop()
+            onResult(value)
+            return
+          }
+        } catch {
+          // A single undecodable frame is the normal case, not an error.
+        }
+      }
+      if (!stopped) frame = requestAnimationFrame(() => void tick())
+    }
+
+    frame = requestAnimationFrame(() => void tick())
+  }
+
+  void run()
   return { stop }
 }

@@ -9,12 +9,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{
-    Router,
     extract::Request,
     handler::HandlerWithoutStateExt,
-    http::{HeaderValue, header},
+    http::{header, HeaderValue},
     middleware::{self, Next},
     response::Response,
+    Router,
 };
 use tower_http::{
     compression::CompressionLayer, cors::CorsLayer, services::ServeDir, trace::TraceLayer,
@@ -24,11 +24,11 @@ use tracing::{info, warn};
 use super::actors::runtime::{ActorThread, ActorThreadError};
 use super::bootstrap::Node;
 use super::config;
-use crate::models::{DatabaseUrl, Defaults, NodeConfig, RelayAllowlist};
 use super::state::AppState;
 use super::{db, grpc, recovery};
 use crate::handlers::{self, errors};
 use crate::middlewares::request_id;
+use crate::models::{DatabaseUrl, Defaults, NodeConfig, RelayAllowlist};
 
 /// How long an outbound connection to a peer may take to establish.
 ///
@@ -314,9 +314,9 @@ fn bind_hint(error: &std::io::Error, port: u16, setting: &str) -> String {
              the host side is fixed by remapping instead (-p 8080:{port}) and setting \
              DEREC_PUBLIC_PORT/DEREC_PUBLIC_GRPC_PORT to the published port."
         ),
-        std::io::ErrorKind::PermissionDenied => format!(
-            "Ports below 1024 need extra privileges; pick a higher one with {setting}."
-        ),
+        std::io::ErrorKind::PermissionDenied => {
+            format!("Ports below 1024 need extra privileges; pick a higher one with {setting}.")
+        }
         _ => format!("Check that the port is valid and free, or change it with {setting}."),
     }
 }

@@ -20,6 +20,7 @@ A table per config section, `[server]` and `[defaults]`, with every setting, its
 - **Reset to node** drops every override.
 - Overrides never reach the server as settings. They travel on each provisioning request and prefill the setup wizard.
 - The gRPC switches are facts about the node, not preferences: `grpc_enabled` and `grpc_relay_enabled` always come from the node, whatever was saved.
+- If the node is down when the page loads, the built-in defaults stand in and the app keeps asking for the node's (after 1 s, 2 s, 5 s, 10 s, then every 30 s, and at once when a vault reaches the node again) until it answers once. A vault that was already running then follows the node for its timers and auto-accept settings, but its replay window and unpair acknowledgement are fixed when its protocol starts, so they change only after a reload; the Console names any vault where they differ.
 - **Reset browser data** also erases these overrides.
 
 ## Participant pool

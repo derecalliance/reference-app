@@ -40,23 +40,18 @@ export function QrScanner({ onScan, onCancel }: QrScannerProps) {
     const video = videoRef.current
     if (!video) return
 
-    let disposed = false
-
-    void startQrScan(
+    // The session is stoppable from the moment it is created, before the
+    // camera opens — see `startQrScan` for why that matters under StrictMode.
+    const session = startQrScan(
       video,
-      value => { if (!disposed) onScanRef.current(value) },
-      reason => { if (!disposed) setFailure(reason) },
-    ).then(session => {
-      sessionRef.current = session
-      // `startQrScan` resolves after an await, so the component can already be
-      // gone — and then nothing else would ever stop the camera.
-      if (disposed) session.stop()
-    })
+      value => onScanRef.current(value),
+      reason => setFailure(reason),
+    )
+    sessionRef.current = session
 
     return () => {
-      disposed = true
-      sessionRef.current?.stop()
-      sessionRef.current = null
+      session.stop()
+      if (sessionRef.current === session) sessionRef.current = null
     }
   }, [])
 

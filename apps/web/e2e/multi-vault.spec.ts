@@ -72,33 +72,48 @@ async function listedReplicaCount(page: Page, name: string): Promise<number> {
 }
 
 test('two vaults in one tab keep their bag versions and replica counts apart', async ({ page }) => {
+  // Each phase is a step, so a timeout names the phase it happened in. This
+  // test once timed out in a full run with nothing to say where, and it has
+  // not been reproduced since.
+
   // Alpha: a protected secret and a replica. Beta: a protected secret of its
   // own, and no replica.
-  await setUpOwner(page, { name: 'Alpha', participants: 3, prePaired: 2, minParticipants: 2 })
-  await protectSecret(page, 'Alpha seed', 'alpha-only')
-  await addAndPairReplica(page, uniqueReplicaName('Alpha-replica'))
+  await test.step('Alpha protects a secret and pairs a replica', async () => {
+    await setUpOwner(page, { name: 'Alpha', participants: 3, prePaired: 2, minParticipants: 2 })
+    await protectSecret(page, 'Alpha seed', 'alpha-only')
+    await addAndPairReplica(page, uniqueReplicaName('Alpha-replica'))
+  })
 
-  await setUpAnotherVault(page, { name: 'Beta', prePaired: 2 })
-  await protectSecret(page, 'Beta seed', 'beta-only')
+  await test.step('Beta is set up and protects a secret', async () => {
+    await setUpAnotherVault(page, { name: 'Beta', prePaired: 2 })
+    await protectSecret(page, 'Beta seed', 'beta-only')
+  })
 
-  await backToVaults(page)
-  await expect.poll(() => listedBagVersion(page, 'Beta'), { timeout: 30_000 }).toBe(1)
-  await expect.poll(() => listedReplicaCount(page, 'Alpha'), { timeout: 30_000 }).toBe(1)
-  expect(await listedReplicaCount(page, 'Beta')).toBe(0)
-  const alphaBefore = await listedBagVersion(page, 'Alpha')
-  expect(alphaBefore).not.toBeNull()
+  const alphaBefore = await test.step('the list shows each vault its own numbers', async () => {
+    await backToVaults(page)
+    await expect.poll(() => listedBagVersion(page, 'Beta'), { timeout: 30_000 }).toBe(1)
+    await expect.poll(() => listedReplicaCount(page, 'Alpha'), { timeout: 30_000 }).toBe(1)
+    expect(await listedReplicaCount(page, 'Beta')).toBe(0)
+    const version = await listedBagVersion(page, 'Alpha')
+    expect(version).not.toBeNull()
+    return version
+  })
 
   // A new version of Alpha's bag moves Alpha's number, and only Alpha's.
-  await openVault(page, 'Alpha')
-  await protectSecret(page, 'Alpha second', 'alpha-again')
-  await backToVaults(page)
+  await test.step('Alpha publishes a new version', async () => {
+    await openVault(page, 'Alpha')
+    await protectSecret(page, 'Alpha second', 'alpha-again')
+    await backToVaults(page)
+  })
 
-  await expect
-    .poll(() => listedBagVersion(page, 'Alpha'), { timeout: 30_000 })
-    .toBeGreaterThan(alphaBefore ?? 0)
-  expect(await listedBagVersion(page, 'Beta')).toBe(1)
-  expect(await listedReplicaCount(page, 'Alpha')).toBe(1)
-  expect(await listedReplicaCount(page, 'Beta')).toBe(0)
+  await test.step('only Alpha’s number moved', async () => {
+    await expect
+      .poll(() => listedBagVersion(page, 'Alpha'), { timeout: 30_000 })
+      .toBeGreaterThan(alphaBefore ?? 0)
+    expect(await listedBagVersion(page, 'Beta')).toBe(1)
+    expect(await listedReplicaCount(page, 'Alpha')).toBe(1)
+    expect(await listedReplicaCount(page, 'Beta')).toBe(0)
+  })
 })
 
 test('a vault off screen that needs a decision says so without interrupting', async ({ browser }) => {

@@ -57,7 +57,7 @@ beforeEach(() => {
     .mockResolvedValue([helper('aaaaaaaa-1', 'Alex'), helper('bbbbbbbb-2', 'Alex')])
   api.apiGetServerDefaults
     .mockReset()
-    .mockResolvedValue({ defaults: FALLBACK_SERVER_DEFAULTS, reachable: true })
+    .mockResolvedValue({ defaults: FALLBACK_SERVER_DEFAULTS, reachable: true, fromServer: true })
   api.apiToggleParticipantStatus.mockReset().mockRejectedValue(new Error('node said no'))
   host = document.createElement('div')
   document.body.appendChild(host)

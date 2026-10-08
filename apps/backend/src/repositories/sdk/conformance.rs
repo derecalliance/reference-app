@@ -24,8 +24,8 @@
 use derec_library::protocol::types::{ChannelStatus, HelperFilter};
 use derec_library::protocol::{
     ChannelQuery, ChannelRecord, DeRecChannelStore, DeRecSecretStore, DeRecShareStore,
-    DeRecStateStore, DeRecUserSecretStore, HelperChannel, SecretKind, SecretValue, Share, StateItem,
-    UserSecrets,
+    DeRecStateStore, DeRecUserSecretStore, HelperChannel, SecretKind, SecretValue, Share,
+    StateItem, UserSecrets,
 };
 use derec_library::types::ChannelId;
 
@@ -296,10 +296,7 @@ pub async fn share_store_conforms<S: DeRecShareStore>(store: &mut S) {
     );
 
     // An explicit version filter narrows; an empty one means "every version".
-    let filtered = store
-        .load(SECRET_A, channel, &[2])
-        .await
-        .expect("readable");
+    let filtered = store.load(SECRET_A, channel, &[2]).await.expect("readable");
     assert_eq!(filtered.len(), 1, "a version filter must narrow the result");
     assert_eq!(filtered[0].version, 2);
 
@@ -324,10 +321,7 @@ pub async fn share_store_conforms<S: DeRecShareStore>(store: &mut S) {
         .await
         .expect("save");
 
-    let foreign = store
-        .load(SECRET_A, channel, &[9])
-        .await
-        .expect("readable");
+    let foreign = store.load(SECRET_A, channel, &[9]).await.expect("readable");
     assert_eq!(foreign.len(), 1, "the share is filed under the partition");
     assert_eq!(
         foreign[0].secret_id, SECRET_B,
@@ -675,10 +669,7 @@ pub async fn state_store_conforms<S: DeRecStateStore>(
     );
 
     assert!(
-        store
-            .remove(SECRET_A, key.clone())
-            .await
-            .expect("remove"),
+        store.remove(SECRET_A, key.clone()).await.expect("remove"),
         "removing a present item reports true"
     );
     assert!(

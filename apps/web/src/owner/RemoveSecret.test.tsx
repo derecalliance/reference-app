@@ -5,7 +5,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { BagVersion, PairedParticipant, SecretBag, UserSecret } from '../types'
+import type { BagVersion, PairedParticipant, PublishedRound, SecretBag, UserSecret } from '../types'
 import { RemoveSecretModal } from './RemoveSecretModal'
 import { SecretBagPanel } from './SecretBagPanel'
 
@@ -109,7 +109,7 @@ describe('removing a secret from the Secrets tab', () => {
 })
 
 describe('RemoveSecretModal', () => {
-  function renderModal(onRemoveSecret: (id: string) => Promise<number | null>) {
+  function renderModal(onRemoveSecret: (id: string) => Promise<PublishedRound | null>) {
     act(() =>
       root.render(
         <RemoveSecretModal
@@ -124,7 +124,7 @@ describe('RemoveSecretModal', () => {
   }
 
   it('asks first, warning that earlier versions keep the secret', () => {
-    const onRemove = vi.fn(async () => 3)
+    const onRemove = vi.fn(async () => ({ version: 3, recipientIds: [helper.id] }))
     renderModal(onRemove)
 
     expect(host.textContent).toContain('Earlier versions still contain it')
@@ -132,7 +132,7 @@ describe('RemoveSecretModal', () => {
   })
 
   it('removes on confirmation and follows the round it started', async () => {
-    const onRemove = vi.fn(async () => 3)
+    const onRemove = vi.fn(async () => ({ version: 3, recipientIds: [helper.id] }))
     renderModal(onRemove)
 
     await act(async () => buttonWithText('Remove Secret').click())

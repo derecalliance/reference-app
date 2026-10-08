@@ -8,15 +8,15 @@
 //! Drives the real `derec_backend::build_router` with `static_dir` pointed at a
 //! throwaway directory, the same way `config_route.rs` drives it with none.
 
-use std::path::PathBuf;
 use axum::{
-    Router,
     body::Body,
-    http::{Request, StatusCode, header},
+    http::{header, Request, StatusCode},
     response::Response,
+    Router,
 };
-use derec_backend::models::{Defaults, LoadedConfig};
 use derec_backend::infrastructure::bootstrap::Node;
+use derec_backend::models::{Defaults, LoadedConfig};
+use std::path::PathBuf;
 use tower::ServiceExt;
 
 /// Big enough that the compression layer, which skips tiny bodies, engages.
@@ -50,7 +50,8 @@ async fn app(dir: &std::path::Path) -> Router {
     loaded.settings.server.static_dir = dir.to_string_lossy().into_owned();
 
     let state = Node::new(
-        derec_backend::models::NodeConfig::new("http://localhost:5000", Defaults::default()).with_loaded(loaded),
+        derec_backend::models::NodeConfig::new("http://localhost:5000", Defaults::default())
+            .with_loaded(loaded),
         reqwest::Client::new(),
         actix_rt::Arbiter::current(),
         pool,

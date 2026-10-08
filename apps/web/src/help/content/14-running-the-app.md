@@ -1,12 +1,12 @@
 # Running the app
 
-Every way to run the node: `./start.sh`, plain Docker Compose with SQLite or PostgreSQL, `docker run`, from source, reaching it from a phone on the LAN, and starting fresh.
+Every way to run the node: `./start.sh`, plain Docker Compose with SQLite or PostgreSQL, `docker run` from the published image, building the image yourself, from source, reaching it from a phone on the LAN, and starting fresh.
 
 Run it only on your own machine or a LAN you trust. It has no authentication, permissive CORS and listens on all interfaces: anyone who can reach its port can read every actor's channel keys from `GET /api/v1/actors` and delete the shared helpers.
 
 ## ./start.sh
 
-Needs Docker with Compose v2.24 or newer, nothing else. Run it from the repository root. It stops whatever it started before, rebuilds the image from the checkout (cached), starts the node, waits until `/health` answers and prints the address. The first build takes several minutes.
+Needs Docker with Compose v2.24 or newer, nothing else. Run it from the repository root. It stops whatever it started before, pulls the published image (`ghcr.io/derecalliance/reference-app`), starts the node, waits until `/health` answers and prints the address. If the pull fails (offline, or the version is not published yet) it builds the image from the checkout instead; the first build takes several minutes.
 
 | Command | Effect |
 | --- | --- |
@@ -15,6 +15,7 @@ Needs Docker with Compose v2.24 or newer, nothing else. Run it from the reposito
 | `./start.sh --lan` | Also reachable from phones and other machines: works out this machine's LAN address and advertises it. Set `LAN_IP=<address>` if it cannot. |
 | `./start.sh --fresh` | Erase all stored data (both databases) first. |
 | `./start.sh --port 8080` | A fixed HTTP port instead of the first free one. |
+| `./start.sh --build` | Build the image from the checkout instead of pulling it — to run local changes. Tagged `derec/reference-app:dev`, so it never shadows the published image. |
 | `./start.sh --stop` | Stop it. |
 
 Logs: `docker compose -p derec logs -f node`. Data is kept between runs unless you pass `--fresh`.
@@ -24,8 +25,11 @@ Logs: `docker compose -p derec logs -f node`. Data is kept between runs unless y
 | Command | Runs |
 | --- | --- |
 | `docker compose up -d` (repo root) | SQLite node on `http://localhost:5000`, from `examples/compose.sqlite.yaml`. |
-| `docker compose -f examples/compose.postgres.yaml up -d` | PostgreSQL (`postgres:17-alpine`, user, password and database `derec`) plus the node, which waits for it. |
+| `docker compose -f compose.postgres.yaml up -d` (repo root) | PostgreSQL (`postgres:17-alpine`, user, password and database `derec`) plus the node, which waits for it. |
+| `docker compose -f compose.yaml -f compose.build.yaml up -d --build` | The SQLite node built from your checkout. Works the same after `compose.postgres.yaml`. |
 | `docker compose -p derec down` | Stops either. Add `-v` to erase its data. |
+
+Both pull the published image. `compose.build.yaml` is an override that builds it instead; use it only after the repo-root files, whose paths it resolves against. The files in `examples/` need no checkout: copy one anywhere and run `docker compose up -d` beside it.
 
 Both share the project name `derec`, so one replaces the other. Data lives in named volumes, `derec-data` (SQLite) and `derec-pgdata` (PostgreSQL).
 
@@ -37,17 +41,17 @@ Compose reads these from your shell or an optional repo-root `.env` (copy `examp
 | `DEREC_HOST_GRPC_PORT` | Host port for gRPC (default 50051). Also sets `DEREC_PUBLIC_GRPC_PORT`. |
 | `LAN_IP` | The address peers are told: `DEREC_BASE_URL=http://${LAN_IP}`. Unset, `localhost`. |
 | `POSTGRES_PASSWORD` | PostgreSQL only. Default `derec`. |
+| `DEREC_IMAGE` | Another image repository, without the tag (default `ghcr.io/derecalliance/reference-app`) — for example a local registry. |
 
 To use a config file, copy `examples/config.example.toml` to `apps/backend/config.toml` **first**, then uncomment the mount in the compose file. Mounting a file that does not exist makes Docker create a directory there, and the node refuses to boot.
 
 ## docker run
 
-Build the image from the repository root, then run it. Use the tag the compose files name (`image:` in `examples/compose.sqlite.yaml`); `<tag>` below stands for it.
+No checkout needed: the image is published for `linux/amd64` and `linux/arm64`. `<version>` is the app's version: the SDK version it is built against, optionally with a pre-release suffix (`0.0.8-alpha.1`, then `0.0.8`). Pre-releases never move `latest`. Every setting the image takes, with its default, is in [docs/DOCKER.md](https://github.com/derecalliance/reference-app/blob/main/docs/DOCKER.md).
 
 ```
-docker build -f apps/backend/Dockerfile -t derec/reference-app:<tag> .
 docker run -d --name derec -p 5000:5000 -p 50051:50051 \
-  -v derec-data:/var/lib/derec derec/reference-app:<tag>
+  -v derec-data:/var/lib/derec ghcr.io/derecalliance/reference-app:<version>
 ```
 
 - The image serves the UI and the API on one origin; open `http://localhost:5000`.
@@ -62,9 +66,21 @@ docker run -d --name derec -p 5000:5000 -p 50051:50051 \
 | `-v derec-data:/var/lib/derec` | yes | yes |
 | `-e DEREC_DATABASE_URL=sqlite::memory:` | no | no |
 
+## Building the image yourself
+
+To run local changes, build from the repository root and run the result the same way:
+
+```
+docker build -f apps/backend/Dockerfile -t derec/reference-app:dev .
+docker run -d --name derec -p 5000:5000 -p 50051:50051 \
+  -v derec-data:/var/lib/derec derec/reference-app:dev
+```
+
+`./start.sh --build` and `compose.build.yaml` do the same. Maintainers publish with `scripts/publish-image.sh`; `scripts/publish-image.sh --local` pushes both platforms to a registry on `localhost:5055` instead, and `DEREC_IMAGE=localhost:5055/derecalliance/reference-app ./start.sh` then runs what was pushed. See `CONTRIBUTING.md`.
+
 ## From source
 
-Needs Rust 1.88+ and Node.js 22+, and two terminals:
+Needs Rust 1.89+ and Node.js 22+, and two terminals:
 
 ```
 cd apps/backend && cargo run          # backend on http://localhost:5000, state in apps/backend/derec.db

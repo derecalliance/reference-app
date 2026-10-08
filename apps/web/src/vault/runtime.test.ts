@@ -45,7 +45,7 @@ describe('VaultRuntime.removeSecret', () => {
       .spyOn(r, 'protect')
       .mockResolvedValue({ version: 3, participants: [], replicaTargets: [] })
 
-    await expect(r.removeSecret('aa')).resolves.toBe(3)
+    await expect(r.removeSecret('aa')).resolves.toEqual({ version: 3, recipientIds: [] })
     expect(protect).toHaveBeenCalledWith([secrets[1]])
   })
 

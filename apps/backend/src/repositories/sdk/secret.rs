@@ -163,7 +163,9 @@ impl DeRecSecretStore for SqlSecretStore {
         Box::pin(async move {
             let json = serde_json::to_string(&value).map_err(backend)?;
 
-            let mut tx = crate::repositories::begin_write(&pool).await.map_err(backend)?;
+            let mut tx = crate::repositories::begin_write(&pool)
+                .await
+                .map_err(backend)?;
 
             sqlx::query(
                 "DELETE FROM secrets \

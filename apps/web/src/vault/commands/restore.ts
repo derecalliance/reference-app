@@ -9,13 +9,27 @@ import { TRANSPORT_PROTOCOL_HTTPS, protocolName } from '../../contactDto'
 import { fromBase64Url } from '../../derecApi'
 import { buildProtocolInstance } from '../../owner/protocol'
 import { decodeSecretText, snapshotToPayload } from '../../owner/recoveredSecret'
+import { pairingRoleLabel } from '../../pairingRoleOptions'
 import { isReplicaChannel } from '../../ownerPairing'
-import { resolveRosterEntries } from '../../peerIdentity'
+import { resolveRosterEntries, type RosterMatch } from '../../peerIdentity'
 import { resolveVaultConfig } from '../../protocolDefaults'
-import { getOrCreateReplicaId } from '../../replicaIdentity'
+import {
+  loadReplicaState,
+  recordConfirmation,
+  recordReplicaChannel,
+  replicaChannelRowId,
+  retainReplicaChannels,
+} from '../../replicaFlows'
+import { getOrCreateReplicaId, readReplicaId, setReplicaId } from '../../replicaIdentity'
 import { clearNamespace } from '../../stores'
-import type { BagVersion, PairedParticipant, RecoveredSecret, SecretBag } from '../../types'
+import type { BagVersion, PairedParticipant, RecoveredSecret, SecretBag, Vault } from '../../types'
 import type { CommandContext } from './context'
+import {
+  restoredGroupPeer,
+  restoredReplicaIdentity,
+  type RecoveredReplicaGroup,
+  type RestoredGroupPeer,
+} from './restoreReplicas'
 
 /**
  * Restore this vault from a recovered secret.
@@ -23,12 +37,14 @@ import type { CommandContext } from './context'
  * 1. Retires the ephemeral recovery channels while their keys still exist —
  *    only those: a channel the snapshot itself names is restored, not retired.
  * 2. Wipes the namespace and replays the snapshot through an instance bound to
- *    the recovered `secret_id`.
+ *    the recovered `secret_id`, under a replica id the recovered group names —
+ *    see `restoredReplicaIdentity`.
  * 3. Announces this device's endpoint to the restored helpers via
  *    `UpdateChannelInfo` — the snapshot carries the *pre-loss* transport,
  *    which is what those helpers still have on their channel records.
  * 4. Installs that instance in the running vault and commits the rebuilt
- *    vault — participants, bag, threshold — bound to the recovered secret.
+ *    vault — helpers, the replica group's channel, bag, threshold — bound to
+ *    the recovered secret.
  *
  * Reports its own failures. Returns whether the restore committed.
  */
@@ -90,6 +106,12 @@ export async function restoreVault(
     //    lock, as adoption does it: a drain landing between the wipe and the
     //    replay would write into a namespace that is half gone.
     const config = resolveVaultConfig(current.configOverrides, ctx.getServerDefaults())
+    const group = secret.snapshot.replicas
+    // Chosen before the instance is built, because it is built with it. The
+    // library cannot publish for a group that does not name this device, and
+    // `restore` leaves that choice to the application.
+    const identity = restoredReplicaIdentity(group, readReplicaId(current.id))
+    const replicaId = identity?.replicaId ?? getOrCreateReplicaId(current.id)
     const restoreInstance = buildProtocolInstance({
       namespace: targetNs,
       secretId: secret.secretId,
@@ -99,7 +121,7 @@ export async function restoreVault(
       keepList: ctx.keepList,
       timeoutSecs: config.protocolTimeoutSecs,
       unpairAck: config.unpairAck,
-      replicaId: getOrCreateReplicaId(current.id),
+      replicaId,
       relayActorId: current.id,
       // The restored instance becomes the vault's live one (`adoptInstance`),
       // so it carries the same setting as the runtime's — see
@@ -121,6 +143,25 @@ export async function restoreVault(
         e.type === 'PeerNotRestored' && e.replica_id === undefined ? [e.channel_id] : [],
       ),
     )
+    const membersNotRestored = new Set(
+      restoreEvents.flatMap(e =>
+        e.type === 'PeerNotRestored' && e.replica_id !== undefined ? [e.replica_id] : [],
+      ),
+    )
+    // Committed: from here this vault *is* the group member it was restored
+    // as, and every later instance must be built as that member too.
+    if (identity?.takesOverSource) {
+      setReplicaId(current.id, identity.replicaId)
+      ctx.log({
+        role: 'owner',
+        flow: 'recovery',
+        step: 'replica_identity_adopted',
+        description:
+          `This device now answers to the replica group as its source (replica ${identity.replicaId}), ` +
+          'the device the recovered vault was protected from. Its next publish tells the group where it is now.',
+        payload: { replicaId: identity.replicaId.toString(), groupChannelId: group?.channelId },
+      })
+    }
     for (const event of restoreEvents) {
       try {
         ctx.fold(ctx.getVault(), event)
@@ -144,15 +185,38 @@ export async function restoreVault(
     // A helper the library could not restore has no channel to drive; listing
     // it would offer flows that fail against a channel that does not exist.
     const restorable = secret.snapshot.helpers.filter(h => !notRestored.has(h.channelId))
+    // The replica group comes back too: `restore` wrote its members, and the
+    // destinations keep taking every publish. Without a row for it the
+    // Replicas tab read "No replicas yet" while the mirroring went on.
+    const groupPeer = group
+      ? restoredGroupPeer(
+          group,
+          replicaId.toString(),
+          membersNotRestored,
+          loadReplicaState(current.id).channels[group.channelId]?.peerReplicaId ?? null,
+        )
+      : null
+    // Re-identified together, so no two of them can claim one actor.
     const matches = resolveRosterEntries(
-      restorable.map(h => ({
-        channelId: h.channelId,
-        transports: h.transports,
-        name: h.communicationInfo?.['name'],
-      })),
+      [
+        ...restorable.map(h => ({
+          channelId: h.channelId,
+          transports: h.transports,
+          name: h.communicationInfo?.['name'],
+        })),
+        ...(group && groupPeer
+          ? [
+              {
+                channelId: group.channelId,
+                transports: groupPeer.peer.transports,
+                name: groupPeer.peer.communicationInfo?.['name'],
+              },
+            ]
+          : []),
+      ],
       actors,
     )
-    const participants: PairedParticipant[] = restorable.map((h, i) => {
+    const helpers: PairedParticipant[] = restorable.map((h, i) => {
       const { actor, transportUri } = matches[i]
       // The matched entry's own discriminant: a `grpc` or `both` helper's
       // first-recognised endpoint may be a `grpc://` one.
@@ -174,10 +238,15 @@ export async function restoreVault(
         browserManaged: actor?.browser_managed,
       }
     })
+    const replicaRow =
+      group && groupPeer
+        ? replicaGroupRow(current, group, groupPeer, matches[restorable.length])
+        : null
+    const participants = replicaRow ? [...helpers, replicaRow] : helpers
 
     const bagVersion: BagVersion = {
       version: secret.version,
-      participantIds: participants.map(p => p.id),
+      participantIds: helpers.map(p => p.id),
       verifiedParticipantIds: [],
       failedParticipantIds: [],
       secrets: secret.snapshot.secrets.map(s => ({
@@ -191,7 +260,7 @@ export async function restoreVault(
       // `restore` writes no tracking shares, so this version cannot be verified
       // — the library's contract. The next published version can.
       restoredFromRecovery: true,
-      helpers: participants.map(p => ({ id: p.id, name: p.name, channelId: p.channelId })),
+      helpers: helpers.map(p => ({ id: p.id, name: p.name, channelId: p.channelId })),
       // The group the recovered secret carried, as the library decoded it.
       replicas: secret.snapshot.replicas
         ? {
@@ -213,8 +282,10 @@ export async function restoreVault(
       threshold: current.minParticipants,
     }
 
-    // 3. Announce our current endpoint to every restored helper.
-    if (participants.length > 0) {
+    // 3. Announce our current endpoint to every restored helper. Not to the
+    //    replica group: `UpdateChannelInfo` addresses helper channels, and a
+    //    group learns a member's endpoint from the roster on its next publish.
+    if (helpers.length > 0) {
       try {
         // Both local setters first: `start(UpdateChannelInfo)` tells the peers
         // but does not change what *this* node believes about itself, and the
@@ -226,7 +297,7 @@ export async function restoreVault(
         ])
         await restoreInstance.protocol.setCommunicationInfo({ name: current.name })
         await restoreInstance.protocol.start(FlowKind.UpdateChannelInfo, {
-          target: participants.map(p => BigInt(p.channelId)),
+          target: helpers.map(p => BigInt(p.channelId)),
           communication_info: { name: current.name },
           // Named, as every app-facing endpoint is since SDK 0.0.6.
           own_transports: [{ uri: current.transport.uri, protocol: 'https' }],
@@ -235,7 +306,7 @@ export async function restoreVault(
           role: 'owner',
           flow: 'recovery',
           step: 'announce_endpoint',
-          description: `Announced the recovered endpoint to ${participants.length} helper(s)`,
+          description: `Announced the recovered endpoint to ${helpers.length} helper(s)`,
           payload: { transportUri: current.transport.uri, secretId: secret.secretId },
         })
       } catch (err) {
@@ -254,6 +325,7 @@ export async function restoreVault(
     //    instance against the old record or the other way round.
     await ctx.withLock(async () => {
       ctx.adoptInstance(restoreInstance)
+      recordRestoredGroup(current.id, group, groupPeer)
       ctx.commit({
         ...ctx.getVault(),
         participants,
@@ -272,11 +344,15 @@ export async function restoreVault(
       role: 'owner',
       flow: 'recovery',
       step: 'recovery_completed',
-      description: `Restored ${participants.length} helper(s) and ${secret.snapshot.secrets.length} secret(s) from recovered bag`,
+      description:
+        `Restored ${helpers.length} helper(s)` +
+        (replicaRow ? `, the replica group with ${groupPeer?.peer.communicationInfo?.['name'] ?? 'its members'},` : '') +
+        ` and ${secret.snapshot.secrets.length} secret(s) from recovered bag`,
       payload: {
         secretId: secret.secretId,
         version: secret.version,
-        helperCount: participants.length,
+        helperCount: helpers.length,
+        replicaGroupChannelId: replicaRow?.channelId ?? null,
         secretCount: secret.snapshot.secrets.length,
       },
     })
@@ -288,4 +364,77 @@ export async function restoreVault(
     })
     return false
   }
+}
+
+/**
+ * The participant row for the restored replica group's channel.
+ *
+ * Restoring on the device that held the group keeps the row it already had —
+ * same id, name and endpoint. A new device builds one from the roster member
+ * `groupPeer` names, as adopting a mirrored vault does.
+ */
+function replicaGroupRow(
+  current: Vault,
+  group: RecoveredReplicaGroup,
+  groupPeer: RestoredGroupPeer,
+  match: RosterMatch<BEActorWithStatus> | undefined,
+): PairedParticipant {
+  const existing = current.participants.find(
+    p => isReplicaChannel(p) && p.connectionStatus === 'paired' && p.channelId === group.channelId,
+  )
+  if (existing) return existing
+
+  const { peer, peerRole } = groupPeer
+  const actor = match?.actor
+  const transportUri = match?.transportUri ?? peer.transports[0]?.uri ?? ''
+  return {
+    id: actor?.id ?? `peer-${group.channelId}`,
+    name: actor?.name || peer.communicationInfo?.['name'] || pairingRoleLabel(peerRole),
+    channelId: group.channelId,
+    transport: {
+      protocol: protocolName(
+        peer.transports.find(t => t.uri === transportUri)?.protocol ?? TRANSPORT_PROTOCOL_HTTPS,
+      ),
+      uri: transportUri,
+    },
+    transports: peer.transports.map(t => ({ protocol: protocolName(t.protocol), uri: t.uri })),
+    connectionStatus: 'paired',
+    peerRole,
+    // A replica holds no share for this device — it mirrors the whole vault.
+    secretShares: [],
+    browserManaged: actor?.browser_managed,
+  }
+}
+
+/**
+ * Put this device's replica bookkeeping in line with the restored group.
+ *
+ * `restore` wiped every channel the library held and wrote back the group's
+ * one, so any other recorded replica channel is gone. The group's channel is
+ * recorded as confirmed: `restore` writes its members `Paired` — confirming a
+ * fingerprint is what admitted them in the first place — and it is flagged as
+ * already synced once, so the restore does not publish on its own.
+ */
+function recordRestoredGroup(
+  vaultId: string,
+  group: RecoveredReplicaGroup | undefined,
+  groupPeer: RestoredGroupPeer | null,
+): void {
+  if (!group || !groupPeer) {
+    retainReplicaChannels(vaultId, [])
+    return
+  }
+  retainReplicaChannels(vaultId, [group.channelId])
+  recordReplicaChannel(vaultId, {
+    channelId: group.channelId,
+    role: groupPeer.ownRole,
+    peerName: groupPeer.peer.communicationInfo?.['name'],
+    establishedAt: Date.now(),
+    peerReplicaId: groupPeer.peer.replicaId,
+  })
+  recordConfirmation(vaultId, replicaChannelRowId(group.channelId), {
+    local: true,
+    channelId: group.channelId,
+    firstSyncStarted: true,
+  })
 }

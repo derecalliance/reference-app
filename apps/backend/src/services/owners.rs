@@ -12,8 +12,7 @@ use uuid::Uuid;
 use super::ports::InboxDirectory;
 use super::ServiceError;
 use crate::models::{
-    Actor, ActorSettings, DisplayName, NodeConfig, RegisterOwner, RenamedOwner, Role,
-    TransportMode,
+    Actor, ActorSettings, DisplayName, NodeConfig, RegisterOwner, RenamedOwner, Role, TransportMode,
 };
 use crate::repositories::actors::ActorRepository;
 

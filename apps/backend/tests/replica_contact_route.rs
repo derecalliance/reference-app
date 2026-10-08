@@ -18,11 +18,13 @@ use std::sync::Arc;
 
 use actix::prelude::*;
 use axum::{
-    Router,
     body::Body,
     http::{Request, StatusCode},
+    Router,
 };
-use derec_backend::infrastructure::actors::provisioned::{InstanceForChannelMsg, ListInstanceSecretsMsg, ProvisionedActor};
+use derec_backend::infrastructure::actors::provisioned::{
+    InstanceForChannelMsg, ListInstanceSecretsMsg, ProvisionedActor,
+};
 use derec_backend::infrastructure::bootstrap::Node;
 use serde_json::Value;
 use tower::ServiceExt;
@@ -97,7 +99,10 @@ async fn create_helper_from(router: &Router, body: &'static str) -> (Uuid, u64) 
 /// purely as a read-only assertion on which instance a route-minted contact
 /// actually landed in. Carries no key material.
 fn provisioned_addr(state: &Node, actor_id: Uuid) -> Addr<ProvisionedActor> {
-    state.inboxes.provisioned(&actor_id).expect("actor registered")
+    state
+        .inboxes
+        .provisioned(&actor_id)
+        .expect("actor registered")
 }
 
 async fn post_contact(router: &Router, actor_id: Uuid, query: &str) -> axum::response::Response {
@@ -168,7 +173,10 @@ async fn no_replica_for_owner_secret_still_mints_from_the_own_instance() {
         .expect("actor alive");
     assert_eq!(owner, Some(own_secret));
 
-    let secrets = addr.send(ListInstanceSecretsMsg).await.expect("actor alive");
+    let secrets = addr
+        .send(ListInstanceSecretsMsg)
+        .await
+        .expect("actor alive");
     assert_eq!(
         secrets,
         vec![own_secret],
@@ -282,10 +290,17 @@ async fn replica_instances_per_actor_are_capped() {
         let response = post_contact(
             &router,
             actor_id,
-            &format!("contact_mode=inline_keys&replica_for_owner_secret={}", 0x1000 + secret),
+            &format!(
+                "contact_mode=inline_keys&replica_for_owner_secret={}",
+                0x1000 + secret
+            ),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::OK, "secret {secret} is within the cap");
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "secret {secret} is within the cap"
+        );
     }
 
     let response = post_contact(
@@ -296,5 +311,8 @@ async fn replica_instances_per_actor_are_capped() {
     .await;
     assert_eq!(response.status(), StatusCode::CONFLICT);
     let body = body_json(response).await;
-    assert!(body["error"]["code"].is_string(), "the refusal uses the shared error shape: {body}");
+    assert!(
+        body["error"]["code"].is_string(),
+        "the refusal uses the shared error shape: {body}"
+    );
 }

@@ -20,6 +20,8 @@ Every actor has an HTTP endpoint, `POST /derec/{actor_id}`.
 
 A gRPC helper advertises `grpc://<base_url host>:<public_grpc_port>`. gRPC has no path to name an actor, so inbound gRPC messages are routed by channel id through the `bound` and `pinned` tiers shown in [Inspect](12-inspect-and-console.md).
 
+Each route also has a `side`. `endpoint` is the actor at one end of the pairing. `mirror` is a replica that holds a copy of its source's helper channel after hydrating, so the same channel id can have several claimants. Delivery prefers a bound endpoint, then a bound mirror, then a pin. Over gRPC it sets aside claimants that serve no gRPC endpoint, and it refuses a genuine tie rather than guess, which shows as a `refused` event.
+
 What a helper **advertises** (`http`, `grpc`, `both`) says how peers may reach it. Every hosted helper can **send** over both protocols regardless.
 
 ## The relay

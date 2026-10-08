@@ -84,6 +84,7 @@ describe('the protocol defaults form', () => {
           helperTransports: { http: 4, grpc: 0, both: 0 },
         },
         reachable: true,
+        fromServer: true,
       })
     })
 
@@ -93,7 +94,7 @@ describe('the protocol defaults form', () => {
   it('offers Retry instead of a form when the node cannot be reached', async () => {
     await render()
     await act(async () => {
-      resolveDefaults({ defaults: FALLBACK_SERVER_DEFAULTS, reachable: false })
+      resolveDefaults({ defaults: FALLBACK_SERVER_DEFAULTS, reachable: false, fromServer: false })
     })
 
     expect(host.textContent).toContain('Cannot reach the DeRec server')
@@ -103,7 +104,7 @@ describe('the protocol defaults form', () => {
   it('shows what is wrong and refuses to save an invalid draft', async () => {
     await render()
     await act(async () => {
-      resolveDefaults({ defaults: FALLBACK_SERVER_DEFAULTS, reachable: true })
+      resolveDefaults({ defaults: FALLBACK_SERVER_DEFAULTS, reachable: true, fromServer: true })
     })
 
     type(field('Minimum'), '9')
@@ -118,7 +119,7 @@ describe('the protocol defaults form', () => {
   it('stores only what differs from the node', async () => {
     await render()
     await act(async () => {
-      resolveDefaults({ defaults: FALLBACK_SERVER_DEFAULTS, reachable: true })
+      resolveDefaults({ defaults: FALLBACK_SERVER_DEFAULTS, reachable: true, fromServer: true })
     })
 
     type(field('Minimum'), '2')
@@ -130,7 +131,7 @@ describe('the protocol defaults form', () => {
   it('refuses a minimum of 1, which no vault could start with', async () => {
     await render()
     await act(async () => {
-      resolveDefaults({ defaults: FALLBACK_SERVER_DEFAULTS, reachable: true })
+      resolveDefaults({ defaults: FALLBACK_SERVER_DEFAULTS, reachable: true, fromServer: true })
     })
 
     type(field('Minimum'), '1')
@@ -142,7 +143,7 @@ describe('the protocol defaults form', () => {
   it('refuses exponent notation and pools the node cannot hold', async () => {
     await render()
     await act(async () => {
-      resolveDefaults({ defaults: FALLBACK_SERVER_DEFAULTS, reachable: true })
+      resolveDefaults({ defaults: FALLBACK_SERVER_DEFAULTS, reachable: true, fromServer: true })
     })
 
     type(field('Participants'), '1e3')

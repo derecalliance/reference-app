@@ -4,8 +4,7 @@
 import { useState } from 'react'
 
 import { errorText } from '../errorText'
-import { isShareTarget } from '../ownerPairing'
-import type { PairedParticipant, UserSecret } from '../types'
+import type { PairedParticipant, PublishedRound, UserSecret } from '../types'
 import { ModalFrame } from '../ModalFrame'
 import { ModalCloseButton } from './primitives'
 import { ProtectRoundProgress } from './ProtectRoundProgress'
@@ -22,8 +21,8 @@ interface RemoveSecretModalProps {
   participants: PairedParticipant[]
   threshold: number
   onClose: () => void
-  /** Publishes the bag without `secretId`; the library-assigned version, or `null` if nothing was dispatched. */
-  onRemoveSecret: (secretId: string) => Promise<number | null>
+  /** Publishes the bag without `secretId`; the round it dispatched, or `null` if nothing was. */
+  onRemoveSecret: (secretId: string) => Promise<PublishedRound | null>
 }
 
 /**
@@ -37,16 +36,15 @@ export function RemoveSecretModal({ secret, participants, threshold, onClose, on
   const [status, setStatus] = useState<RemoveSecretStatus>({ kind: 'idle' })
 
   async function handleRemove() {
-    // Snapshotted before the round, as adding does: these are who it goes to.
-    const targets = participants.filter(isShareTarget).map(h => h.id)
     setStatus({ kind: 'sending' })
     try {
-      const version = await onRemoveSecret(secret.id)
-      if (version === null) {
+      const round = await onRemoveSecret(secret.id)
+      if (round === null) {
         setStatus({ kind: 'error', message: 'The round was not dispatched — the protocol sent no share requests. Check that enough participants are paired and online.' })
         return
       }
-      setStatus({ kind: 'confirming', participantIds: targets, version })
+      // Who the round was sent to, as the round reports it — see `PublishedRound`.
+      setStatus({ kind: 'confirming', participantIds: round.recipientIds, version: round.version })
     } catch (err) {
       setStatus({ kind: 'error', message: errorText(err) })
     }

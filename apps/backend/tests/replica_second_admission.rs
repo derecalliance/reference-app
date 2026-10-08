@@ -25,13 +25,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use actix::prelude::*;
-use derec_backend::infrastructure::actors::provisioned::{ChannelStatusMsg, CreateContactMsg, EnsureReplicaInstanceMsg, InstanceForChannelMsg, ProvisionedActor};
-use derec_backend::infrastructure::actors::protocol::{ActorProtocol, ProtocolConfig, build_protocol};
+use derec_backend::infrastructure::actors::protocol::{
+    build_protocol, ActorProtocol, ProtocolConfig,
+};
+use derec_backend::infrastructure::actors::provisioned::{
+    ChannelStatusMsg, CreateContactMsg, EnsureReplicaInstanceMsg, InstanceForChannelMsg,
+    ProvisionedActor,
+};
+use derec_backend::infrastructure::bootstrap::Node;
+use derec_backend::models::Actor;
 use derec_backend::models::Defaults;
 use derec_backend::models::{Role, TransportMode, UnpairAck};
-use derec_backend::models::Actor;
 use derec_backend::services::ports::{ActorGateway, InboxDirectory};
-use derec_backend::infrastructure::bootstrap::Node;
 use derec_library::protocol::types::{ReplicaFilter, UserSecret};
 use derec_library::protocol::{
     ChannelStatus, DeRecChannelStore, DeRecEvent, DeRecFlow, DeRecUserSecretStore,
@@ -58,7 +63,10 @@ async fn serve() -> Arc<Node> {
     let port = listener.local_addr().expect("listener is bound").port();
 
     let state = Arc::new(Node::new(
-        derec_backend::models::NodeConfig::new(format!("http://127.0.0.1:{port}"), Defaults::default()),
+        derec_backend::models::NodeConfig::new(
+            format!("http://127.0.0.1:{port}"),
+            Defaults::default(),
+        ),
         reqwest::Client::new(),
         actix_rt::Arbiter::current(),
         derec_backend::infrastructure::db::connect("sqlite::memory:")
@@ -87,9 +95,15 @@ async fn spawn_helper(state: &Arc<Node>, name: &str) -> Addr<ProvisionedActor> {
         .register(actor.clone(), test_settings())
         .await
         .expect("the registry is writable");
-    state.runtime.spawn(&actor, &test_settings()).expect("the actor starts");
+    state
+        .runtime
+        .spawn(&actor, &test_settings())
+        .expect("the actor starts");
 
-    state.inboxes.provisioned(&actor.id).expect("spawning registers an inbox")
+    state
+        .inboxes
+        .provisioned(&actor.id)
+        .expect("spawning registers an inbox")
 }
 
 /// The source: a browser-managed owner with a replica id, driven directly the
@@ -190,11 +204,11 @@ fn latest_ack(events: &[DeRecEvent], replica_id: u64) -> Option<u32> {
     events
         .iter()
         .filter_map(|e| match e {
-            DeRecEvent::ReplicaSecretAcked { from_replica_id, version, .. }
-                if *from_replica_id == replica_id =>
-            {
-                Some(*version)
-            }
+            DeRecEvent::ReplicaSecretAcked {
+                from_replica_id,
+                version,
+                ..
+            } if *from_replica_id == replica_id => Some(*version),
             _ => None,
         })
         .max()
@@ -211,7 +225,9 @@ struct Member {
 /// that publish to be acknowledged.
 async fn admit(state: &Node, source: &mut Source, helper: &Addr<ProvisionedActor>) -> Member {
     helper
-        .send(EnsureReplicaInstanceMsg { owner_secret_id: source.secret_id })
+        .send(EnsureReplicaInstanceMsg {
+            owner_secret_id: source.secret_id,
+        })
         .await
         .expect("the helper actor is alive")
         .expect("the replica instance is created");
@@ -240,23 +256,27 @@ async fn admit(state: &Node, source: &mut Source, helper: &Addr<ProvisionedActor
 
     let completed = |events: &[DeRecEvent]| {
         events.iter().find_map(|e| match e {
-            DeRecEvent::PairingCompleted { channel_id, pairing_channel_id, .. }
-                if *pairing_channel_id == pairing_id =>
-            {
-                Some(*channel_id)
-            }
+            DeRecEvent::PairingCompleted {
+                channel_id,
+                pairing_channel_id,
+                ..
+            } if *pairing_channel_id == pairing_id => Some(*channel_id),
             _ => None,
         })
     };
-    pump_until(state, source, "the pairing to complete", |e| completed(e).is_some()).await;
+    pump_until(state, source, "the pairing to complete", |e| {
+        completed(e).is_some()
+    })
+    .await;
     let channel = completed(&source.events).expect("checked above");
     let replica_id = source
         .events
         .iter()
         .find_map(|e| match e {
-            DeRecEvent::ReplicaPaired { channel_id, peer_replica_id } if *channel_id == channel => {
-                Some(*peer_replica_id)
-            }
+            DeRecEvent::ReplicaPaired {
+                channel_id,
+                peer_replica_id,
+            } if *channel_id == channel => Some(*peer_replica_id),
             _ => None,
         })
         .expect("a replica pairing reports the peer's replica id");
@@ -266,7 +286,9 @@ async fn admit(state: &Node, source: &mut Source, helper: &Addr<ProvisionedActor
     let mut status = None;
     for _ in 0..POLL_ATTEMPTS {
         status = helper
-            .send(ChannelStatusMsg { channel_id: channel.0 })
+            .send(ChannelStatusMsg {
+                channel_id: channel.0,
+            })
             .await
             .expect("the helper actor is alive");
         if status == Some(ChannelStatus::Paired) {
@@ -274,7 +296,11 @@ async fn admit(state: &Node, source: &mut Source, helper: &Addr<ProvisionedActor
         }
         actix_rt::time::sleep(POLL_INTERVAL).await;
     }
-    assert_eq!(status, Some(ChannelStatus::Paired), "the helper confirms its side");
+    assert_eq!(
+        status,
+        Some(ChannelStatus::Paired),
+        "the helper confirms its side"
+    );
 
     let fingerprint = source
         .protocol
@@ -290,7 +316,10 @@ async fn admit(state: &Node, source: &mut Source, helper: &Addr<ProvisionedActor
         "the source's own code matches"
     );
 
-    Member { replica_id, pairing_channel: channel.0 }
+    Member {
+        replica_id,
+        pairing_channel: channel.0,
+    }
 }
 
 /// The channel the source's own row names — the group's channel.
@@ -367,24 +396,40 @@ async fn a_publish_after_the_joiners_handover_reaches_every_member() {
     let mut source = register_source(&state).await;
 
     let first = admit(&state, &mut source, &alex).await;
-    pump_until(&state, &mut source, "the first member's catch-up ack", |e| {
-        latest_ack(e, first.replica_id).is_some()
-    })
+    pump_until(
+        &state,
+        &mut source,
+        "the first member's catch-up ack",
+        |e| latest_ack(e, first.replica_id).is_some(),
+    )
     .await;
 
     let second = admit(&state, &mut source, &richard).await;
-    pump_until(&state, &mut source, "the second member's catch-up ack", |e| {
-        latest_ack(e, second.replica_id).is_some()
-    })
+    pump_until(
+        &state,
+        &mut source,
+        "the second member's catch-up ack",
+        |e| latest_ack(e, second.replica_id).is_some(),
+    )
     .await;
     let group = group_channel(&source).await;
-    assert_eq!(group, first.pairing_channel, "the group stays on the first member's channel");
-    assert_eq!(channel_of(&source, &second).await, group, "the joiner's row moved onto it");
+    assert_eq!(
+        group, first.pairing_channel,
+        "the group stays on the first member's channel"
+    );
+    assert_eq!(
+        channel_of(&source, &second).await,
+        group,
+        "the joiner's row moved onto it"
+    );
 
     let version = protect(&mut source).await;
-    pump_until(&state, &mut source, "both members to acknowledge the publish", |e| {
-        acked(e, first.replica_id, version) && acked(e, second.replica_id, version)
-    })
+    pump_until(
+        &state,
+        &mut source,
+        "both members to acknowledge the publish",
+        |e| acked(e, first.replica_id, version) && acked(e, second.replica_id, version),
+    )
     .await;
 }
 
@@ -404,14 +449,20 @@ async fn a_publish_during_the_joiners_handover_reaches_every_member() {
     let mut source = register_source(&state).await;
 
     let first = admit(&state, &mut source, &alex).await;
-    pump_until(&state, &mut source, "the first member's catch-up ack", |e| {
-        latest_ack(e, first.replica_id).is_some()
-    })
+    pump_until(
+        &state,
+        &mut source,
+        "the first member's catch-up ack",
+        |e| latest_ack(e, first.replica_id).is_some(),
+    )
     .await;
 
     let second = admit(&state, &mut source, &richard).await;
     let group = group_channel(&source).await;
-    assert_eq!(group, first.pairing_channel, "the group stays on the first member's channel");
+    assert_eq!(
+        group, first.pairing_channel,
+        "the group stays on the first member's channel"
+    );
 
     // Let the joiner hydrate from the catch-up sync, without the source
     // reading its acknowledgement.
@@ -421,7 +472,10 @@ async fn a_publish_during_the_joiners_handover_reaches_every_member() {
         }
         actix_rt::time::sleep(POLL_INTERVAL).await;
     }
-    assert!(routes(&richard, group).await, "the joiner hydrated onto the group channel");
+    assert!(
+        routes(&richard, group).await,
+        "the joiner hydrated onto the group channel"
+    );
     assert!(
         !routes(&richard, second.pairing_channel).await,
         "the joiner no longer holds its pairing channel"
@@ -433,8 +487,11 @@ async fn a_publish_during_the_joiners_handover_reaches_every_member() {
     );
 
     let version = protect(&mut source).await;
-    pump_until(&state, &mut source, "both members to acknowledge the publish", |e| {
-        acked(e, first.replica_id, version) && acked(e, second.replica_id, version)
-    })
+    pump_until(
+        &state,
+        &mut source,
+        "both members to acknowledge the publish",
+        |e| acked(e, first.replica_id, version) && acked(e, second.replica_id, version),
+    )
     .await;
 }

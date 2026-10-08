@@ -5,7 +5,8 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { PairedParticipant } from '../types'
+import type { PairedParticipant, PublishedRound } from '../types'
+import { publishTargets } from '../ownerPairing'
 import { AddSecretModal } from './AddSecretModal'
 import { ProtectRoundProgress } from './ProtectRoundProgress'
 import { roundProgress } from './roundProgress'
@@ -59,10 +60,11 @@ describe('AddSecretModal and Escape', () => {
       root.render(
         <AddSecretModal
           participants={[participant('a')]}
+          pendingChannelIds={new Set()}
           secretBag={null}
           threshold={1}
           onClose={onClose}
-          onAddSecret={async () => 4}
+          onAddSecret={async () => ({ version: 4, recipientIds: ['a'] })}
         />,
       ),
     )
@@ -74,15 +76,16 @@ describe('AddSecretModal and Escape', () => {
 
   it('ignores Escape while the round is being sent', async () => {
     const onClose = vi.fn()
-    let finish: (version: number) => void = () => {}
+    let finish: (round: PublishedRound) => void = () => {}
     act(() =>
       root.render(
         <AddSecretModal
           participants={[participant('a')]}
+          pendingChannelIds={new Set()}
           secretBag={null}
           threshold={1}
           onClose={onClose}
-          onAddSecret={() => new Promise<number>(resolve => (finish = resolve))}
+          onAddSecret={() => new Promise<PublishedRound>(resolve => (finish = resolve))}
         />,
       ),
     )
@@ -95,7 +98,7 @@ describe('AddSecretModal and Escape', () => {
     pressEscape()
     expect(onClose).not.toHaveBeenCalled()
 
-    await act(async () => finish(4))
+    await act(async () => finish({ version: 4, recipientIds: ['a'] }))
   })
 })
 
@@ -137,11 +140,12 @@ describe('ProtectRoundProgress while a participant has not answered', () => {
 
 describe('AddSecretModal size limit', () => {
   it('refuses a secret that would take the bag past the limit, before anything is sent', () => {
-    const onAddSecret = vi.fn(async () => 4)
+    const onAddSecret = vi.fn(async () => ({ version: 4, recipientIds: ['a'] }))
     act(() =>
       root.render(
         <AddSecretModal
           participants={[participant('a')]}
+          pendingChannelIds={new Set()}
           secretBag={null}
           threshold={1}
           onClose={() => {}}
@@ -165,6 +169,7 @@ describe('AddSecretModal size limit', () => {
       root.render(
         <AddSecretModal
           participants={[participant('a')]}
+          pendingChannelIds={new Set()}
           secretBag={null}
           threshold={1}
           onClose={() => {}}
@@ -184,5 +189,65 @@ describe('AddSecretModal size limit', () => {
     expect(host.textContent).toContain('None of the 1 share request(s) could be delivered')
     // Back on the form, with Cancel available — nothing left blocking the page.
     expect(Array.from(host.querySelectorAll('button')).some(b => b.textContent === 'Cancel' && !b.disabled)).toBe(true)
+  })
+})
+
+describe('AddSecretModal following a round', () => {
+  it('waits only on the participants the round was sent to', async () => {
+    // `b` is paired but its fingerprint was refused: the library holds the
+    // channel `Pending` and the round never reached it, so it is no recipient.
+    act(() =>
+      root.render(
+        <AddSecretModal
+          participants={[participant('a', 'confirmed'), participant('b')]}
+          pendingChannelIds={new Set(['9b'])}
+          secretBag={null}
+          threshold={1}
+          onClose={() => {}}
+          onAddSecret={async () => ({ version: 4, recipientIds: ['a'] })}
+        />,
+      ),
+    )
+    setValue('#ps-name', 'Seed')
+    setValue('input[aria-label="Secret data"]', 'one two')
+    await act(async () => (host.querySelector('form') as HTMLFormElement).requestSubmit())
+
+    expect(host.textContent).toContain('1 of 1 confirmed')
+    expect(host.textContent).not.toMatch(/no answer|did not store/)
+  })
+
+  it('lists only the participants the round will target', () => {
+    // `b` completed its handshake but its fingerprint was refused, so the
+    // library holds the channel `Pending` and a round sends it nothing. `r` is
+    // a replica channel, which never receives a share.
+    const replica: PairedParticipant = { ...participant('r'), peerRole: 'replica_destination' }
+    act(() =>
+      root.render(
+        <AddSecretModal
+          participants={[participant('a'), participant('b'), participant('c'), replica]}
+          pendingChannelIds={new Set(['9b'])}
+          secretBag={null}
+          threshold={1}
+          onClose={() => {}}
+          onAddSecret={async () => ({ version: 1, recipientIds: ['a', 'c'] })}
+        />,
+      ),
+    )
+
+    expect(host.textContent).toContain('Participants (2 paired)')
+    const listed = Array.from(host.querySelectorAll('.participant-check-item')).map(li => li.textContent)
+    expect(listed).toEqual(['A', 'C'])
+  })
+})
+
+describe('publishTargets', () => {
+  it('keeps share targets the library does not hold Pending', () => {
+    const owner: PairedParticipant = { ...participant('o'), peerRole: 'owner' }
+    const unpaired: PairedParticipant = { ...participant('u'), connectionStatus: 'available' }
+    const targets = publishTargets(
+      [participant('a'), participant('b'), owner, unpaired],
+      new Set(['9b']),
+    )
+    expect(targets.map(p => p.id)).toEqual(['a'])
   })
 })

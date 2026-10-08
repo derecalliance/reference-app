@@ -55,6 +55,23 @@ export function isShareTarget(h: PairedParticipant): boolean {
 }
 
 /**
+ * The participants the next protect round will send a share to.
+ *
+ * [`isShareTarget`] plus the library's own gate: a channel it still holds
+ * `Pending` — a fingerprint nobody confirmed, or one refused — is not a target
+ * of `ProtectSecret` and is sent nothing. `pendingChannelIds` is that set, as
+ * read from the channel store. Every count and list that says who a round
+ * will reach goes through this, so none can disagree with what the round
+ * actually does.
+ */
+export function publishTargets(
+  participants: readonly PairedParticipant[],
+  pendingChannelIds: ReadonlySet<string>,
+): PairedParticipant[] {
+  return participants.filter(p => isShareTarget(p) && !pendingChannelIds.has(p.channelId))
+}
+
+/**
  * Whether a roster row is a replica channel rather than a participant one.
  *
  * A replica channel reaches the participant roster like any other, so every

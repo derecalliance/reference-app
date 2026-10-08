@@ -80,6 +80,17 @@ Click **Recover** on the card and confirm **Recover from bag**. This:
 
 It cannot be undone. The restored version cannot be verified (no proof material survives a restore); publish a new version to verify again.
 
+### Restoring a vault that has replicas
+
+The bag also carries the vault's replica group, and restoring brings it back: the Replicas tab lists the replica again, and the next published version is mirrored to it as before.
+
+A replica group only accepts versions from one of its own members, so the restored vault has to be one:
+
+- **On the device that held the group**, the vault keeps the identity it had.
+- **On a new device**, the vault takes over the identity of the device the bag was protected from — the group's source — because that is the device it replaces. The console logs *This device now answers to the replica group as its source*. Its next publish tells the replica where it is now. Keep only one of the two devices publishing: the old one, if it still runs, answers under the same identity.
+
+A vault restored on a new device by an earlier version of the app has no such identity, and every publish stops with *this vault belongs to a replica group that does not list this device*. Recover it again (Discover, Recover, Recover from bag) to fix it.
+
 ## Shares held for others
 
 The **Shares** tab is the other side: the shares this vault holds as a helper for other owners, per channel and version, with the raw share in base64 or hex.

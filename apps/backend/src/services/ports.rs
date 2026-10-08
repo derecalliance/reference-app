@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::models::{
     Actor, ActorSettings, ChannelSummary, ContactRequest, EventSnapshot, InboxKind, Listener,
-    NewEvent, OwnTarget, Resolution, Route,
+    NewEvent, OwnTarget, Route,
 };
 
 // ── Inboxes ─────────────────────────────────────────────────────────────────
@@ -150,8 +150,10 @@ pub trait ChannelRoutes: Send + Sync {
     fn pin(&self, channel_id: u64, actor_id: Uuid);
     /// Drop `actor_id`'s pin on `channel_id`, leaving any other claim intact.
     fn unpin(&self, channel_id: u64, actor_id: Uuid);
-    /// Which actor a message on `channel_id`, sent by `sender`, is for.
-    fn resolve_from(&self, channel_id: u64, sender: Option<Uuid>) -> Resolution;
+    /// Every claim on `channel_id` except the sender's, each with its tier
+    /// and side. [`crate::models::Resolution::among`] picks the recipient
+    /// from them; a caller may narrow them first.
+    fn claims(&self, channel_id: u64, sender: Option<Uuid>) -> Vec<Route>;
     /// Forget every claim `actor_id` holds, answering how many channels it
     /// held.
     fn remove_actor(&self, actor_id: Uuid) -> usize;

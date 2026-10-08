@@ -12,19 +12,19 @@
 use std::sync::Arc;
 
 use axum::{
-    Router,
     body::Body,
-    http::{Request, StatusCode, header},
+    http::{header, Request, StatusCode},
+    Router,
 };
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use derec_backend::models::Listener;
-use derec_backend::models::{Defaults, LoadedConfig};
-use derec_backend::models::{Carrier, Direction, Outcome};
-use derec_backend::models::{Role, TransportMode, UnpairAck};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use derec_backend::infrastructure::bootstrap::Node;
+use derec_backend::models::Listener;
+use derec_backend::models::{Carrier, Direction, Outcome};
+use derec_backend::models::{Defaults, LoadedConfig};
+use derec_backend::models::{Role, TransportMode, UnpairAck};
 use derec_backend::services::ports::InboxDirectory;
 use prost::Message as _;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -34,20 +34,22 @@ use uuid::Uuid;
 async fn moved_node(grpc_enabled: bool, relay_allowed_hosts: &str) -> (Arc<Node>, Router) {
     let mut loaded = LoadedConfig::default();
     loaded.settings.server.relay_allowed_hosts = relay_allowed_hosts.to_owned();
-    let state = Arc::new(
-        Node::new(
-        derec_backend::models::NodeConfig::new("http://192.168.0.28:5600", Defaults {
+    let state = Arc::new(Node::new(
+        derec_backend::models::NodeConfig::new(
+            "http://192.168.0.28:5600",
+            Defaults {
                 grpc_enabled,
                 grpc_port: 50651,
                 ..Defaults::default()
-            }).with_loaded(loaded),
+            },
+        )
+        .with_loaded(loaded),
         reqwest::Client::new(),
         actix_rt::Arbiter::current(),
         derec_backend::infrastructure::db::connect("sqlite::memory:")
-                .await
-                .expect("an in-memory database always connects"),
-    ),
-    );
+            .await
+            .expect("an in-memory database always connects"),
+    ));
     for (listener, address) in [
         (Listener::Grpc, "localhost:9090"),
         (Listener::Http, "http://localhost:8080"),
@@ -186,7 +188,10 @@ async fn an_http_address_this_node_advertised_before_reaches_the_actor_it_names(
     .await;
 
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
-    assert_eq!(state.mailboxes.drain(&owner).await.expect("readable"), vec![wire]);
+    assert_eq!(
+        state.mailboxes.drain(&owner).await.expect("readable"),
+        vec![wire]
+    );
 }
 
 #[actix_rt::test]
@@ -214,7 +219,11 @@ async fn another_node_is_refused_with_the_setting_to_change_and_the_refusal_is_l
     assert_eq!(refused.outcome, Outcome::Refused);
     assert_eq!(refused.actor_id, Some(requester));
     assert_eq!(refused.channel_id.as_deref(), Some("5"));
-    assert!(refused.detail.contains("relay_allowed_hosts"), "{}", refused.detail);
+    assert!(
+        refused.detail.contains("relay_allowed_hosts"),
+        "{}",
+        refused.detail
+    );
 }
 
 #[actix_rt::test]
@@ -231,7 +240,11 @@ async fn an_allowed_node_is_dialled() {
 
     assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
     let refused = relay_events(&state).pop().expect("recorded");
-    assert!(refused.detail.contains("relay delivery failed"), "{}", refused.detail);
+    assert!(
+        refused.detail.contains("relay delivery failed"),
+        "{}",
+        refused.detail
+    );
 }
 
 #[actix_rt::test]
@@ -263,7 +276,10 @@ async fn a_channel_nobody_here_holds_is_502_with_the_reason() {
 
     assert_eq!(status, StatusCode::BAD_GATEWAY);
     let message = body["error"]["message"].as_str().expect("error shape");
-    assert!(message.contains("no actor on this node holds channel 31337"), "{message}");
+    assert!(
+        message.contains("no actor on this node holds channel 31337"),
+        "{message}"
+    );
     assert_eq!(relay_events(&state).len(), 1);
 }
 
@@ -303,7 +319,10 @@ async fn a_message_as_large_as_the_grpc_listener_accepts_can_be_relayed() {
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
-    assert_eq!(state.mailboxes.drain(&owner).await.expect("readable"), vec![wire]);
+    assert_eq!(
+        state.mailboxes.drain(&owner).await.expect("readable"),
+        vec![wire]
+    );
 
     let too_big = envelope(9, max + 1);
     let (status, body) = relay(
@@ -312,7 +331,13 @@ async fn a_message_as_large_as_the_grpc_listener_accepts_can_be_relayed() {
     )
     .await;
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
-    assert!(body["error"]["message"].as_str().expect("error shape").contains("4 MiB"), "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .expect("error shape")
+            .contains("4 MiB"),
+        "{body}"
+    );
 }
 
 #[actix_rt::test]
@@ -328,5 +353,113 @@ async fn the_http_transport_route_takes_a_message_of_the_same_size() {
     let response = router.clone().oneshot(request).await.expect("infallible");
 
     assert_eq!(response.status(), StatusCode::ACCEPTED);
-    assert_eq!(state.mailboxes.drain(&owner).await.expect("readable"), vec![wire]);
+    assert_eq!(
+        state.mailboxes.drain(&owner).await.expect("readable"),
+        vec![wire]
+    );
+}
+
+/// A provisioned-style actor on this node advertising `mode`, with a mailbox
+/// so whatever is delivered to it can be read back.
+async fn helper(state: &Node, mode: TransportMode) -> Uuid {
+    let actor = derec_backend::models::Actor::mint(
+        Role::Helper,
+        "Fixture",
+        "http://localhost:8080",
+        "localhost:9090",
+        mode,
+    );
+    state
+        .actors
+        .register(
+            actor.clone(),
+            derec_backend::models::ActorSettings {
+                replica_id: rand::random(),
+                timeout_secs: 300,
+                unpair_ack: UnpairAck::Required,
+            },
+        )
+        .await
+        .expect("the registry is writable");
+    state.inboxes.register_browser(actor.id);
+    actor.id
+}
+
+#[actix_rt::test]
+async fn a_relayed_message_reaches_the_helper_past_a_grpc_replicas_copy_of_its_channel() {
+    // A replica's instance holds the source's helper channels, so a gRPC
+    // replica claimed the same id as the gRPC helper serving it, and the
+    // source's relayed message to that helper was refused as ambiguous (502).
+    let (state, router) = moved_node(true, "").await;
+    let source = browser_owner(&state).await;
+    let helper_id = helper(&state, TransportMode::Grpc).await;
+    let replica_id = helper(&state, TransportMode::Grpc).await;
+    state
+        .channel_router
+        .bind(4343, replica_id, derec_backend::models::Side::Mirror);
+    state
+        .channel_router
+        .bind(4343, helper_id, derec_backend::models::Side::Endpoint);
+
+    let wire = envelope(4343, 16);
+    let (status, body) = relay(
+        &router,
+        json!({
+            "uri": "grpc://localhost:9090",
+            "data": URL_SAFE_NO_PAD.encode(&wire),
+            "actor_id": source,
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(
+        state.mailboxes.drain(&helper_id).await.expect("readable"),
+        vec![wire]
+    );
+    assert!(state
+        .mailboxes
+        .drain(&replica_id)
+        .await
+        .expect("readable")
+        .is_empty());
+}
+
+#[actix_rt::test]
+async fn a_relayed_message_on_a_channel_two_helpers_serve_is_still_refused() {
+    // Two ends of one channel here and no sender among them: a genuine tie.
+    let (state, router) = moved_node(true, "").await;
+    let source = browser_owner(&state).await;
+    let first = helper(&state, TransportMode::Grpc).await;
+    let second = helper(&state, TransportMode::Grpc).await;
+    state
+        .channel_router
+        .bind(4344, first, derec_backend::models::Side::Endpoint);
+    state
+        .channel_router
+        .bind(4344, second, derec_backend::models::Side::Endpoint);
+
+    let (status, body) = relay(
+        &router,
+        json!({
+            "uri": "grpc://localhost:9090",
+            "data": URL_SAFE_NO_PAD.encode(envelope(4344, 16)),
+            "actor_id": source,
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+    assert!(state
+        .mailboxes
+        .drain(&first)
+        .await
+        .expect("readable")
+        .is_empty());
+    assert!(state
+        .mailboxes
+        .drain(&second)
+        .await
+        .expect("readable")
+        .is_empty());
 }

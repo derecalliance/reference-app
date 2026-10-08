@@ -162,6 +162,12 @@ export interface ServerDefaultsResult {
    * unreachable would send them hunting for a process that is running fine.
    */
   reachable: boolean
+  /**
+   * Whether `defaults` are the node's own answer rather than the built-in
+   * fallback — false when it was unreachable *or* answered with an error.
+   * What a caller retrying for the real values waits on.
+   */
+  fromServer: boolean
 }
 
 /**
@@ -177,11 +183,11 @@ export interface ServerDefaultsResult {
 export async function apiGetServerDefaults(): Promise<ServerDefaultsResult> {
   try {
     const res = await request(`/config`)
-    if (!res.ok) return { defaults: toServerDefaults(null), reachable: true }
+    if (!res.ok) return { defaults: toServerDefaults(null), reachable: true, fromServer: false }
     const dto = await readResult<Partial<ServerDefaultsDto>>(res)
-    return { defaults: toServerDefaults(dto), reachable: true }
+    return { defaults: toServerDefaults(dto), reachable: true, fromServer: true }
   } catch {
-    return { defaults: toServerDefaults(null), reachable: false }
+    return { defaults: toServerDefaults(null), reachable: false, fromServer: false }
   }
 }
 
