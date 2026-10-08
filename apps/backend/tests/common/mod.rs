@@ -15,22 +15,24 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use actix::prelude::*;
-use derec_backend::infrastructure::actors::provisioned::{ChannelStatusMsg, CreateContactMsg, ProvisionedActor};
-use derec_backend::infrastructure::actors::protocol::{ProtocolConfig, build_protocol};
-use derec_backend::models::Defaults;
-use derec_backend::infrastructure::grpc::GrpcIngress;
-use derec_backend::infrastructure::grpc::pb::de_rec_transport_server::DeRecTransportServer;
-use derec_backend::models::{Role, TransportMode, UnpairAck};
-use derec_backend::models::Actor;
-use derec_backend::services::ports::{ActorGateway, InboxDirectory};
-use derec_backend::infrastructure::bootstrap::Node;
 use derec_backend::infrastructure::actors::protocol::ActorProtocol;
+use derec_backend::infrastructure::actors::protocol::{build_protocol, ProtocolConfig};
+use derec_backend::infrastructure::actors::provisioned::{
+    ChannelStatusMsg, CreateContactMsg, ProvisionedActor,
+};
+use derec_backend::infrastructure::bootstrap::Node;
+use derec_backend::infrastructure::grpc::pb::de_rec_transport_server::DeRecTransportServer;
+use derec_backend::infrastructure::grpc::GrpcIngress;
+use derec_backend::models::Actor;
+use derec_backend::models::Defaults;
+use derec_backend::models::{Role, TransportMode, UnpairAck};
+use derec_backend::services::ports::{ActorGateway, InboxDirectory};
 use derec_library::protocol::types::Target;
 use derec_library::protocol::{ChannelStatus, DeRecFlow};
 use derec_library::types::ChannelId;
 use tokio::sync::oneshot;
-use tonic::transport::Server;
 use tonic::transport::server::TcpIncoming;
+use tonic::transport::Server;
 use uuid::Uuid;
 
 /// Stock protocol settings for a fixture actor.
@@ -101,13 +103,20 @@ async fn serve() -> (Arc<Node>, GrpcHandle) {
     let http_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("an ephemeral port is available");
-    let http_port = http_listener.local_addr().expect("listener is bound").port();
+    let http_port = http_listener
+        .local_addr()
+        .expect("listener is bound")
+        .port();
 
     let incoming = TcpIncoming::bind("127.0.0.1:0".parse().expect("a valid socket address"))
         .expect("an ephemeral gRPC port is available");
     let grpc_addr = incoming.local_addr().expect("the gRPC listener is bound");
 
-    let defaults = Defaults { grpc_enabled: true, grpc_port: grpc_addr.port(), ..Defaults::default() };
+    let defaults = Defaults {
+        grpc_enabled: true,
+        grpc_port: grpc_addr.port(),
+        ..Defaults::default()
+    };
 
     let state = Arc::new(Node::new(
         derec_backend::models::NodeConfig::new(format!("http://127.0.0.1:{http_port}"), defaults),
@@ -127,32 +136,48 @@ async fn serve() -> (Arc<Node>, GrpcHandle) {
     let grpc_state = state.clone();
     actix_rt::spawn(async move {
         let _ = Server::builder()
-            .add_service(DeRecTransportServer::new(GrpcIngress::new(grpc_state.state.delivery.clone())))
+            .add_service(DeRecTransportServer::new(GrpcIngress::new(
+                grpc_state.state.delivery.clone(),
+            )))
             .serve_with_incoming_shutdown(incoming, async move {
                 let _ = shutdown_rx.await;
             })
             .await;
     });
 
-    (state, GrpcHandle { addr: grpc_addr, shutdown: Mutex::new(Some(shutdown_tx)) })
+    (
+        state,
+        GrpcHandle {
+            addr: grpc_addr,
+            shutdown: Mutex::new(Some(shutdown_tx)),
+        },
+    )
 }
 
 /// Provision a hosted helper in the requested transport mode, exactly as
 /// `POST /helpers` does.
-async fn spawn_helper(
-    state: &Arc<Node>,
-    mode: TransportMode,
-) -> (Uuid, Addr<ProvisionedActor>) {
-    let actor =
-        Actor::mint(Role::Helper, "Helper", &state.config.base_url, &state.config.grpc_authority(), mode);
+async fn spawn_helper(state: &Arc<Node>, mode: TransportMode) -> (Uuid, Addr<ProvisionedActor>) {
+    let actor = Actor::mint(
+        Role::Helper,
+        "Helper",
+        &state.config.base_url,
+        &state.config.grpc_authority(),
+        mode,
+    );
     state
         .actors
         .register(actor.clone(), test_settings())
         .await
         .expect("the registry is writable");
-    state.runtime.spawn(&actor, &test_settings()).expect("the helper starts");
+    state
+        .runtime
+        .spawn(&actor, &test_settings())
+        .expect("the helper starts");
 
-    let addr = state.inboxes.provisioned(&actor.id).expect("spawning registers an inbox");
+    let addr = state
+        .inboxes
+        .provisioned(&actor.id)
+        .expect("spawning registers an inbox");
 
     (actor.id, addr)
 }
@@ -191,15 +216,27 @@ async fn register_owner(state: &Arc<Node>) -> Owner {
         local_delivery: None,
     };
 
-    Owner { id: actor.id, secret_id, protocol: build_protocol(&config).expect("the owner's protocol builds") }
+    Owner {
+        id: actor.id,
+        secret_id,
+        protocol: build_protocol(&config).expect("the owner's protocol builds"),
+    }
 }
 
 /// Drain the owner's mailbox into its protocol, as the front end's poll loop
 /// does. A no-op when the mailbox is empty.
 async fn pump(state: &Node, owner: &mut Owner) {
-    let messages = state.mailboxes.drain(&owner.id).await.expect("the mailbox is readable");
+    let messages = state
+        .mailboxes
+        .drain(&owner.id)
+        .await
+        .expect("the mailbox is readable");
     for bytes in messages {
-        owner.protocol.process(&bytes).await.expect("the owner processes the helper's reply");
+        owner
+            .protocol
+            .process(&bytes)
+            .await
+            .expect("the owner processes the helper's reply");
     }
 }
 
@@ -214,7 +251,10 @@ async fn await_helper_status(
     let mut last = None;
     for _ in 0..POLL_ATTEMPTS {
         pump(state, owner).await;
-        last = helper.send(ChannelStatusMsg { channel_id }).await.expect("the helper actor is alive");
+        last = helper
+            .send(ChannelStatusMsg { channel_id })
+            .await
+            .expect("the helper actor is alive");
         if last == Some(want) {
             return last;
         }
@@ -282,12 +322,24 @@ pub async fn owner_paired_with(mode: TransportMode) -> Rig {
     let channel_id = await_helper_channel(&state, helper_id, &mut owner).await;
 
     assert_eq!(
-        await_helper_status(&state, &helper, &mut owner, channel_id, ChannelStatus::Paired).await,
+        await_helper_status(
+            &state,
+            &helper,
+            &mut owner,
+            channel_id,
+            ChannelStatus::Paired
+        )
+        .await,
         Some(ChannelStatus::Paired),
         "the fixture is only useful once both sides have actually completed the handshake"
     );
 
-    Rig { secret_id: owner.secret_id, channel_id: ChannelId(channel_id), owner, grpc }
+    Rig {
+        secret_id: owner.secret_id,
+        channel_id: ChannelId(channel_id),
+        owner,
+        grpc,
+    }
 }
 
 /// The transports the owner's channel store has recorded for the helper
@@ -300,7 +352,12 @@ pub async fn recorded_transports(rig: &Rig) -> Vec<derec_proto::TransportProtoco
         .owner
         .protocol
         .channel_store
-        .load(rig.secret_id, ChannelQuery::Helper { channel_id: rig.channel_id })
+        .load(
+            rig.secret_id,
+            ChannelQuery::Helper {
+                channel_id: rig.channel_id,
+            },
+        )
         .await
         .expect("the in-memory channel store is readable")
         .expect("the channel exists after pairing");

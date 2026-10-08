@@ -6,8 +6,7 @@
 #   docker compose -f examples/compose.sqlite.yaml up -d
 #
 # or let `./start.sh` do it, which also picks free ports and waits for the node
-# to be healthy. The first run builds the image (Rust and the web bundle, several
-# minutes); later runs reuse it.
+# to be healthy. The image is pulled from the registry; nothing is built.
 #
 # Paths below are relative to THIS file's directory, so they work however the
 # file is reached. Needs Docker Compose v2.24 or newer (`docker compose
@@ -20,13 +19,14 @@ name: derec
 
 services:
   node:
-    # Built from the checkout on first `up`; `--build` rebuilds after a pull.
-    # The tag names the SDK the image is compiled against — a different SDK is a
-    # different image, not a flag.
-    build:
-      context: ..
-      dockerfile: apps/backend/Dockerfile
-    image: derec/reference-app:0.0.7
+    # The published image, pulled like any other (`postgres`, `redis`…). The tag
+    # names the SDK it is compiled against — a different SDK is a different
+    # image, not a flag. To build it from your checkout instead, add
+    # `-f compose.build.yaml` to the repo-root compose files (or run
+    # `./start.sh --build`).
+    # DEREC_IMAGE points it at another registry — e.g. a local one used to try
+    # an image before publishing it (`scripts/publish-image.sh --local`).
+    image: ${DEREC_IMAGE:-ghcr.io/derecalliance/reference-app}:0.0.8-alpha.1
 
     # Optional bulk configuration: copy examples/.env.example to `.env` at the
     # repo root. These variables go INTO the container and outrank the config

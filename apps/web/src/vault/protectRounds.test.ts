@@ -4,6 +4,7 @@
 import type { DeRecEvent } from '@derec-alliance/web'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { toBase64Url } from '../derecApi'
 import { PROTECT_ROUND_BACKSTOP_MS } from '../owner/protocol'
 import type { PairedParticipant, SecretBag, UserSecret, Vault } from '../types'
 import { VaultRuntime } from './runtime'
@@ -64,10 +65,14 @@ function runtime(overrides: Partial<Vault> = {}) {
     }),
     d,
   )
+  // The library targets every paired helper channel, and says so per channel.
   let nextVersion = 2
-  const start = vi.fn(async () => [
-    event({ type: 'ProtectSecretStarted', channel_id: '901', version: nextVersion++, trace_id: 't' }),
-  ])
+  const start = vi.fn(async () => {
+    const version = nextVersion++
+    return r.state().vault.participants.map(p =>
+      event({ type: 'ProtectSecretStarted', channel_id: p.channelId, version, trace_id: 't' }),
+    )
+  })
   stubInstance(r, { start })
   return { r, d, start }
 }
@@ -229,6 +234,51 @@ describe('a round the library closes below threshold', () => {
     ])
     expect(r.state().vault.secretBag?.currentVersion.version).toBe(1)
     expect(r.state().vault.pendingProtectRounds).toBeUndefined()
+  })
+})
+
+describe('a helper the library does not send the round to', () => {
+  it('is neither waited on nor reported as having failed to store it', async () => {
+    const { r, start } = runtime()
+    // h4's fingerprint was refused, so its channel is still `Pending` and the
+    // library sends the round to the other three only.
+    start.mockImplementationOnce(async () =>
+      ['901', '902', '903'].map(channel_id =>
+        event({ type: 'ProtectSecretStarted', channel_id, version: 2, trace_id: 't' }),
+      ),
+    )
+
+    const round = await r.addSecret('S2', 'two')
+
+    expect(round).toEqual({ version: 2, recipientIds: ['h1', 'h2', 'h3'] })
+    expect(shareStatus(r, 'h4', 2)).toBeUndefined()
+
+    deliver(r, confirmed(2, '901'), confirmed(2, '902'), confirmed(2, '903'), complete(2, true))
+
+    const committed = r.state().vault.secretBag?.currentVersion
+    expect(committed?.version).toBe(2)
+    expect(committed?.failedParticipantIds).toEqual([])
+    expect(committed?.helpers.map(h => h.id)).toEqual(['h1', 'h2', 'h3'])
+    expect(shareStatus(r, 'h4', 2)).toBeUndefined()
+  })
+})
+
+describe('a vault whose replica group does not list this device', () => {
+  afterEach(() => localStorage.clear())
+
+  it('refuses to publish, saying why and what to do, before the library is asked', async () => {
+    // The group as the library stores it for vault v1 / secret 42: one member,
+    // and not this device (whose id is pinned to 5555).
+    localStorage.setItem('derec:replica-id:v1', '5555')
+    localStorage.setItem('derec:vault:v1:42:channel-idx:replica', JSON.stringify(['1001']))
+    localStorage.setItem(
+      'derec:vault:v1:42:channel:replica:1001',
+      toBase64Url(new TextEncoder().encode(JSON.stringify({ Replica: { channel_id: 700, role: 'Source', status: 'Paired' } }))),
+    )
+    const { r, start } = runtime()
+
+    await expect(r.addSecret('S2', 'two')).rejects.toThrow(/does not list this device.*Recover from bag/s)
+    expect(start).not.toHaveBeenCalled()
   })
 })
 

@@ -11,12 +11,14 @@
 //! Each case gets a fresh database. The conformance functions assume an empty
 //! store and leave it dirty, so sharing one would make results depend on order.
 
-use derec_backend::repositories::sdk::conformance;
-use derec_backend::repositories::sharing_rounds::{SharingRoundRepository, SqlSharingRoundRepository};
 use derec_backend::infrastructure::db;
+use derec_backend::repositories::sdk::conformance;
 use derec_backend::repositories::sdk::{
     channel::SqlChannelStore, secret::SqlSecretStore, share::SqlShareStore, state::SqlStateStore,
     user_secret::SqlUserSecretStore,
+};
+use derec_backend::repositories::sharing_rounds::{
+    SharingRoundRepository, SqlSharingRoundRepository,
 };
 use derec_library::protocol::{CollectedShare, DeRecShareStore, DeRecStateStore, StateItem};
 use derec_library::types::ChannelId;
@@ -260,7 +262,10 @@ async fn a_pending_recovery_keeps_its_share_channels_and_an_older_row_still_load
         let removed = record
             .as_object_mut()
             .and_then(|fields| fields.remove("share_channels"));
-        assert!(removed.is_some(), "the current shape carries share_channels: {json}");
+        assert!(
+            removed.is_some(),
+            "the current shape carries share_channels: {json}"
+        );
         sqlx::query("UPDATE state_items SET item = $1 WHERE actor_id = 'actor-a'")
             .bind(record.to_string())
             .execute(&pool)
@@ -272,7 +277,9 @@ async fn a_pending_recovery_keeps_its_share_channels_and_an_older_row_still_load
             .await
             .expect("an older row must still load")
         {
-            Some(StateItem::PendingRecovery { version, shares, .. }) => {
+            Some(StateItem::PendingRecovery {
+                version, shares, ..
+            }) => {
                 assert_eq!(version, 3);
                 assert!(shares.is_empty(), "an older row re-collects its shares");
             }

@@ -20,6 +20,7 @@ import { onTabMessage, postTabMessage } from '../tabSync'
 import { acquireVaultLock, heldVaultIds, vaultLockMode } from '../vaultLock'
 import { deleteVault, listVaultIds, loadVaultById, persistVault } from '../vaultPersistence'
 import { VaultManager, type VaultEntry } from './manager'
+import { loadServerDefaults } from './serverDefaultsLoader'
 
 const ManagerContext = createContext<VaultManager | null>(null)
 const ServerDefaultsContext = createContext<ServerDefaults>(FALLBACK_SERVER_DEFAULTS)
@@ -28,6 +29,8 @@ const ServerDefaultsContext = createContext<ServerDefaults>(FALLBACK_SERVER_DEFA
 const NODE_UNREACHABLE_NOTICE = 'node-unreachable'
 const NODE_UNREACHABLE_MESSAGE =
   'Cannot reach the DeRec node — no vault is receiving messages. Retrying automatically.'
+/** Raised on `nodeAnswering` when the mailbox polls reach the node again. */
+const NODE_ANSWERING_EVENT = 'node-answering'
 
 /**
  * Builds the tab's one `VaultManager`, boots it, and releases every lock when
@@ -41,13 +44,17 @@ export function VaultManagerProvider({ children }: { children: ReactNode }) {
   // Stable for the provider's life — `ConsoleProvider` memoises it.
   const { log } = useConsole()
   // The node's own defaults, the bottom tier of every vault's config, fetched
-  // once for the tab. Held twice on purpose: as state for the views, which
-  // must re-render when they land, and in a plain holder for the runtimes,
-  // which read it when they need it and outlive any render.
+  // for the tab until the node first answers — see `loadServerDefaults`. Held
+  // twice on purpose: as state for the views, which must re-render when they
+  // land, and in a plain holder for the runtimes, which read it when they need
+  // it and outlive any render.
   const [serverDefaults, setServerDefaults] = useState<ServerDefaults>(FALLBACK_SERVER_DEFAULTS)
   const [serverDefaultsHolder] = useState<{ value: ServerDefaults }>(() => ({
     value: FALLBACK_SERVER_DEFAULTS,
   }))
+  // Fired when the vaults' mailbox polls reach the node again, so the defaults
+  // are retried at once rather than at the next backoff step.
+  const [nodeAnswering] = useState(() => new EventTarget())
 
   const [manager] = useState(
     () =>
@@ -56,10 +63,14 @@ export function VaultManagerProvider({ children }: { children: ReactNode }) {
         notify: {
           error: reportError,
           info: reportInfo,
-          nodeUnreachable: unreachable =>
-            unreachable
-              ? showNotice(NODE_UNREACHABLE_NOTICE, 'error', NODE_UNREACHABLE_MESSAGE)
-              : clearNotice(NODE_UNREACHABLE_NOTICE),
+          nodeUnreachable: unreachable => {
+            if (unreachable) {
+              showNotice(NODE_UNREACHABLE_NOTICE, 'error', NODE_UNREACHABLE_MESSAGE)
+              return
+            }
+            clearNotice(NODE_UNREACHABLE_NOTICE)
+            nodeAnswering.dispatchEvent(new Event(NODE_ANSWERING_EVENT))
+          },
         },
         getServerDefaults: () => serverDefaultsHolder.value,
         locks: { acquire: acquireVaultLock, held: heldVaultIds },
@@ -75,16 +86,18 @@ export function VaultManagerProvider({ children }: { children: ReactNode }) {
   )
 
   useEffect(() => {
-    let cancelled = false
-    void apiGetServerDefaults()
-      .then(({ defaults }) => {
-        if (cancelled) return
+    // The fallback stands in until the node answers — a vault must still run
+    // with the backend down — and is replaced the first time it does.
+    const loader = loadServerDefaults({
+      fetch: apiGetServerDefaults,
+      onLoaded: defaults => {
+        const previous = serverDefaultsHolder.value
         serverDefaultsHolder.value = defaults
         setServerDefaults(defaults)
-      })
-      .catch(() => {
-        // The fallback stands in; a vault must still run with the backend down.
-      })
+        manager.serverDefaultsArrived(previous, defaults)
+      },
+    })
+    const retryDefaults = () => loader.retryNow()
     void manager.boot()
 
     // Released on unload as well: the browser frees Web Locks when the tab dies,
@@ -102,12 +115,16 @@ export function VaultManagerProvider({ children }: { children: ReactNode }) {
     }
     window.addEventListener('pagehide', release)
     window.addEventListener('pageshow', restore)
+    window.addEventListener('online', retryDefaults)
+    nodeAnswering.addEventListener(NODE_ANSWERING_EVENT, retryDefaults)
     return () => {
-      cancelled = true
+      loader.stop()
+      nodeAnswering.removeEventListener(NODE_ANSWERING_EVENT, retryDefaults)
       window.removeEventListener('pagehide', release)
       window.removeEventListener('pageshow', restore)
+      window.removeEventListener('online', retryDefaults)
     }
-  }, [manager, serverDefaultsHolder])
+  }, [manager, serverDefaultsHolder, nodeAnswering])
 
   useFollowOtherTabs(manager)
 
@@ -195,8 +212,9 @@ export function useVaultManager(): VaultManager {
 }
 
 /**
- * The node's own defaults — the fallback until the tab's one fetch lands.
- * The same values every runtime resolves its configuration against.
+ * The node's own defaults — the fallback until the node first answers, which
+ * is retried with a bounded backoff. The same values every runtime resolves
+ * its configuration against.
  */
 // eslint-disable-next-line react-refresh/only-export-components
 export function useServerDefaults(): ServerDefaults {

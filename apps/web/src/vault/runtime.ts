@@ -93,6 +93,7 @@ import {
   listHelperChannels,
   listReplicaMembers,
   loadRawShare,
+  openSharingRoundVersions,
   readHelperChannelInfo,
   readHelperChannelStatus,
   takeStorageQuotaFailure,
@@ -103,6 +104,7 @@ import type {
   BagVersion,
   CorruptShareReport,
   PendingPairing,
+  PublishedRound,
   RecoveredSecret,
   SecretBag,
   UserSecret,
@@ -126,8 +128,9 @@ import { restoreVault } from './commands/restore'
 import { routeActionRequired, type InboundContext } from './inbound'
 import { keepListFor } from './keepList'
 import { replicaConflictBlockReason } from './replicaConflict'
+import { replicaMembershipProblem } from './replicaMembership'
 import { ReplicaCatchUp } from './replicaSync'
-import { RoundTracker, settleUnansweredShares } from './rounds'
+import { RoundTracker, roundRecipients, settleUnansweredShares } from './rounds'
 import type {
   Attention,
   AttentionKind,
@@ -490,7 +493,12 @@ export class VaultRuntime {
    * round told them to drop.
    */
   private readonly keepList: KeepListSource = (secretId, version) => {
-    const open = this.rounds.snapshotProtectRounds().map(round => round.version)
+    // Rounds this vault started, and every round the library still holds open
+    // — including those it started itself, which the tracker never sees.
+    const open = [
+      ...this.rounds.snapshotProtectRounds().map(round => round.version),
+      ...openSharingRoundVersions(this.namespace, secretId),
+    ]
     const kept = keepListFor(this.vault, secretId, version, open)
     this.deps.log({
       role: 'owner',
@@ -1826,6 +1834,12 @@ export class VaultRuntime {
     if (conflict && !options.resolvesReplicaConflict) {
       return Promise.reject(new Error(replicaConflictBlockReason(conflict)))
     }
+    // Read from the library's own store, as the library itself checks it.
+    const membership = replicaMembershipProblem(
+      listReplicaMembers(this.namespace, this.partition),
+      getOrCreateReplicaId(this.vault.id).toString(),
+    )
+    if (membership) return Promise.reject(new Error(membership))
     return this.runFlow(async () => {
       const protocol = this.requireProtocol()
 
@@ -1897,7 +1911,12 @@ export class VaultRuntime {
       // Read after the await: the drain may have committed while `start` ran.
       const current = this.vault
       const existingBag = current.secretBag
-      const pairedParticipants = current.participants.filter(isShareTarget)
+      // The round's recipients are the channels the library targeted, as its
+      // own events name them — not every share-target row. A helper whose
+      // fingerprint was never confirmed is a row like any other here, but the
+      // library holds its channel `Pending` and sends it nothing; counting it
+      // reported every round as "1 helper did not store it".
+      const recipients = roundRecipients(current.participants, startEvents, newVersion)
 
       // The new bag version — not committed to the vault until SharingComplete.
       const newBagVersion: BagVersion = {
@@ -1907,7 +1926,7 @@ export class VaultRuntime {
         failedParticipantIds: [],
         secrets,
         rawBytes: '',
-        helpers: pairedParticipants.map(h => ({ id: h.id, name: h.name, channelId: h.channelId })),
+        helpers: recipients.map(h => ({ id: h.id, name: h.name, channelId: h.channelId })),
         // Read after `start` from the same store the library just built the
         // secret's `replicas` from, by the same rule.
         replicas: replicaGroupFromStore(
@@ -1931,7 +1950,7 @@ export class VaultRuntime {
         bag: pendingBag,
         version: newVersion,
         protocolSecretId: current.secretId,
-        channelIds: pairedParticipants.map(h => h.channelId),
+        channelIds: recipients.map(h => h.channelId),
       })
 
       // A share request that could not be delivered will never be answered:
@@ -1940,7 +1959,7 @@ export class VaultRuntime {
       const notDelivered = new Map(undelivered.map(e => [e.channel_id, e.error]))
       for (const [channelId, error] of notDelivered) {
         this.rounds.dropShare(channelId, newVersion)
-        const participant = pairedParticipants.find(p => p.channelId === channelId)
+        const participant = recipients.find(p => p.channelId === channelId)
         if (participant) {
           this.rounds.recordShareFailed(newVersion, {
             id: participant.id,
@@ -1955,7 +1974,7 @@ export class VaultRuntime {
       this.commit({
         ...current,
         participants: current.participants.map(h =>
-          pairedParticipants.some(ph => ph.id === h.id)
+          recipients.some(ph => ph.id === h.id)
             ? {
                 ...h,
                 secretShares: [
@@ -1979,7 +1998,7 @@ export class VaultRuntime {
       if (notDelivered.size > 0 && dispatched.length < current.minParticipants) {
         this.failSharingRound(
           newVersion,
-          `only ${dispatched.length} of ${pairedParticipants.length} share request(s) could be delivered`,
+          `only ${dispatched.length} of ${recipients.length} share request(s) could be delivered`,
         )
       }
 
@@ -1989,7 +2008,7 @@ export class VaultRuntime {
       // `channel_id`, never against this list.
       const replicaTargets = await this.confirmedReplicaTargets()
 
-      return { version: newVersion, participants: pairedParticipants, replicaTargets }
+      return { version: newVersion, participants: recipients, replicaTargets }
     })
   }
 
@@ -1998,9 +2017,11 @@ export class VaultRuntime {
    *
    * Returns the version the *library* assigned, not one derived here: rounds are
    * keyed by version and several can run at once, so anything watching this
-   * round has to be told which one it is. `null` if no round was dispatched.
+   * round has to be told which one it is — and who it went to, which only the
+   * round itself knows (see `roundRecipients`). `null` if no round was
+   * dispatched.
    */
-  async addSecret(name: string, data: string): Promise<number | null> {
+  async addSecret(name: string, data: string): Promise<PublishedRound | null> {
     // Per-user-secret ids are application-level random identifiers, hex-encoded.
     const idBytes = crypto.getRandomValues(new Uint8Array(16))
     const id = Array.from(idBytes).map(b => b.toString(16).padStart(2, '0')).join('')
@@ -2023,7 +2044,7 @@ export class VaultRuntime {
         replicas: round.replicaTargets.map(r => ({ name: r.name, channelId: r.channelId })),
       },
     })
-    return round.version
+    return publishedRound(round)
   }
 
   /**
@@ -2031,10 +2052,9 @@ export class VaultRuntime {
    *
    * Only the current version changes: earlier versions — and the shares helpers
    * hold for them — still carry it, which the confirmation dialog says. Returns
-   * the library-assigned version, as `addSecret` does; `null` if no round was
-   * dispatched.
+   * the round as `addSecret` does; `null` if no round was dispatched.
    */
-  async removeSecret(secretId: string): Promise<number | null> {
+  async removeSecret(secretId: string): Promise<PublishedRound | null> {
     const current = this.rounds.latestSecrets(this.vault.secretBag)
     const removed = current.find(s => s.id === secretId)
     if (!removed) throw new Error('That secret is no longer in the current version of the bag.')
@@ -2054,7 +2074,7 @@ export class VaultRuntime {
         replicas: round.replicaTargets.map(r => ({ name: r.name, channelId: r.channelId })),
       },
     })
-    return round.version
+    return publishedRound(round)
   }
 
   // ── Replica conflicts ──────────────────────────────────────────────────────
@@ -2524,8 +2544,11 @@ export class VaultRuntime {
    * Restore this vault from a recovered secret — see `commands/restore.ts`.
    * Reports its own failures. Returns whether the restore committed.
    */
-  restoreFromRecovered(secret: RecoveredSecret): Promise<boolean> {
-    return restoreVault(secret, this.commandContext)
+  async restoreFromRecovered(secret: RecoveredSecret): Promise<boolean> {
+    const restored = await restoreVault(secret, this.commandContext)
+    // The restore rewrote the replica bookkeeping the Replicas tab reads.
+    if (restored) this.effects.refreshReplicas()
+    return restored
   }
 
   /**
@@ -3752,4 +3775,9 @@ function peersToldText(sent: { dispatched: number; failed: number }): string {
   if (sent.dispatched === 0 && sent.failed === 0) return 'No paired peer to tell.'
   const told = `Sent to ${sent.dispatched} paired peer(s)`
   return sent.failed > 0 ? `${told}; ${sent.failed} could not be reached.` : `${told}.`
+}
+
+/** What the dialogs following a round are told about it. */
+function publishedRound(round: ProtectRoundResult): PublishedRound {
+  return { version: round.version, recipientIds: round.participants.map(p => p.id) }
 }

@@ -3,13 +3,22 @@
 
 import { test, expect } from './fixtures'
 import {
+  addAndPairReplica,
   discoverAll,
+  linkToPreviousOwner,
+  newOwnerContext,
   openTab,
   pairParticipant,
+  participantIndex,
+  participantName,
   protectSecret,
   recoverOfferedSecret,
+  replicaChannelCount,
+  replicaChannelRow,
+  restoreRecoveredBag,
   setUpOwner,
   tabCount,
+  uniqueReplicaName,
   unpairParticipant,
 } from './app'
 
@@ -132,6 +141,109 @@ test.describe('recovery', () => {
 
     // Nothing was replaced, unlinked, or left mid-restore.
     expect(await tabCount(page, 'Channels')).toBe(before)
+  })
+})
+
+test.describe('restoring a vault that has a replica', () => {
+  /**
+   * On a new device: the device-loss path the replica exists for. The old device protected a
+   * bag mirrored to a hosted replica; a new one pairs the same helpers, has
+   * each link the new channel to the old owner, recovers, and restores.
+   *
+   * Restoring used to keep the new device's own replica id, which the
+   * recovered group does not name, so every publish after it failed with
+   * "replica group has members but this device holds no row of its own" —
+   * and the Replicas tab read "No replicas yet" while the replica was still a
+   * member.
+   */
+  test('restoring on the same device keeps its replica listed, and mirroring', async ({ page, pageErrors }) => {
+    test.setTimeout(360_000)
+    const replica = uniqueReplicaName('Replica')
+
+    await setUpOwner(page, { name: 'Alice', participants: 3, prePaired: 0, minParticipants: 2 })
+    await pairParticipant(page, { index: 0, mode: 'Inline keys' })
+    await pairParticipant(page, { index: 1, mode: 'Inline keys' })
+    await addAndPairReplica(page, replica)
+    await protectSecret(page, 'Passphrase', 'hunter2')
+    await openTab(page, 'Replicas')
+    await expect(page.getByText(/Mirrored v\d+, acknowledged/)).toHaveCount(1, { timeout: 90_000 })
+    expect(await tabCount(page, 'Replicas')).toBe(1)
+
+    await discoverAll(page)
+    await recoverOfferedSecret(page)
+    await restoreRecoveredBag(page, 'Passphrase')
+
+    // It used to drop to "No replicas yet" here, while the replica stayed a
+    // member and kept acknowledging every round.
+    await openTab(page, 'Replicas')
+    await expect(replicaChannelRow(page, replica)).toBeVisible({ timeout: 30_000 })
+    expect(await tabCount(page, 'Replicas')).toBe(1)
+
+    await protectSecret(page, 'After restore', 'still-mirrored')
+    await openTab(page, 'Replicas')
+    expect(await tabCount(page, 'Replicas')).toBe(1)
+    await expect(page.getByText(/Mirrored v\d+, acknowledged/)).toHaveCount(1, { timeout: 90_000 })
+    expect(pageErrors).toEqual([])
+  })
+
+  test('the restored vault publishes, and still lists its replica', async ({ page, browser, pageErrors }) => {
+    test.setTimeout(480_000)
+
+    // Unique names: helpers are shared by every spec in the run, and the link
+    // picker tells this owner's old channel from others' by its peer name.
+    const oldDevice = uniqueReplicaName('Alice')
+    const replica = uniqueReplicaName('Replica')
+
+    await setUpOwner(page, { name: oldDevice, participants: 3, prePaired: 0, minParticipants: 2 })
+    const helpers: string[] = []
+    for (let i = 0; i < 3; i++) helpers.push(await participantName(page, i))
+    for (const helper of helpers) {
+      await pairParticipant(page, { index: await participantIndex(page, helper), mode: 'Inline keys' })
+    }
+    await addAndPairReplica(page, replica)
+    await protectSecret(page, 'Passphrase', 'hunter2')
+    // The replica holds the version, so the recovered roster carries the group.
+    await openTab(page, 'Replicas')
+    await expect(page.getByText(/Mirrored v\d+, acknowledged/)).toHaveCount(1, { timeout: 90_000 })
+
+    // The old device is lost.
+    await page.close()
+
+    const fresh = await newOwnerContext(browser, {
+      name: uniqueReplicaName('Alice-new'),
+      participants: 3,
+      prePaired: 0,
+      minParticipants: 2,
+    })
+    const newDevice = fresh.page
+    try {
+      for (const helper of helpers) {
+        await pairParticipant(newDevice, { index: await participantIndex(newDevice, helper), mode: 'Inline keys' })
+        await linkToPreviousOwner(newDevice, helper, oldDevice)
+      }
+      await discoverAll(newDevice)
+      await recoverOfferedSecret(newDevice)
+      await restoreRecoveredBag(newDevice, 'Passphrase')
+
+      // Listed as this device's own replica channel — not merely as a member
+      // of a group this device is outside of, which is all it used to be.
+      await openTab(newDevice, 'Replicas')
+      await expect(replicaChannelRow(newDevice, replica)).toBeVisible({ timeout: 30_000 })
+      expect(await replicaChannelCount(newDevice)).toBe(1)
+
+      // The publish that used to fail on the invariant.
+      await protectSecret(newDevice, 'After restore', 'still-mirrored')
+      await openTab(newDevice, 'Secrets')
+      await expect(newDevice.locator('.tab-panel')).toContainText('After restore')
+
+      await openTab(newDevice, 'Replicas')
+      expect(await tabCount(newDevice, 'Replicas')).toBe(1)
+      await expect(replicaChannelRow(newDevice, replica)).toBeVisible()
+      await expect(newDevice.getByText(/Mirrored v\d+, acknowledged/)).toHaveCount(1, { timeout: 90_000 })
+    } finally {
+      await fresh.context.close()
+    }
+    expect(pageErrors).toEqual([])
   })
 })
 

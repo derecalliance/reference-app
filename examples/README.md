@@ -5,13 +5,17 @@ inline.
 
 | File | Use it | For |
 | --- | --- | --- |
-| `compose.sqlite.yaml` | in place: `docker compose -f examples/compose.sqlite.yaml up -d` — or `docker compose up` at the repo root, whose `compose.yaml` includes it | running it in Docker on SQLite (the default) |
-| `compose.postgres.yaml` | in place: `docker compose -f examples/compose.postgres.yaml up -d` | running it in Docker on PostgreSQL |
+| `compose.sqlite.yaml` | in place: `docker compose -f examples/compose.sqlite.yaml up -d` — or `docker compose up` at the repo root, whose `compose.yaml` includes it | running the published image on SQLite (the default) |
+| `compose.postgres.yaml` | in place: `docker compose -f examples/compose.postgres.yaml up -d` — or `docker compose -f compose.postgres.yaml up -d` at the repo root | running the published image on PostgreSQL |
 | `config.example.toml` | copy to `apps/backend/config.toml` for `cargo run`; mount at `/etc/derec/config.toml` in the image | the TOML config file |
 | `.env.example` | copy to `.env` (repo root for compose; `apps/backend/` for `cargo run`) | environment variables |
 
-The compose files run where they sit: their paths are relative to this
-directory, and both work on a fresh checkout with no `.env` and no config file.
+The compose files run where they sit and pull the published image
+(`ghcr.io/derecalliance/reference-app`; `DEREC_IMAGE` points them at another
+registry). To build the image from your checkout instead, use the repo-root
+`compose.yaml` / `compose.postgres.yaml` with `-f compose.build.yaml`, or
+`./start.sh --build`. Both work on a fresh checkout with no `.env` and no
+config file.
 They share the project name `derec`, so one replaces the other rather than
 running beside it. [`../start.sh`](../start.sh) runs either one, picks free
 ports, and waits until the node is healthy.

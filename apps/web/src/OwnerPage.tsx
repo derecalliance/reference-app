@@ -7,7 +7,7 @@ import { errorText } from './errorText'
 import { Alert, Button, Stack } from '@mui/material'
 import { advertisedEndpoints, type ContactMessage } from '@derec-alliance/web'
 import './OwnerPage.css'
-import type { Vault, PairedParticipant, RecoveredSecret, UserSecret } from './types'
+import type { Vault, PairedParticipant, PublishedRound, RecoveredSecret, UserSecret } from './types'
 import { useConsole, type ConsoleEntryInput } from './ConsoleContext'
 import { reportError, reportInfo } from './toastBus'
 import { protocolTimeoutMs } from './config'
@@ -51,7 +51,7 @@ import { ReplicaPairingRequestDialog } from './ReplicaPairingRequestDialog'
 import type { PendingPairingConfirmation } from './inboundPairing'
 import {
   isReplicaChannel,
-  isShareTarget,
+  publishTargets,
   splitPairedChannels,
 } from './ownerPairing'
 import {
@@ -408,6 +408,11 @@ function OwnerPage({ runtime }: Props) {
     })
   }, [manager, vault.id, refreshStoredMembers])
 
+  // A restore rebinds the vault to the recovered secret, and the group it
+  // restored lives in that secret's partition: read it once the vault names it,
+  // rather than on whichever roster change happens to come next.
+  useEffect(() => refreshStoredMembers(), [vault.secretId, refreshStoredMembers])
+
   /**
    * The replica channel whose fingerprint comparison is on screen, or `null`.
    *
@@ -702,17 +707,19 @@ function OwnerPage({ runtime }: Props) {
   const ownerStartPairing = (contact: ContactMessage, role: PairingRole, peerName?: string) =>
     runtime.startPairing(contact, role, peerName)
 
-  async function ownerAddSecret(name: string, data: string): Promise<number | null> {
-    const version = await runtime.addSecret(name, data)
-    if (version !== null) setActiveTab('secrets')
-    return version
+  async function ownerAddSecret(name: string, data: string): Promise<PublishedRound | null> {
+    const round = await runtime.addSecret(name, data)
+    if (round !== null) setActiveTab('secrets')
+    return round
   }
 
   const ownerRemoveSecret = (secretId: string) => runtime.removeSecret(secretId)
 
   // Adding and removing a secret both publish a new bag version, so both need
-  // enough channels that can actually receive a share.
-  const shareTargetCount = vault.participants.filter(isShareTarget).length
+  // enough channels that can actually receive a share. A channel the library
+  // still holds `Pending` — a fingerprint nobody confirmed, or one refused — is
+  // sent nothing, so it does not count towards that.
+  const shareTargetCount = publishTargets(vault.participants, unconfirmedChannelIds).length
   const publishBlockedReason = vault.replicaConflict
     ? replicaConflictBlockReason(vault.replicaConflict)
     : shareTargetCount < vault.minParticipants
@@ -1648,6 +1655,7 @@ function OwnerPage({ runtime }: Props) {
       {protectOpen && (
         <AddSecretModal
           participants={vault.participants}
+          pendingChannelIds={unconfirmedChannelIds}
           secretBag={vault.secretBag}
           threshold={vault.minParticipants}
           onClose={() => { setProtectOpen(false); runtimeRef.current?.setBusy(false) }}
@@ -1682,7 +1690,7 @@ function OwnerPage({ runtime }: Props) {
       )}
 
       {(() => {
-        const pairedCount = vault.participants.filter(isShareTarget).length
+        const pairedCount = shareTargetCount
         const belowMin = pairedCount < vault.minParticipants
         const recommended = effectiveRecommended(
           vault.recommendedParticipants,

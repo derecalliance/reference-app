@@ -1212,6 +1212,26 @@ export function makeStateStore(namespace: string) {
   }
 }
 
+/**
+ * The versions of every protect round the library still holds open for
+ * `secretId` — its `SharingRound` state rows (kind 3), which it writes when a
+ * round is dispatched and removes when the round completes or times out.
+ *
+ * This is the only complete list. Rounds the library starts on its own — the
+ * pair-completion hook, and the publish inside `verifyFingerprint` when a
+ * replica or gated helper is confirmed — never pass through the app's round
+ * tracker, and `verifyFingerprint` does not even return their events. Such a
+ * round can stay open for a while after every helper stored its share, because
+ * the library also waits on the replica leg; a newer round that left it out of
+ * its `keepList` made the helpers delete a version that then committed.
+ */
+export function openSharingRoundVersions(namespace: string, secretId: string): number[] {
+  return loadStringArray(stateIndexKey(namespace, secretId, 3))
+    .filter(composite => localStorage.getItem(stateRowKey(namespace, secretId, composite)) !== null)
+    .map(composite => Number(composite.slice('3:'.length)))
+    .filter(version => Number.isSafeInteger(version) && version > 0)
+}
+
 // ── Transport ────────────────────────────────────────────────────────────────
 
 /**

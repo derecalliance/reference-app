@@ -1,8 +1,8 @@
 [package]
 name = "derec-backend"
-version = "0.0.7"
+version = "0.0.8-alpha.1"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.89"
 description = "Thin backend for the DeRec reference app: actor registry, message relay and hosted helpers"
 license = "Apache-2.0"
 repository = "https://github.com/derecalliance/reference-app"
@@ -39,8 +39,8 @@ base64 = "0.22"
 # SDK. Plaintext endpoints are not a compile-time feature — they are
 # `DeRecProtocolBuilder::with_unsafe_connection`, decided per instance at
 # runtime.
-derec-library = { version = "0.0.7", features = ["serde"] }
-derec-proto = "0.0.7"
+derec-library = { version = "0.0.8", features = ["serde"] }
+derec-proto = "0.0.8"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 rand = "0.8"
 # Operator-supplied defaults for the front end, read from a mounted config file.

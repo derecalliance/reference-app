@@ -316,6 +316,63 @@ export async function pairParticipant(
 }
 
 /**
+ * The side-panel index of the participant called `name`.
+ *
+ * For a test that has to reach the *same* helpers from two browser contexts:
+ * the pool is server-wide and lists differently once other specs have grown
+ * it, so an index taken in one context means nothing in another.
+ */
+export async function participantIndex(page: Page, name: string): Promise<number> {
+  const names = (await page.locator('.side-participant-item .side-participant-name').allInnerTexts())
+    .map(text => text.trim())
+  const index = names.indexOf(name)
+  if (index < 0) throw new Error(`no participant named ${name} (have: ${names.join(', ')})`)
+  return index
+}
+
+/**
+ * Link this device's channel with the provisioned helper `name` to the channel
+ * that helper already holds for `previousOwner`, as its operator would after
+ * authenticating a returning owner — the step that lets it answer Discovery.
+ */
+export async function linkToPreviousOwner(
+  page: Page,
+  name: string,
+  previousOwner: string,
+): Promise<void> {
+  const row = await expandParticipant(page, await participantIndex(page, name))
+  await row.getByRole('button', { name: 'Link', exact: true }).click()
+
+  const modal = page.locator('.modal').filter({ hasText: `Link on ${name}` })
+  await modal.getByRole('option').filter({ hasText: previousOwner }).click()
+  await modal.getByRole('button', { name: 'Link', exact: true }).click()
+  await expect(modal).toBeHidden({ timeout: 30_000 })
+}
+
+/**
+ * Commit the recovered bag into this device with "Recover from bag", and wait
+ * until the Secrets tab shows `expectedSecret` from it.
+ */
+export async function restoreRecoveredBag(page: Page, expectedSecret: string): Promise<void> {
+  await page.getByRole('button', { name: 'Recover', exact: true }).last().click()
+  const dialog = page.locator('.modal-overlay').filter({ hasText: 'Recover from this bag?' })
+  await expect(dialog).toBeVisible()
+  await dialog.getByRole('button', { name: 'Recover from bag' }).click()
+
+  // Re-opened on every poll: restore lands on a tab of its own choosing, which
+  // would override a single click placed before it completes.
+  await expect
+    .poll(
+      async () => {
+        await openTab(page, 'Secrets')
+        return page.locator('.tab-panel').innerText()
+      },
+      { timeout: 120_000 },
+    )
+    .toContain(expectedSecret)
+}
+
+/**
  * Resolve the out-of-band fingerprint dialog a `NoKeys` pairing raises.
  *
  * Both codes come from the same shared key, so a fixture peer always matches;

@@ -20,10 +20,12 @@
 use std::collections::HashMap;
 
 use actix::prelude::*;
-use derec_backend::infrastructure::actors::provisioned::{ListChannelsMsg, ListInstanceSecretsMsg, ProvisionedActor, ReconfigureMsg};
-use derec_backend::infrastructure::actors::protocol::{build_protocol, ProtocolConfig};
-use derec_backend::models::{Role, Transport, TransportProtocol, UnpairAck};
 use derec_backend::infrastructure::actors::protocol::ActorProtocol;
+use derec_backend::infrastructure::actors::protocol::{build_protocol, ProtocolConfig};
+use derec_backend::infrastructure::actors::provisioned::{
+    ListChannelsMsg, ListInstanceSecretsMsg, ProvisionedActor, ReconfigureMsg,
+};
+use derec_backend::models::{Role, Transport, TransportProtocol, UnpairAck};
 use derec_library::protocol::{ChannelRecord, DeRecChannelStore, HelperChannel};
 use derec_library::types::ChannelId;
 
@@ -73,7 +75,14 @@ async fn spawn(
 
     // The same `actor_id` the instance's stores were built with. Two different
     // ones would point the rebuild at a partition the seeded channel is not in.
-    ProvisionedActor::new(protocol, config(pool, actor_id), actor_id, Role::Helper, state.actor_dependencies()).start()
+    ProvisionedActor::new(
+        protocol,
+        config(pool, actor_id),
+        actor_id,
+        Role::Helper,
+        state.actor_dependencies(),
+    )
+    .start()
 }
 
 /// A helper-channel row, as the pairing handshake writes one.

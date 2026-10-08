@@ -223,7 +223,10 @@ async fn load_stored_instances(
 
     let ttl = i64::try_from(PIN_TTL.as_secs()).unwrap_or(i64::MAX);
     let since = crate::utils::time::now_unix_secs().saturating_sub(ttl);
-    let unpaired_contacts = state.protocol_records.unpaired_contacts(&actor.id, since).await?;
+    let unpaired_contacts = state
+        .protocol_records
+        .unpaired_contacts(&actor.id, since)
+        .await?;
 
     Ok(StoredInstances {
         replica_secret_ids,
@@ -245,7 +248,8 @@ async fn remember_addresses(state: &Node, actors: &[Actor]) {
     }
 
     let config = &state.config;
-    let mut addresses: Vec<(Listener, String)> = vec![(Listener::Http, config.base_url.to_string())];
+    let mut addresses: Vec<(Listener, String)> =
+        vec![(Listener::Http, config.base_url.to_string())];
     if config.defaults.grpc_enabled {
         addresses.push((Listener::Grpc, config.grpc_authority()));
     }
@@ -468,7 +472,11 @@ mod tests {
 
     #[test]
     fn with_grpc_enabled_every_mode_is_served_as_stored() {
-        for mode in [TransportMode::Http, TransportMode::Grpc, TransportMode::Both] {
+        for mode in [
+            TransportMode::Http,
+            TransportMode::Grpc,
+            TransportMode::Both,
+        ] {
             assert_eq!(mode_served_here(mode, true), mode);
         }
     }
@@ -477,7 +485,11 @@ mod tests {
     fn with_grpc_disabled_nothing_keeps_a_grpc_endpoint() {
         // The listener is not running, so a gRPC endpoint would pair and then
         // black-hole every reply.
-        for mode in [TransportMode::Http, TransportMode::Grpc, TransportMode::Both] {
+        for mode in [
+            TransportMode::Http,
+            TransportMode::Grpc,
+            TransportMode::Both,
+        ] {
             assert_eq!(mode_served_here(mode, false), TransportMode::Http);
         }
     }

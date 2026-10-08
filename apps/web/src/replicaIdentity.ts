@@ -65,6 +65,18 @@ export function getOrCreateReplicaId(vaultId: string): bigint {
   return id
 }
 
+/**
+ * Replace this vault's replica id with `id`.
+ *
+ * For one case only: restoring a vault whose replica group does not name this
+ * device's current id, where the device takes over the identity the group
+ * knows the vault by — see `restoredReplicaIdentity`. Persisted so every later
+ * instance of this vault is built with the same id.
+ */
+export function setReplicaId(vaultId: string, id: bigint): void {
+  localStorage.setItem(storageKey(vaultId), id.toString())
+}
+
 /** Drops the stored identity. Only for explicit "reset this device" actions. */
 export function resetReplicaId(vaultId: string): void {
   localStorage.removeItem(storageKey(vaultId))

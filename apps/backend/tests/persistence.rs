@@ -15,15 +15,15 @@
 //! references — and a browser-run owner gets its mailbox back without being
 //! respawned as a backend actor, because its protocol lives in the page.
 
-use derec_backend::repositories::sdk::conformance::{HIGH_ID, SECRET_A};
-use derec_backend::models::{Role, TransportMode, UnpairAck};
-use derec_backend::models::Actor;
-use derec_backend::services::ports::{ActorGateway, InboxDirectory};
-use derec_backend::models::ActorSettings;
 use derec_backend::infrastructure::bootstrap::Node;
 use derec_backend::infrastructure::db;
+use derec_backend::models::Actor;
+use derec_backend::models::ActorSettings;
 use derec_backend::models::DatabaseUrl;
+use derec_backend::models::{Role, TransportMode, UnpairAck};
 use derec_backend::repositories::sdk::channel::SqlChannelStore;
+use derec_backend::repositories::sdk::conformance::{HIGH_ID, SECRET_A};
+use derec_backend::services::ports::{ActorGateway, InboxDirectory};
 use derec_library::protocol::types::ChannelStatus;
 use derec_library::protocol::{ChannelQuery, ChannelRecord, DeRecChannelStore, HelperChannel};
 use derec_library::types::ChannelId;
@@ -56,7 +56,9 @@ fn query() -> ChannelQuery {
 async fn a_channel_written_before_a_restart_is_there_after_one() {
     let dir = std::env::temp_dir().join(format!("derec-persist-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
-    let url = String::from(DatabaseUrl::from(dir.join("derec.db").to_string_lossy().as_ref()));
+    let url = String::from(DatabaseUrl::from(
+        dir.join("derec.db").to_string_lossy().as_ref(),
+    ));
 
     // First "process": write a channel, then drop everything.
     {
@@ -124,7 +126,10 @@ async fn an_in_memory_database_deliberately_does_not_survive() {
 /// An `Node` over a given pool, as `main` builds one.
 fn state_over(pool: sqlx::AnyPool) -> std::sync::Arc<Node> {
     std::sync::Arc::new(Node::new(
-        derec_backend::models::NodeConfig::new("http://localhost:5000", derec_backend::models::Defaults::default()),
+        derec_backend::models::NodeConfig::new(
+            "http://localhost:5000",
+            derec_backend::models::Defaults::default(),
+        ),
         reqwest::Client::new(),
         actix_rt::Arbiter::current(),
         pool,
@@ -139,7 +144,9 @@ async fn a_helper_provisioned_before_a_restart_comes_back_with_its_identity() {
     // and a fresh one would make this helper a stranger to its own group.
     let dir = std::env::temp_dir().join(format!("derec-restart-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
-    let url = String::from(DatabaseUrl::from(dir.join("derec.db").to_string_lossy().as_ref()));
+    let url = String::from(DatabaseUrl::from(
+        dir.join("derec.db").to_string_lossy().as_ref(),
+    ));
 
     let (actor_id, replica_id) = {
         let pool = db::connect(&url).await.expect("connect");
@@ -163,7 +170,10 @@ async fn a_helper_provisioned_before_a_restart_comes_back_with_its_identity() {
             .register(helper.clone(), settings.clone())
             .await
             .expect("register");
-        state.runtime.spawn(&helper, &settings).expect("the helper starts");
+        state
+            .runtime
+            .spawn(&helper, &settings)
+            .expect("the helper starts");
 
         (helper.id, settings.replica_id)
     };
@@ -212,7 +222,9 @@ async fn a_browser_run_owner_gets_its_inbox_back_and_is_not_respawned() {
     // undeliverable rather than buffered.
     let dir = std::env::temp_dir().join(format!("derec-restart-owner-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
-    let url = String::from(DatabaseUrl::from(dir.join("derec.db").to_string_lossy().as_ref()));
+    let url = String::from(DatabaseUrl::from(
+        dir.join("derec.db").to_string_lossy().as_ref(),
+    ));
 
     let actor_id = {
         let pool = db::connect(&url).await.expect("connect");
@@ -271,7 +283,9 @@ async fn a_recovered_helper_routes_grpc_for_channels_paired_before_the_restart()
     // channels.
     let dir = std::env::temp_dir().join(format!("derec-restart-grpc-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
-    let url = String::from(DatabaseUrl::from(dir.join("derec.db").to_string_lossy().as_ref()));
+    let url = String::from(DatabaseUrl::from(
+        dir.join("derec.db").to_string_lossy().as_ref(),
+    ));
 
     let actor_id = {
         let pool = db::connect(&url).await.expect("connect");
@@ -349,15 +363,20 @@ async fn a_node_restarted_on_a_new_address_re_advertises_its_existing_actors() {
     // every existing helper, so the whole pool was unreachable.
     let dir = std::env::temp_dir().join(format!("derec-readvertise-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
-    let url = String::from(DatabaseUrl::from(dir.join("derec.db").to_string_lossy().as_ref()));
+    let url = String::from(DatabaseUrl::from(
+        dir.join("derec.db").to_string_lossy().as_ref(),
+    ));
 
     let state_at = |pool, base: &str| {
         std::sync::Arc::new(Node::new(
-        derec_backend::models::NodeConfig::new(base, derec_backend::models::Defaults::default()),
-        reqwest::Client::new(),
-        actix_rt::Arbiter::current(),
-        pool,
-    ))
+            derec_backend::models::NodeConfig::new(
+                base,
+                derec_backend::models::Defaults::default(),
+            ),
+            reqwest::Client::new(),
+            actix_rt::Arbiter::current(),
+            pool,
+        ))
     };
 
     let actor_id = {
@@ -388,8 +407,16 @@ async fn a_node_restarted_on_a_new_address_re_advertises_its_existing_actors() {
     let uris = |state: &Node| {
         let state = state.actors.clone();
         async move {
-            let actor = state.get(&actor_id).await.expect("readable").expect("still listed");
-            actor.transports.into_iter().map(|t| t.uri).collect::<Vec<_>>()
+            let actor = state
+                .get(&actor_id)
+                .await
+                .expect("readable")
+                .expect("still listed");
+            actor
+                .transports
+                .into_iter()
+                .map(|t| t.uri)
+                .collect::<Vec<_>>()
         }
     };
 
@@ -437,7 +464,9 @@ async fn mail_queued_for_a_browser_owner_survives_a_restart() {
     // closed across one — lost every reply that had not been collected.
     let dir = std::env::temp_dir().join(format!("derec-restart-mail-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
-    let url = String::from(DatabaseUrl::from(dir.join("derec.db").to_string_lossy().as_ref()));
+    let url = String::from(DatabaseUrl::from(
+        dir.join("derec.db").to_string_lossy().as_ref(),
+    ));
 
     let first = vec![0x20, 0x07];
     let second = vec![0x20, 0x08];
@@ -469,12 +498,15 @@ async fn mail_queued_for_a_browser_owner_survives_a_restart() {
 
         for message in [&first, &second] {
             assert_eq!(
-                state.state.delivery.dispatch(
-                    owner.id,
-                    derec_backend::models::Carrier::Http,
-                    message.clone(),
-                )
-                .await,
+                state
+                    .state
+                    .delivery
+                    .dispatch(
+                        owner.id,
+                        derec_backend::models::Carrier::Http,
+                        message.clone(),
+                    )
+                    .await,
                 derec_backend::models::DispatchOutcome::Delivered
             );
         }
@@ -494,7 +526,12 @@ async fn mail_queued_for_a_browser_owner_survives_a_restart() {
             "every queued message comes back, in the order it arrived"
         );
         assert!(
-            state.mailboxes.drain(&actor_id).await.expect("readable").is_empty(),
+            state
+                .mailboxes
+                .drain(&actor_id)
+                .await
+                .expect("readable")
+                .is_empty(),
             "draining is destructive: each message is delivered once"
         );
     }
@@ -509,7 +546,9 @@ async fn a_node_restarted_with_grpc_disabled_stops_advertising_grpc() {
     // HTTP half; a gRPC-only helper is re-advertised over HTTP.
     let dir = std::env::temp_dir().join(format!("derec-grpc-off-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
-    let url = String::from(DatabaseUrl::from(dir.join("derec.db").to_string_lossy().as_ref()));
+    let url = String::from(DatabaseUrl::from(
+        dir.join("derec.db").to_string_lossy().as_ref(),
+    ));
 
     let ids = {
         let pool = db::connect(&url).await.expect("connect");
@@ -543,23 +582,35 @@ async fn a_node_restarted_with_grpc_disabled_stops_advertising_grpc() {
     {
         let pool = db::connect(&url).await.expect("reconnect");
         let state = std::sync::Arc::new(Node::new(
-        derec_backend::models::NodeConfig::new("http://localhost:5000", derec_backend::models::Defaults {
-                grpc_enabled: false,
-                ..derec_backend::models::Defaults::default()
-            }),
-        reqwest::Client::new(),
-        actix_rt::Arbiter::current(),
-        pool,
-    ));
+            derec_backend::models::NodeConfig::new(
+                "http://localhost:5000",
+                derec_backend::models::Defaults {
+                    grpc_enabled: false,
+                    ..derec_backend::models::Defaults::default()
+                },
+            ),
+            reqwest::Client::new(),
+            actix_rt::Arbiter::current(),
+            pool,
+        ));
 
         let report = derec_backend::infrastructure::recovery::recover(&state).await;
 
         assert_eq!(report.helpers, 2, "both helpers stay in service");
         assert_eq!(report.grpc_dropped, 2);
         for id in ids {
-            let actor = state.actors.get(&id).await.expect("readable").expect("listed");
+            let actor = state
+                .actors
+                .get(&id)
+                .await
+                .expect("readable")
+                .expect("listed");
             assert_eq!(
-                actor.transports.iter().map(|t| t.uri.clone()).collect::<Vec<_>>(),
+                actor
+                    .transports
+                    .iter()
+                    .map(|t| t.uri.clone())
+                    .collect::<Vec<_>>(),
                 vec![format!("http://localhost:5000/derec/{id}")],
                 "only the endpoint this node serves is advertised"
             );
@@ -572,8 +623,14 @@ async fn a_node_restarted_with_grpc_disabled_stops_advertising_grpc() {
 // ── What a restart used to forget ────────────────────────────────────────────
 
 /// The running actor's address in `state`.
-fn running(state: &Node, actor_id: uuid::Uuid) -> actix::Addr<derec_backend::infrastructure::actors::provisioned::ProvisionedActor> {
-    state.inboxes.provisioned(&actor_id).expect("a running actor has an inbox")
+fn running(
+    state: &Node,
+    actor_id: uuid::Uuid,
+) -> actix::Addr<derec_backend::infrastructure::actors::provisioned::ProvisionedActor> {
+    state
+        .inboxes
+        .provisioned(&actor_id)
+        .expect("a running actor has an inbox")
 }
 
 /// Provision a helper in `mode` over `state`, as `POST /helpers` does.
@@ -595,7 +652,10 @@ async fn provision(state: &Node, mode: TransportMode) -> derec_backend::models::
         .register(helper.clone(), settings.clone())
         .await
         .expect("register");
-    state.runtime.spawn(&helper, &settings).expect("the helper starts");
+    state
+        .runtime
+        .spawn(&helper, &settings)
+        .expect("the helper starts");
     helper
 }
 
@@ -603,12 +663,14 @@ async fn mint(
     addr: &actix::Addr<derec_backend::infrastructure::actors::provisioned::ProvisionedActor>,
     replica_for_owner_secret: Option<u64>,
 ) -> u64 {
-    addr.send(derec_backend::infrastructure::actors::provisioned::CreateContactMsg {
-        contact_mode: derec_proto::ContactMode::InlineKeys,
-        nonce: None,
-        replica_for_owner_secret,
-        attempt: 0,
-    })
+    addr.send(
+        derec_backend::infrastructure::actors::provisioned::CreateContactMsg {
+            contact_mode: derec_proto::ContactMode::InlineKeys,
+            nonce: None,
+            replica_for_owner_secret,
+            attempt: 0,
+        },
+    )
     .await
     .expect("the actor is alive")
     .expect("a contact is minted")
@@ -626,7 +688,9 @@ async fn a_helpers_replica_instances_come_back_with_it() {
 
     let dir = std::env::temp_dir().join(format!("derec-restart-replica-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
-    let url = String::from(DatabaseUrl::from(dir.join("derec.db").to_string_lossy().as_ref()));
+    let url = String::from(DatabaseUrl::from(
+        dir.join("derec.db").to_string_lossy().as_ref(),
+    ));
 
     let (helper_id, own_secret, contact) = {
         let pool = db::connect(&url).await.expect("connect");
@@ -634,9 +698,11 @@ async fn a_helpers_replica_instances_come_back_with_it() {
         let helper = provision(&state, TransportMode::Http).await;
         let addr = running(&state, helper.id);
 
-        addr.send(derec_backend::infrastructure::actors::provisioned::EnsureReplicaInstanceMsg {
-            owner_secret_id: OWNER_SECRET,
-        })
+        addr.send(
+            derec_backend::infrastructure::actors::provisioned::EnsureReplicaInstanceMsg {
+                owner_secret_id: OWNER_SECRET,
+            },
+        )
         .await
         .expect("the actor is alive")
         .expect("the replica instance is created");
@@ -644,12 +710,17 @@ async fn a_helpers_replica_instances_come_back_with_it() {
         // already paired, both on the replica instance.
         let contact = mint(&addr, Some(OWNER_SECRET)).await;
         SqlChannelStore::new(pool, helper.id.to_string())
-            .save(OWNER_SECRET, ChannelRecord::Helper(helper_channel(REPLICA_CHANNEL)))
+            .save(
+                OWNER_SECRET,
+                ChannelRecord::Helper(helper_channel(REPLICA_CHANNEL)),
+            )
             .await
             .expect("save channel");
 
         let own: u64 = helper.secret_id.parse().expect("numeric secret id");
-        addr.send(derec_backend::infrastructure::actors::provisioned::ShutdownMsg).await.expect("alive");
+        addr.send(derec_backend::infrastructure::actors::provisioned::ShutdownMsg)
+            .await
+            .expect("alive");
         (helper.id, own, contact)
     };
 
@@ -665,13 +736,19 @@ async fn a_helpers_replica_instances_come_back_with_it() {
         let mut expected = vec![own_secret, OWNER_SECRET];
         expected.sort_unstable();
         assert_eq!(
-            addr.send(derec_backend::infrastructure::actors::provisioned::ListInstanceSecretsMsg).await.expect("alive"),
+            addr.send(derec_backend::infrastructure::actors::provisioned::ListInstanceSecretsMsg)
+                .await
+                .expect("alive"),
             expected,
             "the replica instance must be running again"
         );
 
         let owner_of = |channel_id| {
-            addr.send(derec_backend::infrastructure::actors::provisioned::InstanceForChannelMsg { channel_id })
+            addr.send(
+                derec_backend::infrastructure::actors::provisioned::InstanceForChannelMsg {
+                    channel_id,
+                },
+            )
         };
         assert_eq!(
             owner_of(REPLICA_CHANNEL).await.expect("alive"),
@@ -696,7 +773,9 @@ async fn an_open_contact_still_routes_after_a_restart_until_its_lifetime_ends() 
     // documented one-hour contact lifetime.
     let dir = std::env::temp_dir().join(format!("derec-restart-contact-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
-    let url = String::from(DatabaseUrl::from(dir.join("derec.db").to_string_lossy().as_ref()));
+    let url = String::from(DatabaseUrl::from(
+        dir.join("derec.db").to_string_lossy().as_ref(),
+    ));
 
     let (helper_id, own_secret, fresh, expired) = {
         let pool = db::connect(&url).await.expect("connect");
@@ -718,14 +797,20 @@ async fn an_open_contact_still_routes_after_a_restart_until_its_lifetime_ends() 
             .expect("backdate");
 
         let own: u64 = helper.secret_id.parse().expect("numeric secret id");
-        addr.send(derec_backend::infrastructure::actors::provisioned::ShutdownMsg).await.expect("alive");
+        addr.send(derec_backend::infrastructure::actors::provisioned::ShutdownMsg)
+            .await
+            .expect("alive");
         (helper.id, own, fresh, expired)
     };
 
     {
         let pool = db::connect(&url).await.expect("reconnect");
         let state = state_over(pool);
-        assert_eq!(state.channel_router.resolve(fresh), None, "proves nothing otherwise");
+        assert_eq!(
+            state.channel_router.resolve(fresh),
+            None,
+            "proves nothing otherwise"
+        );
 
         let report = derec_backend::infrastructure::recovery::recover(&state).await;
         assert_eq!(report.contacts, 1, "only the live contact: {report:?}");
@@ -737,7 +822,11 @@ async fn an_open_contact_still_routes_after_a_restart_until_its_lifetime_ends() 
         // HTTP carries the actor, but the actor still needs the instance.
         let addr = running(&state, helper_id);
         let owner_of = |channel_id| {
-            addr.send(derec_backend::infrastructure::actors::provisioned::InstanceForChannelMsg { channel_id })
+            addr.send(
+                derec_backend::infrastructure::actors::provisioned::InstanceForChannelMsg {
+                    channel_id,
+                },
+            )
         };
         assert_eq!(owner_of(fresh).await.expect("alive"), Some(own_secret));
         assert_eq!(owner_of(expired).await.expect("alive"), None);
@@ -752,16 +841,22 @@ async fn every_address_the_node_advertised_survives_the_restart_that_changes_it(
     // the old port: peers still hold it.
     let dir = std::env::temp_dir().join(format!("derec-restart-addresses-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
-    let url = String::from(DatabaseUrl::from(dir.join("derec.db").to_string_lossy().as_ref()));
+    let url = String::from(DatabaseUrl::from(
+        dir.join("derec.db").to_string_lossy().as_ref(),
+    ));
 
     let helper_id = {
         let pool = db::connect(&url).await.expect("connect");
         let state = std::sync::Arc::new(Node::new(
-        derec_backend::models::NodeConfig::new("http://192.168.0.28:8080", derec_backend::models::Defaults::default()).with_public_grpc_port(8081),
-        reqwest::Client::new(),
-        actix_rt::Arbiter::current(),
-        pool,
-    ));
+            derec_backend::models::NodeConfig::new(
+                "http://192.168.0.28:8080",
+                derec_backend::models::Defaults::default(),
+            )
+            .with_public_grpc_port(8081),
+            reqwest::Client::new(),
+            actix_rt::Arbiter::current(),
+            pool,
+        ));
         let helper = provision(&state, TransportMode::Both).await;
         running(&state, helper.id)
             .send(derec_backend::infrastructure::actors::provisioned::ShutdownMsg)
@@ -773,11 +868,15 @@ async fn every_address_the_node_advertised_survives_the_restart_that_changes_it(
     {
         let pool = db::connect(&url).await.expect("reconnect");
         let state = std::sync::Arc::new(Node::new(
-        derec_backend::models::NodeConfig::new("http://192.168.0.28:9090", derec_backend::models::Defaults::default()).with_public_grpc_port(9091),
-        reqwest::Client::new(),
-        actix_rt::Arbiter::current(),
-        pool,
-    ));
+            derec_backend::models::NodeConfig::new(
+                "http://192.168.0.28:9090",
+                derec_backend::models::Defaults::default(),
+            )
+            .with_public_grpc_port(9091),
+            reqwest::Client::new(),
+            actix_rt::Arbiter::current(),
+            pool,
+        ));
         derec_backend::infrastructure::recovery::recover(&state).await;
 
         use derec_backend::models::OwnTarget;
@@ -787,7 +886,9 @@ async fn every_address_the_node_advertised_survives_the_restart_that_changes_it(
             "the old public gRPC port is still this node"
         );
         assert_eq!(
-            state.addresses.own_target(&format!("http://192.168.0.28:8080/derec/{helper_id}")),
+            state
+                .addresses
+                .own_target(&format!("http://192.168.0.28:8080/derec/{helper_id}")),
             Some(OwnTarget::Actor(helper_id)),
             "and so is the old public HTTP port"
         );

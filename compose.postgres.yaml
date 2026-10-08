@@ -1,0 +1,11 @@
+# `docker compose -f compose.postgres.yaml up` from the repo root: the DeRec
+# reference app on PostgreSQL, at http://localhost:5000. Pulls the published
+# image; add `-f compose.build.yaml` to build it from your checkout instead.
+#
+# The services live in examples/compose.postgres.yaml, documented inline.
+# ./start.sh --postgres runs this file.
+
+name: derec
+
+include:
+  - examples/compose.postgres.yaml

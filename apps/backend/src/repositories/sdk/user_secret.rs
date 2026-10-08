@@ -105,16 +105,15 @@ impl DeRecUserSecretStore for SqlUserSecretStore {
         let actor = self.actor_id.clone();
 
         Box::pin(async move {
-            let row: Option<(String,)> =
-                sqlx::query_as(
-                    "SELECT payload FROM user_secrets \
+            let row: Option<(String,)> = sqlx::query_as(
+                "SELECT payload FROM user_secrets \
                      WHERE secret_id = $1 AND actor_id = $2",
-                )
-                    .bind(secret)
-                    .bind(actor)
-                    .fetch_optional(&pool)
-                    .await
-                    .map_err(backend)?;
+            )
+            .bind(secret)
+            .bind(actor)
+            .fetch_optional(&pool)
+            .await
+            .map_err(backend)?;
 
             match row {
                 Some((json,)) => {
@@ -137,7 +136,9 @@ impl DeRecUserSecretStore for SqlUserSecretStore {
 
             // Replace, never accumulate: there is one current snapshot per
             // secret, which is what "latest" means.
-            let mut tx = crate::repositories::begin_write(&pool).await.map_err(backend)?;
+            let mut tx = crate::repositories::begin_write(&pool)
+                .await
+                .map_err(backend)?;
 
             sqlx::query("DELETE FROM user_secrets WHERE secret_id = $1 AND actor_id = $2")
                 .bind(&secret)
@@ -149,12 +150,12 @@ impl DeRecUserSecretStore for SqlUserSecretStore {
             sqlx::query(
                 "INSERT INTO user_secrets (secret_id, payload, actor_id) VALUES ($1, $2, $3)",
             )
-                .bind(&secret)
-                .bind(&json)
-                .bind(&actor)
-                .execute(&mut *tx)
-                .await
-                .map_err(backend)?;
+            .bind(&secret)
+            .bind(&json)
+            .bind(&actor)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
 
             tx.commit().await.map_err(backend)?;
             Ok(())

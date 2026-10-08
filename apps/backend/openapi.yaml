@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: DeRec reference app — backend
-  version: "0.0.7"
+  version: "0.0.8-alpha.1"
   description: |
     The backend half of the DeRec reference app: an actor registry, a message
     relay, and a debug surface. It runs as a developer's local container and
@@ -1346,6 +1346,14 @@ components:
                   only in memory and no store has seen it yet; it expires after
                   an hour. A channel with both ends on this node is listed once
                   per actor.
+              side:
+                type: string
+                enum: [endpoint, mirror]
+                description: |
+                  `endpoint` — this actor is one end of the pairing. `mirror` —
+                  a replica holding a copy of its source's view of a helper
+                  channel. A message on a channel goes to an endpoint before a
+                  mirror; a mirror receives only when nothing else claims it.
         events_dropped: { type: integer }
         latest_event_seq: { type: integer }
 

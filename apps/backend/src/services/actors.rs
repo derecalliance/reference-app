@@ -1074,10 +1074,7 @@ mod tests {
             .await
             .expect_err("refused");
 
-        assert_eq!(
-            error,
-            ServiceError::FingerprintMismatch
-        );
+        assert_eq!(error, ServiceError::FingerprintMismatch);
     }
 
     #[tokio::test]

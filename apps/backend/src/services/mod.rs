@@ -159,12 +159,18 @@ mod tests {
     fn a_store_failure_is_answered_without_its_detail() {
         let error = ServiceError::from(RepositoryError::Corrupt("row 7 is garbage".to_owned()));
 
-        assert_eq!(error, ServiceError::Internal("actor registry unavailable".to_owned()));
+        assert_eq!(
+            error,
+            ServiceError::Internal("actor registry unavailable".to_owned())
+        );
     }
 
     #[test]
     fn a_full_mailbox_is_transient() {
-        let error = ServiceError::from(RepositoryError::MailboxFull { queued: 1000, bytes: 0 });
+        let error = ServiceError::from(RepositoryError::MailboxFull {
+            queued: 1000,
+            bytes: 0,
+        });
 
         assert!(matches!(error, ServiceError::MailboxFull(_)));
     }
@@ -173,7 +179,9 @@ mod tests {
     fn a_busy_actor_is_transient_rather_than_a_fault() {
         assert_eq!(
             ServiceError::from_actor_call("pairing", ActorCallError::Busy),
-            ServiceError::Unavailable("actor is busy with another call; try again shortly".to_owned())
+            ServiceError::Unavailable(
+                "actor is busy with another call; try again shortly".to_owned()
+            )
         );
     }
 
@@ -192,7 +200,9 @@ mod tests {
             ActorCallError::Protocol(derec_library::Error::InvalidInput("bad contact")),
         );
 
-        assert!(matches!(error, ServiceError::BadRequest(m) if m.starts_with("pairing rejected: ")));
+        assert!(
+            matches!(error, ServiceError::BadRequest(m) if m.starts_with("pairing rejected: "))
+        );
     }
 
     #[test]
@@ -202,7 +212,10 @@ mod tests {
             ActorCallError::Protocol(derec_library::Error::Invariant("internal detail")),
         );
 
-        assert_eq!(error, ServiceError::Internal("contact creation failed".to_owned()));
+        assert_eq!(
+            error,
+            ServiceError::Internal("contact creation failed".to_owned())
+        );
     }
 
     #[test]

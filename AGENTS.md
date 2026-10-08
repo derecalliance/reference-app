@@ -143,6 +143,12 @@ A channel in **neither** tier cannot be routed over gRPC at all, and an inbound
 gRPC message for it is refused rather than guessed at. You will see that as an
 event with `outcome: "refused"` and no `actor_id`.
 
+Bound entries also carry a `side`: `endpoint` for the actor at one end of the
+pairing, `mirror` for a replica holding a copy of its source's helper channel.
+One channel can appear several times — its helper plus each mirroring replica —
+and delivery goes to the endpoint. Two endpoints (or two mirrors and no
+endpoint) for one channel are a tie, and the message is refused.
+
 ### "Which helper is which?"
 
 ```
@@ -229,10 +235,15 @@ If you are an agent *modifying* the app rather than driving it:
   marked *unreleased* it describes the release as it will ship, so update the
   bullet that covers the feature instead of appending a history of edits. Pure
   refactors, tests and internal renames do not need an entry.
-- **The app's version is the SDK's.** Moving to a new SDK means bumping
-  `apps/backend/Cargo.toml`, `apps/web/package.json`, the Dockerfile's
-  `VERSION`, the image tags in `examples/compose.*.yaml`, `README.md` and
-  `CONTRIBUTING.md`, `info.version` in `apps/backend/openapi.yaml` (a test
-  checks it), and the `CHANGELOG.md` heading.
+- **The app's version is the SDK's**, optionally with a pre-release suffix
+  (`0.0.8-alpha.1`, `-beta.N`, `-rc.N`). It is declared once, as `version` in
+  `apps/backend/Cargo.toml`; change it only with `scripts/version.sh set
+  <version>`, which rewrites every copy (web package, `openapi.yaml`, the
+  Dockerfile, the compose files, the image tags in the docs, the CHANGELOG
+  heading), and verify with `scripts/version.sh check`. Moving to a new SDK
+  means bumping `derec-library`, `derec-proto` and `@derec-alliance/web` first.
+- **The Docker image's documentation is `docs/DOCKER.md`.** A new, removed or
+  changed setting, default, port or volume updates its tables in the same
+  change.
 - Keep `apps/backend/openapi.yaml`, this file and the in-app Help
   (`apps/web/src/help/content/`) in step with any API or behaviour change.

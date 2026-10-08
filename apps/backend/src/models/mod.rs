@@ -49,5 +49,5 @@ pub use owner::{RegisterOwner, RenamedOwner};
 pub use protocol_settings::{
     AuthenticationMethod, ProtocolSettings, SettingsError, UnpairAck, MAX_PROTOCOL_TIMEOUT_SECS,
 };
-pub use routing::{Resolution, Route, Tier, SENDER_METADATA};
+pub use routing::{Resolution, Route, Side, Tier, SENDER_METADATA};
 pub use transport::{Transport, TransportBreakdown, TransportMode, TransportProtocol};

@@ -165,6 +165,22 @@ export interface BagReplicaGroup {
   members: BagReplicaMember[]
 }
 
+/**
+ * A protect round the library dispatched, as the dialogs that follow it need it.
+ *
+ * `recipientIds` are the participants the library actually sent a share to —
+ * read off the round's own `ProtectSecretStarted` / `ProtectSecretFailed`
+ * events, not every participant row. A helper whose fingerprint was never
+ * confirmed is still `Pending` in the library and is sent nothing, so counting
+ * it would report a share that was never asked for as one that went unstored.
+ */
+export interface PublishedRound {
+  /** The version the library assigned to the round. */
+  version: number
+  /** Participants the round sent a share to. */
+  recipientIds: string[]
+}
+
 /** The single secret bag managed by the protocol. */
 export interface SecretBag {
   /** Protocol-level secret identifier (u64 as decimal string) */
@@ -236,7 +252,7 @@ export interface RecoveredSecretReplica {
   transports: RecoveredSecretTransport[]
   /** Absent when the peer advertised nothing — the SDK omits an empty map. */
   communicationInfo?: Record<string, string>
-  /** Hex-encoded u64, matching the wire `derec.replica_id` representation. */
+  /** Decimal u64, as the SDK spells every replica id. */
   replicaId: string
   /**
    * Exactly one member of a group carries `Source` — the device the secret

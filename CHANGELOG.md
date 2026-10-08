@@ -6,11 +6,12 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The app's version is the version of the DeRec SDK it is built against
 (`derec-library` / `derec-proto` on crates.io, `@derec-alliance/web` on npm):
 the SDK is compiled into both halves, so a different SDK means a different
-release rather than a different setting.
+release rather than a different setting. Pre-releases of a version carry a
+suffix (`0.0.8-alpha.1`, `-beta.N`, `-rc.N`).
 
-## [0.0.7] — unreleased
+## [0.0.8-alpha.1] — unreleased
 
-First release. Built against DeRec SDK 0.0.7.
+First release. Built against DeRec SDK 0.0.8.
 
 ### Added
 
@@ -37,17 +38,27 @@ First release. Built against DeRec SDK 0.0.7.
   bag, including its replica group. Round progress tells apart a helper that
   refused (Rejected), one that never answered (No answer) and one that could
   not be reached (Not reachable); a helper that refuses a verification shows as
-  Rejected. A secret bag is capped at 32 KB, which is what browser storage can
+  Rejected. A round counts only the helpers it was actually sent to: one whose
+  fingerprint was refused is sent nothing, so it is neither waited on nor
+  reported as having failed to store the version, and the Add Secret form does
+  not list it among the participants. A secret bag is capped at 32 KB, which is what browser storage can
   hold across every kept version.
 - **Share retention.** Each round tells helpers which versions to keep
-  (`keepList`): the three newest committed versions plus any round still open.
-  Helpers drop the rest, so a rolled-back round never lingers on them or in
-  discovery.
+  (`keepList`): the three newest committed versions plus any round still open,
+  including the rounds the library publishes on its own when a helper pairs or
+  a replica's fingerprint is confirmed, so a version that commits after a newer
+  round started is not dropped and still shows in discovery. Helpers drop the
+  rest, so a rolled-back round never lingers on them or in discovery.
 - **Recovery and restore.** Reconstruct a secret from helper shares, and
   restore this device from a recovered bag. A helper that holds no share of the
   requested version is reported as refused and does not hold recovery up; a
   corrupted share is reported with the helper and reason, with an offer to
-  unpair it. Helpers on another node can be linked for recovery.
+  unpair it. Helpers on another node can be linked for recovery. Restoring a
+  vault that has replicas keeps its group: on the device that held it the
+  Replicas tab still lists the replica, and on a new device the vault takes
+  over the identity its group knows it by — the source's — so it can publish
+  and keeps mirroring. A vault restored without that identity is told why it
+  cannot publish and how to fix it, instead of failing on an internal error.
 - **Unpairing**, with configurable acknowledgement policy.
 - **Replica groups.** Pair another device — or a provisioned helper in replica
   mode — as a replica behind a fingerprint gate; mirroring with per-member
@@ -62,7 +73,11 @@ First release. Built against DeRec SDK 0.0.7.
 - **HTTP and gRPC transports.** A gRPC listener alongside HTTP; helpers that
   advertise `http`, `grpc` or `both`; and a relay through which a browser owner
   reaches a gRPC-only helper. The relay reaches other nodes only when they are
-  listed in `DEREC_RELAY_ALLOWED_HOSTS`. Messages up to 4 MiB.
+  listed in `DEREC_RELAY_ALLOWED_HOSTS`. Messages up to 4 MiB. A provisioned
+  replica holding copies of its source's helper channels never shadows the
+  helper serving one: gRPC and relayed messages reach the helper, and
+  `routes[].side` in `GET /api/v1/debug/state` shows which claim is the
+  channel's end (`endpoint`) and which a replica's copy (`mirror`).
 - **Persistence and recovery.** The backend persists to SQLite (default) or
   Postgres and rebuilds every hosted helper — identity, `replica_id`,
   settings, channels, shares, replica instances and open pairing contacts — on
@@ -71,12 +86,29 @@ First release. Built against DeRec SDK 0.0.7.
   address the node used before are still delivered.
 - **Docker image** serving the UI and API from one origin, with a data volume,
   a non-root user, a healthcheck and graceful shutdown on `docker stop`.
-- **One-command start.** `./start.sh` builds and runs the node, picks free
+  Published for `linux/amd64` and `linux/arm64` as
+  `ghcr.io/derecalliance/reference-app:<version>` (and `latest`), so a node
+  runs with `docker run` and no checkout. Pre-releases are tagged
+  `<version>-alpha.N` / `-beta.N` / `-rc.N` and never move `latest`.
+  [docs/DOCKER.md](docs/DOCKER.md) documents the image: tags, ports, volumes and
+  every setting with its default, environment files and Compose.
+- **Release tooling.** The version is declared once, in
+  `apps/backend/Cargo.toml`; `scripts/version.sh` sets it everywhere and checks
+  that every copy agrees with it and with the SDK. `scripts/publish-image.sh`
+  publishes the image from the tagged release commit after checking the tree,
+  the tag, the registry login and that the version is not already published,
+  then verifies both platforms in the registry; `--local` rehearses against a
+  registry on `localhost:5055` and `--dry-run` pushes nothing.
+- **One-command start.** `./start.sh` pulls and runs the node, picks free
   ports, waits until it answers and is safe to rerun (`--postgres`, `--lan`,
-  `--fresh`, `--port`, `--stop`); `docker compose up` at the repo root runs the
-  same SQLite node. Compose examples for SQLite and PostgreSQL in `examples/`.
-  Separate public ports (`DEREC_PUBLIC_PORT`, `DEREC_PUBLIC_GRPC_PORT`) for
-  nodes published on other host ports.
+  `--fresh`, `--port`, `--stop`); `--build` builds the image from the checkout
+  instead, and a failed pull falls back to building. `docker compose up` at the
+  repo root runs the same SQLite node and `docker compose -f
+  compose.postgres.yaml up` the PostgreSQL one, both from the published image;
+  add `-f compose.build.yaml` to build from the checkout. The compose files in
+  `examples/` need no checkout, and `DEREC_IMAGE` points them at another
+  registry. Separate public ports (`DEREC_PUBLIC_PORT`,
+  `DEREC_PUBLIC_GRPC_PORT`) for nodes published on other host ports.
 - **HTTP API under `/api/v1`.** Every app endpoint answers in one envelope —
   `{"result", "timestamp", "request_id"}` on success and
   `{"error": {"code", "message"}, "timestamp", "request_id"}` on failure, with
@@ -95,6 +127,9 @@ First release. Built against DeRec SDK 0.0.7.
 - **Settings section.** The node's resolved configuration, plus per-browser
   overrides of the protocol defaults, including auto-accept for incoming unpair,
   share storage and verification requests.
+  A tab opened while the node is down retries fetching the node's defaults
+  (bounded backoff, at most one request every 30 s) until it answers once,
+  instead of keeping the built-in fallback until a reload.
 - **Debug and inspect surfaces.** The Inspect section (actors, endpoints,
   channel routes, protocol instances), a Console panel of protocol events and
   backend deliveries tagged with the transport that carried them, and

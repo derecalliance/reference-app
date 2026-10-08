@@ -23,18 +23,21 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use actix::prelude::*;
-use derec_backend::infrastructure::actors::provisioned::{ChannelStatusMsg, CreateContactMsg, EnsureReplicaInstanceMsg, GetFingerprintMsg, InstanceForChannelMsg, PendingChannelIdsMsg, ProvisionedActor, VerifyFingerprintMsg};
-use derec_backend::infrastructure::actors::protocol::{ProtocolConfig, build_protocol};
+use derec_backend::infrastructure::actors::protocol::ActorProtocol;
+use derec_backend::infrastructure::actors::protocol::{build_protocol, ProtocolConfig};
+use derec_backend::infrastructure::actors::provisioned::{
+    ChannelStatusMsg, CreateContactMsg, EnsureReplicaInstanceMsg, GetFingerprintMsg,
+    InstanceForChannelMsg, PendingChannelIdsMsg, ProvisionedActor, VerifyFingerprintMsg,
+};
+use derec_backend::infrastructure::bootstrap::Node;
+use derec_backend::models::Actor;
 use derec_backend::models::Defaults;
 use derec_backend::models::{Role, TransportMode, UnpairAck};
-use derec_backend::models::Actor;
 use derec_backend::services::ports::{ActorGateway, InboxDirectory};
-use derec_backend::infrastructure::bootstrap::Node;
-use derec_backend::infrastructure::actors::protocol::ActorProtocol;
+use derec_library::protocol::types::ReplicaFilter;
 use derec_library::protocol::{
     ChannelQuery, ChannelRecord, ChannelStatus, DeRecChannelStore, DeRecFlow,
 };
-use derec_library::protocol::types::ReplicaFilter;
 use derec_library::types::ChannelId;
 use uuid::Uuid;
 
@@ -64,7 +67,10 @@ async fn serve() -> Arc<Node> {
     let port = listener.local_addr().expect("listener is bound").port();
 
     let state = Arc::new(Node::new(
-        derec_backend::models::NodeConfig::new(format!("http://127.0.0.1:{port}"), Defaults::default()),
+        derec_backend::models::NodeConfig::new(
+            format!("http://127.0.0.1:{port}"),
+            Defaults::default(),
+        ),
         reqwest::Client::new(),
         actix_rt::Arbiter::current(),
         derec_backend::infrastructure::db::connect("sqlite::memory:")
@@ -85,21 +91,28 @@ async fn spawn_helper(state: &Arc<Node>, name: &str) -> (Uuid, Addr<ProvisionedA
     spawn_actor(state, Role::Helper, name).await
 }
 
-async fn spawn_actor(
-    state: &Arc<Node>,
-    role: Role,
-    name: &str,
-) -> (Uuid, Addr<ProvisionedActor>) {
-    let actor =
-        Actor::mint(role, name, &state.config.base_url, &state.config.grpc_authority(), TransportMode::Http);
+async fn spawn_actor(state: &Arc<Node>, role: Role, name: &str) -> (Uuid, Addr<ProvisionedActor>) {
+    let actor = Actor::mint(
+        role,
+        name,
+        &state.config.base_url,
+        &state.config.grpc_authority(),
+        TransportMode::Http,
+    );
     state
         .actors
         .register(actor.clone(), test_settings())
         .await
         .expect("the registry is writable");
-    state.runtime.spawn(&actor, &test_settings()).expect("the actor starts");
+    state
+        .runtime
+        .spawn(&actor, &test_settings())
+        .expect("the actor starts");
 
-    let addr = state.inboxes.provisioned(&actor.id).expect("spawning registers an inbox");
+    let addr = state
+        .inboxes
+        .provisioned(&actor.id)
+        .expect("spawning registers an inbox");
 
     (actor.id, addr)
 }
@@ -301,7 +314,9 @@ async fn a_replica_mode_pairing_is_confirmed_on_the_helpers_replica_instance() {
     let mut owner = register_owner(&state, "Alice").await;
 
     helper
-        .send(EnsureReplicaInstanceMsg { owner_secret_id: owner.secret_id })
+        .send(EnsureReplicaInstanceMsg {
+            owner_secret_id: owner.secret_id,
+        })
         .await
         .expect("the helper actor is alive")
         .expect("the replica instance is created");
@@ -340,8 +355,14 @@ async fn a_replica_mode_pairing_is_confirmed_on_the_helpers_replica_instance() {
          instance-targeting requirement at all"
     );
 
-    let status =
-        await_helper_status(&state, &helper, &mut owner, channel_id, ChannelStatus::Paired).await;
+    let status = await_helper_status(
+        &state,
+        &helper,
+        &mut owner,
+        channel_id,
+        ChannelStatus::Paired,
+    )
+    .await;
 
     assert_eq!(
         status,
@@ -385,7 +406,9 @@ async fn a_replica_mode_channels_fingerprint_is_served_by_its_owning_instance() 
     let mut owner = register_owner(&state, "Alice").await;
 
     helper
-        .send(EnsureReplicaInstanceMsg { owner_secret_id: owner.secret_id })
+        .send(EnsureReplicaInstanceMsg {
+            owner_secret_id: owner.secret_id,
+        })
         .await
         .expect("the helper actor is alive")
         .expect("the replica instance is created");
@@ -426,7 +449,14 @@ async fn a_replica_mode_channels_fingerprint_is_served_by_its_owning_instance() 
     // Waiting for `Paired` is how the test knows both sides finished the
     // handshake, and so that both stores hold the channel's shared key.
     assert_eq!(
-        await_helper_status(&state, &helper, &mut owner, channel_id, ChannelStatus::Paired).await,
+        await_helper_status(
+            &state,
+            &helper,
+            &mut owner,
+            channel_id,
+            ChannelStatus::Paired
+        )
+        .await,
         Some(ChannelStatus::Paired),
     );
 
@@ -450,7 +480,10 @@ async fn a_replica_mode_channels_fingerprint_is_served_by_its_owning_instance() 
 
     assert!(
         helper
-            .send(VerifyFingerprintMsg { channel_id, fingerprint: owner_fingerprint })
+            .send(VerifyFingerprintMsg {
+                channel_id,
+                fingerprint: owner_fingerprint
+            })
             .await
             .expect("the helper actor is alive")
             .expect("verification runs against the instance holding the channel"),
@@ -491,8 +524,14 @@ async fn a_no_keys_pairing_is_confirmed_by_the_helper_but_not_by_the_owner() {
 
     let channel_id = await_helper_channel(&state, helper_id, &mut owner).await;
 
-    let status =
-        await_helper_status(&state, &helper, &mut owner, channel_id, ChannelStatus::Paired).await;
+    let status = await_helper_status(
+        &state,
+        &helper,
+        &mut owner,
+        channel_id,
+        ChannelStatus::Paired,
+    )
+    .await;
 
     assert_eq!(
         status,
@@ -545,7 +584,9 @@ async fn the_tick_backstop_confirms_a_channel_the_event_path_missed() {
     let mut owner = register_unreachable_owner(&state, "Alice").await;
 
     helper
-        .send(EnsureReplicaInstanceMsg { owner_secret_id: owner.secret_id })
+        .send(EnsureReplicaInstanceMsg {
+            owner_secret_id: owner.secret_id,
+        })
         .await
         .expect("the helper actor is alive")
         .expect("the replica instance is created");
@@ -583,8 +624,28 @@ async fn the_tick_backstop_confirms_a_channel_the_event_path_missed() {
          helper recorded the channel, so the fast path ran after all"
     );
 
-    let status =
-        await_helper_status(&state, &helper, &mut owner, channel_id, ChannelStatus::Paired).await;
+    // The tick is driven here rather than waited for. Its 15 s period put the
+    // first scheduled sweep at the edge of the poll budget, so the test failed
+    // whenever a loaded machine pushed it past; ticking explicitly takes the
+    // clock out of it. Each tick runs to completion before the status is read,
+    // and a tick that found the instance borrowed — it skips those — is simply
+    // repeated.
+    let mut status = None;
+    for _ in 0..POLL_ATTEMPTS {
+        state
+            .runtime
+            .tick(&helper_id)
+            .await
+            .expect("the helper actor is running");
+        status = helper
+            .send(ChannelStatusMsg { channel_id })
+            .await
+            .expect("the helper actor is alive");
+        if status == Some(ChannelStatus::Paired) {
+            break;
+        }
+        actix_rt::time::sleep(POLL_INTERVAL).await;
+    }
 
     assert_eq!(
         status,

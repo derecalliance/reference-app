@@ -7,7 +7,7 @@
 //! engine — there is deliberately no `database_type` setting, because a second
 //! setting could only ever contradict the URL.
 
-use sqlx::any::{AnyPoolOptions, install_default_drivers};
+use sqlx::any::{install_default_drivers, AnyPoolOptions};
 
 use crate::models::DatabaseUrl;
 
@@ -81,9 +81,15 @@ impl DbError {
         };
         let lowered = text.to_ascii_lowercase();
         let about_access = matches!(self, Self::ReadOnly { .. })
-            || ["readonly", "read-only", "unable to open", "permission", "access"]
-                .iter()
-                .any(|needle| lowered.contains(needle));
+            || [
+                "readonly",
+                "read-only",
+                "unable to open",
+                "permission",
+                "access",
+            ]
+            .iter()
+            .any(|needle| lowered.contains(needle));
         if !about_access {
             return None;
         }
@@ -145,7 +151,21 @@ pub async fn connect(database_url: &str) -> Result<sqlx::AnyPool, DbError> {
         // those errors, all after the ten-minute mark, on a node that had been
         // serving happily until then. Short runs never reach the timeout, which
         // is what made it look intermittent.
-        options = options.idle_timeout(None).max_lifetime(None);
+        //
+        // `test_before_acquire` is the same hazard reached by cancellation. sqlx
+        // pings an idle connection *after* taking it out of the pool, and if the
+        // acquiring future is dropped during that await, the connection is
+        // dropped with it — closed, not returned. Futures are dropped like that
+        // routinely here: a browser hanging up mid-request drops its handler,
+        // and deleting a helper stops its actor along with the call it had in
+        // flight. An e2e run lost every table half a second after such a
+        // deletion. Without the ping, acquiring an idle connection never
+        // awaits, so there is no point at which it can be dropped in hand. The
+        // ping has nothing to detect anyway: there is no server to hang up.
+        options = options
+            .idle_timeout(None)
+            .max_lifetime(None)
+            .test_before_acquire(false);
     }
 
     let pool = options
@@ -213,7 +233,9 @@ fn sqlite_file_path(url: &DatabaseUrl) -> Option<&str> {
         return None;
     }
     let url = url.as_str();
-    let rest = url.strip_prefix("sqlite://").or_else(|| url.strip_prefix("sqlite:"))?;
+    let rest = url
+        .strip_prefix("sqlite://")
+        .or_else(|| url.strip_prefix("sqlite:"))?;
     let path = rest.split('?').next().unwrap_or(rest);
     (!path.is_empty()).then_some(path)
 }
@@ -266,59 +288,24 @@ pub fn warn_if_ephemeral(database_url: &str) {
     if !DatabaseUrl::from(database_url).is_ephemeral() {
         return;
     }
-    tracing::warn!(
-        "╔══════════════════════════════════════════════════════════════════════╗"
-    );
-    tracing::warn!(
-        "║  EPHEMERAL DATABASE — this node keeps nothing across a restart.      ║"
-    );
-    tracing::warn!(
-        "║                                                                      ║"
-    );
-    tracing::warn!(
-        "║  DEREC_DATABASE_URL names an in-memory SQLite database, so every     ║"
-    );
-    tracing::warn!(
-        "║  actor, pairing, share and vault is lost when this process stops.    ║"
-    );
-    tracing::warn!(
-        "║  A browser that reconnects after a restart will still hold channel   ║"
-    );
-    tracing::warn!(
-        "║  state for peers this node no longer knows, and its flows will fail  ║"
-    );
-    tracing::warn!(
-        "║  in ways that look like protocol bugs but are not.                   ║"
-    );
-    tracing::warn!(
-        "║                                                                      ║"
-    );
-    tracing::warn!(
-        "║  State can also vanish mid-run: the database lives in one pooled     ║"
-    );
-    tracing::warn!(
-        "║  connection, and if that connection is ever dropped and reopened     ║"
-    );
-    tracing::warn!(
-        "║  the replacement starts empty. Use this for short scratch sessions   ║"
-    );
-    tracing::warn!(
-        "║  only.                                                               ║"
-    );
-    tracing::warn!(
-        "║                                                                      ║"
-    );
-    tracing::warn!(
-        "║  For anything you expect to survive, set DEREC_DATABASE_URL to a     ║"
-    );
-    tracing::warn!(
-        "║  file path — e.g. /var/lib/derec/derec.db, which the image mounts.   ║"
-    );
-    tracing::warn!(
-        "╚══════════════════════════════════════════════════════════════════════╝"
-    );
+    tracing::warn!("╔══════════════════════════════════════════════════════════════════════╗");
+    tracing::warn!("║  EPHEMERAL DATABASE — this node keeps nothing across a restart.      ║");
+    tracing::warn!("║                                                                      ║");
+    tracing::warn!("║  DEREC_DATABASE_URL names an in-memory SQLite database, so every     ║");
+    tracing::warn!("║  actor, pairing, share and vault is lost when this process stops.    ║");
+    tracing::warn!("║  A browser that reconnects after a restart will still hold channel   ║");
+    tracing::warn!("║  state for peers this node no longer knows, and its flows will fail  ║");
+    tracing::warn!("║  in ways that look like protocol bugs but are not.                   ║");
+    tracing::warn!("║                                                                      ║");
+    tracing::warn!("║  State can also vanish mid-run: the database lives in one pooled     ║");
+    tracing::warn!("║  connection, and if that connection is ever dropped and reopened     ║");
+    tracing::warn!("║  the replacement starts empty. Use this for short scratch sessions   ║");
+    tracing::warn!("║  only.                                                               ║");
+    tracing::warn!("║                                                                      ║");
+    tracing::warn!("║  For anything you expect to survive, set DEREC_DATABASE_URL to a     ║");
+    tracing::warn!("║  file path — e.g. /var/lib/derec/derec.db, which the image mounts.   ║");
+    tracing::warn!("╚══════════════════════════════════════════════════════════════════════╝");
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -327,12 +314,23 @@ mod tests {
     #[test]
     fn a_sqlite_url_yields_its_file_path_and_memory_yields_none() {
         assert_eq!(
-            sqlite_file_path(&DatabaseUrl::from("sqlite:///var/lib/derec/derec.db?mode=rwc")),
+            sqlite_file_path(&DatabaseUrl::from(
+                "sqlite:///var/lib/derec/derec.db?mode=rwc"
+            )),
             Some("/var/lib/derec/derec.db")
         );
-        assert_eq!(sqlite_file_path(&DatabaseUrl::from("sqlite://./derec.db")), Some("./derec.db"));
-        assert_eq!(sqlite_file_path(&DatabaseUrl::from("sqlite::memory:")), None);
-        assert_eq!(sqlite_file_path(&DatabaseUrl::from("postgres://db/derec")), None);
+        assert_eq!(
+            sqlite_file_path(&DatabaseUrl::from("sqlite://./derec.db")),
+            Some("./derec.db")
+        );
+        assert_eq!(
+            sqlite_file_path(&DatabaseUrl::from("sqlite::memory:")),
+            None
+        );
+        assert_eq!(
+            sqlite_file_path(&DatabaseUrl::from("postgres://db/derec")),
+            None
+        );
     }
 
     /// A database that opens but cannot be written must not come up healthy.
@@ -406,8 +404,14 @@ mod tests {
 
             assert!(hint.contains("directory"), "{url}: {hint}");
             assert!(hint.contains(&dir.display().to_string()), "{url}: {hint}");
-            assert!(!hint.contains("uid"), "permissions are not the cause: {hint}");
-            assert!(!hint.contains("Append"), "mode=rwc would not fix it: {hint}");
+            assert!(
+                !hint.contains("uid"),
+                "permissions are not the cause: {hint}"
+            );
+            assert!(
+                !hint.contains("Append"),
+                "mode=rwc would not fix it: {hint}"
+            );
         }
         assert!(!dir.exists(), "nothing may have been created on the way");
     }
@@ -448,7 +452,9 @@ mod tests {
     /// is the closest thing to proving the connection was not replaced.
     #[tokio::test]
     async fn an_ephemeral_pool_keeps_its_schema_across_reacquisitions() {
-        let pool = connect("sqlite::memory:").await.expect("in-memory connects");
+        let pool = connect("sqlite::memory:")
+            .await
+            .expect("in-memory connects");
 
         for _ in 0..5 {
             // Each iteration returns the connection to the pool and takes it
@@ -459,5 +465,40 @@ mod tests {
                 .expect("the actors table survives reacquisition");
             assert_eq!(count, 0);
         }
+    }
+
+    /// The regression test for the participants e2e run that lost every
+    /// table right after a helper was deleted.
+    ///
+    /// Deleting a helper stops its actor, which drops whatever call the actor
+    /// had in flight; a browser that hangs up mid-request drops its handler
+    /// the same way. If that call was inside `acquire()` while sqlx pinged the
+    /// idle connection (`test_before_acquire`), the checked-out connection was
+    /// dropped with it — and for an in-memory database, so was every table.
+    ///
+    /// `biased` polls the acquire exactly once, which parks it on that ping,
+    /// and the ready branch then drops it there.
+    #[tokio::test]
+    async fn an_ephemeral_pool_survives_an_acquire_cancelled_mid_flight() {
+        let pool = connect("sqlite::memory:")
+            .await
+            .expect("in-memory connects");
+
+        for _ in 0..5 {
+            tokio::select! {
+                biased;
+                _ = pool.acquire() => {}
+                () = std::future::ready(()) => {}
+            }
+            // Let the pool's own spawned bookkeeping run, as it would between
+            // two requests on a live node.
+            tokio::task::yield_now().await;
+        }
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM actors")
+            .fetch_one(&pool)
+            .await
+            .expect("the actors table survives a cancelled acquire");
+        assert_eq!(count, 0);
     }
 }

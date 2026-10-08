@@ -195,7 +195,10 @@ async fn owner_and_helper_names_are_trimmed_required_and_bounded() {
 
     let (status, _, body) = send(
         &router,
-        post_json("/api/v1/owners", &json!({ "name": "  Alice  " }).to_string()),
+        post_json(
+            "/api/v1/owners",
+            &json!({ "name": "  Alice  " }).to_string(),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -360,9 +363,11 @@ async fn a_fingerprint_for_a_channel_the_actor_does_not_hold_is_404() {
     let (_, router) = app().await;
     let helper = provision(&router, json!({ "name": "Alex" })).await;
 
-    let request = Request::get(format!("/api/v1/actors/{helper}/fingerprint?channel_id=12345"))
-        .body(Body::empty())
-        .expect("request builds");
+    let request = Request::get(format!(
+        "/api/v1/actors/{helper}/fingerprint?channel_id=12345"
+    ))
+    .body(Body::empty())
+    .expect("request builds");
     let (status, content_type, body) = send(&router, request).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_error_shape(&content_type, &body);
@@ -544,8 +549,10 @@ async fn the_roster_prefers_a_paired_channel_over_a_newer_pending_one() {
             created_at,
         })
     };
-    let mut store =
-        derec_backend::repositories::sdk::channel::SqlChannelStore::new(state.pool.clone(), helper.clone());
+    let mut store = derec_backend::repositories::sdk::channel::SqlChannelStore::new(
+        state.pool.clone(),
+        helper.clone(),
+    );
     store
         .save(1, record(100, ChannelStatus::Paired, 10))
         .await
@@ -804,13 +811,19 @@ async fn an_ensure_total_past_the_pool_limit_names_the_limit() {
 
     let (status, content_type, body) = send(
         &router,
-        post_json("/api/v1/helpers/ensure", &json!({ "total": 300 }).to_string()),
+        post_json(
+            "/api/v1/helpers/ensure",
+            &json!({ "total": 300 }).to_string(),
+        ),
     )
     .await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_error_shape(&content_type, &body);
-    assert_eq!(body["error"]["message"], "total must be at most 255 (got 300)");
+    assert_eq!(
+        body["error"]["message"],
+        "total must be at most 255 (got 300)"
+    );
     assert!(
         state.actors.all().await.expect("readable").is_empty(),
         "nothing is created"

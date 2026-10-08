@@ -61,11 +61,7 @@ impl HttpTransport {
     /// One delivery attempt. The failure reason is a `String` rather than a
     /// protocol error because it is only ever logged: what reaches the caller
     /// is whether *any* endpoint accepted.
-    async fn post(
-        client: &reqwest::Client,
-        uri: &str,
-        message: Vec<u8>,
-    ) -> Result<(), String> {
+    async fn post(client: &reqwest::Client, uri: &str, message: Vec<u8>) -> Result<(), String> {
         let resp = client
             .post(uri)
             .header("Content-Type", "application/octet-stream")
@@ -166,9 +162,7 @@ impl GrpcTransport {
                 .to_string()
                 .parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
             {
-                request
-                    .metadata_mut()
-                    .insert(SENDER_METADATA, value);
+                request.metadata_mut().insert(SENDER_METADATA, value);
             }
         }
 
@@ -246,7 +240,10 @@ impl DeRecTransport for CompositeTransport {
 
         Box::pin(async move {
             if plan.is_empty() {
-                tracing::error!(offered, "transport: no endpoint on a protocol this node dials");
+                tracing::error!(
+                    offered,
+                    "transport: no endpoint on a protocol this node dials"
+                );
                 return Err(derec_library::Error::Invariant(NO_DIALABLE_ENDPOINT));
             }
 
@@ -372,7 +369,10 @@ mod tests {
     #[test]
     fn an_unknown_discriminant_is_skipped_rather_than_dialed() {
         let offered = vec![
-            TransportProtocol { uri: "??://x".to_owned(), protocol: 99 },
+            TransportProtocol {
+                uri: "??://x".to_owned(),
+                protocol: 99,
+            },
             http("http://b:2"),
         ];
 
@@ -384,15 +384,26 @@ mod tests {
 
     #[test]
     fn this_nodes_transport_failures_read_as_an_unreachable_peer_and_nothing_else_does() {
-        assert!(is_unreachable(&derec_library::Error::Invariant(NO_DIALABLE_ENDPOINT)));
-        assert!(is_unreachable(&derec_library::Error::Invariant(NO_ENDPOINT_ACCEPTED)));
-        assert!(!is_unreachable(&derec_library::Error::Invariant("transport: something else")));
-        assert!(!is_unreachable(&derec_library::Error::InvalidInput("transport: nope")));
+        assert!(is_unreachable(&derec_library::Error::Invariant(
+            NO_DIALABLE_ENDPOINT
+        )));
+        assert!(is_unreachable(&derec_library::Error::Invariant(
+            NO_ENDPOINT_ACCEPTED
+        )));
+        assert!(!is_unreachable(&derec_library::Error::Invariant(
+            "transport: something else"
+        )));
+        assert!(!is_unreachable(&derec_library::Error::InvalidInput(
+            "transport: nope"
+        )));
     }
 
     #[test]
     fn an_empty_plan_means_nothing_was_dialable() {
-        let offered = vec![TransportProtocol { uri: "??://x".to_owned(), protocol: 99 }];
+        let offered = vec![TransportProtocol {
+            uri: "??://x".to_owned(),
+            protocol: 99,
+        }];
 
         assert!(CompositeTransport::plan(&offered).is_empty());
     }

@@ -732,3 +732,33 @@ describe('VaultManager — halting for a reset', () => {
     expect(deps.eraseStores).not.toHaveBeenCalled()
   })
 })
+
+describe('VaultManager when the node defaults arrive late', () => {
+  const nodeDefaults = { ...FALLBACK_SERVER_DEFAULTS, protocolTimeoutSecs: 60, unpairAck: 'not_required' as const }
+
+  it('names each running vault whose protocol instance keeps the fallback values', async () => {
+    const pinned = vault({ id: 'pinned', name: 'Pinned', configOverrides: { protocolTimeoutSecs: 120, unpairAck: 'required' } })
+    const { manager, deps } = setup([alpha, pinned], {}, { pinned: 'running' })
+    await manager.boot()
+
+    manager.serverDefaultsArrived(FALLBACK_SERVER_DEFAULTS, nodeDefaults)
+
+    // Alpha resolves both fixed values from the node tier, so they moved; the
+    // vault that overrides both is unaffected and not mentioned.
+    const late = vi.mocked(deps.log).mock.calls.map(([entry]) => entry).filter(e => e.step === 'server_defaults_late')
+    expect(late).toHaveLength(1)
+    expect(late[0].description).toContain('"Alpha"')
+    expect(late[0].description).toContain('replay window 300s (node: 60s)')
+    expect(late[0].description).toContain('unpair acknowledgement "required" (node: "not_required")')
+  })
+
+  it('says nothing when the node agrees with the fallback, or no vault is running', async () => {
+    const { manager, deps } = setup([alpha], {}, { alpha: 'failed' })
+    await manager.boot()
+
+    manager.serverDefaultsArrived(FALLBACK_SERVER_DEFAULTS, nodeDefaults)
+    manager.serverDefaultsArrived(FALLBACK_SERVER_DEFAULTS, FALLBACK_SERVER_DEFAULTS)
+
+    expect(vi.mocked(deps.log).mock.calls.some(([e]) => e.step === 'server_defaults_late')).toBe(false)
+  })
+})

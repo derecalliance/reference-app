@@ -205,6 +205,15 @@ two tiers: `bound` (the pairing completed — the steady state) and `pinned` (a
 contact was minted and the handshake has not completed). A channel in neither
 tier is refused rather than guessed at.
 
+A bound claim also records its **side**: `endpoint` (the actor is one end of
+the pairing) or `mirror` (a replica holding a copy of its source's helper
+channel after hydrating). Several actors can then claim one channel — the
+helper that serves it and every replica that mirrors it — so delivery ranks
+bound endpoints above bound mirrors above pins, sets aside claimants that
+advertise no gRPC endpoint when the message arrived over gRPC, and still
+refuses a genuine tie. `/api/v1/debug/state` shows each route's `tier` and
+`side`.
+
 A browser cannot speak gRPC (no HTTP/2 trailer access), so `POST /derec/relay`
 asks the backend to dial a gRPC endpoint on a browser owner's behalf
 (`grpc_relay_enabled`). Provisioned helpers advertise `http`, `grpc` or `both`,

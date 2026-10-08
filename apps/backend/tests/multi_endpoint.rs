@@ -19,7 +19,12 @@ async fn pairing_with_a_both_helper_records_both_endpoints_in_the_advertised_ord
         .owner
         .protocol
         .channel_store
-        .load(rig.secret_id, ChannelQuery::Helper { channel_id: rig.channel_id })
+        .load(
+            rig.secret_id,
+            ChannelQuery::Helper {
+                channel_id: rig.channel_id,
+            },
+        )
         .await
         .expect("the in-memory channel store is readable")
         .expect("the channel exists after pairing");
@@ -34,7 +39,10 @@ async fn pairing_with_a_both_helper_records_both_endpoints_in_the_advertised_ord
         derec_proto::Protocol::Grpc as i32,
         "the peer's order must be preserved verbatim"
     );
-    assert_eq!(helper.transports[1].protocol, derec_proto::Protocol::Https as i32);
+    assert_eq!(
+        helper.transports[1].protocol,
+        derec_proto::Protocol::Https as i32
+    );
 }
 
 #[actix_rt::test]
@@ -45,7 +53,12 @@ async fn a_grpc_only_helper_records_exactly_one_endpoint() {
         .owner
         .protocol
         .channel_store
-        .load(rig.secret_id, ChannelQuery::Helper { channel_id: rig.channel_id })
+        .load(
+            rig.secret_id,
+            ChannelQuery::Helper {
+                channel_id: rig.channel_id,
+            },
+        )
         .await
         .expect("readable")
         .expect("paired")
@@ -54,7 +67,10 @@ async fn a_grpc_only_helper_records_exactly_one_endpoint() {
     };
 
     assert_eq!(helper.transports.len(), 1);
-    assert_eq!(helper.transports[0].protocol, derec_proto::Protocol::Grpc as i32);
+    assert_eq!(
+        helper.transports[0].protocol,
+        derec_proto::Protocol::Grpc as i32
+    );
 }
 
 #[actix_rt::test]

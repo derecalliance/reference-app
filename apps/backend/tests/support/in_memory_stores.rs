@@ -25,13 +25,13 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
+use derec_library::protocol::types::{HelperFilter, ReplicaFilter};
 use derec_library::protocol::{
     ChannelQuery, ChannelRecord, ChannelStoreFuture, DeRecChannelStore, DeRecSecretStore,
     DeRecShareStore, DeRecStateStore, DeRecUserSecretStore, HelperChannel, MissingPolicy,
     ReplicaMember, SecretKind, SecretStoreError, SecretStoreFuture, SecretValue, Share,
     ShareStoreFuture, StateItem, StateKey, StateKind, StateStoreFuture, UserSecrets,
 };
-use derec_library::protocol::types::{HelperFilter, ReplicaFilter};
 use derec_library::types::ChannelId;
 
 // ── Channel store ───────────────────────────────────────────────────────────
@@ -499,7 +499,11 @@ mod tests {
         }]
     }
 
-    fn helper(channel_id: u64, status: ChannelStatus, peer_role: derec_proto::SenderKind) -> HelperChannel {
+    fn helper(
+        channel_id: u64,
+        status: ChannelStatus,
+        peer_role: derec_proto::SenderKind,
+    ) -> HelperChannel {
         HelperChannel {
             channel_id: ChannelId(channel_id),
             transports: endpoint("http://localhost:5000/derec/a"),
@@ -525,7 +529,10 @@ mod tests {
     async fn seeded() -> InMemoryChannelStore {
         let mut store = InMemoryChannelStore::default();
         store
-            .save(1, ChannelRecord::Replica(member(11, ChannelStatus::Paired, ReplicaRole::Source)))
+            .save(
+                1,
+                ChannelRecord::Replica(member(11, ChannelStatus::Paired, ReplicaRole::Source)),
+            )
             .await
             .expect("in-memory save cannot fail");
         store
@@ -538,7 +545,11 @@ mod tests {
         store
             .save(
                 1,
-                ChannelRecord::Replica(member(33, ChannelStatus::Pending, ReplicaRole::Destination)),
+                ChannelRecord::Replica(member(
+                    33,
+                    ChannelStatus::Pending,
+                    ReplicaRole::Destination,
+                )),
             )
             .await
             .expect("in-memory save cannot fail");
@@ -557,7 +568,10 @@ mod tests {
     async fn a_default_filter_selects_every_member() {
         let store = seeded().await;
 
-        let members = store.replicas(1, ReplicaFilter::default()).await.expect("readable");
+        let members = store
+            .replicas(1, ReplicaFilter::default())
+            .await
+            .expect("readable");
         assert_eq!(ids(&members), vec![11, 22, 33]);
     }
 
@@ -605,7 +619,13 @@ mod tests {
         // Ordered by `(created_at, replica_id)` — this app's succession policy.
         // Dropping entries must not reorder what is left.
         let members = store
-            .replicas(1, ReplicaFilter { exclude: vec![ReplicaId(22)], ..Default::default() })
+            .replicas(
+                1,
+                ReplicaFilter {
+                    exclude: vec![ReplicaId(22)],
+                    ..Default::default()
+                },
+            )
             .await
             .expect("readable");
         assert_eq!(ids(&members), vec![11, 33]);
@@ -617,7 +637,11 @@ mod tests {
         store
             .save(
                 1,
-                ChannelRecord::Helper(helper(100, ChannelStatus::Paired, derec_proto::SenderKind::Owner)),
+                ChannelRecord::Helper(helper(
+                    100,
+                    ChannelStatus::Paired,
+                    derec_proto::SenderKind::Owner,
+                )),
             )
             .await
             .expect("in-memory save cannot fail");
@@ -636,7 +660,10 @@ mod tests {
         let pending = store
             .helpers(
                 1,
-                HelperFilter { status: vec![ChannelStatus::Pending], ..Default::default() },
+                HelperFilter {
+                    status: vec![ChannelStatus::Pending],
+                    ..Default::default()
+                },
             )
             .await
             .expect("readable");
@@ -648,7 +675,10 @@ mod tests {
         let owners = store
             .helpers(
                 1,
-                HelperFilter { role: Some(derec_proto::SenderKind::Owner), ..Default::default() },
+                HelperFilter {
+                    role: Some(derec_proto::SenderKind::Owner),
+                    ..Default::default()
+                },
             )
             .await
             .expect("readable");
@@ -662,11 +692,17 @@ mod tests {
     async fn a_filter_does_not_reach_across_secrets() {
         let mut store = seeded().await;
         store
-            .save(2, ChannelRecord::Replica(member(44, ChannelStatus::Paired, ReplicaRole::Source)))
+            .save(
+                2,
+                ChannelRecord::Replica(member(44, ChannelStatus::Paired, ReplicaRole::Source)),
+            )
             .await
             .expect("in-memory save cannot fail");
 
-        let members = store.replicas(2, ReplicaFilter::default()).await.expect("readable");
+        let members = store
+            .replicas(2, ReplicaFilter::default())
+            .await
+            .expect("readable");
         assert_eq!(ids(&members), vec![44]);
     }
 }

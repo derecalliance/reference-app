@@ -22,13 +22,17 @@ use std::time::Duration;
 use actix::Addr;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use derec_backend::infrastructure::actors::provisioned::{CreateContactMsg, ProvisionedActor, ShutdownMsg, StartFlowMsg};
-use derec_backend::infrastructure::actors::protocol::{build_protocol, ActorProtocol, ProtocolConfig};
+use derec_backend::infrastructure::actors::protocol::{
+    build_protocol, ActorProtocol, ProtocolConfig,
+};
+use derec_backend::infrastructure::actors::provisioned::{
+    CreateContactMsg, ProvisionedActor, ShutdownMsg, StartFlowMsg,
+};
+use derec_backend::infrastructure::bootstrap::Node;
+use derec_backend::models::ActorSettings;
 use derec_backend::models::Defaults;
 use derec_backend::models::{Actor, Role, Transport, TransportMode, TransportProtocol, UnpairAck};
 use derec_backend::services::ports::{ActorGateway, InboxDirectory};
-use derec_backend::models::ActorSettings;
-use derec_backend::infrastructure::bootstrap::Node;
 use derec_library::protocol::types::Target;
 use derec_library::protocol::{
     ChannelQuery, ChannelRecord, DeRecChannelStore, DeRecEvent, DeRecFlow,
@@ -62,10 +66,13 @@ async fn serve(base: impl Fn(u16) -> String) -> (Arc<Node>, u16) {
     let port = listener.local_addr().expect("listener is bound").port();
 
     let state = Arc::new(Node::new(
-        derec_backend::models::NodeConfig::new(base(port), Defaults {
-            grpc_enabled: false,
-            ..Defaults::default()
-        }),
+        derec_backend::models::NodeConfig::new(
+            base(port),
+            Defaults {
+                grpc_enabled: false,
+                ..Defaults::default()
+            },
+        ),
         reqwest::Client::new(),
         actix_rt::Arbiter::current(),
         derec_backend::infrastructure::db::connect("sqlite::memory:")
@@ -97,13 +104,19 @@ async fn spawn_helper(state: &Node, base_url: &str) -> (Actor, Addr<ProvisionedA
         .register(helper.clone(), settings.clone())
         .await
         .expect("the registry is writable");
-    state.runtime.spawn(&helper, &settings).expect("the helper starts");
+    state
+        .runtime
+        .spawn(&helper, &settings)
+        .expect("the helper starts");
     let addr = provisioned(state, helper.id);
     (helper, addr)
 }
 
 fn provisioned(state: &Node, actor_id: Uuid) -> Addr<ProvisionedActor> {
-    state.inboxes.provisioned(&actor_id).expect("a running actor has an inbox")
+    state
+        .inboxes
+        .provisioned(&actor_id)
+        .expect("a running actor has an inbox")
 }
 
 /// A browser-managed owner advertising `transports`, with its protocol held
@@ -265,7 +278,9 @@ async fn after_the_node_moves_a_recovered_helper_tells_its_peers_the_new_address
         "the moved helper is queued to announce"
     );
 
-    let summary = derec_backend::infrastructure::recovery::announce_new_addresses(&state, &report.announce).await;
+    let summary =
+        derec_backend::infrastructure::recovery::announce_new_addresses(&state, &report.announce)
+            .await;
     assert_eq!(
         summary.peers.announced, 1,
         "the one paired peer is told: {summary:?}"
@@ -328,7 +343,9 @@ async fn a_same_node_peer_at_an_address_nothing_listens_on_is_still_told() {
     let report = derec_backend::infrastructure::recovery::recover(&state).await;
     assert_eq!(report.announce, vec![helper.id]);
 
-    let summary = derec_backend::infrastructure::recovery::announce_new_addresses(&state, &report.announce).await;
+    let summary =
+        derec_backend::infrastructure::recovery::announce_new_addresses(&state, &report.announce)
+            .await;
     assert_eq!(summary.peers.announced, 1, "{summary:?}");
     assert!(summary.everyone_told(), "{summary:?}");
 
@@ -342,7 +359,11 @@ async fn a_same_node_peer_at_an_address_nothing_listens_on_is_still_told() {
         }
         actix_rt::time::sleep(POLL_INTERVAL).await;
     }
-    assert_eq!(recorded, vec![new_uri], "the announcement reached the owner");
+    assert_eq!(
+        recorded,
+        vec![new_uri],
+        "the announcement reached the owner"
+    );
 }
 
 /// How long the slow endpoint below holds each delivery, in milliseconds.

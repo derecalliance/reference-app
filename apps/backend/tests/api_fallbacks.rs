@@ -16,7 +16,12 @@ use serde_json::Value;
 use tower::ServiceExt;
 
 async fn send(request: Request<Body>) -> (StatusCode, Option<String>, Value) {
-    let router = derec_backend::infrastructure::server::build_router(derec_backend::infrastructure::test_support::node().await.state.clone());
+    let router = derec_backend::infrastructure::server::build_router(
+        derec_backend::infrastructure::test_support::node()
+            .await
+            .state
+            .clone(),
+    );
     let response = router.oneshot(request).await.expect("router is infallible");
     let status = response.status();
     let allow = response

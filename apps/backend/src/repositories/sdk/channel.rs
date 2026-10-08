@@ -120,7 +120,9 @@ impl DeRecChannelStore for SqlChannelStore {
             // Delete-then-insert rather than an upsert: it is the one shape
             // both engines accept unmodified, and it matches the in-memory
             // store's `HashMap::insert` — replace in place, never duplicate.
-            let mut tx = crate::repositories::begin_write(&pool).await.map_err(backend)?;
+            let mut tx = crate::repositories::begin_write(&pool)
+                .await
+                .map_err(backend)?;
 
             sqlx::query(
                 "DELETE FROM channels \
@@ -192,12 +194,12 @@ impl DeRecChannelStore for SqlChannelStore {
                 "SELECT record FROM channels \
                  WHERE secret_id = $1 AND kind = $2 AND actor_id = $3",
             )
-                    .bind(secret)
-                    .bind(KIND_HELPER)
-                    .bind(actor)
-                    .fetch_all(&pool)
-                    .await
-                    .map_err(backend)?;
+            .bind(secret)
+            .bind(KIND_HELPER)
+            .bind(actor)
+            .fetch_all(&pool)
+            .await
+            .map_err(backend)?;
 
             let mut out = Vec::with_capacity(rows.len());
             for (json,) in rows {
@@ -235,12 +237,12 @@ impl DeRecChannelStore for SqlChannelStore {
                 "SELECT record FROM channels \
                  WHERE secret_id = $1 AND kind = $2 AND actor_id = $3",
             )
-                    .bind(secret)
-                    .bind(KIND_REPLICA)
-                    .bind(actor)
-                    .fetch_all(&pool)
-                    .await
-                    .map_err(backend)?;
+            .bind(secret)
+            .bind(KIND_REPLICA)
+            .bind(actor)
+            .fetch_all(&pool)
+            .await
+            .map_err(backend)?;
 
             let mut out = Vec::with_capacity(rows.len());
             for (json,) in rows {
@@ -279,7 +281,9 @@ impl DeRecChannelStore for SqlChannelStore {
 
         Box::pin(async move {
             // Both directions, so `linked_channels` can start from either end.
-            let mut tx = crate::repositories::begin_write(&pool).await.map_err(backend)?;
+            let mut tx = crate::repositories::begin_write(&pool)
+                .await
+                .map_err(backend)?;
 
             for (from, to) in [(&a, &b), (&b, &a)] {
                 sqlx::query(

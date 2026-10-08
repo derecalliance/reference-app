@@ -258,40 +258,37 @@ impl DeliveryServiceImpl {
     /// Which actor a message on `channel_id`, addressed to this node's gRPC
     /// listener, is for.
     ///
-    /// The router decides, with one narrowing when it finds several claimants:
-    /// an actor that advertises no gRPC endpoint is set aside, since nothing
+    /// The router's claims decide, ranked by [`Resolution::among`]: an end of
+    /// the channel beats a replica's copy of it, so a replica — whose
+    /// instance holds its source's helper channels — never shadows the helper
+    /// serving one. Before ranking, when more than one actor claims the
+    /// channel, any that advertises no gRPC endpoint is set aside: nothing
     /// addressed to the gRPC listener can be for an actor no peer dials over
-    /// gRPC. A replica is the everyday case: hydrating the source's roster
-    /// gives the replica's instance the source's helper channels, so an
-    /// HTTP-only replica claims the same ids as the gRPC helpers serving them.
+    /// gRPC.
     ///
     /// A claimant is only set aside when the registry positively says it is
-    /// HTTP-only; one the registry cannot answer for stays, and the channel
-    /// stays ambiguous rather than being guessed.
+    /// HTTP-only; one the registry cannot answer for stays, and a channel two
+    /// equal claims still hold is refused rather than guessed.
     async fn resolve_recipient(&self, channel_id: u64, sender: Option<Uuid>) -> Resolution {
-        let claimants = match self.routes.resolve_from(channel_id, sender) {
-            Resolution::Ambiguous(claimants) => claimants,
-            resolved => return resolved,
-        };
+        let claims = self.routes.claims(channel_id, sender);
+        let contested = claims.windows(2).any(|w| w[0].actor_id != w[1].actor_id);
+        if !contested {
+            return Resolution::among(&claims);
+        }
 
-        let mut reachable = Vec::with_capacity(claimants.len());
-        for actor_id in claimants {
+        let mut reachable = Vec::with_capacity(claims.len());
+        for claim in claims {
             let http_only = matches!(
-                self.actors.get(&actor_id).await,
+                self.actors.get(&claim.actor_id).await,
                 Ok(Some(actor)) if !actor.advertises_grpc()
             );
             if !http_only {
-                reachable.push(actor_id);
+                reachable.push(claim);
             }
         }
-
-        match reachable.as_slice() {
-            [only] => Resolution::Actor(*only),
-            // Every claimant is HTTP-only: none of them is what the sender
-            // dialled.
-            [] => Resolution::Unknown,
-            _ => Resolution::Ambiguous(reachable),
-        }
+        // Every claimant HTTP-only answers `Unknown`: none of them is what
+        // the sender dialled.
+        Resolution::among(&reachable)
     }
 
     /// Record a message gRPC ingress could not place, so the debug log shows it.
@@ -794,8 +791,8 @@ fn dialable(uri: &str) -> Option<(String, u16)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{Actor, Role, Side, TransportMode};
     use crate::models::{Defaults, LoadedConfig};
-    use crate::models::{Actor, Role, TransportMode};
     use crate::repositories::mailbox_polls::InMemoryMailboxPolls;
     use crate::services::test_fakes::{
         FakeActorRepository, FakeDialer, FakeDisabledHelpers, FakeEventRecorder, FakeInboxes,
@@ -1349,16 +1346,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_http_only_claimant_is_set_aside_on_a_grpc_message() {
+    async fn an_http_only_replicas_copy_yields_to_the_grpc_helper() {
         // A replica holds copies of the source's helper channels, so it claims
-        // the same ids as the gRPC helper serving them — but nothing addressed
-        // to the gRPC listener can be for an HTTP-only actor.
+        // the same ids as the gRPC helper serving them.
         let fixture = Fixture::new();
         let replica = fixture.provisioned(TransportMode::Http);
         let helper = fixture.provisioned(TransportMode::Grpc);
-        fixture
-            .routes
-            .resolve_to(5, Resolution::Ambiguous(vec![replica.id, helper.id]));
+        fixture.routes.bind(5, replica.id, Side::Mirror);
+        fixture.routes.bind(5, helper.id, Side::Endpoint);
 
         fixture
             .service()
@@ -1370,13 +1365,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_grpc_replicas_copy_yields_to_the_grpc_helper() {
+        // The case setting HTTP-only claimants aside cannot settle: both can
+        // be dialled over gRPC, and only the side each claims from tells the
+        // helper serving the channel from the replica holding a copy.
+        let fixture = Fixture::new();
+        let replica = fixture.provisioned(TransportMode::Grpc);
+        let helper = fixture.provisioned(TransportMode::Grpc);
+        fixture.routes.bind(5, replica.id, Side::Mirror);
+        fixture.routes.bind(5, helper.id, Side::Endpoint);
+
+        fixture
+            .service()
+            .receive_grpc(message(5), None)
+            .await
+            .expect("delivered");
+
+        assert_eq!(fixture.inboxes.delivered(), vec![(helper.id, envelope(5))]);
+    }
+
+    #[tokio::test]
+    async fn an_http_only_endpoint_is_set_aside_on_a_grpc_message() {
+        // Two ends of one channel, one of which no peer dials over gRPC.
+        let fixture = Fixture::new();
+        let http_only = fixture.provisioned(TransportMode::Http);
+        let grpc = fixture.provisioned(TransportMode::Grpc);
+        fixture.routes.bind(5, http_only.id, Side::Endpoint);
+        fixture.routes.bind(5, grpc.id, Side::Endpoint);
+
+        fixture
+            .service()
+            .receive_grpc(message(5), None)
+            .await
+            .expect("delivered");
+
+        assert_eq!(fixture.inboxes.delivered()[0].0, grpc.id);
+    }
+
+    #[tokio::test]
+    async fn a_channel_only_http_only_actors_claim_is_unknown_over_grpc() {
+        let fixture = Fixture::new();
+        let a = fixture.provisioned(TransportMode::Http);
+        let b = fixture.provisioned(TransportMode::Http);
+        fixture.routes.bind(5, a.id, Side::Endpoint);
+        fixture.routes.bind(5, b.id, Side::Mirror);
+
+        let refusal = fixture
+            .service()
+            .receive_grpc(message(5), None)
+            .await
+            .expect_err("refused");
+
+        assert!(matches!(refusal, GrpcRefusal::NotFound(_)));
+    }
+
+    #[tokio::test]
     async fn two_grpc_claimants_and_no_sender_is_refused_rather_than_guessed() {
         let fixture = Fixture::new();
         let a = fixture.provisioned(TransportMode::Grpc);
         let b = fixture.provisioned(TransportMode::Grpc);
-        fixture
-            .routes
-            .resolve_to(5, Resolution::Ambiguous(vec![a.id, b.id]));
+        fixture.routes.bind(5, a.id, Side::Endpoint);
+        fixture.routes.bind(5, b.id, Side::Endpoint);
 
         let refusal = fixture
             .service()
@@ -1392,7 +1441,7 @@ mod tests {
     async fn a_full_mailbox_is_resource_exhausted_over_grpc() {
         let fixture = Fixture::new();
         let alice = fixture.browser();
-        fixture.routes.resolve_to(5, Resolution::Actor(alice.id));
+        fixture.routes.bind(5, alice.id, Side::Endpoint);
         fixture.mailboxes.cap_at(0);
 
         let refusal = fixture
@@ -1461,14 +1510,39 @@ mod tests {
             "grpc://localhost:50051",
             OwnTarget::GrpcListener { served: true },
         );
-        fixture.routes.resolve_to(7, Resolution::Actor(alice.id));
+        let sender = Uuid::new_v4();
+        fixture.routes.bind(7, sender, Side::Endpoint);
+        fixture.routes.bind(7, alice.id, Side::Endpoint);
 
         let attempt = fixture
             .service()
-            .deliver_local("grpc://localhost:50051", &envelope(7), Some(Uuid::new_v4()))
+            .deliver_local("grpc://localhost:50051", &envelope(7), Some(sender))
             .await;
 
         assert_eq!(attempt, LocalAttempt::Delivered);
         assert_eq!(fixture.mailboxes.waiting(&alice.id), vec![envelope(7)]);
+    }
+
+    #[tokio::test]
+    async fn a_local_grpc_send_past_a_replicas_copy_reaches_the_helper() {
+        // `local.rs`'s path: an actor here dials this node's own gRPC address
+        // on a channel a gRPC replica holds a copy of.
+        let fixture = Fixture::new();
+        fixture.endpoints.own(
+            "grpc://localhost:50051",
+            OwnTarget::GrpcListener { served: true },
+        );
+        let replica = fixture.provisioned(TransportMode::Grpc);
+        let helper = fixture.provisioned(TransportMode::Grpc);
+        fixture.routes.bind(7, replica.id, Side::Mirror);
+        fixture.routes.bind(7, helper.id, Side::Endpoint);
+
+        let attempt = fixture
+            .service()
+            .deliver_local("grpc://localhost:50051", &envelope(7), None)
+            .await;
+
+        assert_eq!(attempt, LocalAttempt::Delivered);
+        assert_eq!(fixture.inboxes.delivered(), vec![(helper.id, envelope(7))]);
     }
 }

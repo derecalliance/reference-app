@@ -810,6 +810,21 @@ export function forgetReplicaChannel(vaultId: string, channelId: string): Replic
   return saveReplicaState(vaultId, pruneChannels(current, [channelId]))
 }
 
+/**
+ * Drop this device's bookkeeping for every replica channel except `keep`.
+ *
+ * For `restore`, which wipes the library's namespace and writes back only the
+ * group the recovered secret names, on its one channel. Any other channel
+ * recorded here no longer exists in the library — and a stale record still
+ * names its member, which hides that member's row from the Replicas tab.
+ */
+export function retainReplicaChannels(vaultId: string, keep: readonly string[]): ReplicaState {
+  const current = loadReplicaState(vaultId)
+  const doomed = Object.keys(current.channels).filter(channelId => !keep.includes(channelId))
+  if (doomed.length === 0) return current
+  return saveReplicaState(vaultId, pruneChannels(current, doomed))
+}
+
 /** Remove every trace of `doomed` channel ids from a replica state. */
 function pruneChannels(current: ReplicaState, doomed: readonly string[]): ReplicaState {
   const channels = { ...current.channels }

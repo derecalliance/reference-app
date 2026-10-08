@@ -1,0 +1,21 @@
+# Build the node image from your checkout instead of pulling the published one.
+# An override, added after the root compose file you run:
+#
+#   docker compose -f compose.yaml -f compose.build.yaml up -d --build
+#   docker compose -f compose.postgres.yaml -f compose.build.yaml up -d --build
+#
+# or `./start.sh --build`. The first build compiles the Rust backend and the web
+# bundle (several minutes); later builds reuse the cache. The result is tagged
+# `derec/reference-app:dev`, so it never shadows the published image.
+#
+# Use it with the repo-root compose files (`compose.yaml`,
+# `compose.postgres.yaml`): an override's paths resolve against the project
+# directory, which is the repo root for those.
+
+services:
+  node:
+    image: derec/reference-app:dev
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    pull_policy: build

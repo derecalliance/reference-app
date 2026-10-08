@@ -11,12 +11,12 @@
 mod in_memory_stores;
 
 use derec_backend::repositories::sdk::conformance;
+use derec_library::protocol::StateItem;
+use derec_library::types::ChannelId;
 use in_memory_stores::{
     InMemoryChannelStore, InMemorySecretStore, InMemoryShareStore, InMemoryStateStore,
     InMemoryUserSecretStore,
 };
-use derec_library::protocol::StateItem;
-use derec_library::types::ChannelId;
 
 /// A distinct `PendingVerification` item per `n`.
 ///

@@ -4,11 +4,11 @@
 //! The gRPC listener resolves an actor from the envelope and hands the bytes
 //! to the same inbox HTTP would.
 
-use derec_backend::services::ports::InboxDirectory;
-use derec_backend::models::Carrier;
-use derec_backend::infrastructure::grpc::GrpcIngress;
 use derec_backend::infrastructure::grpc::pb::de_rec_transport_server::DeRecTransport;
+use derec_backend::infrastructure::grpc::GrpcIngress;
+use derec_backend::models::Carrier;
 use derec_backend::models::DispatchOutcome;
+use derec_backend::services::ports::InboxDirectory;
 use prost::Message as _;
 use tonic::Request;
 use uuid::Uuid;
@@ -48,7 +48,11 @@ async fn an_envelope_routes_to_the_actor_its_channel_is_pinned_to() {
 
     assert_eq!(resolved, actor_id);
     assert_eq!(
-        state.state.delivery.dispatch(resolved, Carrier::Grpc, envelope(4242)).await,
+        state
+            .state
+            .delivery
+            .dispatch(resolved, Carrier::Grpc, envelope(4242))
+            .await,
         DispatchOutcome::Delivered
     );
 }
@@ -74,7 +78,11 @@ async fn a_disabled_actor_drops_grpc_traffic_exactly_as_it_drops_http() {
         .expect("the registry is writable");
 
     assert_eq!(
-        state.state.delivery.dispatch(actor_id, Carrier::Grpc, envelope(1)).await,
+        state
+            .state
+            .delivery
+            .dispatch(actor_id, Carrier::Grpc, envelope(1))
+            .await,
         DispatchOutcome::Dropped
     );
 }
@@ -86,7 +94,10 @@ async fn a_disabled_actor_drops_grpc_traffic_exactly_as_it_drops_http() {
 // a plain async fn, so no socket is needed.
 
 /// Drain whatever is waiting in `actor_id`'s browser inbox.
-async fn drain(state: &derec_backend::infrastructure::bootstrap::Node, actor_id: Uuid) -> Vec<Vec<u8>> {
+async fn drain(
+    state: &derec_backend::infrastructure::bootstrap::Node,
+    actor_id: Uuid,
+) -> Vec<Vec<u8>> {
     assert!(
         (state.inboxes.kind(&actor_id) == Some(derec_backend::models::InboxKind::Browser)),
         "actor has a browser mailbox"
@@ -157,7 +168,11 @@ async fn the_relay_refuses_another_node_nobody_allowed() {
     let state = derec_backend::infrastructure::test_support::node().await;
 
     assert_eq!(
-        state.state.delivery.relay_target("grpc://evil.example:50051").await,
+        state
+            .state
+            .delivery
+            .relay_target("grpc://evil.example:50051")
+            .await,
         RelayTarget::Refused(RelayRefusal::NotAllowed)
     );
 }
@@ -181,7 +196,10 @@ async fn the_relay_accepts_an_endpoint_a_registered_actor_advertises() {
         .await
         .expect("the registry is writable");
 
-    assert_eq!(state.state.delivery.relay_target(&uri).await, RelayTarget::Remote);
+    assert_eq!(
+        state.state.delivery.relay_target(&uri).await,
+        RelayTarget::Remote
+    );
 }
 
 #[actix_rt::test]
@@ -189,7 +207,11 @@ async fn the_relay_dials_a_host_the_operator_allowed() {
     let mut loaded = derec_backend::models::LoadedConfig::default();
     loaded.settings.server.relay_allowed_hosts = "node-b:50051, 192.168.0.40".to_owned();
     let state = derec_backend::infrastructure::bootstrap::Node::new(
-        derec_backend::models::NodeConfig::new("http://192.168.0.28:5000", derec_backend::models::Defaults::default()).with_loaded(loaded),
+        derec_backend::models::NodeConfig::new(
+            "http://192.168.0.28:5000",
+            derec_backend::models::Defaults::default(),
+        )
+        .with_loaded(loaded),
         reqwest::Client::new(),
         actix_rt::Arbiter::current(),
         derec_backend::infrastructure::db::connect("sqlite::memory:")
@@ -197,8 +219,16 @@ async fn the_relay_dials_a_host_the_operator_allowed() {
             .expect("an in-memory database always connects"),
     );
 
-    for uri in ["grpc://node-b:50051", "grpc://192.168.0.40:1234", "http://192.168.0.40/derec/x"] {
-        assert_eq!(state.state.delivery.relay_target(uri).await, RelayTarget::Remote, "{uri}");
+    for uri in [
+        "grpc://node-b:50051",
+        "grpc://192.168.0.40:1234",
+        "http://192.168.0.40/derec/x",
+    ] {
+        assert_eq!(
+            state.state.delivery.relay_target(uri).await,
+            RelayTarget::Remote,
+            "{uri}"
+        );
     }
     for uri in ["grpc://node-b:50052", "grpc://node-c:50051"] {
         assert_eq!(
@@ -209,7 +239,11 @@ async fn the_relay_dials_a_host_the_operator_allowed() {
     }
     // Allowed or not, a shape the relay cannot dial is refused as such.
     assert_eq!(
-        state.state.delivery.relay_target("grpc://user@node-b:50051").await,
+        state
+            .state
+            .delivery
+            .relay_target("grpc://user@node-b:50051")
+            .await,
         RelayTarget::Refused(RelayRefusal::Malformed)
     );
 }
@@ -219,11 +253,15 @@ async fn the_relay_dials_a_host_the_operator_allowed() {
 /// gRPC helper's previous address.
 async fn moved_node(grpc_enabled: bool) -> derec_backend::infrastructure::bootstrap::Node {
     derec_backend::infrastructure::bootstrap::Node::new(
-        derec_backend::models::NodeConfig::new("http://192.168.0.28:5000", derec_backend::models::Defaults {
-            grpc_enabled,
-            grpc_port: 50051,
-            ..derec_backend::models::Defaults::default()
-        }).with_public_grpc_port(8081),
+        derec_backend::models::NodeConfig::new(
+            "http://192.168.0.28:5000",
+            derec_backend::models::Defaults {
+                grpc_enabled,
+                grpc_port: 50051,
+                ..derec_backend::models::Defaults::default()
+            },
+        )
+        .with_public_grpc_port(8081),
         reqwest::Client::new(),
         actix_rt::Arbiter::current(),
         derec_backend::infrastructure::db::connect("sqlite::memory:")
@@ -248,7 +286,11 @@ async fn the_relay_delivers_to_this_nodes_own_grpc_listener_under_any_name_it_an
         "grpc://192.168.0.28:8081",
         "grpc://localhost:8081/",
     ] {
-        assert_eq!(state.state.delivery.relay_target(uri).await, SERVED, "{uri} is this node");
+        assert_eq!(
+            state.state.delivery.relay_target(uri).await,
+            SERVED,
+            "{uri} is this node"
+        );
     }
 }
 
@@ -258,7 +300,11 @@ async fn an_address_this_node_advertised_before_is_still_this_node() {
     // listens on 9090 any more, but a browser paired before the move holds it.
     let state = moved_node(true).await;
     assert_eq!(
-        state.state.delivery.relay_target("grpc://192.168.0.28:9090").await,
+        state
+            .state
+            .delivery
+            .relay_target("grpc://192.168.0.28:9090")
+            .await,
         RelayTarget::Refused(RelayRefusal::NotAllowed),
         "unknown until remembered"
     );
@@ -269,7 +315,14 @@ async fn an_address_this_node_advertised_before_is_still_this_node() {
         .await
         .expect("the database is writable");
 
-    assert_eq!(state.state.delivery.relay_target("grpc://192.168.0.28:9090").await, SERVED);
+    assert_eq!(
+        state
+            .state
+            .delivery
+            .relay_target("grpc://192.168.0.28:9090")
+            .await,
+        SERVED
+    );
 }
 
 #[actix_rt::test]
@@ -304,7 +357,11 @@ async fn with_grpc_disabled_the_relay_says_so_for_this_nodes_grpc_address() {
     let state = moved_node(false).await;
 
     assert_eq!(
-        state.state.delivery.relay_target("grpc://localhost:50051").await,
+        state
+            .state
+            .delivery
+            .relay_target("grpc://localhost:50051")
+            .await,
         RelayTarget::Refused(RelayRefusal::GrpcDisabled)
     );
 }
@@ -325,12 +382,15 @@ async fn send_to_a_disabled_actor_returns_ok_without_delivering() {
         .expect("the registry is writable");
 
     let ingress = GrpcIngress::new(state.state.delivery.clone());
-    let decoded = derec_proto::DeRecMessage::decode(envelope(7).as_slice())
-        .expect("a well-formed envelope");
+    let decoded =
+        derec_proto::DeRecMessage::decode(envelope(7).as_slice()).expect("a well-formed envelope");
 
     let response = ingress.send(Request::new(decoded)).await;
 
-    assert!(response.is_ok(), "a dropped message is still an accepted call");
+    assert!(
+        response.is_ok(),
+        "a dropped message is still an accepted call"
+    );
     assert!(
         drain(&state, actor_id).await.is_empty(),
         "a disabled actor's inbox must stay empty"
@@ -358,11 +418,21 @@ async fn a_channel_held_by_two_local_actors_routes_by_the_senders_hint() {
     let mut request = Request::new(decoded());
     request.metadata_mut().insert(
         derec_backend::models::SENDER_METADATA,
-        initiator.to_string().parse().expect("a uuid is valid metadata"),
+        initiator
+            .to_string()
+            .parse()
+            .expect("a uuid is valid metadata"),
     );
-    ingress.send(request).await.expect("the hinted call is accepted");
+    ingress
+        .send(request)
+        .await
+        .expect("the hinted call is accepted");
 
-    assert_eq!(drain(&state, responder).await.len(), 1, "the other end receives it");
+    assert_eq!(
+        drain(&state, responder).await.len(),
+        1,
+        "the other end receives it"
+    );
     assert!(
         drain(&state, initiator).await.is_empty(),
         "the sender must never receive its own message"
@@ -375,4 +445,96 @@ async fn a_channel_held_by_two_local_actors_routes_by_the_senders_hint() {
     assert_eq!(error.code(), tonic::Code::FailedPrecondition);
     assert!(drain(&state, initiator).await.is_empty());
     assert!(drain(&state, responder).await.is_empty());
+}
+
+/// Register an actor advertising `mode` with a browser mailbox, so what is
+/// delivered to it can be read back.
+async fn registered(
+    state: &derec_backend::infrastructure::bootstrap::Node,
+    mode: derec_backend::models::TransportMode,
+) -> Uuid {
+    let actor = derec_backend::models::Actor::mint(
+        derec_backend::models::Role::Helper,
+        "Fixture",
+        &state.config.base_url,
+        &state.config.grpc_authority(),
+        mode,
+    );
+    state
+        .actors
+        .register(actor.clone(), test_settings())
+        .await
+        .expect("the registry is writable");
+    state.inboxes.register_browser(actor.id);
+    actor.id
+}
+
+#[actix_rt::test]
+async fn a_grpc_message_reaches_the_helper_past_a_grpc_replicas_copy_of_its_channel() {
+    // A replica's instance holds its source's helper channels. With both the
+    // replica and the helper serving gRPC, the peer's message used to be
+    // refused as ambiguous; the helper serving the channel is its recipient.
+    use derec_backend::models::{Side, TransportMode};
+    let state = derec_backend::infrastructure::test_support::node().await;
+    let helper = registered(&state, TransportMode::Grpc).await;
+    let replica = registered(&state, TransportMode::Grpc).await;
+    state.channel_router.bind(5151, replica, Side::Mirror);
+    state.channel_router.bind(5151, helper, Side::Endpoint);
+
+    let ingress = GrpcIngress::new(state.state.delivery.clone());
+    let decoded = derec_proto::DeRecMessage::decode(envelope(5151).as_slice())
+        .expect("a well-formed envelope");
+
+    ingress
+        .send(Request::new(decoded))
+        .await
+        .expect("the helper takes it");
+
+    assert_eq!(drain(&state, helper).await, vec![envelope(5151)]);
+    assert!(drain(&state, replica).await.is_empty());
+}
+
+#[actix_rt::test]
+async fn a_grpc_message_skips_an_http_only_replicas_copy_of_its_channel() {
+    use derec_backend::models::{Side, TransportMode};
+    let state = derec_backend::infrastructure::test_support::node().await;
+    let helper = registered(&state, TransportMode::Grpc).await;
+    let replica = registered(&state, TransportMode::Http).await;
+    state.channel_router.bind(5152, replica, Side::Mirror);
+    state.channel_router.bind(5152, helper, Side::Endpoint);
+
+    let ingress = GrpcIngress::new(state.state.delivery.clone());
+    let decoded = derec_proto::DeRecMessage::decode(envelope(5152).as_slice())
+        .expect("a well-formed envelope");
+
+    ingress
+        .send(Request::new(decoded))
+        .await
+        .expect("the helper takes it");
+
+    assert_eq!(drain(&state, helper).await, vec![envelope(5152)]);
+    assert!(drain(&state, replica).await.is_empty());
+}
+
+#[actix_rt::test]
+async fn a_grpc_message_on_a_channel_two_replicas_copy_is_refused_rather_than_guessed() {
+    use derec_backend::models::{Side, TransportMode};
+    let state = derec_backend::infrastructure::test_support::node().await;
+    let first = registered(&state, TransportMode::Grpc).await;
+    let second = registered(&state, TransportMode::Grpc).await;
+    state.channel_router.bind(5153, first, Side::Mirror);
+    state.channel_router.bind(5153, second, Side::Mirror);
+
+    let ingress = GrpcIngress::new(state.state.delivery.clone());
+    let decoded = derec_proto::DeRecMessage::decode(envelope(5153).as_slice())
+        .expect("a well-formed envelope");
+
+    let error = ingress
+        .send(Request::new(decoded))
+        .await
+        .expect_err("two copies and no end are a tie");
+
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    assert!(drain(&state, first).await.is_empty());
+    assert!(drain(&state, second).await.is_empty());
 }

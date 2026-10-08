@@ -24,7 +24,7 @@ The data field enforces the 32 KB limit for the whole bag: *Up to 32 KB across a
 
 Adding a secret publishes the **whole bag** as a new version, split into one share per paired helper:
 
-1. The library assigns the version number and sends a share to every helper.
+1. The library assigns the version number and sends a share to every paired helper. A helper whose fingerprint has not been confirmed — or was refused (*Doesn’t match*) — is still pending in the library, gets nothing, and does not count towards the minimum needed to publish.
 2. Each helper stores its share and confirms, refuses, or stays silent.
 3. When every helper has answered or timed out, the round resolves:
    - at least *threshold* confirmations: the version **commits** and becomes the current bag;
@@ -34,7 +34,7 @@ Several rounds can run at once. Pairing a helper after a bag exists, and confirm
 
 ## Round progress
 
-The progress dialog lists every helper the round went to:
+The progress dialog lists every helper the round went to, and only those: a helper the library did not send it to is not waited on, and is not counted as having failed to store the version.
 
 | State | Meaning |
 | --- | --- |
@@ -70,6 +70,7 @@ The trash button on a secret publishes a **new version without it**, through the
 From SDK 0.0.7 the owner decides which versions helpers keep, and every publish carries that list (`keepList`):
 
 - this app lists the **three newest committed versions**, and the library adds the version being distributed;
+- it also lists every round that is **still open**, including the ones the library publishes on its own (pairing a helper, confirming a replica's fingerprint), which can stay open until the replica acknowledges. Such a round may still commit, so a newer publish must not make helpers drop it;
 - a helper deletes every version the list does not name, so the shares of **rolled-back rounds** are dropped on the next publish;
 - if this device knows no committed version yet (an empty bag), it sends no list, and helpers keep everything.
 

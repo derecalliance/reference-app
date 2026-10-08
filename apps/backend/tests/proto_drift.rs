@@ -48,8 +48,8 @@ enum Pinned {
 }
 
 fn pinned() -> Pinned {
-    let manifest = std::fs::read_to_string(manifest_dir().join("Cargo.toml"))
-        .expect("read Cargo.toml");
+    let manifest =
+        std::fs::read_to_string(manifest_dir().join("Cargo.toml")).expect("read Cargo.toml");
     let parsed: toml::Value = manifest.parse().expect("parse Cargo.toml");
     let dep = &parsed["dependencies"]["derec-proto"];
 

@@ -303,7 +303,11 @@ mod tests {
 
         let mut m = map();
         m.pin_channel(100, OWN);
-        assert_eq!(m.secret_for_channel(100), Some(OWN), "pin supplies the owner");
+        assert_eq!(
+            m.secret_for_channel(100),
+            Some(OWN),
+            "pin supplies the owner"
+        );
     }
 
     #[test]
@@ -340,7 +344,11 @@ mod tests {
         // from the store now retires the binding entirely, the same as any
         // other store-backed channel.
         m.reconcile(OWN, &[]);
-        assert_eq!(m.secret_for_channel(100), None, "pin did not survive underneath");
+        assert_eq!(
+            m.secret_for_channel(100),
+            None,
+            "pin did not survive underneath"
+        );
     }
 
     #[test]

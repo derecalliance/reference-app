@@ -258,15 +258,14 @@ impl DeRecShareStore for SqlShareStore {
 
         Box::pin(async move {
             // MAX over no rows is NULL on both engines, which arrives as None.
-            let row: Option<(Option<i64>,)> =
-                sqlx::query_as(
-                    "SELECT MAX(version) FROM shares WHERE secret_id = $1 AND actor_id = $2",
-                )
-                    .bind(secret)
-                    .bind(actor)
-                    .fetch_optional(&pool)
-                    .await
-                    .map_err(backend)?;
+            let row: Option<(Option<i64>,)> = sqlx::query_as(
+                "SELECT MAX(version) FROM shares WHERE secret_id = $1 AND actor_id = $2",
+            )
+            .bind(secret)
+            .bind(actor)
+            .fetch_optional(&pool)
+            .await
+            .map_err(backend)?;
 
             match row.and_then(|(max,)| max) {
                 Some(v) => Ok(Some(u32::try_from(v).map_err(backend)?)),
@@ -291,7 +290,9 @@ impl DeRecShareStore for SqlShareStore {
         let share_secret = id_to_text(share.secret_id);
 
         Box::pin(async move {
-            let mut tx = crate::repositories::begin_write(&pool).await.map_err(backend)?;
+            let mut tx = crate::repositories::begin_write(&pool)
+                .await
+                .map_err(backend)?;
 
             sqlx::query(
                 "DELETE FROM shares \
@@ -341,12 +342,12 @@ impl DeRecShareStore for SqlShareStore {
             sqlx::query(
                 "DELETE FROM shares WHERE secret_id = $1 AND channel_id = $2 AND actor_id = $3",
             )
-                .bind(secret)
-                .bind(channel)
-                .bind(actor)
-                .execute(&pool)
-                .await
-                .map_err(backend)?;
+            .bind(secret)
+            .bind(channel)
+            .bind(actor)
+            .execute(&pool)
+            .await
+            .map_err(backend)?;
             Ok(())
         })
     }
@@ -405,7 +406,10 @@ impl DeRecShareStore for SqlShareStore {
 
             let mut rounds = BTreeMap::new();
             for (round_version, committed) in rows {
-                rounds.insert(u32::try_from(round_version).map_err(backend)?, committed != 0);
+                rounds.insert(
+                    u32::try_from(round_version).map_err(backend)?,
+                    committed != 0,
+                );
             }
             Ok(keep_list_from_rounds(version, &rounds))
         })
@@ -444,7 +448,10 @@ mod tests {
     #[test]
     fn nothing_known_to_have_committed_keeps_everything() {
         assert_eq!(keep_list_from_rounds(1, &rounds(&[])), None);
-        assert_eq!(keep_list_from_rounds(3, &rounds(&[(1, false), (2, false)])), None);
+        assert_eq!(
+            keep_list_from_rounds(3, &rounds(&[(1, false), (2, false)])),
+            None
+        );
     }
 
     /// The round being distributed has not committed yet, and a later round

@@ -77,7 +77,9 @@ impl DeRecStateStore for SqlStateStore {
             let kind_col = kind_text(key.kind());
             let payload = serde_json::to_string(&StateItemRecord::from(&item)).map_err(backend)?;
 
-            let mut tx = crate::repositories::begin_write(&pool).await.map_err(backend)?;
+            let mut tx = crate::repositories::begin_write(&pool)
+                .await
+                .map_err(backend)?;
 
             sqlx::query(
                 "DELETE FROM state_items \
@@ -87,8 +89,8 @@ impl DeRecStateStore for SqlStateStore {
             .bind(&key_col)
             .bind(&actor)
             .execute(&mut *tx)
-                .await
-                .map_err(backend)?;
+            .await
+            .map_err(backend)?;
 
             sqlx::query(
                 "INSERT INTO state_items (secret_id, state_key, kind, item, actor_id) \
@@ -153,8 +155,8 @@ impl DeRecStateStore for SqlStateStore {
             .bind(key_col)
             .bind(actor)
             .execute(&pool)
-                    .await
-                    .map_err(backend)?;
+            .await
+            .map_err(backend)?;
 
             Ok(result.rows_affected() > 0)
         })
@@ -167,17 +169,16 @@ impl DeRecStateStore for SqlStateStore {
         let actor = self.actor_id.clone();
 
         Box::pin(async move {
-            let rows: Vec<(String,)> =
-                sqlx::query_as(
-                    "SELECT item FROM state_items \
+            let rows: Vec<(String,)> = sqlx::query_as(
+                "SELECT item FROM state_items \
                      WHERE secret_id = $1 AND kind = $2 AND actor_id = $3",
-                )
-                    .bind(secret)
-                    .bind(kind_col)
-                    .bind(actor)
-                    .fetch_all(&pool)
-                    .await
-                    .map_err(backend)?;
+            )
+            .bind(secret)
+            .bind(kind_col)
+            .bind(actor)
+            .fetch_all(&pool)
+            .await
+            .map_err(backend)?;
 
             let mut out = Vec::with_capacity(rows.len());
             for (json,) in rows {

@@ -10,15 +10,20 @@
 //! `derec_backend::build_router` driven through `tower::ServiceExt::oneshot`.
 
 use axum::{
-    Router,
     body::Body,
     http::{Request, StatusCode},
+    Router,
 };
 use serde_json::Value;
 use tower::ServiceExt;
 
 async fn app() -> Router {
-    derec_backend::infrastructure::server::build_router(derec_backend::infrastructure::test_support::node().await.state.clone())
+    derec_backend::infrastructure::server::build_router(
+        derec_backend::infrastructure::test_support::node()
+            .await
+            .state
+            .clone(),
+    )
 }
 
 async fn get(router: &Router, path: &str) -> (StatusCode, Value) {

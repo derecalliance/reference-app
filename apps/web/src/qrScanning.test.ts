@@ -2,7 +2,7 @@
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { classifyCameraError, qrScanSupport } from './qrScanning'
+import { classifyCameraError, qrScanSupport, startQrScan } from './qrScanning'
 
 /**
  * Capability detection decides whether the scan affordance is offered at all,
@@ -144,5 +144,92 @@ describe('classifyCameraError', () => {
     expect(classifyCameraError({ name: 'AbortError' })).toBe('unavailable')
     expect(classifyCameraError(null)).toBe('unavailable')
     expect(classifyCameraError(new Error('boom'))).toBe('unavailable')
+  })
+})
+
+describe('startQrScan', () => {
+  /** A camera whose `getUserMedia` answers only when the test says so. */
+  function deferredCamera() {
+    const opens: Array<{ track: { stop: ReturnType<typeof vi.fn> }; open: () => void }> = []
+    setMediaDevices({
+      getUserMedia: () =>
+        new Promise(resolve => {
+          const track = { stop: vi.fn() }
+          opens.push({ track, open: () => resolve({ getTracks: () => [track] }) })
+        }),
+    })
+    return opens
+  }
+
+  /** A `<video>` whose `play()` is interrupted when another stream is attached. */
+  function sharedVideo() {
+    let pending: { reject: (e: Error) => void } | null = null
+    let srcObject: unknown = null
+    const video = {
+      muted: false,
+      playsInline: false,
+      readyState: 0,
+      videoWidth: 0,
+      get srcObject() {
+        return srcObject
+      },
+      set srcObject(value: unknown) {
+        pending?.reject(new Error('The play() request was interrupted by a new load request.'))
+        pending = null
+        srcObject = value
+      },
+      play: () => new Promise<void>((_resolve, reject) => (pending = { reject })),
+    }
+    return video as unknown as HTMLVideoElement
+  }
+
+  afterEach(() => {
+    setDetector(originalDetector)
+    setMediaDevices(undefined)
+  })
+
+  it('a session stopped before its camera opens never touches the shared video', async () => {
+    setDetector(detectorSupporting(['qr_code']))
+    const opens = deferredCamera()
+    const video = sharedVideo()
+
+    // StrictMode: mount, unmount, remount — two sessions on one element, the
+    // first discarded before either camera has opened.
+    const firstFailure = vi.fn()
+    const first = startQrScan(video, vi.fn(), firstFailure)
+    first.stop()
+    const liveFailure = vi.fn()
+    startQrScan(video, vi.fn(), liveFailure)
+    await Promise.resolve()
+
+    // Under load the discarded session's camera can open *after* the live one.
+    opens[1].open()
+    await vi.waitFor(() => expect(video.srcObject).not.toBeNull())
+    const liveStream = video.srcObject
+    opens[0].open()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(video.srcObject).toBe(liveStream)
+    expect(opens[0].track.stop).toHaveBeenCalled()
+    expect(liveFailure).not.toHaveBeenCalled()
+    expect(firstFailure).not.toHaveBeenCalled()
+  })
+
+  it('reports nothing for a session stopped while its preview was starting', async () => {
+    setDetector(detectorSupporting(['qr_code']))
+    const opens = deferredCamera()
+    const video = sharedVideo()
+    const onFailure = vi.fn()
+
+    const session = startQrScan(video, vi.fn(), onFailure)
+    await Promise.resolve()
+    opens[0].open()
+    await vi.waitFor(() => expect(video.srcObject).not.toBeNull())
+    session.stop()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(onFailure).not.toHaveBeenCalled()
+    expect(video.srcObject).toBeNull()
+    expect(opens[0].track.stop).toHaveBeenCalled()
   })
 })

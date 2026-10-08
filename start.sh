@@ -2,20 +2,23 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 DeRec Alliance. All rights reserved.
 #
-# Build and run the DeRec reference app in Docker, from a fresh clone or over a
-# running one. Safe to run again at any time: whatever this project already has
-# running is stopped first, the image is rebuilt from the checkout (cached, so
-# fast when nothing changed), and the node is started and waited on until it
-# answers. Data is kept between runs unless --fresh is given.
+# Run the DeRec reference app in Docker, from a fresh clone or over a running
+# one. Safe to run again at any time: whatever this project already has running
+# is stopped first, the published image is pulled (or, with --build, built from
+# the checkout), and the node is started and waited on until it answers. Data is
+# kept between runs unless --fresh is given.
 #
 #   ./start.sh                 SQLite, at http://localhost:<port>
 #   ./start.sh --postgres      PostgreSQL instead
 #   ./start.sh --lan           also reachable from phones and other machines
 #   ./start.sh --fresh         erase all data first (both databases)
 #   ./start.sh --port 8080     a fixed HTTP port instead of the first free one
+#   ./start.sh --build         build the image from this checkout instead of pulling
 #   ./start.sh --stop          stop it and exit
 #
-# Needs Docker with Compose v2.24 or newer. Nothing else: no Node, no Rust.
+# Needs Docker with Compose v2.24 or newer. Nothing else: no Node, no Rust. If
+# the published image cannot be pulled (offline, or not published yet), it is
+# built from the checkout instead.
 
 set -euo pipefail
 
@@ -26,12 +29,13 @@ DB=sqlite
 LAN=0
 FRESH=0
 STOP_ONLY=0
+BUILD=0
 HTTP_PORT="${DEREC_HOST_PORT:-}"
 GRPC_PORT="${DEREC_HOST_GRPC_PORT:-}"
 HEALTH_TIMEOUT_SECS=180
 
 usage() {
-  sed -n '5,19p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '5,22p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
@@ -47,6 +51,7 @@ while [ $# -gt 0 ]; do
     --lan) LAN=1 ;;
     --fresh) FRESH=1 ;;
     --stop) STOP_ONLY=1 ;;
+    --build) BUILD=1 ;;
     --port)
       [ $# -ge 2 ] || fail "--port needs a number"
       HTTP_PORT="$2"
@@ -76,13 +81,14 @@ else
   fail "Docker Compose v2 is required (\`docker compose version\`)."
 fi
 
+# The repo-root files, so the project directory (and its optional `.env`) is
+# the repo root, which is also what compose.build.yaml's paths resolve against.
 if [ "$DB" = postgres ]; then
-  COMPOSE_FILES=(-f examples/compose.postgres.yaml)
-  # Run from examples/, compose would look for `.env` there; use the root one.
-  [ -f .env ] && COMPOSE_FILES+=(--env-file .env)
+  COMPOSE_FILES=(-f compose.postgres.yaml)
 else
   COMPOSE_FILES=(-f compose.yaml)
 fi
+BUILD_OVERRIDE=(-f compose.build.yaml)
 
 compose() { "${COMPOSE[@]}" -p "$PROJECT" "${COMPOSE_FILES[@]}" "$@"; }
 
@@ -165,8 +171,21 @@ fi
 
 # ── Build and start ──────────────────────────────────────────────────────────
 
-say "Building and starting the node ($DB) — the first build takes several minutes"
-compose up -d --build
+if [ "$BUILD" = 0 ]; then
+  say "Pulling the published image"
+  if ! compose pull --quiet; then
+    say "Could not pull the image (offline, or not published yet); building it from this checkout instead"
+    BUILD=1
+  fi
+fi
+if [ "$BUILD" = 1 ]; then
+  COMPOSE_FILES+=("${BUILD_OVERRIDE[@]}")
+  say "Building the image from this checkout ($DB) — the first build takes several minutes"
+  compose up -d --build
+else
+  say "Starting the node ($DB)"
+  compose up -d
+fi
 
 # ── Wait until it answers ────────────────────────────────────────────────────
 

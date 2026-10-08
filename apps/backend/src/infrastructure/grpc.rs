@@ -98,7 +98,10 @@ pub fn bind(port: u16) -> std::io::Result<tonic::transport::server::TcpIncoming>
 }
 
 /// Serve gRPC ingress on an already-bound socket, until the process ends.
-pub async fn serve(delivery: Arc<dyn DeliveryService>, incoming: tonic::transport::server::TcpIncoming) {
+pub async fn serve(
+    delivery: Arc<dyn DeliveryService>,
+    incoming: tonic::transport::server::TcpIncoming,
+) {
     info!("gRPC transport listening");
 
     if let Err(e) = tonic::transport::Server::builder()
@@ -136,7 +139,10 @@ mod tests {
     #[tokio::test]
     async fn binding_an_already_bound_port_fails() {
         let first = bind(0).expect("first bind must succeed");
-        let port = first.local_addr().expect("bound socket has a local address").port();
+        let port = first
+            .local_addr()
+            .expect("bound socket has a local address")
+            .port();
 
         assert!(
             bind(port).is_err(),

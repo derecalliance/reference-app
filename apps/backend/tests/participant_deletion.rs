@@ -20,12 +20,12 @@
 use std::sync::Arc;
 
 use axum::{
-    Router,
     body::Body,
     http::{Request, StatusCode},
+    Router,
 };
 use derec_backend::infrastructure::bootstrap::Node;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tower::ServiceExt;
 
 /// Every table keyed by `actor_id`, with a minimal valid row for each.
@@ -35,35 +35,70 @@ use tower::ServiceExt;
 /// from the production list still fails a test.
 fn seed_rows(actor: &str) -> Vec<(&'static str, String)> {
     vec![
-        ("channels", format!(
-            "INSERT INTO channels (actor_id, secret_id, kind, entity_id, channel_id, record) \
-             VALUES ('{actor}', '1', 'helper', 'e1', 'c1', '{{}}')")),
-        ("channel_links", format!(
-            "INSERT INTO channel_links (actor_id, secret_id, channel_id, linked_id) \
-             VALUES ('{actor}', '1', 'c1', 'c2')")),
-        ("secrets", format!(
-            "INSERT INTO secrets (actor_id, secret_id, channel_id, kind, value) \
-             VALUES ('{actor}', '1', 'c1', 'shared_key', 'v')")),
-        ("user_secrets", format!(
-            "INSERT INTO user_secrets (actor_id, secret_id, payload) \
-             VALUES ('{actor}', '1', 'p')")),
-        ("shares", format!(
+        (
+            "channels",
+            format!(
+                "INSERT INTO channels (actor_id, secret_id, kind, entity_id, channel_id, record) \
+             VALUES ('{actor}', '1', 'helper', 'e1', 'c1', '{{}}')"
+            ),
+        ),
+        (
+            "channel_links",
+            format!(
+                "INSERT INTO channel_links (actor_id, secret_id, channel_id, linked_id) \
+             VALUES ('{actor}', '1', 'c1', 'c2')"
+            ),
+        ),
+        (
+            "secrets",
+            format!(
+                "INSERT INTO secrets (actor_id, secret_id, channel_id, kind, value) \
+             VALUES ('{actor}', '1', 'c1', 'shared_key', 'v')"
+            ),
+        ),
+        (
+            "user_secrets",
+            format!(
+                "INSERT INTO user_secrets (actor_id, secret_id, payload) \
+             VALUES ('{actor}', '1', 'p')"
+            ),
+        ),
+        (
+            "shares",
+            format!(
             "INSERT INTO shares (actor_id, secret_id, channel_id, version, share_secret_id, bytes) \
-             VALUES ('{actor}', '1', 'c1', 1, '9', 'b')")),
-        ("sharing_rounds", format!(
-            "INSERT INTO sharing_rounds (actor_id, secret_id, version, committed) \
-             VALUES ('{actor}', '1', 1, 1)")),
-        ("state_items", format!(
-            "INSERT INTO state_items (actor_id, secret_id, state_key, kind, item) \
-             VALUES ('{actor}', '1', 'k', 'kind', 'i')")),
-        ("actor_channels", format!(
-            "INSERT INTO actor_channels (actor_id, channel_id) VALUES ('{actor}', 'c1')")),
-        ("disabled_helpers", format!(
-            "INSERT INTO disabled_helpers (actor_id) VALUES ('{actor}')")),
-        ("participant_contacts", format!(
-            "INSERT INTO participant_contacts (actor_id, contact) VALUES ('{actor}', 'c')")),
-        ("mailbox", format!(
-            "INSERT INTO mailbox (actor_id, seq, payload) VALUES ('{actor}', 1, 'p')")),
+             VALUES ('{actor}', '1', 'c1', 1, '9', 'b')"),
+        ),
+        (
+            "sharing_rounds",
+            format!(
+                "INSERT INTO sharing_rounds (actor_id, secret_id, version, committed) \
+             VALUES ('{actor}', '1', 1, 1)"
+            ),
+        ),
+        (
+            "state_items",
+            format!(
+                "INSERT INTO state_items (actor_id, secret_id, state_key, kind, item) \
+             VALUES ('{actor}', '1', 'k', 'kind', 'i')"
+            ),
+        ),
+        (
+            "actor_channels",
+            format!("INSERT INTO actor_channels (actor_id, channel_id) VALUES ('{actor}', 'c1')"),
+        ),
+        (
+            "disabled_helpers",
+            format!("INSERT INTO disabled_helpers (actor_id) VALUES ('{actor}')"),
+        ),
+        (
+            "participant_contacts",
+            format!("INSERT INTO participant_contacts (actor_id, contact) VALUES ('{actor}', 'c')"),
+        ),
+        (
+            "mailbox",
+            format!("INSERT INTO mailbox (actor_id, seq, payload) VALUES ('{actor}', 1, 'p')"),
+        ),
     ]
 }
 
@@ -122,9 +157,15 @@ async fn deleting_a_participant_removes_it_from_the_roster() {
 
     let helper_id = provision(&router, "Alex").await;
 
-    let (_, before) = send(&router, Request::get("/api/v1/actors").body(Body::empty()).unwrap()).await;
+    let (_, before) = send(
+        &router,
+        Request::get("/api/v1/actors").body(Body::empty()).unwrap(),
+    )
+    .await;
     assert!(
-        before["actors"].as_array().is_some_and(|a| a.iter().any(|x| x["id"] == helper_id.as_str())),
+        before["actors"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|x| x["id"] == helper_id.as_str())),
         "provisioned helper should be listed first: {before}"
     );
 
@@ -137,9 +178,15 @@ async fn deleting_a_participant_removes_it_from_the_roster() {
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
-    let (_, after) = send(&router, Request::get("/api/v1/actors").body(Body::empty()).unwrap()).await;
+    let (_, after) = send(
+        &router,
+        Request::get("/api/v1/actors").body(Body::empty()).unwrap(),
+    )
+    .await;
     assert!(
-        after["actors"].as_array().is_some_and(|a| a.iter().all(|x| x["id"] != helper_id.as_str())),
+        after["actors"]
+            .as_array()
+            .is_some_and(|a| a.iter().all(|x| x["id"] != helper_id.as_str())),
         "deleted helper is still listed: {after}"
     );
 }
@@ -216,7 +263,12 @@ async fn deleting_a_participant_drops_its_live_handles() {
 
 #[actix_rt::test]
 async fn deleting_an_unknown_participant_is_not_found() {
-    let router = derec_backend::infrastructure::server::build_router(derec_backend::infrastructure::test_support::node().await.state.clone());
+    let router = derec_backend::infrastructure::server::build_router(
+        derec_backend::infrastructure::test_support::node()
+            .await
+            .state
+            .clone(),
+    );
     let unknown = uuid::Uuid::new_v4();
 
     let (status, _) = send(
@@ -232,7 +284,12 @@ async fn deleting_an_unknown_participant_is_not_found() {
 
 #[actix_rt::test]
 async fn deleting_the_same_participant_twice_is_not_found_the_second_time() {
-    let router = derec_backend::infrastructure::server::build_router(derec_backend::infrastructure::test_support::node().await.state.clone());
+    let router = derec_backend::infrastructure::server::build_router(
+        derec_backend::infrastructure::test_support::node()
+            .await
+            .state
+            .clone(),
+    );
     let helper_id = provision(&router, "Alex").await;
 
     let path = format!("/api/v1/helpers/{helper_id}");

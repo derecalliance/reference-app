@@ -10,11 +10,11 @@ use super::actors::inboxes::ActorInboxes;
 use super::actors::provisioned::ActorDependencies;
 use super::actors::runtime::ActorRuntime;
 use super::addresses::NodeAddresses;
-use crate::models::NodeConfig;
 use super::event_log::EventLog;
 use super::routing::ChannelRouter;
 use super::state::AppState;
 use super::transport::RelayDialer;
+use crate::models::NodeConfig;
 use crate::repositories::actors::{ActorRepository, SqlActorRepository};
 use crate::repositories::advertised_addresses::SqlAdvertisedAddressRepository;
 use crate::repositories::browser_contacts::{
