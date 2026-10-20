@@ -188,6 +188,7 @@ export const sharingHandlers = {
             version,
             verifiedParticipantIds: [],
             verifyRejections: undefined,
+            invalidProofParticipantIds: undefined,
             failedParticipantIds: [],
             restoredFromRecovery: undefined,
           },
@@ -274,11 +275,54 @@ export const sharingHandlers = {
     announceVerificationIfDone(secretBag, version, ctx)
     return { ...current, secretBag }
   },
+
+  // The helper answered, but its proof does not match the share this device
+  // stored. Unlike a refusal this is a sign of a damaged or dishonest helper,
+  // so it is recorded apart and raised as a warning. The challenge is spent:
+  // checking the helper again takes a new round.
+  ShareVerifyInvalid: (current, event, ctx) => {
+    const { channel_id: channelId, version } = event
+
+    ctx.log({
+      role: 'owner',
+      flow: 'verification',
+      step: 'ShareVerifyInvalid',
+      description: `Verification of v${version} failed on channel ${channelId}: the proof does not match the stored share`,
+      payload: { channelId, version },
+    })
+
+    if (!ctx.rounds.isAwaitingVerification(channelId, version)) return current
+    ctx.rounds.endVerification(channelId)
+
+    const participant = current.participants.find(h => h.channelId === channelId)
+    if (!participant) return current
+
+    ctx.notify.error(
+      `${participant.name}'s share of v${version} failed verification`,
+      'Its proof does not match the share this vault sent. The helper may be damaged or dishonest; ' +
+        'consider unpairing it and publishing a new version.',
+      { channelId },
+    )
+
+    const bag = current.secretBag
+    const secretBag = bag
+      ? updateBagVersion(bag, version, v => ({
+          ...v,
+          invalidProofParticipantIds: [
+            ...(v.invalidProofParticipantIds ?? []).filter(id => id !== participant.id),
+            participant.id,
+          ],
+        }))
+      : null
+    announceVerificationIfDone(secretBag, version, ctx)
+    return { ...current, secretBag }
+  },
 } satisfies Partial<EventHandlers>
 
 /**
  * One banner per verification round, not one per helper: raised when its last
- * challenge is answered, whether with a proof or a refusal, and naming both.
+ * challenge is answered — with a proof, a refusal or an invalid proof — and
+ * naming each.
  */
 function announceVerificationIfDone(
   secretBag: Vault['secretBag'],
@@ -289,9 +333,11 @@ function announceVerificationIfDone(
   const bagVersion = bagVersionOf(secretBag, version)
   const verified = bagVersion?.verifiedParticipantIds.length ?? 0
   const rejected = bagVersion?.verifyRejections?.length ?? 0
+  const invalid = bagVersion?.invalidProofParticipantIds?.length ?? 0
   ctx.notify.outcome(
     `Verification of v${version} complete: ${verified} share${verified === 1 ? '' : 's'} verified` +
-      (rejected > 0 ? `, ${rejected} rejected` : ''),
+      (rejected > 0 ? `, ${rejected} rejected` : '') +
+      (invalid > 0 ? `, ${invalid} with an invalid proof` : ''),
   )
 }
 

@@ -21,7 +21,7 @@ use axum::{
         rejection::{BytesRejection, JsonRejection, PathRejection, QueryRejection},
         FromRequest, FromRequestParts, OptionalFromRequest, Request,
     },
-    http::{request::Parts, StatusCode},
+    http::{header, request::Parts, StatusCode},
     Json,
 };
 use serde::de::DeserializeOwned;
@@ -201,6 +201,95 @@ where
     }
 }
 
+/// The body a route that also speaks protobuf should answer with, negotiated
+/// from the request's `Accept` header.
+///
+/// JSON — the envelope — unless the caller ranks `application/octet-stream`
+/// strictly above `application/json`. A missing header, `*/*`, a tie, or a
+/// header naming neither all get JSON, so the UI and any client that does not
+/// ask are unaffected. Only the success body is negotiated; errors are always
+/// the JSON envelope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseFormat {
+    Json,
+    Protobuf,
+}
+
+impl ResponseFormat {
+    /// The media type a [`ResponseFormat::Protobuf`] body is served as.
+    pub const PROTOBUF_MEDIA_TYPE: &'static str = "application/octet-stream";
+
+    /// Pick the format from an `Accept` header value.
+    fn from_accept(accept: &str) -> Self {
+        let json = accept_quality(accept, "application", "json");
+        let protobuf = accept_quality(accept, "application", "octet-stream");
+        if protobuf > json {
+            Self::Protobuf
+        } else {
+            Self::Json
+        }
+    }
+}
+
+impl<S> FromRequestParts<S> for ResponseFormat
+where
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        // Repeated `Accept` headers are one comma-separated list (RFC 9110 §5.3).
+        let accept = parts
+            .headers
+            .get_all(header::ACCEPT)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .collect::<Vec<_>>()
+            .join(",");
+        Ok(Self::from_accept(&accept))
+    }
+}
+
+/// The quality (`q`, in thousandths) an `Accept` header gives `type/subtype`,
+/// taken from the most specific media range that covers it — exact, then
+/// `type/*`, then `*/*` — per RFC 9110 §12.5.1. `0` when nothing covers it.
+fn accept_quality(accept: &str, main_type: &str, subtype: &str) -> u16 {
+    accept
+        .split(',')
+        .filter_map(|range| {
+            let mut params = range.split(';').map(str::trim);
+            let (range_type, range_subtype) = params.next()?.split_once('/')?;
+            let specificity = match (range_type, range_subtype) {
+                (t, s) if t.eq_ignore_ascii_case(main_type) && s.eq_ignore_ascii_case(subtype) => 2,
+                (t, "*") if t.eq_ignore_ascii_case(main_type) => 1,
+                ("*", "*") => 0,
+                _ => return None,
+            };
+            let quality = params
+                .filter_map(|param| param.split_once('='))
+                .find(|(name, _)| name.trim().eq_ignore_ascii_case("q"))
+                .map_or(1000, |(_, value)| parse_quality(value.trim()));
+            Some((specificity, quality))
+        })
+        .max_by_key(|(specificity, _)| *specificity)
+        .map_or(0, |(_, quality)| quality)
+}
+
+/// A `qvalue` (`0` to `1`, up to three decimals) in thousandths; anything
+/// unparseable counts as `0`, so a malformed range never wins.
+fn parse_quality(value: &str) -> u16 {
+    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
+    if fraction.len() > 3 || !fraction.bytes().all(|b| b.is_ascii_digit()) {
+        return 0;
+    }
+    let thousandths: u16 = format!("{fraction:0<3}").parse().unwrap_or(0);
+    match whole {
+        "1" if thousandths == 0 => 1000,
+        "0" => thousandths,
+        _ => 0,
+    }
+}
+
 // ── Message clean-up ────────────────────────────────────────────────────────
 
 /// The part of a rejection's text worth showing, with Rust type names removed.
@@ -293,6 +382,42 @@ fn replace_word(haystack: &str, needle: &str, replacement: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_is_the_format_unless_octet_stream_is_ranked_above_it() {
+        use ResponseFormat::{Json, Protobuf};
+
+        for (accept, expected) in [
+            ("", Json),
+            ("*/*", Json),
+            ("application/json", Json),
+            ("text/html", Json),
+            ("application/octet-stream", Protobuf),
+            ("APPLICATION/Octet-Stream", Protobuf),
+            ("application/octet-stream, application/json", Json),
+            ("application/octet-stream, application/json;q=0.9", Protobuf),
+            ("application/json;q=0.5, application/octet-stream", Protobuf),
+            ("application/octet-stream;q=0.8, */*;q=0.1", Protobuf),
+            ("application/octet-stream;q=0", Json),
+            ("application/*, application/json;q=0.2", Protobuf),
+            ("application/octet-stream;q=nonsense", Json),
+            ("application/octet-stream ; Q=1.0", Protobuf),
+        ] {
+            assert_eq!(ResponseFormat::from_accept(accept), expected, "{accept:?}");
+        }
+    }
+
+    #[test]
+    fn a_quality_value_reads_in_thousandths() {
+        assert_eq!(parse_quality("1"), 1000);
+        assert_eq!(parse_quality("1.000"), 1000);
+        assert_eq!(parse_quality("0.5"), 500);
+        assert_eq!(parse_quality("0.125"), 125);
+        assert_eq!(parse_quality("0"), 0);
+        assert_eq!(parse_quality("1.5"), 0);
+        assert_eq!(parse_quality("0.1234"), 0);
+        assert_eq!(parse_quality("2"), 0);
+    }
 
     #[test]
     fn a_struct_name_is_replaced_with_json_vocabulary() {

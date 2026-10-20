@@ -29,8 +29,8 @@ If a helper advertises only gRPC and the node's relay is off, **Pair** is disabl
 
 Use the two buttons in the vault header:
 
-- **Share Contact** shows this vault's contact as a QR code, with **Copy** buttons for the *QR Payload* (JSON) and *Raw Bytes (hex)*, and the transport it advertises. Changing the contact mode mints a new contact; the previous one becomes stale and is cleaned up.
-- **Pair** takes the peer's contact. Paste the payload, or click **Scan QR** where the browser supports it. Pick **your** role from *Owner*, *Helper*, *Replica source* or *Replica destination*; the dialog says what the other side becomes. Click **Pair as …**.
+- **Share Contact** shows this vault's contact as a QR code, with **Copy** buttons for the *QR Payload* (JSON) and *Raw Bytes (hex)* — the contact's protobuf `ContactMessage` bytes, the form other DeRec implementations exchange — and the transport it advertises. Changing the contact mode mints a new contact; the previous one becomes stale and is cleaned up.
+- **Pair** takes the peer's contact. Paste it — the JSON payload, or the raw protobuf bytes as hex or base64, which is how a contact from another implementation (or from `POST /api/v1/actors/{id}/contact` with `Accept: application/octet-stream`) usually arrives — or click **Scan QR** where the browser supports it. Pick **your** role from *Owner*, *Helper*, *Replica source* or *Replica destination*; the dialog says what the other side becomes. Click **Pair as …**.
 
 Picking *Replica destination* first asks for consent, because that side's vault is replaced. See [Replicas](07-replicas.md).
 

@@ -809,6 +809,22 @@ describe('auto-pairing at setup', () => {
     )
   })
 
+  it('records each pairing as it starts, before reaching for the next participant', async () => {
+    // A reply the poll folds before its pending record exists cannot find the
+    // participant's placeholder, and lands as a second row for the same helper:
+    // pre-pairing all seven of a pool listed five of them twice.
+    const recordedWhenAsked: number[] = []
+    const { r } = pairingRuntime(3, async () => {
+      recordedWhenAsked.push(r.state().vault.pendingPairings.length)
+      return {} as ContactMessage
+    })
+
+    await r.autoPair()
+
+    expect(recordedWhenAsked).toEqual([0, 1, 2])
+    expect(r.state().vault.pendingPairings).toHaveLength(3)
+  })
+
   it('lets the poll slow down once every one of them has paired', async () => {
     const { r } = pairingRuntime(2)
     await r.autoPair()

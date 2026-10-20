@@ -45,6 +45,14 @@ A `204` has no body. The transport keeps its own shapes: `POST /derec/{id}` and
 `POST /derec/relay` answer an empty `202`, `GET /derec/{id}/mailbox` answers
 `{"messages": [{"data": "<base64url>"}]}`, and `/health` an empty `200`.
 
+One `/api/v1` route negotiates its body: `POST /api/v1/actors/{id}/contact`
+with `Accept: application/octet-stream` answers the encoded protobuf
+`ContactMessage` — no envelope, `Content-Type: application/octet-stream`, the
+request id only in `x-request-id` — so a backend can hand the bytes straight to
+its SDK. Without that header (or with `*/*` or `application/json`) it is the
+JSON envelope as usual. Its errors are the JSON envelope either way, so check
+the status before decoding.
+
 **Every error, everywhere, has one shape** — the transport, unknown paths (404)
 and wrong methods (405) included:
 

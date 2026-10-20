@@ -15,14 +15,15 @@ The dialog, **Verifying Shares · vN**, stays on the version you challenged even
 | **Waiting…** | The challenge went out; no answer yet. |
 | **Verified** | The helper proved it holds the share. |
 | **Rejected** | The helper answered and refused the challenge. Its memo (or `status N`) follows the label. A helper that no longer holds that version answers this way too (`UNKNOWN_SHARE_VERSION`). |
+| **Proof invalid** | The helper answered, but its proof does not match the share this vault sent. Unlike a refusal, an honest helper never answers this way: it points to a damaged or dishonest helper, and a warning says so. A version published before SDK 0.0.9 answers this way too — its shares were committed with the older hashing — so publish a new version and verify that one. |
 | **Challenge not sent** | The challenge could not be dispatched to this helper, or the helper is no longer paired. |
 | **Verification timed out** | No answer within the protocol timeout. |
 
-A refusal is an answer, so it resolves the row at once. Before SDK 0.0.7 a refusal produced no event and the row spun until the deadline. The challenge is used up either way: checking that helper again takes a new **Verify Shares**.
+A refusal or an invalid proof is an answer, so it resolves the row at once. Before SDK 0.0.7 a refusal produced no event and the row spun until the deadline. The challenge is used up either way: checking that helper again takes a new **Verify Shares**.
 
-The summary reads *X of N verified · R rejected · F failed*, and the button changes from **Close** to **Done** when every row has resolved.
+The summary reads *X of N verified · R rejected · I invalid proofs · F failed*, and the button changes from **Close** to **Done** when every row has resolved.
 
-On the version card, *Helper Shares* keeps the result: ✓ verified, ✗ *Rejected verification: …*, ○ not yet verified, with *X/N verified* beside the heading.
+On the version card, *Helper Shares* keeps the result: ✓ verified, ✗ *Rejected verification: …*, ✗ *Failed verification: its proof does not match the share sent*, ○ not yet verified, with *X/N verified* beside the heading.
 
 ## When Verify Shares is unavailable
 

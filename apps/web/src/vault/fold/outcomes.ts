@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
+import type { IgnoreReason } from '@derec-alliance/web'
+
 import type { Vault } from '../../types'
 import type { EventHandlers, EventOf, FoldContext } from './context'
 
@@ -19,6 +21,16 @@ type DispatchFailed =
   | 'VerifySharesFailed'
   | 'RecoverSecretFailed'
   | 'UpdateChannelInfoFailed'
+
+/** Why the library dropped a message, as the Console panel says it. */
+const IGNORE_REASON_TEXT: Record<IgnoreReason, string> = {
+  PendingVerification: "this device has not confirmed the channel's fingerprint yet",
+  Expired: 'older than the protocol timeout',
+  // A 0.0.8 peer stamps its replies' envelope and inner message separately,
+  // so this is what talking to an SDK older than 0.0.9 looks like.
+  TimestampMismatch: "its envelope and inner timestamps differ (a peer on an SDK older than 0.0.9?)",
+  StaleResponse: 'it answers a verification challenge a newer one replaced',
+}
 
 // `start()` reports a result per target it dispatched to. A `*Started` is real
 // progress, so it refreshes the watchdog rather than letting it time out a flow
@@ -98,10 +110,7 @@ export const outcomeHandlers = {
       role: 'owner',
       flow: 'protocol',
       step: 'MessageIgnored',
-      description:
-        event.reason === 'PendingVerification'
-          ? `Ignored a message on channel ${event.channel_id} — this device has not confirmed the channel's fingerprint yet`
-          : `Ignored a message on channel ${event.channel_id} — older than the protocol timeout`,
+      description: `Ignored a message on channel ${event.channel_id} — ${IGNORE_REASON_TEXT[event.reason]}`,
       payload: { channelId: event.channel_id, reason: event.reason, traceId: event.trace_id },
     })
     return current

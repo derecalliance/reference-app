@@ -289,8 +289,8 @@ function SidePanelParticipantItem({
 
       {pairAsInitiatorOpen && startPairingAsInitiator && (
         <PairInitiatorModal
-          label="Your Contact (QR Payload)"
-          placeholder="Paste the JSON payload from your own Share Contact QR code"
+          label="Your Contact"
+          placeholder="Paste the JSON payload from your own Share Contact QR code, or the contact's raw protobuf bytes as hex or base64"
           pairedChannelIds={pairedChannelIds}
           pairingRejectionCount={pairingRejectionCount}
           pairingCompletedSignal={pairingCompletedSignal}

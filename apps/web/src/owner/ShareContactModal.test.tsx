@@ -21,6 +21,7 @@ vi.mock('../ConsoleContext', () => ({
 
 vi.mock('./contact', () => ({
   serializeContact: (contact: ContactMessage) => `payload-${contact.channel_id.toString()}`,
+  contactToHex: (contact: ContactMessage) => `hex-${contact.channel_id.toString()}`,
 }))
 
 // The QR's payload is what identifies the contact on screen; rendering it as

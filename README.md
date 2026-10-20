@@ -156,7 +156,20 @@ The API lives under `/api/v1` and answers in one envelope: `{"result": …,
 failure, with a stable `code` such as `NOT_FOUND` or `RELAY_DISABLED`. Every
 response carries an `x-request-id` header — send your own to find that request
 in the node's logs. `GET /health` and the DeRec transport (`/derec/*`) stay at
-the root with their bodies unchanged. [`AGENTS.md`](AGENTS.md) has the full
+the root with their bodies unchanged.
+
+A backend using the node's helpers as a service can skip the JSON-to-protobuf
+step when it mints a contact: `POST /api/v1/actors/{id}/contact` with
+`Accept: application/octet-stream` answers the encoded `ContactMessage` bytes,
+ready for the SDK, with no envelope (the request id is in the `x-request-id`
+header). JSON stays the default, and errors are the JSON envelope either way:
+
+```sh
+curl -X POST -H 'Accept: application/octet-stream' \
+  http://localhost:5000/api/v1/actors/<helper-id>/contact -o contact.bin
+```
+
+[`AGENTS.md`](AGENTS.md) has the full
 error-code table, and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#backend-layering)
 how the backend is layered.
 

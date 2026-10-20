@@ -1125,14 +1125,19 @@ export class VaultRuntime {
     if (targets.length === 0) return
     this.setAutoPairing(targets.map(p => p.id))
 
-    const started: PendingPairing[] = []
+    let started = 0
     for (const participant of targets) {
       // Stopped meanwhile: the rest wait for the next start.
       if (!this.protocolInstance) break
       try {
         const contact = await this.io.participantContact(participant.id)
-        const channelId = await this.startPairing(contact, 'owner', participant.name)
-        started.push({ channelId, participantId: participant.id })
+        // Recorded as it starts, not once the batch is through: the poll keeps
+        // draining meanwhile, and an early reply needs its record to find the
+        // participant's row.
+        const channelId = await this.startPairing(contact, 'owner', participant.name, {
+          participantId: participant.id,
+        })
+        started++
         this.deps.log({
           role: 'owner',
           flow: 'pairing',
@@ -1151,12 +1156,8 @@ export class VaultRuntime {
       }
     }
 
-    if (started.length === 0) return
-    this.commit({
-      ...this.vault,
-      prePairedCount: 0,
-      pendingPairings: [...this.vault.pendingPairings, ...started],
-    })
+    if (started === 0) return
+    this.commit({ ...this.vault, prePairedCount: 0 })
   }
 
   private setAutoPairing(ids: readonly string[]): void {
@@ -1659,8 +1660,18 @@ export class VaultRuntime {
    *
    * `role` is load-bearing: it is the only thing that reaches the wire as
    * `sender_kind`, and the responder derives the complement from it.
+   *
+   * `pending` records the pairing under the vault lock, before any drain can
+   * fold the peer's reply. Recorded afterwards, a fast reply finds no record,
+   * cannot be matched to the participant's placeholder, and becomes a second
+   * row for the same peer.
    */
-  startPairing(contact: ContactMessage, role: PairingRole, peerName?: string): Promise<bigint> {
+  startPairing(
+    contact: ContactMessage,
+    role: PairingRole,
+    peerName?: string,
+    pending?: Omit<PendingPairing, 'channelId'>,
+  ): Promise<bigint> {
     // A completed pairing publishes the vault to the new peer on the library's
     // own initiative, which a diverged vault must not do — see `protect`.
     const conflict = this.vault.replicaConflict
@@ -1678,7 +1689,9 @@ export class VaultRuntime {
           peerCommunicationInfo: peerName ? { name: peerName } : {},
         }),
       )
-      return pairingChannelIdFrom(events)
+      const channelId = pairingChannelIdFrom(events)
+      if (pending) this.addPendingPairing(channelId, pending.participantId, pending.peerTransportUri)
+      return channelId
     })
   }
 
@@ -2232,6 +2245,7 @@ export class VaultRuntime {
           ...v,
           verifiedParticipantIds: [],
           verifyRejections: undefined,
+          invalidProofParticipantIds: undefined,
         })),
       })
 
@@ -2260,10 +2274,7 @@ export class VaultRuntime {
       } catch (err) {
         for (const participant of reachable) this.rounds.endVerification(participant.channelId)
         this.commit(this.vault)
-        throw new Error(
-          describeVerifyFailure(await this.unreachableReason('No challenge was sent', err), version),
-          { cause: err },
-        )
+        throw new Error(await this.unreachableReason('No challenge was sent', err), { cause: err })
       }
 
       startEvents = this.withDeliveryReasons(startEvents)
@@ -2274,12 +2285,12 @@ export class VaultRuntime {
           role: 'owner',
           flow: 'verification',
           step: 'VerifySharesFailed',
-          description: `Verification challenge could not be sent on channel ${event.channel_id}: ${event.error}`,
-          payload: { channelId: event.channel_id, version, error: event.error },
+          description: `Verification challenge could not be sent on channel ${event.channel_id} (${event.reason}): ${event.error}`,
+          payload: { channelId: event.channel_id, version, reason: event.reason, error: event.error },
         })
       }
       if (failed.length > 0 && !startEvents.some(e => e.type === 'VerifySharesStarted')) {
-        throw new Error(describeVerifyFailure(failed[0].error, version))
+        throw new Error(describeVerifyFailure(failed[0], version))
       }
 
       this.deps.log({

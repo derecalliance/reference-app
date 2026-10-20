@@ -58,6 +58,11 @@ info:
     `202`, `GET /derec/{actor_id}/mailbox` answers `{"messages": […]}`, and
     `GET /health` an empty `200`.
 
+    One `/api/v1` route also speaks protobuf: `POST
+    /api/v1/actors/{actor_id}/contact` answers the encoded `ContactMessage`
+    as `application/octet-stream`, with no envelope, to a caller whose
+    `Accept` asks for it. JSON stays the default, and its errors stay JSON.
+
     ## Request id
 
     Every response carries an `x-request-id` header. Send your own (1–128
@@ -385,6 +390,25 @@ paths:
         owner's secret, creating it on first use. It must be a non-zero
         decimal `u64` other than the actor's own secret, and one actor mirrors
         at most 16 owners — a 17th is `409`.
+
+        ## Response format
+
+        The success body is negotiated from the request's `Accept` header
+        (OpenAPI expresses this through the two media types under `200`
+        rather than as a parameter):
+
+        | `Accept` | `200` body | `Content-Type` |
+        | --- | --- | --- |
+        | absent, `*/*`, `application/json`, or anything else | the `ContactMessage` JSON as `result`, in the envelope | `application/json` |
+        | `application/octet-stream` (ranked above `application/json`) | the protobuf `derec.ContactMessage`, encoded, with no envelope | `application/octet-stream` |
+
+        The protobuf form is for backend consumers: the bytes are exactly what
+        the DeRec SDK takes as a contact, so no JSON-to-protobuf conversion is
+        needed. Its `request_id` is in the `x-request-id` header only. Quality
+        values are honoured (`application/octet-stream, application/json;q=0.5`
+        selects protobuf); a tie goes to JSON. **Errors are always the JSON
+        `Error` envelope**, whatever was asked for — check the status before
+        decoding. Both forms answer `Vary: Accept`.
       parameters:
         - $ref: "#/components/parameters/ActorId"
         - name: contact_mode
@@ -400,7 +424,14 @@ paths:
           schema: { type: string, pattern: "^[0-9]+$" }
       responses:
         "200":
-          description: The contact
+          description: |
+            The contact — the JSON envelope by default, or the encoded protobuf
+            `ContactMessage` when `Accept` asks for `application/octet-stream`.
+          headers:
+            x-request-id: { $ref: "#/components/headers/RequestId" }
+            Vary:
+              description: Always `Accept`; the body depends on it.
+              schema: { type: string, example: accept }
           content:
             application/json:
               schema:
@@ -410,6 +441,13 @@ paths:
                     required: [result]
                     properties:
                       result: { $ref: "#/components/schemas/ContactMessage" }
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+                description: |
+                  An encoded `ContactMessage` protobuf, as defined in
+                  lib-derec's protobufs. No envelope.
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
@@ -953,7 +991,9 @@ paths:
       summary: Deliver a protocol message to an actor (HTTP transport)
       description: |
         The endpoint peers post to. The body is raw protobuf wire bytes, not
-        JSON. A suspended actor answers `202` and discards the message, so a
+        JSON. Send it as `Content-Type: application/octet-stream`, as this
+        node does when it delivers; the header is optional, and a body without
+        one is read as `application/octet-stream`. A suspended actor answers `202` and discards the message, so a
         peer sees the same thing it would from a healthy one.
 
         A body may be at most 4 MiB — the most the gRPC listener accepts, so a

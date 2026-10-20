@@ -129,15 +129,23 @@ function BagVersionDetails({
               const rejection = isVerified
                 ? undefined
                 : version.verifyRejections?.find(r => r.id === h.id)
+              const invalidProof =
+                !isVerified && (version.invalidProofParticipantIds?.includes(h.id) ?? false)
               const state = isVerified
                 ? { className: 'participant-tag--verified', icon: '✓', label: 'Verified' }
-                : rejection
+                : invalidProof
                   ? {
                       className: 'participant-tag--failed',
                       icon: '✗',
-                      label: `Rejected verification: ${rejection.memo || `status ${rejection.status}`}`,
+                      label: 'Failed verification: its proof does not match the share sent',
                     }
-                  : { className: '', icon: '○', label: 'Not yet verified' }
+                  : rejection
+                    ? {
+                        className: 'participant-tag--failed',
+                        icon: '✗',
+                        label: `Rejected verification: ${rejection.memo || `status ${rejection.status}`}`,
+                      }
+                    : { className: '', icon: '○', label: 'Not yet verified' }
               return (
                 <li key={h.id} className={`participant-tag ${state.className}`}>
                   <span>{h.name}</span>
@@ -312,6 +320,7 @@ export function SecretBagPanel({
           version={verifyingVersion.version}
           verifiedParticipantIds={verifyingVersion.verifiedParticipantIds}
           rejections={verifyingVersion.verifyRejections}
+          invalidProofParticipantIds={verifyingVersion.invalidProofParticipantIds}
           confirmedParticipants={participants.filter(h => verifyingVersion.participantIds.includes(h.id))}
           onClose={() => { setVerifying(null); onVerifyClose?.() }}
           onVerify={onVerify}

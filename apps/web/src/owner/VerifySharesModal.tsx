@@ -56,6 +56,7 @@ export function SecretDataField({
 const ROW_DISPLAY: Record<VerifyRowState, { label: string; itemClass: string; statusClass: string }> = {
   verified: { label: 'Verified', itemClass: 'share-progress-item--confirmed', statusClass: 'status--verified' },
   rejected: { label: 'Rejected', itemClass: 'share-progress-item--failed', statusClass: 'status--failed' },
+  invalid: { label: 'Proof invalid', itemClass: 'share-progress-item--failed', statusClass: 'status--failed' },
   failed: { label: 'Challenge not sent', itemClass: 'share-progress-item--failed', statusClass: 'status--failed' },
   'timed-out': { label: 'Verification timed out', itemClass: 'share-progress-item--failed', statusClass: 'status--failed' },
   waiting: { label: 'Waiting…', itemClass: '', statusClass: '' },
@@ -75,6 +76,7 @@ export function VerifySharesModal({
   version,
   verifiedParticipantIds,
   rejections,
+  invalidProofParticipantIds,
   confirmedParticipants,
   onClose,
   onVerify,
@@ -84,6 +86,8 @@ export function VerifySharesModal({
   verifiedParticipantIds: readonly string[]
   /** Live-updated refusals for `version` — see `BagVersion.verifyRejections`. */
   rejections?: readonly { id: string; status: number; memo: string }[]
+  /** Live-updated invalid proofs for `version` — see `BagVersion.invalidProofParticipantIds`. */
+  invalidProofParticipantIds?: readonly string[]
   confirmedParticipants: PairedParticipant[]
   onClose: () => void
   onVerify: (version: number) => Promise<VerifyDispatch>
@@ -122,10 +126,11 @@ export function VerifySharesModal({
     return () => clearTimeout(timer)
   }, [timeoutMs])
 
-  const { rows, verifiedCount, rejectedCount, failedCount, allDone, percent } = verifyProgress({
+  const { rows, verifiedCount, rejectedCount, invalidCount, failedCount, allDone, percent } = verifyProgress({
     participants: confirmedParticipants,
     verifiedParticipantIds,
     rejections,
+    invalidProofParticipantIds,
     failedChannelIds,
     deadlinePassed,
   })
@@ -157,6 +162,7 @@ export function VerifySharesModal({
           <p className="share-progress-summary">
             {verifiedCount} of {rows.length} verified
             {rejectedCount > 0 && ` · ${rejectedCount} rejected`}
+            {invalidCount > 0 && ` · ${invalidCount} invalid proof${invalidCount === 1 ? '' : 's'}`}
             {failedCount > 0 && ` · ${failedCount} failed`}
           </p>
         </div>

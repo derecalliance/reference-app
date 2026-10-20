@@ -308,12 +308,14 @@ describe('verifying shares', () => {
     expect(r.state().busy).toBe(false)
   })
 
-  it('turns the library’s missing-tracking-share refusal into the same explanation', async () => {
+  it('turns the library’s NoProof report into the same explanation (SDK 0.0.9)', async () => {
     const { r } = runtime({ secretBag: withConfirmed() })
     stubInstance(r, {
-      start: async () => {
-        throw new Error('invalid input: no committed share stored for this channel/version — cannot verify proof')
-      },
+      // Nothing to check a proof against: nothing is sent, and every channel
+      // reports why.
+      start: async () => [
+        event({ type: 'VerifySharesFailed', channel_id: '901', version: 1, reason: 'NoProof', error: 'no proof' }),
+      ],
     })
 
     await expect(r.verifyShares(1)).rejects.toThrow('Publish a new version')
@@ -325,7 +327,7 @@ describe('verifying shares', () => {
     stubInstance(r, {
       start: async () => [
         event({ type: 'VerifySharesStarted', channel_id: '901', version: 1, trace_id: 't' }),
-        event({ type: 'VerifySharesFailed', channel_id: '902', version: 1, error: 'unreachable' }),
+        event({ type: 'VerifySharesFailed', channel_id: '902', version: 1, reason: 'DispatchFailed', error: 'unreachable' }),
       ],
     })
 

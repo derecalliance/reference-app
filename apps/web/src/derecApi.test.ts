@@ -57,6 +57,23 @@ describe('relayMessage', () => {
 })
 
 describe('sendMessage', () => {
+  it('posts the raw protobuf bytes as application/octet-stream', async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 202 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const message = new Uint8Array([8, 1, 16, 2])
+
+    await sendMessage('http://peer:5000/derec/x', message)
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://peer:5000/derec/x',
+      expect.objectContaining({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: message,
+      }),
+    )
+  })
+
   it('marks an endpoint that could not be reached at all as worth resending', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch') }))
 

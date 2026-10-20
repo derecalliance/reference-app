@@ -26,8 +26,10 @@ First release. Built against DeRec SDK 0.0.8.
 - **Pairing** in all three contact modes — inline keys, hashed keys and no keys
   with fingerprint confirmation (including the refusal path) — by copy/paste or
   by scanning a QR code with the camera where the browser supports
-  `BarcodeDetector`. Browser-to-browser pairing, so a vault can be a helper for
-  another vault.
+  `BarcodeDetector`. The Pair dialog takes the JSON payload or the contact's
+  raw protobuf `ContactMessage` bytes as hex or base64, which is how a contact
+  from another implementation arrives; Share Contact copies either form.
+  Browser-to-browser pairing, so a vault can be a helper for another vault.
 - **Provisioned helper pool.** Backend-hosted helpers shared by every owner;
   the requested count is a target for the pool, not an order to create.
   Helpers can be provisioned, deleted and toggled offline from the
@@ -38,7 +40,8 @@ First release. Built against DeRec SDK 0.0.8.
   bag, including its replica group. Round progress tells apart a helper that
   refused (Rejected), one that never answered (No answer) and one that could
   not be reached (Not reachable); a helper that refuses a verification shows as
-  Rejected. A round counts only the helpers it was actually sent to: one whose
+  Rejected, and one whose proof does not match the share it was sent shows as
+  Proof invalid, with a warning that it may be damaged or dishonest. A round counts only the helpers it was actually sent to: one whose
   fingerprint was refused is sent nothing, so it is neither waited on nor
   reported as having failed to store the version, and the Add Secret form does
   not list it among the participants. A secret bag is capped at 32 KB, which is what browser storage can
@@ -116,6 +119,10 @@ First release. Built against DeRec SDK 0.0.8.
   `RELAY_DISABLED` — and echoes an `x-request-id` header. The DeRec transport
   (`/derec/*`) and `/health` stay unprefixed, and `/derec/*` success bodies are
   the plain protocol shapes. Described in `apps/backend/openapi.yaml`.
+  `POST /api/v1/actors/{id}/contact` negotiates its body from `Accept`:
+  `application/octet-stream` answers the encoded protobuf `ContactMessage`
+  (no envelope) for backend consumers to hand straight to their SDK; JSON
+  stays the default, and errors are JSON either way.
 - **Layered backend.** One file per endpoint under `handlers/`, each calling
   exactly one service; services and repositories behind traits with typed
   errors and injected dependencies; business models in `models/`, one file per

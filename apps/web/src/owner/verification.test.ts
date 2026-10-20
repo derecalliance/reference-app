@@ -82,6 +82,26 @@ describe('verifyProgress with refusals (SDK 0.0.7 ShareVerifyRejected)', () => {
   })
 })
 
+describe('verifyProgress with invalid proofs (SDK 0.0.9 ShareVerifyInvalid)', () => {
+  it('resolves a helper whose proof does not match to its own state, counted as answered', () => {
+    const progress = verifyProgress({
+      participants,
+      verifiedParticipantIds: ['h1', 'h2'],
+      rejections: [{ id: 'h3', status: 10, memo: '' }],
+      invalidProofParticipantIds: ['h4'],
+      failedChannelIds: new Set(),
+      deadlinePassed: true,
+    })
+
+    expect(progress.rows.map(r => r.state)).toEqual(['verified', 'verified', 'rejected', 'invalid'])
+    expect(progress.invalidCount).toBe(1)
+    expect(progress.rejectedCount).toBe(1)
+    expect(progress.failedCount).toBe(0)
+    expect(progress.allDone).toBe(true)
+    expect(progress.percent).toBe(100)
+  })
+})
+
 describe('verifyBlockedReason', () => {
   const round = { version: 5, protocolSecretId: '42', bag: {} as SecretBag, channelIds: [] } satisfies PendingProtectRound
 
@@ -99,13 +119,14 @@ describe('verifyBlockedReason', () => {
 })
 
 describe('describeVerifyFailure', () => {
-  it('explains the library’s missing-tracking-share refusal', () => {
+  it('explains NoProof as a version restored from a recovered bag (SDK 0.0.9)', () => {
     expect(
-      describeVerifyFailure('invalid input: no committed share stored for this channel/version — cannot verify proof', 3),
+      describeVerifyFailure({ reason: 'NoProof', error: 'no proof held for this channel at v3' }, 3),
     ).toContain('v3 was restored from a recovered bag')
   })
 
-  it('passes any other error through', () => {
-    expect(describeVerifyFailure('boom', 3)).toBe('boom')
+  it('passes any other failure through in the library’s words', () => {
+    expect(describeVerifyFailure({ reason: 'NoSharedKey', error: 'boom' }, 3)).toBe('boom')
+    expect(describeVerifyFailure({ reason: 'DispatchFailed', error: 'down' }, 3)).toBe('down')
   })
 })

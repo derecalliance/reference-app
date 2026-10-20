@@ -7,7 +7,7 @@ import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import { useConsole } from '../ConsoleContext'
 import { CONTACT_MODE_OPTIONS, type ContactModeKey, DEFAULT_CONTACT_MODE } from '../contactModes'
 import { errorText } from '../errorText'
-import { serializeContact } from './contact'
+import { contactToHex, serializeContact } from './contact'
 import { CopyButton, ModalCloseButton } from './primitives'
 import type { PairingRoleOption } from '../pairingRoleOptions'
 import type { PairingRole } from '../pairingRoles'
@@ -306,6 +306,6 @@ function readyStep(contact: ContactMessage): ShareContactStep {
     kind: 'ready',
     channelId: BigInt(contact.channel_id),
     qrPayload: serializeContact(contact),
-    rawHex: contact.channel_id.toString(),
+    rawHex: contactToHex(contact),
   }
 }

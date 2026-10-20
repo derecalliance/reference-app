@@ -124,6 +124,14 @@ export interface BagVersion {
    * records saved before SDK 0.0.7 reported refusals.
    */
   verifyRejections?: { id: string; status: number; memo: string }[]
+  /**
+   * Participants whose answer to the latest verification challenge for this
+   * version carried a proof that does not match the share this device stored
+   * (`ShareVerifyInvalid`) — a damaged or dishonest helper, not a refusal.
+   * Cleared with `verifiedParticipantIds`. Absent on records saved before SDK
+   * 0.0.9 reported it.
+   */
+  invalidProofParticipantIds?: string[]
   /** Participants that rejected or timed out for this version */
   failedParticipantIds: { id: string; status: number; memo: string }[]
   /** User secrets contained in this version */

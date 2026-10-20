@@ -53,7 +53,7 @@ export function snapshotToPayload(snapshot: RecoveredSecretSnapshot): RecoveredS
     helpers: snapshot.helpers.map(h => ({
       channel_id: h.channelId,
       transports: (h.transports ?? []).map(t => ({ uri: t.uri, protocol: protocolName(t.protocol) })),
-      communication_info: h.communicationInfo,
+      ...communicationInfoField(h.communicationInfo),
       shared_key: fromBase64Url(h.sharedKey),
     })),
     secrets: snapshot.secrets.map(s => ({
@@ -68,12 +68,24 @@ export function snapshotToPayload(snapshot: RecoveredSecretSnapshot): RecoveredS
             replica_id: m.replicaId,
             transports: (m.transports ?? []).map(t => ({ uri: t.uri, protocol: protocolName(t.protocol) })),
             role: m.role,
-            communication_info: m.communicationInfo,
+            ...communicationInfoField(m.communicationInfo),
           })),
           shared_key: fromBase64Url(snapshot.replicas.sharedKey),
         }
       : undefined,
   }
+}
+
+/**
+ * `communication_info` for a `restore` payload entry: present only when there
+ * is one. The SDK decodes the key as a map and refuses an explicit `undefined`
+ * or `null` (`invalid_recovered_secret`, "Reflect.get called on non-object"),
+ * so a peer recorded without communication info must omit it.
+ */
+function communicationInfoField(
+  info: Record<string, string> | null | undefined,
+): { communication_info?: Record<string, string> } {
+  return info ? { communication_info: info } : {}
 }
 
 /** Secret payloads are text in this app; decode lossily for display so a

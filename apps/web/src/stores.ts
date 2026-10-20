@@ -1017,6 +1017,12 @@ export function makeShareStore(namespace: string, options: ShareStoreOptions = {
     async keepList(secretId: string, version: number): Promise<number[] | null> {
       return options.keepList?.(secretId, version) ?? null
     },
+
+    // Called once per verification challenge this helper accepts, after the
+    // challenged share is found. The app sets no verification-frequency limit,
+    // so every one is allowed; refusing would mean rejecting with
+    // `shareStoreRefusal('too_frequent')`.
+    async recordVerification(): Promise<void> {},
   }
 }
 

@@ -64,7 +64,8 @@ impl HttpTransport {
     async fn post(client: &reqwest::Client, uri: &str, message: Vec<u8>) -> Result<(), String> {
         let resp = client
             .post(uri)
-            .header("Content-Type", "application/octet-stream")
+            // Raw protobuf wire bytes, so a receiver need not guess the body.
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
             .body(message)
             .send()
             .await;
@@ -396,6 +397,43 @@ mod tests {
         assert!(!is_unreachable(&derec_library::Error::InvalidInput(
             "transport: nope"
         )));
+    }
+
+    #[tokio::test]
+    async fn an_http_delivery_posts_the_raw_bytes_as_octet_stream() {
+        use axum::{body::Bytes, http::HeaderMap, routing::post, Router};
+
+        let (seen_tx, mut seen_rx) = tokio::sync::mpsc::unbounded_channel();
+        let app = Router::new().route(
+            "/derec/peer",
+            post(move |headers: HeaderMap, body: Bytes| async move {
+                let content_type = headers
+                    .get(axum::http::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_owned);
+                let _ = seen_tx.send((content_type, body));
+                axum::http::StatusCode::ACCEPTED
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind a local port");
+        let addr = listener.local_addr().expect("local address");
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let message = vec![8, 1, 16, 2];
+        HttpTransport::post(
+            &reqwest::Client::new(),
+            &format!("http://{addr}/derec/peer"),
+            message.clone(),
+        )
+        .await
+        .expect("delivered");
+
+        let (content_type, body) = seen_rx.recv().await.expect("the peer was posted to");
+        server.abort();
+        assert_eq!(content_type.as_deref(), Some("application/octet-stream"));
+        assert_eq!(body.as_ref(), message.as_slice());
     }
 
     #[test]

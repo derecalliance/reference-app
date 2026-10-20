@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
+import type { VerifyFailureReason } from '@derec-alliance/web'
+
 import type { BagVersion, PendingProtectRound } from '../types'
 
 /** What dispatching one verification round reported, per channel. */
@@ -8,13 +10,6 @@ export interface VerifyDispatch {
   /** Channels the challenge could not be sent on — they will never answer. */
   failedChannelIds: string[]
 }
-
-/**
- * The library's own words for "there is nothing to check this proof against".
- * Matched loosely: it reaches the app as a thrown error or a per-channel
- * `VerifySharesFailed`, wrapped differently on each path.
- */
-const NO_TRACKING_SHARE = /no committed share stored|cannot verify proof/i
 
 /** Why a version restored from a recovered bag cannot be verified, and the way out. */
 export function restoredVersionReason(version: number): string {
@@ -25,9 +20,17 @@ export function restoredVersionReason(version: number): string {
   )
 }
 
-/** A verification failure, in words the owner can act on where the library's are not. */
-export function describeVerifyFailure(error: string, version: number): string {
-  return NO_TRACKING_SHARE.test(error) ? restoredVersionReason(version) : error
+/**
+ * A channel's `VerifySharesFailed`, in words the owner can act on where the
+ * library's are not. `NoProof` — this device holds nothing to check the
+ * helper's answer against — is what a version restored from a recovered bag
+ * reports, so it is explained as that.
+ */
+export function describeVerifyFailure(
+  failure: { reason: VerifyFailureReason; error: string },
+  version: number,
+): string {
+  return failure.reason === 'NoProof' ? restoredVersionReason(version) : failure.error
 }
 
 /**
@@ -51,7 +54,7 @@ export function verifyBlockedReason(
 }
 
 /** Where one participant stands in a verification round. */
-export type VerifyRowState = 'verified' | 'rejected' | 'failed' | 'timed-out' | 'waiting'
+export type VerifyRowState = 'verified' | 'rejected' | 'invalid' | 'failed' | 'timed-out' | 'waiting'
 
 export interface VerifyRow {
   id: string
@@ -66,9 +69,11 @@ export interface VerifyProgress {
   verifiedCount: number
   /** Refused by the helper itself (`ShareVerifyRejected`). */
   rejectedCount: number
+  /** Answered with a proof that does not match (`ShareVerifyInvalid`). */
+  invalidCount: number
   /**
    * Not verified, never answered and never going to be in this round — not
-   * sent, or timed out. Never counts a verified or rejected row.
+   * sent, or timed out. Never counts a verified, rejected or invalid row.
    */
   failedCount: number
   allDone: boolean
@@ -93,6 +98,8 @@ export function verifyProgress(input: {
   verifiedParticipantIds: readonly string[]
   /** This version's refusals — see `BagVersion.verifyRejections`. */
   rejections?: readonly { id: string; status: number; memo: string }[]
+  /** This version's invalid proofs — see `BagVersion.invalidProofParticipantIds`. */
+  invalidProofParticipantIds?: readonly string[]
   /** Channels the challenge never reached — or every channel, if none did. */
   failedChannelIds: ReadonlySet<string>
   /** The round's deadline has passed. */
@@ -100,29 +107,34 @@ export function verifyProgress(input: {
 }): VerifyProgress {
   const { participants, verifiedParticipantIds, failedChannelIds, deadlinePassed } = input
   const rejections = new Map((input.rejections ?? []).map(r => [r.id, r]))
+  const invalidProof = new Set(input.invalidProofParticipantIds ?? [])
   const rows = participants.map((p): VerifyRow => {
     const rejection = rejections.get(p.id)
     const state: VerifyRowState = verifiedParticipantIds.includes(p.id)
       ? 'verified'
       : rejection
         ? 'rejected'
-        : failedChannelIds.has(p.channelId)
-          ? 'failed'
-          : deadlinePassed
-            ? 'timed-out'
-            : 'waiting'
+        : invalidProof.has(p.id)
+          ? 'invalid'
+          : failedChannelIds.has(p.channelId)
+            ? 'failed'
+            : deadlinePassed
+              ? 'timed-out'
+              : 'waiting'
     const detail =
       state === 'rejected' && rejection ? rejection.memo || `status ${rejection.status}` : null
     return { id: p.id, name: p.name, state, detail }
   })
   const verifiedCount = rows.filter(r => r.state === 'verified').length
   const rejectedCount = rows.filter(r => r.state === 'rejected').length
+  const invalidCount = rows.filter(r => r.state === 'invalid').length
   const failedCount = rows.filter(r => r.state === 'failed' || r.state === 'timed-out').length
-  const resolved = verifiedCount + rejectedCount + failedCount
+  const resolved = verifiedCount + rejectedCount + invalidCount + failedCount
   return {
     rows,
     verifiedCount,
     rejectedCount,
+    invalidCount,
     failedCount,
     allDone: rows.length > 0 && resolved === rows.length,
     percent: rows.length > 0 ? Math.min(100, Math.round((resolved / rows.length) * 100)) : 0,

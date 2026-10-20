@@ -1128,7 +1128,11 @@ function OwnerPage({ runtime }: Props) {
       secretShares: [],
     }
 
-    let updated = { ...vault, participants: [...vault.participants, newParticipant] }
+    // Committed before pairing starts, onto the vault as it is now rather than
+    // the one this render saw: the poll keeps folding while the node answers,
+    // and an early reply needs this row to land on.
+    const current = runtime.state().vault
+    runtime.commit({ ...current, participants: [...current.participants, newParticipant] })
 
     log({
       role: 'owner',
@@ -1138,33 +1142,24 @@ function OwnerPage({ runtime }: Props) {
       payload: { participantId: resp.id, name, autoPair },
     })
 
-    if (autoPair) {
-      if (!runtime.instance()) {
-        runtime.commit(updated)
-        return
-      }
-      try {
-        const dto = await apiCreateActorContact(resp.id)
-        const contact = dtoToContactMessage(dto)
-        const channelId = await runtime.startPairing(contact, 'owner', resp.name)
-        updated = {
-          ...updated,
-          pendingPairings: [...updated.pendingPairings, { channelId, participantId: resp.id }],
-        }
+    if (!autoPair || !runtime.instance()) return
+    try {
+      const dto = await apiCreateActorContact(resp.id)
+      const contact = dtoToContactMessage(dto)
+      const channelId = await runtime.startPairing(contact, 'owner', resp.name, {
+        participantId: resp.id,
+      })
 
-        log({
-          role: 'owner',
-          flow: 'pairing',
-          step: 'auto_pair_initiated',
-          description: `Auto-pair initiated for ${name}`,
-          payload: { participantId: resp.id, channelId: channelId.toString() },
-        })
-      } catch (err) {
-        reportError(`Auto-pairing with "${name}" failed`, err, { participantId: resp.id })
-      }
+      log({
+        role: 'owner',
+        flow: 'pairing',
+        step: 'auto_pair_initiated',
+        description: `Auto-pair initiated for ${name}`,
+        payload: { participantId: resp.id, channelId: channelId.toString() },
+      })
+    } catch (err) {
+      reportError(`Auto-pairing with "${name}" failed`, err, { participantId: resp.id })
     }
-
-    runtime.commit(updated)
   }
 
   /**
@@ -1630,8 +1625,8 @@ function OwnerPage({ runtime }: Props) {
 
       {pairOpen && (
         <PairInitiatorModal
-          label="Participant Contact QR Payload"
-          placeholder="Paste the JSON payload from the participant's Share Contact QR code"
+          label="Participant Contact"
+          placeholder="Paste the JSON payload from the participant's Share Contact QR code, or the contact's raw protobuf bytes as hex or base64"
           pairedChannelIds={pairedChannelIds}
           pairingRejectionCount={pairingRejectionCount}
           pairingCompletedSignal={pairingCompletedSignal}

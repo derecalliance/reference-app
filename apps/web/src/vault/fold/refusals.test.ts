@@ -117,6 +117,52 @@ describe('ShareVerifyRejected', () => {
   })
 })
 
+describe('ShareVerifyInvalid (SDK 0.0.9)', () => {
+  function challenged(): { current: Vault; ctx: FoldContext } {
+    const ctx = context()
+    const deadline = Date.now() + 60_000
+    ctx.rounds.beginVerification('1', { protocolSecretId: '42', version: 3, deadline })
+    ctx.rounds.beginVerification('2', { protocolSecretId: '42', version: 3, deadline })
+    return { current: vault({ participants: [helper(1), helper(2)], secretBag: bagAt(3) }), ctx }
+  }
+
+  const invalid = (channel: string): DeRecEvent => ({ type: 'ShareVerifyInvalid', channel_id: channel, version: 3 })
+
+  it('records the helper apart from refusals and warns about it', () => {
+    const { current, ctx } = challenged()
+
+    const next = foldEvent(current, invalid('2'), ctx)
+
+    expect(next.secretBag?.currentVersion.invalidProofParticipantIds).toEqual(['h2'])
+    expect(next.secretBag?.currentVersion.verifyRejections).toBeUndefined()
+    expect(ctx.rounds.isAwaitingVerification('2', 3)).toBe(false)
+    expect(ctx.notify.error).toHaveBeenCalledWith(
+      "Helper 2's share of v3 failed verification",
+      expect.stringContaining('damaged or dishonest'),
+      { channelId: '2' },
+    )
+    expect(ctx.notify.outcome).not.toHaveBeenCalled()
+  })
+
+  it('closes the round on its last answer, naming the invalid proof', () => {
+    const { current, ctx } = challenged()
+
+    const verified = foldEvent(current, { type: 'ShareVerified', channel_id: '1', version: 3 }, ctx)
+    foldEvent(verified, invalid('2'), ctx)
+
+    expect(ctx.notify.outcome).toHaveBeenCalledWith(
+      'Verification of v3 complete: 1 share verified, 1 with an invalid proof',
+    )
+  })
+
+  it('ignores a verdict nobody is waiting for', () => {
+    const { current, ctx } = challenged()
+    const next = foldEvent(current, { ...invalid('2'), version: 2 } as DeRecEvent, ctx)
+    expect(next).toBe(current)
+    expect(ctx.notify.error).not.toHaveBeenCalled()
+  })
+})
+
 describe('recovery answers without a share', () => {
   function recovering(progress: Partial<RecoveryProgress> = {}): Vault {
     return vault({
