@@ -50,9 +50,10 @@ If another tab of this browser took the new vault first, the wizard says *"…" 
 
 ## On the vault page
 
-Two banners tell you whether the vault can protect a secret yet:
+Banners tell you whether the vault can protect a secret yet:
 
-- *Secret protection is disabled — X of N required participants paired.* Fewer helper channels than the threshold. **Add Secret** is disabled.
+- *Secret protection is disabled. Need at least 2 paired participants (currently X).* No publish is possible: the threshold is at least 2 and no helper may hold it alone. **Add Secret** is disabled.
+- *Paired participants hold X of the N subshares the default threshold needs…* The vault's default threshold is out of reach, but a publish is not: lower the threshold or raise weights in the Add Secret dialog.
 - *Only X of R recommended participants paired. Consider pairing more before protecting secrets.* Advisory only.
 
 ## Claim an existing actor

@@ -43,6 +43,17 @@ interface OpenRound {
   awaiting: Set<string>
   /** Channels among `awaiting` that have confirmed. */
   confirmed: Set<string>
+  /**
+   * Subshares each recipient was sent, by participant id. Absent entries are 1,
+   * the weight of every helper the round did not weight.
+   */
+  weights: Readonly<Record<string, number>>
+  /**
+   * The threshold this round was split with (SDK 0.0.9: a per-round value).
+   * `null` for a round persisted before it was recorded, which falls back to
+   * the vault's setting.
+   */
+  threshold: number | null
 }
 
 /**
@@ -96,13 +107,24 @@ export class RoundTracker {
     protocolSecretId: string
     /** Participant channels the round dispatched a share to. */
     channelIds: readonly string[]
+    /** Subshares sent to each recipient, by participant id; absent means 1. */
+    weights?: Readonly<Record<string, number>>
+    /** The threshold the round was split with; absent or `null` when not recorded. */
+    threshold?: number | null
   }): void {
     this.abandoned.delete(round.version)
     this.rounds.set(round.version, {
       pending: { bag: round.bag, version: round.version, protocolSecretId: round.protocolSecretId },
       awaiting: new Set(round.channelIds.filter(Boolean)),
       confirmed: new Set(),
+      weights: round.weights ?? {},
+      threshold: round.threshold ?? null,
     })
+  }
+
+  /** The threshold round `version` was split with, or `null` when unknown or not open. */
+  roundThreshold(version: number): number | null {
+    return this.rounds.get(version)?.threshold ?? null
   }
 
   /** Every open round, oldest first. */
@@ -136,17 +158,24 @@ export class RoundTracker {
   snapshotProtectRounds(): PendingProtectRound[] {
     return [...this.rounds.values()]
       .sort((a, b) => a.pending.version - b.pending.version)
-      .map(({ pending, awaiting }) => ({
+      .map(({ pending, awaiting, weights, threshold }) => ({
         version: pending.version,
         protocolSecretId: pending.protocolSecretId,
         bag: pending.bag,
         channelIds: [...awaiting],
+        weights: { ...weights },
+        threshold,
       }))
   }
 
   /** Whether a round at this version is still awaiting its shares. */
   hasPendingRound(version: number): boolean {
     return this.rounds.has(version)
+  }
+
+  /** Whether any verification challenge is still awaiting its answer. */
+  get hasAnyVerification(): boolean {
+    return this.verifications.size > 0
   }
 
   /** Whether any protect round is still open. */
@@ -177,6 +206,20 @@ export class RoundTracker {
   /** How many participants have confirmed round `version` so far. */
   confirmedCount(version: number): number {
     return this.rounds.get(version)?.pending.bag.currentVersion.participantIds.length ?? 0
+  }
+
+  /**
+   * The subshares confirmed for round `version` so far — what the threshold
+   * counts since SDK 0.0.9 weighted helpers. Equal to {@link confirmedCount}
+   * when no helper is weighted.
+   */
+  confirmedWeight(version: number): number {
+    const round = this.rounds.get(version)
+    if (!round) return 0
+    return round.pending.bag.currentVersion.participantIds.reduce(
+      (total, id) => total + (round.weights[id] ?? 1),
+      0,
+    )
   }
 
   /**

@@ -48,11 +48,12 @@ test.describe('secret lifecycle', () => {
   /**
    * The vault decides which versions helpers keep (SDK 0.0.7 `keepList`): the
    * latest three committed ones, plus the one being sent. So the fifth round
-   * tells every helper to drop the first — and a helper asked to prove a
-   * share it no longer holds refuses, which the verification view shows as a
-   * rejection rather than waiting on an answer that is not coming.
+   * tells every helper to drop the first — and since SDK 0.0.9 the library
+   * deletes this device's verification copies of it too, so no challenge for
+   * it goes out. The view says why at once, rather than waiting on answers
+   * that are not coming or blaming a restore that never happened.
    */
-  test('helpers drop versions the vault no longer keeps, and refuse to verify them', async ({
+  test('a version helpers no longer keep cannot be verified, and the view says why', async ({
     page,
     pageErrors,
   }) => {
@@ -70,8 +71,9 @@ test.describe('secret lifecycle', () => {
     await page.getByRole('button', { name: 'Verify Shares' }).last().click()
 
     const modal = page.locator('.verify-modal--progress')
-    await expect(modal).toContainText('0 of 2 verified · 2 rejected', { timeout: 90_000 })
-    await expect(modal.locator('.share-progress-item-status', { hasText: 'Rejected' })).toHaveCount(2)
+    await expect(modal).toContainText('0 of 2 verified · 2 failed', { timeout: 90_000 })
+    await expect(modal).toContainText('This device holds no verification copies for v1')
+    await expect(modal).not.toContainText('restored from a recovered bag')
     await expect(modal.getByRole('button', { name: 'Done' })).toBeVisible()
     expect(pageErrors).toEqual([])
   })

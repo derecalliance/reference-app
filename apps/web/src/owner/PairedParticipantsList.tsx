@@ -12,14 +12,67 @@ import { heldShareCount } from './heldShares'
 import { lastDeliveryProblem, SHARE_FAILURE_LABEL } from './shareFailure'
 import { offersRemoteLink } from '../remoteHelperLink'
 import { RemoteHelperLinkModal } from './RemoteHelperLinkModal'
+import { isShareTarget } from '../ownerPairing'
+import { DEFAULT_WEIGHT, participantWeight } from './weights'
 
-/** Channel detail line shown under a channel (shared key + share count). */
+/**
+ * Each helper's default weight — how many subshares it gets unless a publish
+ * says otherwise (SDK 0.0.9). An app preference: setting it sends nothing.
+ */
+export interface DefaultWeightControls {
+  weightFor: (channelId: string) => number
+  /** The highest weight the vault's default threshold allows. */
+  max: number
+  onSet: (channelId: string, weight: number) => void
+}
+
+/** The default-weight field, with the weight the library last published when they differ. */
+function DefaultWeight({ h, controls }: { h: PairedParticipant; controls: DefaultWeightControls }) {
+  const value = controls.weightFor(h.channelId)
+  const published = participantWeight(h)
+  // What the owner is typing, so the field can be cleared and retyped; `null`
+  // shows the saved default. Only whole numbers in range are saved.
+  const [draft, setDraft] = useState<string | null>(null)
+  return (
+    <div className="channel-prop">
+      <span className="channel-prop-label">Default weight</span>
+      <input
+        className="helper-weight-input channel-weight-input"
+        type="number"
+        inputMode="numeric"
+        min={DEFAULT_WEIGHT}
+        max={controls.max}
+        step={1}
+        value={draft ?? value}
+        aria-label={`Default weight for ${h.name}`}
+        title="Subshares this helper gets by default; each publish can change it"
+        onChange={e => {
+          setDraft(e.target.value)
+          const next = Number(e.target.value)
+          if (e.target.value.trim() !== '' && Number.isInteger(next) && next >= DEFAULT_WEIGHT && next <= controls.max) {
+            controls.onSet(h.channelId, next)
+          }
+        }}
+        onBlur={() => setDraft(null)}
+      />
+      {published !== value && (
+        <span className="channel-prop-value" title="The library reuses the last published weights for the publishes it starts on its own">
+          · last published {published}
+        </span>
+      )}
+    </div>
+  )
+}
+
+/** Channel detail line shown under a channel (shared key, share count, default weight). */
 function ChannelDetails({
   h,
   committedVersions,
+  defaultWeights,
 }: {
   h: PairedParticipant
   committedVersions?: ReadonlySet<number>
+  defaultWeights?: DefaultWeightControls
 }) {
   return (
     <div className="channel-row-bottom">
@@ -35,6 +88,7 @@ function ChannelDetails({
           {heldShareCount(h.secretShares, committedVersions)}
         </span>
       </div>
+      {defaultWeights && isShareTarget(h) && <DefaultWeight h={h} controls={defaultWeights} />}
     </div>
   )
 }
@@ -102,6 +156,7 @@ export function PairedParticipantsList({
   onTogglePair,
   onLink,
   committedVersions,
+  defaultWeights,
 }: {
   groups: LinkGroup[]
   /** This vault's committed bag versions — see `committedVersionsOf`. */
@@ -111,6 +166,8 @@ export function PairedParticipantsList({
   unpairingChannelIds: Set<string>
   onTogglePair: (id: string) => void
   onLink: (channelId: string) => void
+  /** Present on an owner's list: each helper's editable default weight. */
+  defaultWeights?: DefaultWeightControls
 }) {
   // The channel whose helper is being linked on its own node, if any.
   const [remoteLinkFor, setRemoteLinkFor] = useState<PairedParticipant | null>(null)
@@ -179,7 +236,7 @@ export function PairedParticipantsList({
                 {remoteLinkButton(h)}
                 {unpairButton(h)}
               </div>
-              <ChannelDetails h={h} committedVersions={committedVersions} />
+              <ChannelDetails h={h} committedVersions={committedVersions} defaultWeights={defaultWeights} />
             </div>
           )
         }
@@ -211,7 +268,7 @@ export function PairedParticipantsList({
                   {remoteLinkButton(h)}
                   {unpairButton(h)}
                 </div>
-                <ChannelDetails h={h} committedVersions={committedVersions} />
+                <ChannelDetails h={h} committedVersions={committedVersions} defaultWeights={defaultWeights} />
               </div>
             ))}
           </div>

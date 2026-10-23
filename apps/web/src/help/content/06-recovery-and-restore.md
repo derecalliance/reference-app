@@ -60,15 +60,26 @@ From SDK 0.0.7 a helper that answers without a usable share no longer blocks the
 - *Bob refused — it holds no share of vN* (status `UNKNOWN_SHARE_VERSION`), or the helper's own memo.
 - *Bob sent a share that was set aside (Malformed | InvalidProof | Inconsistent)*.
 
-A **corrupted** share also raises a standing red warning at the top of the vault page, *Bob sent a corrupted recovery share*, because an honest helper never sends one: it may be damaged or compromised. It offers **Unpair…** (always confirmed) and **Dismiss**.
+A **corrupted** share also raises a standing red warning at the top of the vault page, *Bob sent a corrupted recovery share*, because an honest helper never sends one: it may be damaged or compromised (for `Malformed`, see the upgrade case below). It offers **Unpair…** (always confirmed) and **Dismiss**.
 
 | Reason | Meaning |
 | --- | --- |
-| `Malformed` | The answer held no readable share of this secret and version. |
+| `Malformed` | The answer held no readable share of this secret and version. Besides a damaged helper, this is what a version protected before an SDK upgrade that changed the share format looks like: its shares still **verify** (verification hashes the bytes the helper holds) but no longer decode. Protect a new version and recover that one. |
 | `InvalidProof` | The share failed its own integrity proof. |
 | `Inconsistent` | The share disagreed with the shares the secret was rebuilt from. |
 
-## 5. Restore
+## 5. Restore, or join the group
+
+If the recovered vault still lives on a **replica**, the card also offers **Join group…**. While any replica is live, the library recommends joining over restoring: restoring next to a live replica makes this device claim the lost device's place. Neither path brings back verification copies of earlier versions.
+
+**Join group…** lists the live members (the replica destinations; the source is normally the device that was lost, and stays in the group until you remove it from a live member):
+
+- **Join through *member*** — for a member this node runs: pairs with it as its replica destination at once, nothing to copy.
+- **Pair as replica destination** — for any member: on that device, **Share Contact**; here, paste it into **Pair** as *Replica destination*. Confirm the fingerprint, and this device receives and adopts the vault.
+
+Known SDK 0.0.9 limitation: the member hands the vault over as soon as it confirms the code, and this device ignores that handover until it has confirmed too — after which it cannot ask again. Confirm the code here before the member does. A member this node runs confirms on its own at once, so joining through one does not complete yet.
+
+### Restore
 
 A recovered secret card shows the version, the secret id, every user secret (masked; reveal to check) and the helpers the bag names. Recovering writes nothing to the vault.
 

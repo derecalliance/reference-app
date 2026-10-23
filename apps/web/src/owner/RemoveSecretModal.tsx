@@ -5,7 +5,10 @@ import { useState } from 'react'
 
 import { errorText } from '../errorText'
 import type { PairedParticipant, PublishedRound, UserSecret } from '../types'
+import type { PublishChoice, PublishContext } from '../vault/types'
 import { ModalFrame } from '../ModalFrame'
+import { PublishOptionsPanel } from './PublishOptionsPanel'
+import { usePublishOptions } from './usePublishOptions'
 import { ModalCloseButton } from './primitives'
 import { ProtectRoundProgress } from './ProtectRoundProgress'
 import { roundProgress } from './roundProgress'
@@ -13,16 +16,19 @@ import { roundProgress } from './roundProgress'
 type RemoveSecretStatus =
   | { kind: 'idle' }
   | { kind: 'sending' }
-  | { kind: 'confirming'; participantIds: string[]; version: number }
+  | { kind: 'confirming'; participantIds: string[]; version: number; threshold: number }
   | { kind: 'error'; message: string }
 
 interface RemoveSecretModalProps {
   secret: UserSecret
   participants: PairedParticipant[]
-  threshold: number
+  /** Channels the library holds `Pending`, which a round sends nothing — see `publishTargets`. */
+  pendingChannelIds: ReadonlySet<string>
+  /** What this publish starts from: defaults, committed versions, retention preview. */
+  publishContext: PublishContext
   onClose: () => void
   /** Publishes the bag without `secretId`; the round it dispatched, or `null` if nothing was. */
-  onRemoveSecret: (secretId: string) => Promise<PublishedRound | null>
+  onRemoveSecret: (secretId: string, choice: PublishChoice) => Promise<PublishedRound | null>
 }
 
 /**
@@ -32,19 +38,34 @@ interface RemoveSecretModalProps {
  * Says plainly that earlier versions keep the secret: removal publishes a new
  * version, it does not reach back into shares helpers already hold.
  */
-export function RemoveSecretModal({ secret, participants, threshold, onClose, onRemoveSecret }: RemoveSecretModalProps) {
+export function RemoveSecretModal({
+  secret,
+  participants,
+  pendingChannelIds,
+  publishContext,
+  onClose,
+  onRemoveSecret,
+}: RemoveSecretModalProps) {
   const [status, setStatus] = useState<RemoveSecretStatus>({ kind: 'idle' })
+  const options = usePublishOptions(participants, pendingChannelIds, publishContext)
+  const retention = publishContext.policy.helperRetention
 
   async function handleRemove() {
+    if (!options.choice) return
     setStatus({ kind: 'sending' })
     try {
-      const round = await onRemoveSecret(secret.id)
+      const round = await onRemoveSecret(secret.id, options.choice)
       if (round === null) {
         setStatus({ kind: 'error', message: 'The round was not dispatched — the protocol sent no share requests. Check that enough participants are paired and online.' })
         return
       }
       // Who the round was sent to, as the round reports it — see `PublishedRound`.
-      setStatus({ kind: 'confirming', participantIds: round.recipientIds, version: round.version })
+      setStatus({
+        kind: 'confirming',
+        participantIds: round.recipientIds,
+        version: round.version,
+        threshold: round.threshold,
+      })
     } catch (err) {
       setStatus({ kind: 'error', message: errorText(err) })
     }
@@ -69,7 +90,7 @@ export function RemoveSecretModal({ secret, participants, threshold, onClose, on
       {progress && status.kind === 'confirming' ? (
         <ProtectRoundProgress
           progress={progress}
-          threshold={threshold}
+          threshold={status.threshold}
           version={status.version}
           failureHeading="Removing the secret failed."
           onClose={onClose}
@@ -81,9 +102,23 @@ export function RemoveSecretModal({ secret, participants, threshold, onClose, on
             version without it to every paired participant.
           </p>
           <p className="modal-description">
-            Earlier versions still contain it. Helpers keep the three newest committed versions,
-            so until three newer ones have committed, recovering an earlier version brings it back.
+            Earlier versions still contain it, and recovering one that helpers still keep brings it
+            back.{' '}
+            {retention.mode === 'lastN'
+              ? `Helpers keep the ${retention.n} newest committed versions, so it is gone from them once ${retention.n} newer ones have committed.`
+              : 'Uncheck the versions that hold it below to have helpers drop them now.'}
           </p>
+
+          <PublishOptionsPanel
+            helpers={options.helpers}
+            policy={publishContext.policy}
+            committedVersions={publishContext.committedVersions}
+            openVersions={publishContext.openVersions}
+            preview={publishContext.preview}
+            draft={options.draft}
+            onChange={options.setDraft}
+            disabled={status.kind === 'sending'}
+          />
 
           {status.kind === 'error' && <p className="field-error">{status.message}</p>}
 
@@ -91,7 +126,12 @@ export function RemoveSecretModal({ secret, participants, threshold, onClose, on
             <button type="button" className="secondary" onClick={onClose} disabled={status.kind === 'sending'}>
               Cancel
             </button>
-            <button type="button" className="danger" onClick={() => void handleRemove()} disabled={status.kind === 'sending'}>
+            <button
+              type="button"
+              className="danger"
+              onClick={() => void handleRemove()}
+              disabled={status.kind === 'sending' || options.choice === null}
+            >
               {status.kind === 'sending' ? 'Sending…' : 'Remove Secret'}
             </button>
           </div>

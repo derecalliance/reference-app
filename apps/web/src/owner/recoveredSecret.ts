@@ -24,8 +24,9 @@ export function snapshotFromEvent(secret: RecoveredSecretPayload): RecoveredSecr
     helpers: secret.helpers.map(h => ({
       channelId: h.channel_id,
       transports: (h.transports ?? []).map(t => ({ uri: t.uri, protocol: protocolName(t.protocol) })),
-      communicationInfo: h.communication_info,
+      communicationInfo: h.communication_info ?? undefined,
       sharedKey: toBase64Url(toBytes(h.shared_key)),
+      ...(h.weight !== undefined ? { weight: h.weight } : {}),
     })),
     secrets: secret.secrets.map(s => ({
       id: toBase64Url(toBytes(s.id)),
@@ -37,13 +38,14 @@ export function snapshotFromEvent(secret: RecoveredSecretPayload): RecoveredSecr
           channelId: secret.replicas.channel_id,
           members: secret.replicas.members.map(m => ({
             transports: (m.transports ?? []).map(t => ({ uri: t.uri, protocol: protocolName(t.protocol) })),
-            communicationInfo: m.communication_info,
+            communicationInfo: m.communication_info ?? undefined,
             replicaId: m.replica_id,
             role: m.role,
           })),
           sharedKey: toBase64Url(toBytes(secret.replicas.shared_key)),
         }
       : undefined,
+    ...(secret.threshold !== undefined ? { threshold: secret.threshold } : {}),
   }
 }
 
@@ -55,6 +57,9 @@ export function snapshotToPayload(snapshot: RecoveredSecretSnapshot): RecoveredS
       transports: (h.transports ?? []).map(t => ({ uri: t.uri, protocol: protocolName(t.protocol) })),
       ...communicationInfoField(h.communicationInfo),
       shared_key: fromBase64Url(h.sharedKey),
+      // Dropping it would make `restore` record every helper at weight 1, and
+      // the next publish would quietly reset the weights the owner chose.
+      ...(h.weight !== undefined ? { weight: h.weight } : {}),
     })),
     secrets: snapshot.secrets.map(s => ({
       id: fromBase64Url(s.id),
@@ -73,14 +78,17 @@ export function snapshotToPayload(snapshot: RecoveredSecretSnapshot): RecoveredS
           shared_key: fromBase64Url(snapshot.replicas.sharedKey),
         }
       : undefined,
+    // `restore` writes it as the next publish's threshold; dropped, a restored
+    // vault would split at whatever its own builder setting says.
+    ...(snapshot.threshold !== undefined ? { threshold: snapshot.threshold } : {}),
   }
 }
 
 /**
  * `communication_info` for a `restore` payload entry: present only when there
- * is one. The SDK decodes the key as a map and refuses an explicit `undefined`
- * or `null` (`invalid_recovered_secret`, "Reflect.get called on non-object"),
- * so a peer recorded without communication info must omit it.
+ * is one. Since SDK 0.0.9 an absent or `null` value reads as an empty map;
+ * earlier builds refused an explicit `undefined`/`null`, so the key is still
+ * left out rather than sent empty.
  */
 function communicationInfoField(
   info: Record<string, string> | null | undefined,

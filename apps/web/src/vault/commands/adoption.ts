@@ -5,6 +5,7 @@ import { apiGetActors, type BEActorWithStatus } from '../../api'
 import { toBytes } from '../../bytes'
 import { isReplicaChannel } from '../../ownerPairing'
 import { buildProtocolInstance, type ProtocolInstance } from '../../owner/protocol'
+import { withGroupThreshold } from '../../owner/publishPolicy'
 import { resolveVaultConfig } from '../../protocolDefaults'
 import {
   ReplicaAdoptionError,
@@ -178,8 +179,13 @@ export async function adoptMirroredVault(
     }
   }
 
+  // Publish dialogs start from the group's threshold, which hydration stored
+  // as the library's next one.
+  const latest = ctx.getVault()
+  const publishPolicy = withGroupThreshold(latest, adoption.secret.threshold)
   ctx.commit({
-    ...ctx.getVault(),
+    ...latest,
+    ...(publishPolicy ? { publishPolicy } : {}),
     participants,
     secretBag,
     pendingPairings: [],

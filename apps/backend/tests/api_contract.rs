@@ -647,6 +647,7 @@ async fn the_roster_prefers_a_paired_channel_over_a_newer_pending_one() {
             peer_role: derec_proto::SenderKind::Owner,
             status,
             created_at,
+            weight: 1,
         })
     };
     let mut store = derec_backend::repositories::sdk::channel::SqlChannelStore::new(

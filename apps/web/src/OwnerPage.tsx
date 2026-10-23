@@ -7,7 +7,7 @@ import { errorText } from './errorText'
 import { Alert, Button, Stack } from '@mui/material'
 import { advertisedEndpoints, type ContactMessage } from '@derec-alliance/web'
 import './OwnerPage.css'
-import type { Vault, PairedParticipant, PublishedRound, RecoveredSecret, UserSecret } from './types'
+import type { Vault, PairedParticipant, PublishedRound, RecoveredSecret, RecoveredSecretReplica, UserSecret } from './types'
 import { useConsole, type ConsoleEntryInput } from './ConsoleContext'
 import { reportError, reportInfo } from './toastBus'
 import { protocolTimeoutMs } from './config'
@@ -17,6 +17,7 @@ import { useServerDefaults, useVaultManager } from './vault/managerContext'
 import type {
   Attention,
   AttentionKind,
+  PublishChoice,
   StoreShareRequest,
   UnpairRequest,
   VerifyShareRequest,
@@ -40,6 +41,7 @@ import {
   apiLinkHelperChannels,
   apiAddHelper,
   apiCreateActorContact,
+  apiGetActors,
   apiGetBrowserContact,
   apiStartActorPairing,
   apiToggleParticipantStatus,
@@ -72,6 +74,12 @@ import { contactMessageToDto, dtoToContactMessage } from './contactDto'
 import { AppMuiTheme } from './AppMuiTheme'
 import { ReplicaAdoptionDialog } from './ReplicaAdoptionDialog'
 import { effectiveRecommended } from './owner/recommendedParticipants'
+import { CleanupModal } from './owner/CleanupModal'
+import { RepublishModal } from './owner/RepublishModal'
+import { publishReadiness } from './owner/publishGate'
+import { defaultWeightFor, resolvePublishPolicy } from './owner/publishPolicy'
+import { VaultSettingsModal } from './owner/VaultSettingsModal'
+import { maxWeight, participantWeight } from './owner/weights'
 import { ReplicaFingerprintDialog } from './ReplicaFingerprintDialog'
 import { ChannelFingerprintDialog } from './ChannelFingerprintDialog'
 import { ReplicasTab } from './ReplicasTab'
@@ -188,8 +196,13 @@ function OwnerPage({ runtime }: Props) {
   const [shareOpen, setShareOpen] = useState(false)
   const [pairOpen, setPairOpen] = useState(false)
   const [protectOpen, setProtectOpen] = useState(false)
+  const [republishOpen, setRepublishOpen] = useState(false)
+  const [cleanupOpen, setCleanupOpen] = useState(false)
   const [secretToRemove, setSecretToRemove] = useState<UserSecret | null>(null)
   const [identityOpen, setIdentityOpen] = useState(false)
+  const [vaultSettingsOpen, setVaultSettingsOpen] = useState(false)
+  /** The role the Pair dialog opens on — set by Join group, which pairs as a replica destination. */
+  const [pairDefaultRole, setPairDefaultRole] = useState<PairingRole | undefined>(undefined)
   // Set of paired channel IDs watched by PairInitiatorModal to detect when pairing completes.
   const pairedChannelIds = useMemo(() => {
     const ids = new Set<string>()
@@ -707,24 +720,28 @@ function OwnerPage({ runtime }: Props) {
   const ownerStartPairing = (contact: ContactMessage, role: PairingRole, peerName?: string) =>
     runtime.startPairing(contact, role, peerName)
 
-  async function ownerAddSecret(name: string, data: string): Promise<PublishedRound | null> {
-    const round = await runtime.addSecret(name, data)
+  async function ownerAddSecret(name: string, data: string, choice: PublishChoice): Promise<PublishedRound | null> {
+    const round = await runtime.addSecret(name, data, choice)
     if (round !== null) setActiveTab('secrets')
     return round
   }
 
-  const ownerRemoveSecret = (secretId: string) => runtime.removeSecret(secretId)
+  const ownerRemoveSecret = (secretId: string, choice: PublishChoice) => runtime.removeSecret(secretId, choice)
 
   // Adding and removing a secret both publish a new bag version, so both need
   // enough channels that can actually receive a share. A channel the library
   // still holds `Pending` — a fingerprint nobody confirmed, or one refused — is
   // sent nothing, so it does not count towards that.
-  const shareTargetCount = publishTargets(vault.participants, unconfirmedChannelIds).length
+  //
+  // Only what no publish could satisfy blocks: the dialogs can change the
+  // threshold and the weights, so falling short of the defaults only warns.
+  const publishPolicy = resolvePublishPolicy(vault)
+  const shareTargets = publishTargets(vault.participants, unconfirmedChannelIds)
+  const shareTargetCount = shareTargets.length
+  const readiness = publishReadiness(shareTargets, publishPolicy.defaultThreshold)
   const publishBlockedReason = vault.replicaConflict
     ? replicaConflictBlockReason(vault.replicaConflict)
-    : shareTargetCount < vault.minParticipants
-      ? `Need at least ${vault.minParticipants} paired participant${vault.minParticipants !== 1 ? 's' : ''} (currently ${shareTargetCount})`
-      : null
+    : readiness.blocked
 
   const ownerVerifyShares = (version: number) => runtime.verifyShares(version)
   const ownerRequestDiscovery = () => runtime.requestDiscovery()
@@ -774,6 +791,35 @@ function OwnerPage({ runtime }: Props) {
    * with, so the only direction that makes sense is mirroring *out*. The role
    * goes through `pairReplica`, which resolves it via `senderKindFor`.
    */
+  /**
+   * Join a recovered vault's replica group through `member`, when this node
+   * runs it: find its actor by the endpoint it advertised, and pair with it as
+   * its replica destination. The node mints the member's contact from its
+   * replica instance for the recovered secret, so nothing is copied by hand.
+   * Adoption then asks before this device's vault is replaced.
+   */
+  async function handleJoinThrough(secret: RecoveredSecret, member: RecoveredSecretReplica): Promise<void> {
+    const memberUris = new Set(member.transports.map(t => t.uri))
+    const actors = await apiGetActors()
+    const actor = actors.find(a =>
+      [a.transport, ...(a.transports ?? [])].some(t => t !== undefined && memberUris.has(t.uri)),
+    )
+    const name = member.communicationInfo?.['name'] || `replica ${member.replicaId}`
+    if (!actor) {
+      throw new Error(
+        `${name} is not a provisioned helper on this node. Open Share Contact on that device and pair here as Replica destination.`,
+      )
+    }
+    await pairReplica({
+      protocol: replicaProtocol,
+      vaultId: vault.id,
+      replicaId: actor.id,
+      replicaName: name,
+      role: 'replica_destination',
+      ownerSecretId: secret.secretId,
+    })
+  }
+
   async function handleAddReplica(name: string): Promise<void> {
     // Reuse the helper a previous failed attempt provisioned under this name.
     // The modal stays open on error so the user can retry, and no route removes
@@ -1520,6 +1566,13 @@ function OwnerPage({ runtime }: Props) {
           >
             Edit Identity
           </button>
+          <button
+            className="secondary"
+            onClick={() => setVaultSettingsOpen(true)}
+            title="Default threshold, which versions helpers keep, and cleanup of old verification copies"
+          >
+            Vault Settings
+          </button>
           <button className="primary" onClick={() => setShareOpen(true)}>
             Share Contact
           </button>
@@ -1630,7 +1683,10 @@ function OwnerPage({ runtime }: Props) {
           pairedChannelIds={pairedChannelIds}
           pairingRejectionCount={pairingRejectionCount}
           pairingCompletedSignal={pairingCompletedSignal}
-          onClose={() => setPairOpen(false)}
+          onClose={() => {
+            setPairOpen(false)
+            setPairDefaultRole(undefined)
+          }}
           onSuccess={() => {}}
           onPairingRequestSent={(channelId, participantId, peerTransportUri) =>
             addPendingPairing(channelId, participantId, peerTransportUri)
@@ -1644,6 +1700,7 @@ function OwnerPage({ runtime }: Props) {
           // Vault/Helper contract: all four roles are on offer here, and a
           // browser replica is established by picking one of them.
           roleOptions={BROWSER_PAIRING_ROLE_OPTIONS}
+          defaultRole={pairDefaultRole}
         />
       )}
 
@@ -1652,9 +1709,26 @@ function OwnerPage({ runtime }: Props) {
           participants={vault.participants}
           pendingChannelIds={unconfirmedChannelIds}
           secretBag={vault.secretBag}
-          threshold={vault.minParticipants}
+          publishContext={runtime.publishContext()}
           onClose={() => { setProtectOpen(false); runtimeRef.current?.setBusy(false) }}
           onAddSecret={ownerAddSecret}
+        />
+      )}
+
+      {vaultSettingsOpen && (
+        <VaultSettingsModal
+          policy={publishPolicy}
+          schedule={vault.verificationSchedule ?? null}
+          lastPublishedThreshold={vault.secretBag?.currentVersion.threshold ?? null}
+          onSave={(next, schedule) => {
+            runtime.updatePublishPolicy(next)
+            // Re-set only on a change, so saving other settings does not restart the clock.
+            const current = vault.verificationSchedule ?? null
+            if (current?.every !== schedule?.every || current?.unit !== schedule?.unit) {
+              runtime.setVerificationSchedule(schedule)
+            }
+          }}
+          onClose={() => setVaultSettingsOpen(false)}
         />
       )}
 
@@ -1674,11 +1748,30 @@ function OwnerPage({ runtime }: Props) {
         />
       )}
 
+      {cleanupOpen && (
+        <CleanupModal
+          context={runtime.cleanupContext()}
+          onCleanup={versions => runtime.cleanupProofs(versions)}
+          onClose={() => setCleanupOpen(false)}
+        />
+      )}
+
+      {republishOpen && (
+        <RepublishModal
+          participants={vault.participants}
+          pendingChannelIds={unconfirmedChannelIds}
+          publishContext={runtime.publishContext()}
+          onClose={() => { setRepublishOpen(false); runtimeRef.current?.setBusy(false) }}
+          onRepublish={choice => runtime.republish(choice)}
+        />
+      )}
+
       {secretToRemove && (
         <RemoveSecretModal
           secret={secretToRemove}
           participants={vault.participants}
-          threshold={vault.minParticipants}
+          pendingChannelIds={unconfirmedChannelIds}
+          publishContext={runtime.publishContext()}
           onClose={() => { setSecretToRemove(null); runtimeRef.current?.setBusy(false) }}
           onRemoveSecret={ownerRemoveSecret}
         />
@@ -1686,20 +1779,26 @@ function OwnerPage({ runtime }: Props) {
 
       {(() => {
         const pairedCount = shareTargetCount
-        const belowMin = pairedCount < vault.minParticipants
         const recommended = effectiveRecommended(
           vault.recommendedParticipants,
           vault.minParticipants,
           vault.participants.length,
         )
-        const belowRecommended = !belowMin && pairedCount < recommended
-        if (belowMin) {
+        if (readiness.blocked) {
           return (
             <div className="owner-banner owner-banner--error" role="alert">
-              Secret protection is disabled — {pairedCount} of {vault.minParticipants} required participants paired.
+              Secret protection is disabled. {readiness.blocked}.
             </div>
           )
         }
+        if (readiness.shortOfDefault) {
+          return (
+            <div className="owner-banner owner-banner--warning" role="status">
+              {readiness.shortOfDefault}
+            </div>
+          )
+        }
+        const belowRecommended = pairedCount < recommended
         if (belowRecommended) {
           return (
             <div className="owner-banner owner-banner--warning" role="status">
@@ -1739,6 +1838,16 @@ function OwnerPage({ runtime }: Props) {
                 unpairingChannelIds={unpairingChannelIds}
                 onTogglePair={handleTogglePair}
                 onLink={handleLinkChannel}
+                defaultWeights={{
+                  weightFor: channelId =>
+                    defaultWeightFor(
+                      publishPolicy,
+                      channelId,
+                      participantWeight(vault.participants.find(p => p.channelId === channelId) ?? {}),
+                    ),
+                  max: maxWeight(publishPolicy.defaultThreshold),
+                  onSet: (channelId, weight) => runtime.setDefaultWeight(channelId, weight),
+                }}
               />
             )}
             {/*
@@ -1784,7 +1893,7 @@ function OwnerPage({ runtime }: Props) {
               />
             )}
             {activeTab === 'secrets' && (
-              <SecretBagPanel bag={vault.secretBag} participants={vault.participants} pendingRounds={vault.pendingProtectRounds ?? []} onVerify={ownerVerifyShares} onVerifyClose={() => runtimeRef.current?.setBusy(false)} onAddSecret={() => setProtectOpen(true)} onRemoveSecret={setSecretToRemove} removeDisabledReason={publishBlockedReason} />
+              <SecretBagPanel bag={vault.secretBag} participants={vault.participants} pendingRounds={vault.pendingProtectRounds ?? []} onVerify={ownerVerifyShares} onVerifyClose={() => runtimeRef.current?.setBusy(false)} onAddSecret={() => setProtectOpen(true)} onRemoveSecret={setSecretToRemove} removeDisabledReason={publishBlockedReason} onRepublish={() => setRepublishOpen(true)} onCleanUp={() => setCleanupOpen(true)} defaultThreshold={publishPolicy.defaultThreshold} />
             )}
             {activeTab === 'shares' && (
               <HeldSharesList
@@ -1800,6 +1909,11 @@ function OwnerPage({ runtime }: Props) {
                 onRequestDiscovery={ownerRequestDiscovery}
                 onRecover={ownerRecoverSecret}
                 onRestoreFromBag={handleRestoreFromBag}
+                onJoinThrough={handleJoinThrough}
+                onJoinGroup={() => {
+                  setPairDefaultRole('replica_destination')
+                  setPairOpen(true)
+                }}
               />
             )}
           </div>

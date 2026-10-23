@@ -42,6 +42,11 @@ struct UserSecretsRow {
     /// channel store every round and never read it back).
     #[serde(default)]
     author_replica_id: Option<String>,
+    /// The threshold the next publish splits at (SDK 0.0.9). Absent on rows
+    /// written before it was recorded, which the library reads as "use the
+    /// builder's".
+    #[serde(default)]
+    threshold: Option<u32>,
 }
 
 impl UserSecretsRow {
@@ -55,6 +60,7 @@ impl UserSecretsRow {
                 .map(|s| to_base64(&s.encode_to_vec()))
                 .collect(),
             author_replica_id: value.author_replica_id.map(|id| id.to_string()),
+            threshold: value.threshold,
         })
     }
 
@@ -77,6 +83,7 @@ impl UserSecretsRow {
             secrets,
             description: self.description,
             author_replica_id,
+            threshold: self.threshold,
         })
     }
 }
@@ -198,6 +205,7 @@ mod tests {
             }],
             description: Some("a description".to_owned()),
             author_replica_id: Some(u64::MAX - 7),
+            threshold: Some(4),
         };
 
         let row = UserSecretsRow::from_secrets(&original).expect("encodes");
@@ -205,6 +213,7 @@ mod tests {
 
         assert_eq!(back.version, original.version);
         assert_eq!(back.author_replica_id, Some(u64::MAX - 7));
+        assert_eq!(back.threshold, Some(4), "the recorded threshold must survive");
         assert_eq!(back.description, original.description);
         assert_eq!(back.secrets.len(), 1);
         assert_eq!(back.secrets[0].name, "a name");
@@ -222,6 +231,7 @@ mod tests {
             secrets: Vec::new(),
             description: None,
             author_replica_id: None,
+            threshold: None,
         };
 
         let back = UserSecretsRow::from_secrets(&original)

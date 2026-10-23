@@ -284,6 +284,8 @@ async fn protect(source: &mut Source) -> u32 {
                 data: b"hunter2".to_vec(),
             }],
             description: None,
+            weights: Default::default(),
+            threshold: None,
         })
         .await
         .expect("the source publishes");

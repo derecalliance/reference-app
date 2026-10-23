@@ -13,6 +13,9 @@ import type { ContactMessage } from '@derec-alliance/web'
 import type { RenameOwnerResult } from '../api'
 import type { ConsoleEntry } from '../ConsoleContext'
 import type { MailboxMessage } from '../derecApi'
+import type { CleanupCriterion, CleanupFloor } from '../owner/proofCleanup'
+import type { PublishPolicy } from '../owner/publishPolicy'
+import type { ProofVersionUsage } from '../stores'
 import type { ServerDefaults } from '../config'
 import type { ReplicaSyncTarget, RestoreFailure, UnresolvedAutomaticSync } from '../replicaFlows'
 import type { PairedParticipant, SecretBag, Vault } from '../types'
@@ -118,6 +121,45 @@ export type UnpairDispatch =
   /** Nothing reached the peer; `reason` says why, in words to show. */
   | { dispatched: false; reason: string }
 
+/**
+ * What the owner chose in a publish dialog (Add Secret, Remove Secret,
+ * Republish).
+ */
+export interface PublishChoice {
+  /** Every helper's weight for this round, by channel id — the full assignment. */
+  weights: ReadonlyMap<string, number>
+  /** The threshold this version is split with. */
+  threshold: number
+  /**
+   * The committed versions helpers keep, chosen by the owner ("choose at each
+   * publish"); `null` to follow the vault's "keep the last N" rule.
+   */
+  keep: readonly number[] | null
+  /** Make `threshold` the vault's default for later publishes. */
+  rememberThreshold: boolean
+}
+
+/** What a publish dialog starts from — see `VaultRuntime.publishContext`. */
+export interface PublishContext {
+  policy: PublishPolicy
+  /** Committed versions, newest first. */
+  committedVersions: number[]
+  /** Versions still being published, newest first: always kept. */
+  openVersions: number[]
+  /** What "keep the last N" keeps and drops; `null` in "choose at each publish" mode. */
+  preview: { kept: number[]; dropped: number[] } | null
+}
+
+/** What the Clean up dialog starts from — see `VaultRuntime.cleanupContext`. */
+export interface CleanupContext {
+  /** Verification copies per version, newest first. */
+  usage: ProofVersionUsage[]
+  /** What must stay whatever is chosen; `null` before any version committed. */
+  floor: CleanupFloor | null
+  /** The vault's criterion, resolved — what the dialog pre-selects by. */
+  criterion: CleanupCriterion
+}
+
 /** What one dispatched `ProtectSecret` round produced. */
 export interface ProtectRoundResult {
   /** The version the library assigned to the round. */
@@ -126,6 +168,8 @@ export interface ProtectRoundResult {
   participants: PairedParticipant[]
   /** The replica destinations the round is expected to mirror to. */
   replicaTargets: ReplicaSyncTarget[]
+  /** The threshold the round was split with. */
+  threshold: number
 }
 
 /** A share dispatched in the current round, awaiting its confirmation. */

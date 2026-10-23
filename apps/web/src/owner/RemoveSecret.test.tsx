@@ -4,10 +4,19 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { PublishContext } from '../vault/types'
 
 import type { BagVersion, PairedParticipant, PublishedRound, SecretBag, UserSecret } from '../types'
 import { RemoveSecretModal } from './RemoveSecretModal'
 import { SecretBagPanel } from './SecretBagPanel'
+
+/** A publish dialog's starting point: threshold 2, every helper at 1, keep the last 3. */
+const PUBLISH_CONTEXT: PublishContext = {
+  policy: { defaultThreshold: 2, defaultWeights: {}, helperRetention: { mode: 'lastN', n: 3 }, proofCleanup: { mode: 'manual' } },
+  committedVersions: [],
+  openVersions: [],
+  preview: { kept: [], dropped: [] },
+}
 
 const seed: UserSecret = { id: 'aa', name: 'Seed', data: 'one two' }
 const pin: UserSecret = { id: 'bb', name: 'PIN', data: '1234' }
@@ -70,12 +79,15 @@ function renderPanel(onRemoveSecret: (s: UserSecret) => void, removeDisabledReas
     root.render(
       <SecretBagPanel
         bag={bag}
-        participants={[helper]}
+        participants={[helper, { ...helper, id: 'h2', name: 'Richard', channelId: '901' }]}
         pendingRounds={[]}
         onVerify={async () => ({ failedChannelIds: [] })}
         onAddSecret={() => {}}
         onRemoveSecret={onRemoveSecret}
         removeDisabledReason={removeDisabledReason}
+        onRepublish={() => {}}
+        onCleanUp={() => {}}
+        defaultThreshold={2}
       />,
     ),
   )
@@ -114,8 +126,9 @@ describe('RemoveSecretModal', () => {
       root.render(
         <RemoveSecretModal
           secret={pin}
-          participants={[helper]}
-          threshold={1}
+          pendingChannelIds={new Set()}
+          publishContext={PUBLISH_CONTEXT}
+          participants={[helper, { ...helper, id: 'h2', name: 'Richard', channelId: '901' }]}
           onClose={() => {}}
           onRemoveSecret={onRemoveSecret}
         />,
@@ -124,7 +137,7 @@ describe('RemoveSecretModal', () => {
   }
 
   it('asks first, warning that earlier versions keep the secret', () => {
-    const onRemove = vi.fn(async () => ({ version: 3, recipientIds: [helper.id] }))
+    const onRemove = vi.fn(async () => ({ version: 3, recipientIds: [helper.id], threshold: 2 }))
     renderModal(onRemove)
 
     expect(host.textContent).toContain('Earlier versions still contain it')
@@ -132,12 +145,13 @@ describe('RemoveSecretModal', () => {
   })
 
   it('removes on confirmation and follows the round it started', async () => {
-    const onRemove = vi.fn(async () => ({ version: 3, recipientIds: [helper.id] }))
+    const onRemove = vi.fn(async () => ({ version: 3, recipientIds: [helper.id], threshold: 2 }))
     renderModal(onRemove)
 
     await act(async () => buttonWithText('Remove Secret').click())
 
-    expect(onRemove).toHaveBeenCalledWith('bb')
+    // The owner's publish choice travels with the removal: defaults, untouched.
+    expect(onRemove).toHaveBeenCalledWith('bb', expect.objectContaining({ threshold: 2, keep: null }))
     expect(host.textContent).toContain('0 of 1 confirmed')
   })
 

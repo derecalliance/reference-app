@@ -7,6 +7,7 @@ import {
   type ContactMessage,
   type DeRecEvent,
   type DeRecProtocol,
+  type StatusEnum,
 } from '@derec-alliance/web'
 
 import {
@@ -30,6 +31,7 @@ import {
 import { NodeUnreachableError, fromBase64Url, pollMailbox, type MailboxMessage } from '../derecApi'
 import type { PendingPairingConfirmation } from '../inboundPairing'
 import { bagVersionOf, replicaGroupFromStore, updateBagVersion } from '../owner/bag'
+import { committedVersionsOf } from '../owner/heldShares'
 import {
   asNonOkStatus,
   eventsOfFailedProcess,
@@ -53,6 +55,10 @@ import {
 } from '../owner/verification'
 import { isShareTarget } from '../ownerPairing'
 import { bagBytes, bagSizeProblem } from '../owner/secretLimits'
+import { cleanupCandidates, type CleanupCriterion } from '../owner/proofCleanup'
+import { resolvePublishPolicy, type PublishPolicy } from '../owner/publishPolicy'
+import { describeSchedule, isVerificationDue, type VerificationSchedule } from '../owner/verificationSchedule'
+import { DEFAULT_WEIGHT } from '../owner/weights'
 import { senderKindFor, type PairingRole } from '../pairingRoles'
 import { resolveVaultConfig } from '../protocolDefaults'
 import { loadReplicaAdoptionBlock, saveReplicaAdoptionBlock } from '../replicaAdoptionBlock'
@@ -91,13 +97,18 @@ import {
   forgetHelperChannel,
   hasStorageHeadroom,
   listHelperChannels,
+  listOwnerProofVersions,
   listReplicaMembers,
+  makeShareStore,
+  ownerHelperChannelIds,
   loadRawShare,
   openSharingRoundVersions,
   readHelperChannelInfo,
   readHelperChannelStatus,
+  storedHelperWeights,
   takeStorageQuotaFailure,
   type KeepListSource,
+  type ProofVersionUsage,
 } from '../stores'
 import { getOrCreateReplicaId } from '../replicaIdentity'
 import type {
@@ -126,7 +137,7 @@ import { adoptMirroredVault } from './commands/adoption'
 import type { CommandContext } from './commands/context'
 import { restoreVault } from './commands/restore'
 import { routeActionRequired, type InboundContext } from './inbound'
-import { keepListFor } from './keepList'
+import { keepListFor, retentionPreview } from './keepList'
 import { replicaConflictBlockReason } from './replicaConflict'
 import { replicaMembershipProblem } from './replicaMembership'
 import { ReplicaCatchUp } from './replicaSync'
@@ -136,6 +147,9 @@ import type {
   AttentionKind,
   IdentityUpdate,
   ProtectRoundResult,
+  PublishChoice,
+  PublishContext,
+  CleanupContext,
   StoreShareRequest,
   UnpairDispatch,
   UnpairRequest,
@@ -228,6 +242,15 @@ export class VaultRuntime {
    * commands that start a round and the event handlers that resolve it.
    */
   private readonly rounds = new RoundTracker()
+  /**
+   * The versions the owner selected for the `start` in flight, in "choose at
+   * each publish" mode. The library asks for the keep-list from inside that
+   * call, before the app knows the version it takes, so the selection is held
+   * for the call and filed by version when the library asks.
+   */
+  private pendingKeepSelection: readonly number[] | null = null
+  /** Selections filed by the version the library asked about. */
+  private readonly keepSelections = new Map<number, readonly number[]>()
 
   /** What event handlers may reach. Built once; every member reads live state. */
   private readonly foldContext: FoldContext
@@ -408,6 +431,7 @@ export class VaultRuntime {
         this.identityUpdate = next
         this.emit()
       },
+      respondToFailure: (action, status, memo) => this.respondToFailure(action, status, memo),
     }
 
     this.inboundContext = {
@@ -499,7 +523,21 @@ export class VaultRuntime {
       ...this.rounds.snapshotProtectRounds().map(round => round.version),
       ...openSharingRoundVersions(this.namespace, secretId),
     ]
-    const kept = keepListFor(this.vault, secretId, version, open)
+    if (this.pendingKeepSelection !== null && !this.keepSelections.has(version)) {
+      this.keepSelections.set(version, this.pendingKeepSelection)
+    }
+    const selection = this.keepSelections.get(version)
+    const kept = keepListFor(this.vault, secretId, version, open, selection)
+    if (kept === null && resolvePublishPolicy(this.vault).helperRetention.mode === 'select') {
+      this.deps.log({
+        role: 'owner',
+        flow: 'sharing',
+        step: 'keep_list',
+        description: `Round v${version}: no keep-list sent — select mode, and no selection for v${version}, so helpers keep every version they hold`,
+        payload: { secretId, version, keepList: null },
+      })
+      return null
+    }
     this.deps.log({
       role: 'owner',
       flow: 'sharing',
@@ -581,7 +619,10 @@ export class VaultRuntime {
    */
   private settleOverdueRound(version: number): void {
     const confirmed = this.rounds.confirmedCount(version)
-    if (confirmed < this.vault.minParticipants) {
+    // The threshold counts subshares: with weighted helpers, fewer helpers can
+    // meet it than its number suggests. And it is the round's own threshold.
+    const threshold = this.rounds.roundThreshold(version) ?? this.vault.minParticipants
+    if (this.rounds.confirmedWeight(version) < threshold) {
       this.failSharingRound(version, 'timeout')
       return
     }
@@ -593,7 +634,7 @@ export class VaultRuntime {
       description:
         `Sharing round v${version} reached its threshold (${confirmed} confirmed) but is still ` +
         'waiting on the rest. It is kept open and commits when the library closes it.',
-      payload: { version, confirmed, threshold: this.vault.minParticipants },
+      payload: { version, confirmed, threshold },
     })
   }
 
@@ -1465,6 +1506,36 @@ export class VaultRuntime {
     }
   }
 
+  /**
+   * Answer a failed request whose token the library handed back
+   * (`RequestFailed` with `responded: false`), so its sender is not left to
+   * time out.
+   *
+   * Called from the fold, which runs inside the protocol lock — so the answer
+   * is chained onto the lock rather than awaited, and goes out as soon as the
+   * drain or accept that reported the failure releases it. Each token is
+   * answered once: the library is stateless about tokens, and a second
+   * `reject` would send a second response.
+   */
+  private respondToFailure(action: Uint8Array, status: StatusEnum, memo: string): void {
+    void this.withLock(async () => {
+      const protocol = this.protocolInstance?.protocol
+      if (!protocol) return
+      try {
+        await protocol.reject(action, status, memo)
+      } catch (err) {
+        this.deps.notify.error('Could not answer a failed request', err)
+        this.deps.log({
+          role: 'owner',
+          flow: 'protocol',
+          step: 'failed_request_unanswered',
+          description: `Could not answer a failed request: ${errorText(err)}`,
+          payload: { status },
+        })
+      }
+    })
+  }
+
   /** Accept an action and fold what it produces. Reports rather than throws. */
   private async acceptAndFold(
     action: Uint8Array,
@@ -1547,6 +1618,8 @@ export class VaultRuntime {
     } finally {
       this.ticking = false
     }
+    // Outside the lock: verifying takes it itself.
+    void this.runScheduledVerification()
   }
 
   /**
@@ -1824,10 +1897,25 @@ export class VaultRuntime {
    *
    * Returns `null` when the library dispatched no round; that failure is already
    * reported and the pending bag already unwound.
+   *
+   * `weights` replaces every helper's weight, by channel id; a helper it does
+   * not name gets 1. Without it the round keeps the weights the library has
+   * stored — passing nothing to the library instead would reset them all,
+   * because its map is the full assignment.
+   *
+   * `threshold` is the threshold this version is split with; without it, the
+   * vault's default. Always named to the library, so the round the app tracks
+   * and the round the library runs are measured against the same value.
    */
   protect(
     secrets: UserSecret[],
-    options: { resolvesReplicaConflict?: boolean } = {},
+    options: {
+      resolvesReplicaConflict?: boolean
+      weights?: ReadonlyMap<string, number>
+      threshold?: number
+      /** The versions helpers keep, as the owner selected them; see `PublishChoice.keep`. */
+      keep?: readonly number[] | null
+    } = {},
   ): Promise<ProtectRoundResult | null> {
     // Belt and braces behind the blocked screen: the instance still installed
     // after a failed adoption reads an erased namespace, so protecting a secret
@@ -1873,12 +1961,31 @@ export class VaultRuntime {
         data: new TextEncoder().encode(s.data),
       }))
 
+      const threshold = options.threshold ?? resolvePublishPolicy(this.vault).defaultThreshold
+
+      // Only the weights above 1: an unnamed helper is 1 anyway.
+      const weights = new Map(
+        [...(options.weights ?? storedHelperWeights(this.namespace, this.partition))].filter(
+          ([, weight]) => weight !== DEFAULT_WEIGHT,
+        ),
+      )
+
       const startedAt = Date.now()
       let startEvents: DeRecEvent[]
       try {
-        startEvents = await this.withLock(() =>
-          protocol.start(FlowKind.ProtectSecret, { secrets: wasmSecrets, description: 'DeRec Vault' }),
-        )
+        startEvents = await this.withLock(async () => {
+          this.pendingKeepSelection = options.keep ?? null
+          try {
+            return await protocol.start(FlowKind.ProtectSecret, {
+              secrets: wasmSecrets,
+              description: 'DeRec Vault',
+              weights,
+              threshold,
+            })
+          } finally {
+            this.pendingKeepSelection = null
+          }
+        })
       } catch (err) {
         if (takeStorageQuotaFailure(startedAt)) {
           throw new Error(
@@ -1898,6 +2005,13 @@ export class VaultRuntime {
       const newVersion = protectVersionFrom(startEvents)
       const dispatched = startEvents.flatMap(e => (e.type === 'ProtectSecretStarted' ? [e.channel_id] : []))
       const undelivered = startEvents.flatMap(e => (e.type === 'ProtectSecretFailed' ? [e] : []))
+      // What each recipient was sent — and so what the library now stores for it.
+      const weightOf = new Map(
+        startEvents.flatMap(e =>
+          e.type === 'ProtectSecretStarted' || e.type === 'ProtectSecretFailed' ? [[e.channel_id, e.weight] as const] : [],
+        ),
+      )
+      const channelWeight = (channelId: string) => weightOf.get(channelId) ?? DEFAULT_WEIGHT
       if (newVersion === null || (dispatched.length === 0 && undelivered.length > 0)) {
         this.setBusy(false)
         // The library sends each share request as it starts the round, so a
@@ -1939,6 +2053,7 @@ export class VaultRuntime {
         failedParticipantIds: [],
         secrets,
         rawBytes: '',
+        threshold,
         helpers: recipients.map(h => ({ id: h.id, name: h.name, channelId: h.channelId })),
         // Read after `start` from the same store the library just built the
         // secret's `replicas` from, by the same rule.
@@ -1957,13 +2072,15 @@ export class VaultRuntime {
             secretId: current.secretId,
             currentVersion: newBagVersion,
             previousVersions: [],
-            threshold: current.minParticipants,
+            threshold,
           }
       this.beginProtectRound({
         bag: pendingBag,
         version: newVersion,
         protocolSecretId: current.secretId,
         channelIds: recipients.map(h => h.channelId),
+        weights: Object.fromEntries(recipients.map(h => [h.id, channelWeight(h.channelId)])),
+        threshold,
       })
 
       // A share request that could not be delivered will never be answered:
@@ -1990,6 +2107,7 @@ export class VaultRuntime {
           recipients.some(ph => ph.id === h.id)
             ? {
                 ...h,
+                weight: channelWeight(h.channelId),
                 secretShares: [
                   ...h.secretShares.filter(s => s.version !== newVersion),
                   notDelivered.has(h.channelId)
@@ -1997,18 +2115,25 @@ export class VaultRuntime {
                         version: newVersion,
                         status: 'rejected' as const,
                         verified: false,
+                        weight: channelWeight(h.channelId),
                         failure: { status: 0, memo: `${UNDELIVERED_MEMO}: ${notDelivered.get(h.channelId)}` },
                       }
-                    : { version: newVersion, status: 'pending' as const, verified: false },
+                    : {
+                        version: newVersion,
+                        status: 'pending' as const,
+                        verified: false,
+                        weight: channelWeight(h.channelId),
+                      },
                 ],
               }
             : h,
         ),
       })
 
-      // Too few requests went out for the round ever to reach its threshold:
+      // Too few subshares went out for the round ever to reach its threshold:
       // say so now rather than after the round times out.
-      if (notDelivered.size > 0 && dispatched.length < current.minParticipants) {
+      const dispatchedWeight = dispatched.reduce((sum, channelId) => sum + channelWeight(channelId), 0)
+      if (notDelivered.size > 0 && dispatchedWeight < threshold) {
         this.failSharingRound(
           newVersion,
           `only ${dispatched.length} of ${recipients.length} share request(s) could be delivered`,
@@ -2021,7 +2146,7 @@ export class VaultRuntime {
       // `channel_id`, never against this list.
       const replicaTargets = await this.confirmedReplicaTargets()
 
-      return { version: newVersion, participants: recipients, replicaTargets }
+      return { version: newVersion, participants: recipients, replicaTargets, threshold }
     })
   }
 
@@ -2034,7 +2159,7 @@ export class VaultRuntime {
    * round itself knows (see `roundRecipients`). `null` if no round was
    * dispatched.
    */
-  async addSecret(name: string, data: string): Promise<PublishedRound | null> {
+  async addSecret(name: string, data: string, choice?: PublishChoice): Promise<PublishedRound | null> {
     // Per-user-secret ids are application-level random identifiers, hex-encoded.
     const idBytes = crypto.getRandomValues(new Uint8Array(16))
     const id = Array.from(idBytes).map(b => b.toString(16).padStart(2, '0')).join('')
@@ -2043,7 +2168,7 @@ export class VaultRuntime {
     // secret whose round is still open must not drop out of this one.
     const allSecrets = [...this.rounds.latestSecrets(this.vault.secretBag), newSecret]
 
-    const round = await this.protect(allSecrets)
+    const round = await this.publishWithChoice(allSecrets, choice)
     if (!round) return null
 
     this.deps.log({
@@ -2067,13 +2192,13 @@ export class VaultRuntime {
    * hold for them — still carry it, which the confirmation dialog says. Returns
    * the round as `addSecret` does; `null` if no round was dispatched.
    */
-  async removeSecret(secretId: string): Promise<PublishedRound | null> {
+  async removeSecret(secretId: string, choice?: PublishChoice): Promise<PublishedRound | null> {
     const current = this.rounds.latestSecrets(this.vault.secretBag)
     const removed = current.find(s => s.id === secretId)
     if (!removed) throw new Error('That secret is no longer in the current version of the bag.')
     const remaining = current.filter(s => s.id !== secretId)
 
-    const round = await this.protect(remaining)
+    const round = await this.publishWithChoice(remaining, choice)
     if (!round) return null
 
     this.deps.log({
@@ -2086,6 +2211,264 @@ export class VaultRuntime {
         secretCount: remaining.length,
         replicas: round.replicaTargets.map(r => ({ name: r.name, channelId: r.channelId })),
       },
+    })
+    return publishedRound(round)
+  }
+
+  /**
+   * Save the owner's publish choices for this vault — see `PublishPolicy`.
+   * Nothing is sent: the choices apply from the next publish on.
+   */
+  updatePublishPolicy(next: PublishPolicy): void {
+    this.commit({ ...this.vault, publishPolicy: next })
+    this.deps.log({
+      role: 'owner',
+      flow: 'sharing',
+      step: 'publish_policy_updated',
+      description: `Vault settings saved: default threshold ${next.defaultThreshold}, ${retentionText(next)}, ${cleanupText(next)}`,
+      payload: { ...next },
+    })
+  }
+
+  /**
+   * What a publish dialog starts from: the vault's policy, its committed
+   * versions newest first, the rounds still open (the library's own included),
+   * and what "keep the last N" would keep and drop.
+   */
+  publishContext(): PublishContext {
+    const openVersions = [
+      ...new Set([
+        ...this.rounds.snapshotProtectRounds().map(round => round.version),
+        ...openSharingRoundVersions(this.namespace, this.vault.secretId),
+      ]),
+    ].sort((a, b) => b - a)
+    return {
+      policy: resolvePublishPolicy(this.vault),
+      committedVersions: [...committedVersionsOf(this.vault.secretBag)]
+        .filter(v => !openVersions.includes(v))
+        .sort((a, b) => b - a),
+      openVersions,
+      preview: retentionPreview(this.vault, openVersions),
+    }
+  }
+
+  // ── Periodic verification ──────────────────────────────────────────────────
+
+  /**
+   * Verify the current version automatically every `every` `unit`, or stop
+   * (`null`). The first run is one interval after `now`.
+   */
+  setVerificationSchedule(schedule: Pick<VerificationSchedule, 'every' | 'unit'> | null, now = Date.now()): void {
+    const verificationSchedule = schedule ? { ...schedule, since: now } : null
+    this.commit({ ...this.vault, verificationSchedule, lastScheduledVerificationAt: undefined })
+    this.deps.log({
+      role: 'owner',
+      flow: 'verification',
+      step: 'verification_schedule_set',
+      description: schedule
+        ? `Shares are verified automatically ${describeSchedule(schedule)} while this vault is open`
+        : 'Automatic verification turned off',
+      payload: { schedule: verificationSchedule },
+    })
+  }
+
+  /**
+   * Run the scheduled verification if it is due at `now`: the same challenge
+   * as Verify Shares, on the current version. Skipped while another flow or
+   * verification is in flight, and for a version restored from recovery, which
+   * cannot be verified. Resolves with the version challenged, or `null`.
+   */
+  async runScheduledVerification(now = Date.now()): Promise<number | null> {
+    const schedule = this.vault.verificationSchedule
+    if (!schedule || !isVerificationDue(schedule, this.vault.lastScheduledVerificationAt, now)) return null
+    const version = this.vault.secretBag?.currentVersion
+    if (!version || version.restoredFromRecovery || this.busy || this.rounds.hasAnyVerification) return null
+
+    this.commit({ ...this.vault, lastScheduledVerificationAt: now })
+    this.deps.log({
+      role: 'owner',
+      flow: 'verification',
+      step: 'scheduled_verification',
+      description: `Scheduled verification of v${version.version} (${describeSchedule(schedule)})`,
+      payload: { version: version.version },
+    })
+    try {
+      await this.verifyShares(version.version)
+      // A person closing the Verify dialog is what clears busy by hand; a
+      // scheduled run has no dialog. Its answers still land through the fold,
+      // and the library's own timeouts resolve any that never come — busy only
+      // gates the owner's controls and arms the app watchdog, which would
+      // otherwise call the run a timed-out operation.
+      this.setBusy(false)
+    } catch (err) {
+      this.deps.log({
+        role: 'owner',
+        flow: 'verification',
+        step: 'scheduled_verification_failed',
+        description: `Scheduled verification of v${version.version} could not start: ${errorText(err)}`,
+        payload: { version: version.version },
+      })
+    }
+    return version.version
+  }
+
+  // ── Verification copies ────────────────────────────────────────────────────
+  //
+  // The copies this device keeps of each helper's share, used only to verify
+  // it. The library prunes them on the publishing device and never on a
+  // replica; deleting more is the owner's call (Vault Settings → Old
+  // verification copies), and never affects recovery.
+
+  /** What the Clean up dialog starts from: usage per version, what must stay, and the vault's criterion. */
+  cleanupContext(): CleanupContext {
+    const usage = listOwnerProofVersions(this.namespace, this.partition)
+    const latest = this.newestVersion(usage)
+    const { openVersions } = this.publishContext()
+    return {
+      usage,
+      floor: latest === null ? null : { latest, open: openVersions },
+      criterion: this.cleanupCriterion(latest),
+    }
+  }
+
+  /**
+   * The version whose copies are never deleted: the newest of the bag's and
+   * every version stored here. A mirrored version is written to the store
+   * before the bag catches up with it — the copy that verifies the current
+   * secret would otherwise look like an old one.
+   */
+  private newestVersion(usage: readonly ProofVersionUsage[]): number | null {
+    const versions = [
+      ...(this.vault.secretBag ? [this.vault.secretBag.currentVersion.version] : []),
+      ...usage.map(u => u.version),
+    ]
+    return versions.length === 0 ? null : Math.max(...versions)
+  }
+
+  /**
+   * The vault's cleanup criterion, resolved against what the latest round
+   * told helpers to keep. Manual mode previews by "follow what helpers keep".
+   */
+  private cleanupCriterion(latest: number | null): CleanupCriterion {
+    const cleanup = resolvePublishPolicy(this.vault).proofCleanup
+    if (cleanup.mode === 'auto' && cleanup.criterion === 'lastN') return { kind: 'lastN', n: cleanup.n }
+    if (latest === null) return { kind: 'retention', keep: null }
+    const { openVersions } = this.publishContext()
+    const keep = keepListFor(this.vault, this.vault.secretId, latest, openVersions, this.keepSelections.get(latest))
+    return { kind: 'retention', keep }
+  }
+
+  /**
+   * Delete the verification copies of `versions` on this vault's helper
+   * channels. The latest committed version and any round still open are
+   * never deleted, whatever is asked; shares held for other owners are never
+   * touched. Resolves with the versions actually removed, newest first.
+   */
+  cleanupProofs(versions: readonly number[]): Promise<number[]> {
+    return this.withLock(async () => this.removeProofs(versions, 'Clean up'))
+  }
+
+  private async removeProofs(versions: readonly number[], why: string): Promise<number[]> {
+    const { floor, usage } = this.cleanupContext()
+    if (!floor) return []
+    const protectedVersions = new Set([floor.latest, ...floor.open])
+    const doomed = [...new Set(versions)].filter(v => !protectedVersions.has(v)).sort((a, b) => b - a)
+    if (doomed.length === 0) return []
+    const shares = makeShareStore(this.namespace)
+    for (const channelId of ownerHelperChannelIds(this.namespace, this.partition)) {
+      await shares.removeVersions(this.partition, channelId, doomed)
+    }
+    const copies = usage.filter(u => doomed.includes(u.version)).reduce((sum, u) => sum + u.copies, 0)
+    this.deps.log({
+      role: 'owner',
+      flow: 'verification',
+      step: 'proofs_cleaned_up',
+      description: `${why}: deleted the verification copies of ${doomed.map(v => `v${v}`).join(', ')} (${copies} cop${copies === 1 ? 'y' : 'ies'}). Recovery is unaffected; those versions can no longer be verified from this device.`,
+      payload: { versions: doomed, copies },
+    })
+    this.emit()
+    return doomed
+  }
+
+  /**
+   * Automatic cleanup, after a version lands on this device: committed by a
+   * round here, or installed from another replica. Queued behind the protocol
+   * lock — this runs inside a fold — and judged against the record as it
+   * stands once the lock is free.
+   */
+  private cleanUpAfter(event: DeRecEvent): void {
+    const lands =
+      (event.type === 'SharingComplete' && event.threshold_met) ||
+      event.type === 'ReplicaSecretInstalled' ||
+      event.type === 'ReplicaSecretReceived'
+    if (!lands || resolvePublishPolicy(this.vault).proofCleanup.mode !== 'auto') return
+    void this.withLock(async () => {
+      const { usage, floor, criterion } = this.cleanupContext()
+      if (!floor) return
+      const candidates = cleanupCandidates(usage, floor, criterion)
+      const rule = criterion.kind === 'lastN' ? `keep the last ${criterion.n}` : 'follow what helpers keep'
+      await this.removeProofs(candidates, `Automatic cleanup (${rule})`)
+    })
+  }
+
+  /**
+   * Publish `secrets` with a dialog's choice, and remember its threshold as
+   * the vault's default when the owner asked to and the round went out.
+   * Without a choice the round keeps the stored weights and the default
+   * threshold.
+   */
+  private async publishWithChoice(
+    secrets: Parameters<VaultRuntime['protect']>[0],
+    choice?: PublishChoice,
+  ): ReturnType<VaultRuntime['protect']> {
+    if (!choice) return this.protect(secrets, {})
+    const round = await this.protect(secrets, {
+      weights: choice.weights,
+      threshold: choice.threshold,
+      keep: choice.keep,
+    })
+    // Only once the round is out: a publish that failed or was refused must
+    // not leave its threshold behind as the new default.
+    if (round && choice.rememberThreshold) {
+      this.updatePublishPolicy({ ...resolvePublishPolicy(this.vault), defaultThreshold: choice.threshold })
+    }
+    return round
+  }
+
+  /**
+   * Set the weight a helper gets by default in the publish dialogs. An app
+   * preference: nothing is sent, and the library's stored weights change only
+   * when a publish carries them.
+   */
+  setDefaultWeight(channelId: string, weight: number): void {
+    const policy = resolvePublishPolicy(this.vault)
+    // Kept even at 1: an explicit default overrides the weight the library
+    // last published, which is what a helper without one falls back to.
+    const defaultWeights = { ...policy.defaultWeights, [channelId]: weight }
+    this.commit({ ...this.vault, publishPolicy: { ...policy, defaultWeights } })
+  }
+
+  /**
+   * Publish the current secrets again as a new version, with the owner's
+   * choice of weights, threshold and versions kept.
+   *
+   * The library records weights and the threshold only as part of a round, so
+   * applying changed defaults — or any other choice — without changing the
+   * secrets is a publish like any other.
+   */
+  async republish(choice: PublishChoice): Promise<PublishedRound | null> {
+    const secrets = this.rounds.latestSecrets(this.vault.secretBag)
+    const round = await this.publishWithChoice(secrets, choice)
+    if (!round) return null
+
+    this.deps.log({
+      role: 'owner',
+      flow: 'sharing',
+      step: 'republish',
+      description: `Republished the bag (v${round.version}) at threshold ${round.threshold}, weights: ${round.participants
+        .map(p => `${p.name} ×${choice.weights.get(p.channelId) ?? DEFAULT_WEIGHT}`)
+        .join(', ')}`,
+      payload: { version: round.version, threshold: round.threshold, weights: Object.fromEntries(choice.weights) },
     })
     return publishedRound(round)
   }
@@ -2290,7 +2673,7 @@ export class VaultRuntime {
         })
       }
       if (failed.length > 0 && !startEvents.some(e => e.type === 'VerifySharesStarted')) {
-        throw new Error(describeVerifyFailure(failed[0], version))
+        throw new Error(describeVerifyFailure(failed[0], bagVersion))
       }
 
       this.deps.log({
@@ -3716,6 +4099,7 @@ export class VaultRuntime {
    */
   applyEvent(current: Vault, event: DeRecEvent): Vault {
     const next = foldEvent(current, this.withDeliveryReason(event), this.foldContext)
+    this.cleanUpAfter(event)
     // Every event passes here, whichever path delivered it — drain, tick or a
     // command — so this is the one place a replica catch-up can see its outcome.
     this.catchUp.observe(event)
@@ -3790,5 +4174,22 @@ function peersToldText(sent: { dispatched: number; failed: number }): string {
 
 /** What the dialogs following a round are told about it. */
 function publishedRound(round: ProtectRoundResult): PublishedRound {
-  return { version: round.version, recipientIds: round.participants.map(p => p.id) }
+  return { version: round.version, recipientIds: round.participants.map(p => p.id), threshold: round.threshold }
 }
+
+/** "helpers keep the last 3 versions", for a log line. */
+function retentionText(policy: PublishPolicy): string {
+  return policy.helperRetention.mode === 'lastN'
+    ? `helpers keep the last ${policy.helperRetention.n} versions`
+    : 'helpers keep the versions chosen at each publish'
+}
+
+/** "verification copies cleaned up manually", for a log line. */
+function cleanupText(policy: PublishPolicy): string {
+  const cleanup = policy.proofCleanup
+  if (cleanup.mode === 'manual') return 'verification copies cleaned up manually'
+  return cleanup.criterion === 'retention'
+    ? 'verification copies cleaned up automatically, following what helpers keep'
+    : `verification copies cleaned up automatically, keeping the last ${cleanup.n}`
+}
+

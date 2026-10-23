@@ -6,6 +6,7 @@ import { VerifySharesModal } from './VerifySharesModal'
 import { useState } from 'react'
 import { EyeIcon, EyeOffIcon, TrashIcon } from './icons'
 import { verifyBlockedReason, type VerifyDispatch } from './verification'
+import { recoverability } from './recoverability'
 import type { BagVersion, PairedParticipant, PendingProtectRound, SecretBag, UserSecret } from '../types'
 import { shareFailureLabel } from './shareFailure'
 
@@ -59,6 +60,15 @@ function BagVersionDetails({
           <dt>Version</dt>
           <dd><span className="version-tag">v{version.version}</span></dd>
         </div>
+        {version.threshold !== undefined && (
+          <div className="field-row">
+            <dt>Threshold</dt>
+            <dd>
+              <span className="threshold-value">{version.threshold}</span>
+              <span className="empty-hint"> subshares needed to recover v{version.version}</span>
+            </dd>
+          </div>
+        )}
         <div className="field-row field-row--full">
           <dt>User Secrets ({version.secrets.length})</dt>
           <dd>
@@ -119,6 +129,7 @@ function BagVersionDetails({
             </span>
           )}
         </div>
+        <RecoverabilityLine version={version} />
         {confirmedParticipants.length === 0 ? (
           <p className="empty-hint">Waiting for participants to confirm…</p>
         ) : (
@@ -225,6 +236,9 @@ export function SecretBagPanel({
   onAddSecret,
   onRemoveSecret,
   removeDisabledReason,
+  onRepublish,
+  onCleanUp,
+  defaultThreshold,
 }: {
   bag: SecretBag | null
   participants: PairedParticipant[]
@@ -236,6 +250,13 @@ export function SecretBagPanel({
   onRemoveSecret: (secret: UserSecret) => void
   /** Why secrets cannot be removed right now — e.g. too few paired participants. */
   removeDisabledReason: string | null
+  /** Open the helper-weights editor. A change publishes, so `removeDisabledReason` gates it too. */
+  /** Open Republish: the current secrets again, with new weights, threshold or kept versions. */
+  onRepublish: () => void
+  /** Open Clean up: delete old verification copies stored on this device. */
+  onCleanUp: () => void
+  /** The threshold the next publish starts from (Vault Settings). */
+  defaultThreshold: number
 }) {
   const [showPreviousVersions, setShowPreviousVersions] = useState(false)
   // The version being verified, by number: held here, above the per-version
@@ -308,8 +329,27 @@ export function SecretBagPanel({
               <dd><code className="secret-id-value">{bag.secretId}</code></dd>
             </div>
             <div className="field-row">
-              <dt>Threshold</dt>
-              <dd><span className="threshold-value">{bag.threshold}</span></dd>
+              <dt>Default threshold</dt>
+              <dd>
+                <span className="threshold-value">{defaultThreshold}</span>{' '}
+                <button
+                  type="button"
+                  className="secondary small"
+                  onClick={onRepublish}
+                  disabled={removeDisabledReason !== null}
+                  title={removeDisabledReason ?? 'Publish the current secrets again with new weights, threshold or kept versions'}
+                >
+                  Republish…
+                </button>{' '}
+                <button
+                  type="button"
+                  className="secondary small"
+                  onClick={onCleanUp}
+                  title="Delete old verification copies stored on this device; recovery is never affected"
+                >
+                  Clean up…
+                </button>
+              </dd>
             </div>
           </dl>
         </div>
@@ -331,6 +371,28 @@ export function SecretBagPanel({
 }
 
 /**
+ * Whether `version` can be rebuilt from the helpers that proved they hold it,
+ * once any have — counted in subshares against that version's own threshold.
+ * Says "unknown" for a version published before the SDK recorded the counts,
+ * rather than guessing each helper held one.
+ */
+function RecoverabilityLine({ version }: { version: BagVersion }) {
+  const verdict = recoverability(version)
+  if (!verdict) return null
+  const text =
+    verdict.kind === 'recoverable'
+      ? `v${version.version} recoverable — ${verdict.verified} of ${verdict.threshold} subshares verified`
+      : verdict.kind === 'short'
+        ? `v${version.version} not recoverable from verified helpers alone — ${verdict.verified} of ${verdict.threshold} subshares verified; unverified helpers may still hold the rest`
+        : `v${version.version} recoverability unknown — this version was published before subshare counts were recorded`
+  return (
+    <p className={`recoverability recoverability--${verdict.kind}`} role="status">
+      {text}
+    </p>
+  )
+}
+
+/**
  * The publishing rounds still open, so closing the progress dialog early does
  * not make a round disappear: the version is not in the bag until the round
  * commits, and without this the tab read as though nothing had happened.
@@ -346,15 +408,24 @@ function PendingRoundsNotice({
   return (
     <div className="card-body">
       {rounds.map(round => {
-        const confirmed = round.bag.currentVersion.participantIds.length
+        const confirmedIds = round.bag.currentVersion.participantIds
+        const confirmed = confirmedIds.length
         const total = participants.filter(p =>
           p.secretShares.some(s => s.version === round.version),
         ).length
-        const threshold = round.bag.threshold
+        // The round's own threshold; rounds recorded before it was kept fall
+        // back to the version's, then the bag's.
+        const threshold = round.threshold ?? round.bag.currentVersion.threshold ?? round.bag.threshold
+        // The threshold counts subshares; a round recorded before weighted
+        // helpers has no weights, and every helper in it weighed 1.
+        const weightOf = (id: string) => round.weights?.[id] ?? 1
+        const confirmedWeight = confirmedIds.reduce((sum, id) => sum + weightOf(id), 0)
+        const weighted = Object.values(round.weights ?? {}).some(w => w > 1)
         return (
           <p key={round.version} className="round-pending-note" role="status">
-            Publishing v{round.version}: {confirmed} of {total} confirmed (need {threshold}).{' '}
-            {confirmed >= threshold
+            Publishing v{round.version}: {confirmed} of {total} confirmed
+            {weighted ? ` (${confirmedWeight} of ${threshold} subshares needed).` : ` (need ${threshold}).`}{' '}
+            {confirmedWeight >= threshold
               ? 'Threshold reached — it is committed once the rest answer or time out.'
               : 'It is committed once enough participants confirm, or rolled back if too few do.'}
           </p>

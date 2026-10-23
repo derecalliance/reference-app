@@ -3,7 +3,7 @@
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { PairedParticipant } from '../types'
 import type { LinkGroup } from './linkGroups'
@@ -95,5 +95,74 @@ describe('PairedParticipantsList', () => {
     )
     expect(host.querySelector('.participant-dot')?.className).toContain('available')
     expect(host.textContent).toContain('Last share: No answer')
+  })
+})
+
+describe('default weight per helper (SDK 0.0.9 weighted helpers)', () => {
+  function renderWeights(h: PairedParticipant, defaultWeight: number, onSet = vi.fn<(c: string, w: number) => void>()) {
+    const group: LinkGroup = { key: h.channelId, name: h.name, mainChannelId: h.channelId, channels: [h] }
+    act(() =>
+      root.render(
+        <PairedParticipantsList
+          groups={[group]}
+          unpairingChannelIds={new Set()}
+          onTogglePair={() => {}}
+          onLink={() => {}}
+          defaultWeights={{ weightFor: () => defaultWeight, max: 3, onSet }}
+        />,
+      ),
+    )
+    return onSet
+  }
+
+  function weightField(): HTMLInputElement {
+    const el = host.querySelector<HTMLInputElement>('input[aria-label="Default weight for Bob"]')
+    if (!el) throw new Error('no default weight field')
+    return el
+  }
+
+  it('lets the owner set a helper\'s default weight', () => {
+    const onSet = renderWeights(row({}), 1)
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+
+    act(() => {
+      setter?.call(weightField(), '2')
+      weightField().dispatchEvent(new Event('input', { bubbles: true }))
+    })
+
+    expect(onSet).toHaveBeenCalledWith('42', 2)
+  })
+
+  it('can be cleared and retyped, and falls back to the default if left invalid (review M3)', () => {
+    const onSet = renderWeights(row({}), 1)
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    const type = (value: string) =>
+      act(() => {
+        setter?.call(weightField(), value)
+        weightField().dispatchEvent(new Event('input', { bubbles: true }))
+      })
+
+    type('')
+    expect(weightField().value).toBe('')
+    expect(onSet).not.toHaveBeenCalled()
+
+    act(() => weightField().dispatchEvent(new FocusEvent('focusout', { bubbles: true })))
+    expect(weightField().value).toBe('1')
+
+    type('')
+    type('3')
+    expect(onSet).toHaveBeenCalledWith('42', 3)
+  })
+
+  it('shows the weight last published when it differs from the default', () => {
+    renderWeights(row({ weight: 3 }), 2)
+
+    expect(host.textContent).toContain('last published 3')
+  })
+
+  it('offers no default weight on a channel where this vault is the helper', () => {
+    renderWeights(row({ peerRole: 'owner' }), 1)
+
+    expect(host.querySelector('input[aria-label="Default weight for Bob"]')).toBeNull()
   })
 })

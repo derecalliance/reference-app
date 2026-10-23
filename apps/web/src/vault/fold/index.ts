@@ -5,6 +5,7 @@ import type { DeRecEvent } from '@derec-alliance/web'
 
 import type { Vault } from '../../types'
 import type { EventHandlers, FoldContext } from './context'
+import { failureHandlers } from './failures'
 import { outcomeHandlers } from './outcomes'
 import { pairingHandlers } from './pairing'
 import { recoveryHandlers } from './recovery'
@@ -27,6 +28,7 @@ const HANDLERS: EventHandlers = {
   ...recoveryHandlers,
   ...replicaHandlers,
   ...outcomeHandlers,
+  ...failureHandlers,
 }
 
 /** An erased handler: the table is indexed by a runtime value. */

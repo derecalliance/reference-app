@@ -60,7 +60,18 @@ function dispatchFailed(current: Vault, event: EventOf<DispatchFailed>, ctx: Fol
 export const outcomeHandlers = {
   PairingStarted: dispatchStarted,
   DiscoveryStarted: dispatchStarted,
-  ProtectSecretStarted: dispatchStarted,
+  // `weight` is what the library now stores for the helper, so it is also the
+  // participant's weight from here on. Reaches the fold for the publishes the
+  // library starts on its own; `protect` records its own round's directly.
+  ProtectSecretStarted: (current: Vault, event: EventOf<'ProtectSecretStarted'>, ctx: FoldContext) => {
+    const next = dispatchStarted(current, event, ctx)
+    const participant = next.participants.find(p => p.channelId === event.channel_id)
+    if (!participant || (participant.weight ?? 1) === event.weight) return next
+    return {
+      ...next,
+      participants: next.participants.map(p => (p === participant ? { ...p, weight: event.weight } : p)),
+    }
+  },
   VerifySharesStarted: dispatchStarted,
   RecoverSecretStarted: dispatchStarted,
   UnpairStarted: dispatchStarted,

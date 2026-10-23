@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
-import type { DeRecEvent } from '@derec-alliance/web'
+import type { DeRecEvent, StatusEnum } from '@derec-alliance/web'
 
 import type { PendingReplicaAdoption } from '../../replicaFlows'
 import type { StoredChannelInfo } from '../../stores'
@@ -85,4 +85,11 @@ export interface FoldContext {
    * and without an event of its own.
    */
   isShareHeld(channelId: string, version: number): boolean
+  /**
+   * Answer a request the library reported as `RequestFailed` without
+   * answering: pass its token to `reject` with `status` and `memo`. Queued,
+   * not awaited — handlers run inside the protocol lock, and the answer is
+   * sent as soon as it is released.
+   */
+  respondToFailure(action: Uint8Array, status: StatusEnum, memo: string): void
 }

@@ -3,6 +3,7 @@
 
 import { apiGetActors, type BEActorWithStatus } from '../../api'
 import { VERSION_CONFLICT_STATUS } from '../../owner/protocol'
+import { withGroupThreshold } from '../../owner/publishPolicy'
 import { isReplicaChannel } from '../../ownerPairing'
 import {
   adoptedVaultState,
@@ -409,8 +410,12 @@ function applyMirroredUpdate(update: PendingReplicaAdoption, ctx: FoldContext): 
       const ownReplicaChannels = snapshot.participants.filter(isReplicaChannel)
       const merged = [...participants.filter(p => !isReplicaChannel(p)), ...ownReplicaChannels]
 
+      // The group's threshold travels with the update, and the library adopts
+      // it for its next publish; the dialogs start from the same.
+      const publishPolicy = withGroupThreshold(snapshot, update.secret.threshold)
       ctx.commit({
         ...snapshot,
+        ...(publishPolicy ? { publishPolicy } : {}),
         participants: merged,
         secretBag: withEarlierVersions(secretBag, snapshot.secretBag),
       })

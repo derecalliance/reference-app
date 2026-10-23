@@ -107,6 +107,29 @@ describe('restoreVault', () => {
     expect(committed().secretBag?.currentVersion.restoredFromRecovery).toBe(true)
   })
 
+  it('takes the threshold the recovered roster was split with as this vault\'s default (SDK 0.0.9)', async () => {
+    buildProtocolInstance.mockReturnValue(fakeInstance())
+    apiGetActors.mockResolvedValue([])
+    const { ctx, committed } = context(vault({ minParticipants: 2 }))
+
+    await restoreVault({ ...recovered, snapshot: { ...recovered.snapshot, threshold: 3 } }, ctx)
+
+    // The library writes the roster's threshold as the next publish's; the
+    // app's default follows it, so the dialog pre-fills what the library uses.
+    expect(committed().publishPolicy?.defaultThreshold).toBe(3)
+    expect(committed().secretBag?.currentVersion.threshold).toBe(3)
+  })
+
+  it('keeps this vault\'s default when the roster predates the recorded threshold', async () => {
+    buildProtocolInstance.mockReturnValue(fakeInstance())
+    apiGetActors.mockResolvedValue([])
+    const { ctx, committed } = context(vault({ minParticipants: 2 }))
+
+    await restoreVault(recovered, ctx)
+
+    expect(committed().publishPolicy?.defaultThreshold ?? committed().minParticipants).toBe(2)
+  })
+
   it('re-identifies gRPC helpers sharing one endpoint as distinct actors', async () => {
     buildProtocolInstance.mockReturnValue(fakeInstance())
     apiGetActors.mockResolvedValue([grpcHelper('a1', 'Alex'), grpcHelper('r1', 'Richard')])

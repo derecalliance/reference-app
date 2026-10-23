@@ -46,8 +46,54 @@ First release. Built against DeRec SDK 0.0.8.
   reported as having failed to store the version, and the Add Secret form does
   not list it among the participants. A secret bag is capped at 32 KB, which is what browser storage can
   hold across every kept version.
+- **Publish choices: weights, threshold and versions kept.** Every publish
+  (Add Secret, Remove Secret, Republish) shows the threshold it splits at,
+  every paired helper's weight (how many subshares it holds — the threshold
+  counts subshares, so fewer, more trusted helpers can meet it) and which
+  earlier versions helpers keep, pre-filled from the vault's defaults and
+  changeable for that publish; a changed threshold can be remembered as the
+  default. Each helper's default weight is set on the Channels list, which
+  also shows the weight the SDK last published with. Each version records its
+  own threshold. Round progress, the publish gates and the rollback decision
+  count subshares against the round's own threshold, and a weighted helper
+  shows as ×N. Republish publishes the current secrets again with new
+  choices. A publish is blocked only with fewer than two paired helpers; a
+  default threshold the helpers cannot reach is a warning, since the dialog can
+  lower it or raise weights. A version that commits while a dialog is open is
+  kept unless unchecked, and a remembered threshold is saved only once the
+  publish goes out. Weights and the threshold survive restore, joining a
+  replica group and mirrored updates.
+- **Vault Settings.** Per vault: the default threshold; the versions helpers
+  keep (the last N, default 3, or chosen at each publish — a publish the SDK
+  starts on its own then sends no list); automatic or manual cleanup of old
+  verification copies; and periodic verification.
+- **Cleaning up verification copies.** Clean up lists the copies this device
+  keeps per version (count and size), pre-selects what the vault's rule would
+  delete, and deletes the rest; automatic mode does it after each new version
+  lands, including on a replica, where the SDK never deletes them. The latest
+  version and open rounds are always kept; shares held for others are never
+  touched.
+- **Recoverability and periodic verification.** Verifying a version shows
+  whether its verified helpers hold its threshold of subshares (recoverable,
+  not recoverable from verified helpers alone, or unknown for versions
+  published before the counts were recorded). Shares can be verified
+  automatically every N minutes, hours or days while the vault is open.
+- **Restore or join.** A recovered vault that still lives on a replica offers
+  Join group next to Restore: join through a member this node runs, or pair
+  as replica destination with any member. Joining is blocked by a known SDK
+  0.0.9 limitation when the member confirms first (see the help page).
+- **Stores keep the SDK's per-version data.** The browser and backend share
+  stores keep each share's subshare count and threshold, and the user-secret
+  stores its threshold and author (the browser store had dropped the author
+  since SDK 0.0.6); backend migration `0005` adds the two share columns.
+- **Failed and refused requests.** A request a peer sends that fails on this
+  device is reported and answered rather than left to time out on the peer
+  (the browser answers the SDK's `RequestFailed` token with the status and
+  memo the SDK chose); a share or replica copy the SDK refuses,
+  a pairing it refuses, and an error response from a peer each show in the
+  Console and as a notification. Provisioned helpers log the same events.
 - **Share retention.** Each round tells helpers which versions to keep
-  (`keepList`): the three newest committed versions plus any round still open,
+  (`keepList`): the versions the owner's rule keeps plus any round still open,
   including the rounds the library publishes on its own when a helper pairs or
   a replica's fingerprint is confirmed, so a version that commits after a newer
   round started is not dropped and still shows in discovery. Helpers drop the
@@ -56,7 +102,9 @@ First release. Built against DeRec SDK 0.0.8.
   restore this device from a recovered bag. A helper that holds no share of the
   requested version is reported as refused and does not hold recovery up; a
   corrupted share is reported with the helper and reason, with an offer to
-  unpair it. Helpers on another node can be linked for recovery. Restoring a
+  unpair it; an unreadable (`Malformed`) one also names the innocent cause —
+  a version protected before an SDK upgrade that changed the share format —
+  and advises protecting a new version. Helpers on another node can be linked for recovery. Restoring a
   vault that has replicas keeps its group: on the device that held it the
   Replicas tab still lists the replica, and on a new device the vault takes
   over the identity its group knows it by — the source's — so it can publish

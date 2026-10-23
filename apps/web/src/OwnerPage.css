@@ -2921,3 +2921,72 @@ recovery-pairing-notice {
     flex: 1 1 auto;
   }
 }
+
+/* Helper weights editor: name, number field, and its error under them. */
+.helper-weight-row {
+  display: grid;
+  grid-template-columns: 1fr 5rem;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 9px 12px;
+
+  .form-label {
+    margin: 0;
+  }
+
+  .field-error {
+    grid-column: 1 / -1;
+    margin: 0;
+  }
+}
+
+.helper-weight-input {
+  width: 100%;
+  text-align: right;
+}
+
+.share-progress-item-weight {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Vault Settings: grouped radio choices, and a second level under "Automatically". */
+fieldset.form-field {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.nested-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-left: 24px;
+}
+
+/* Recoverability verdict under a version's helper shares. */
+.recoverability {
+  margin: 4px 0 8px;
+  font-size: 0.85rem;
+}
+
+.recoverability--recoverable {
+  color: var(--success);
+}
+
+.recoverability--short {
+  color: var(--warning);
+}
+
+.recoverability--unknown {
+  color: var(--muted);
+}
+
+/* Periodic verification: "Every [n] [unit]" on one line. */
+.schedule-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+

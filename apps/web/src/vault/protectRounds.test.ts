@@ -250,7 +250,7 @@ describe('a helper the library does not send the round to', () => {
 
     const round = await r.addSecret('S2', 'two')
 
-    expect(round).toEqual({ version: 2, recipientIds: ['h1', 'h2', 'h3'] })
+    expect(round).toEqual({ version: 2, recipientIds: ['h1', 'h2', 'h3'], threshold: 2 })
     expect(shareStatus(r, 'h4', 2)).toBeUndefined()
 
     deliver(r, confirmed(2, '901'), confirmed(2, '902'), confirmed(2, '903'), complete(2, true))
@@ -308,7 +308,7 @@ describe('verifying shares', () => {
     expect(r.state().busy).toBe(false)
   })
 
-  it('turns the library’s NoProof report into the same explanation (SDK 0.0.9)', async () => {
+  it('turns the library’s NoProof report on a version it no longer holds copies of into words (SDK 0.0.9)', async () => {
     const { r } = runtime({ secretBag: withConfirmed() })
     stubInstance(r, {
       // Nothing to check a proof against: nothing is sent, and every channel
@@ -318,7 +318,7 @@ describe('verifying shares', () => {
       ],
     })
 
-    await expect(r.verifyShares(1)).rejects.toThrow('Publish a new version')
+    await expect(r.verifyShares(1)).rejects.toThrow('no verification copies')
     expect(r.state().busy).toBe(false)
   })
 
@@ -332,5 +332,215 @@ describe('verifying shares', () => {
     })
 
     await expect(r.verifyShares(1)).resolves.toEqual({ failedChannelIds: ['902'] })
+  })
+})
+
+describe('the threshold is per round (SDK 0.0.9)', () => {
+  afterEach(() => vi.useRealTimers())
+
+  it('splits at the threshold the publish asks for, and records it on the version', async () => {
+    const { r, start } = runtime()
+
+    const round = await r.protect([s1], { threshold: 3 })
+
+    expect(start).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ threshold: 3 }))
+    expect(round?.threshold).toBe(3)
+    expect(r.state().vault.pendingProtectRounds?.[0]).toMatchObject({ threshold: 3 })
+    expect(r.state().vault.pendingProtectRounds?.[0].bag.currentVersion.threshold).toBe(3)
+  })
+
+  it('always names a threshold, so the app and the library agree on it', async () => {
+    const { r, start } = runtime()
+
+    await r.protect([s1])
+
+    expect(start).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ threshold: 2 }))
+  })
+
+  it('keeps a round open that met the vault setting but not its own threshold', async () => {
+    const { r } = runtime()
+    const round = await r.protect([s1], { threshold: 3 })
+    const version = round!.version
+
+    // Every helper answers: 2 confirmations meet the vault's 2, not the round's 3.
+    const rejected = (channel: string) => ({ type: 'ShareRejected', channel_id: channel, version, status: 10, memo: 'no' })
+    deliver(r, confirmed(version, '901'), confirmed(version, '902'), rejected('903'), rejected('904'))
+
+    expect(r.state().vault.secretBag?.currentVersion.version).toBe(1)
+  })
+})
+
+describe('the publish policy (owner settings)', () => {
+  it('splits at the policy\'s default threshold when the publish names none', async () => {
+    const { r, start } = runtime()
+    r.updatePublishPolicy({
+      defaultThreshold: 3,
+      defaultWeights: {},
+      helperRetention: { mode: 'lastN', n: 3 },
+      proofCleanup: { mode: 'manual' },
+    })
+
+    await r.protect([s1])
+
+    expect(start).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ threshold: 3 }))
+    expect(r.state().vault.publishPolicy?.defaultThreshold).toBe(3)
+  })
+})
+
+describe('default helper weights', () => {
+  it('records a helper\'s default weight, 1 included — it overrides the last published weight', () => {
+    const { r } = runtime()
+
+    r.setDefaultWeight('901', 2)
+    expect(r.state().vault.publishPolicy?.defaultWeights).toEqual({ '901': 2 })
+
+    r.setDefaultWeight('901', 1)
+    expect(r.state().vault.publishPolicy?.defaultWeights).toEqual({ '901': 1 })
+  })
+})
+
+describe('the versions helpers keep, chosen at publish', () => {
+  /** A runtime whose fake `start` asks for the keep-list as the library does, mid-call. */
+  function asking(overrides: Partial<Vault> = {}) {
+    const harness = runtime(overrides)
+    const asked: Array<number[] | null> = []
+    const keepList = (harness.r as unknown as { keepList: (s: string, v: number) => number[] | null }).keepList
+    const inner = harness.start.getMockImplementation()
+    harness.start.mockImplementation(async () => {
+      const events = await inner!()
+      const version = (events[0] as { version: number }).version
+      asked.push(keepList('42', version))
+      return events
+    })
+    return { ...harness, asked }
+  }
+
+  const selectPolicy = {
+    defaultThreshold: 2,
+    defaultWeights: {},
+    helperRetention: { mode: 'select' as const },
+    proofCleanup: { mode: 'manual' as const },
+  }
+
+  it('sends exactly the versions the owner selected for that publish', async () => {
+    const { r, asked } = asking({ publishPolicy: selectPolicy })
+
+    await r.addSecret('S2', 'two', { weights: new Map(), threshold: 2, keep: [1], rememberThreshold: false })
+
+    expect(asked).toEqual([[1]])
+  })
+
+  it('sends no list for a round with no selection, in select mode', async () => {
+    const { r, asked } = asking({ publishPolicy: selectPolicy })
+
+    await r.protect([s1])
+
+    expect(asked).toEqual([null])
+  })
+
+  it('remembers a changed threshold only when the owner says so', async () => {
+    const { r } = runtime()
+
+    await r.addSecret('S2', 'two', { weights: new Map(), threshold: 3, keep: null, rememberThreshold: false })
+    expect(r.state().vault.publishPolicy?.defaultThreshold ?? 2).toBe(2)
+
+    await r.addSecret('S3', 'three', { weights: new Map(), threshold: 3, keep: null, rememberThreshold: true })
+    expect(r.state().vault.publishPolicy?.defaultThreshold).toBe(3)
+  })
+
+  it('does not remember the threshold when the publish never went out (review M1)', async () => {
+    const { r, start } = runtime()
+    start.mockRejectedValueOnce(new Error('refused'))
+
+    await r.addSecret('S2', 'two', { weights: new Map(), threshold: 3, keep: null, rememberThreshold: true }).catch(() => null)
+
+    expect(r.state().vault.publishPolicy?.defaultThreshold ?? 2).toBe(2)
+  })
+
+  it('passes the dialog\'s weights as the full assignment', async () => {
+    const { r, start } = runtime()
+
+    await r.addSecret('S2', 'two', { weights: new Map([['901', 2]]), threshold: 3, keep: null, rememberThreshold: false })
+
+    const params = (start.mock.calls[0] as unknown[])[1] as { weights: Map<string, number>; threshold: number }
+    expect([...params.weights]).toEqual([['901', 2]])
+    expect(params.threshold).toBe(3)
+  })
+})
+
+describe('republish', () => {
+  it('publishes the current secrets again with the dialog\'s choice', async () => {
+    const { r, start } = runtime()
+
+    const round = await r.republish({ weights: new Map([['902', 2]]), threshold: 3, keep: null, rememberThreshold: false })
+
+    expect(round?.threshold).toBe(3)
+    const params = (start.mock.calls[0] as unknown[])[1] as { secrets: unknown[]; weights: Map<string, number> }
+    expect(params.secrets).toHaveLength(1)
+    expect([...params.weights]).toEqual([['902', 2]])
+  })
+})
+
+describe('publishContext', () => {
+  it('gives the dialogs the policy, the committed versions newest first, and what "keep the last N" keeps', async () => {
+    const { r } = runtime({
+      secretBag: { ...bagAt(3, [s1]), previousVersions: [bagAt(2, [s1]).currentVersion, bagAt(1, [s1]).currentVersion] },
+      publishPolicy: { defaultThreshold: 2, defaultWeights: {}, helperRetention: { mode: 'lastN', n: 2 }, proofCleanup: { mode: 'manual' } },
+    })
+
+    const context = r.publishContext()
+
+    expect(context.committedVersions).toEqual([3, 2, 1])
+    expect(context.preview).toEqual({ kept: [3, 2], dropped: [1] })
+    expect(context.policy.helperRetention).toEqual({ mode: 'lastN', n: 2 })
+  })
+})
+
+describe('periodic verification', () => {
+  it('verifies the current version once the schedule is due, and not before', async () => {
+    const { r } = runtime()
+    const verify = vi.spyOn(r, 'verifyShares').mockResolvedValue({ failedChannelIds: [] })
+    r.setVerificationSchedule({ every: 30, unit: 'minutes' }, 0)
+
+    expect(await r.runScheduledVerification(29 * 60_000)).toBeNull()
+    expect(verify).not.toHaveBeenCalled()
+
+    expect(await r.runScheduledVerification(30 * 60_000)).toBe(1)
+    expect(verify).toHaveBeenCalledWith(1)
+    // The next one counts from this run.
+    expect(await r.runScheduledVerification(31 * 60_000)).toBeNull()
+  })
+
+  it('does not leave the vault busy after a scheduled run (review I1)', async () => {
+    const { r } = runtime()
+    // The real verifyShares marks the vault busy; a person closing the dialog
+    // clears it, and a scheduled run has no dialog.
+    vi.spyOn(r, 'verifyShares').mockImplementation(async () => {
+      r.setBusy(true)
+      return { failedChannelIds: [] }
+    })
+    r.setVerificationSchedule({ every: 1, unit: 'minutes' }, 0)
+
+    await r.runScheduledVerification(60_000)
+
+    expect(r.state().busy).toBe(false)
+  })
+
+  it('does nothing without a schedule', async () => {
+    const { r } = runtime()
+    const verify = vi.spyOn(r, 'verifyShares').mockResolvedValue({ failedChannelIds: [] })
+
+    expect(await r.runScheduledVerification(10 ** 12)).toBeNull()
+    expect(verify).not.toHaveBeenCalled()
+  })
+
+  it('skips a version restored from recovery, which cannot be verified', async () => {
+    const restored = { ...bagAt(1, [s1]), currentVersion: { ...bagAt(1, [s1]).currentVersion, restoredFromRecovery: true } }
+    const { r } = runtime({ secretBag: restored })
+    const verify = vi.spyOn(r, 'verifyShares').mockResolvedValue({ failedChannelIds: [] })
+    r.setVerificationSchedule({ every: 1, unit: 'minutes' }, 0)
+
+    expect(await r.runScheduledVerification(60_000)).toBeNull()
+    expect(verify).not.toHaveBeenCalled()
   })
 })

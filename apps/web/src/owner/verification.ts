@@ -21,16 +21,29 @@ export function restoredVersionReason(version: number): string {
 }
 
 /**
+ * Why a version whose verification copies are gone cannot be verified. The
+ * library deletes this device's copies of a version it tells helpers to drop
+ * (SDK 0.0.9), and Clean up deletes them by hand or automatically.
+ */
+export function deletedCopiesReason(version: number): string {
+  return (
+    `This device holds no verification copies for v${version}: they were deleted, either when helpers ` +
+    'were told to stop keeping it or by Clean up. Recovery is not affected; verify a newer version.'
+  )
+}
+
+/**
  * A channel's `VerifySharesFailed`, in words the owner can act on where the
- * library's are not. `NoProof` — this device holds nothing to check the
- * helper's answer against — is what a version restored from a recovered bag
- * reports, so it is explained as that.
+ * library's are not. `NoProof` means this device holds nothing to check the
+ * helper's answer against: a version restored from a recovered bag never had
+ * copies here, and any other version had them deleted.
  */
 export function describeVerifyFailure(
   failure: { reason: VerifyFailureReason; error: string },
-  version: number,
+  version: Pick<BagVersion, 'version' | 'restoredFromRecovery'>,
 ): string {
-  return failure.reason === 'NoProof' ? restoredVersionReason(version) : failure.error
+  if (failure.reason !== 'NoProof') return failure.error
+  return version.restoredFromRecovery ? restoredVersionReason(version.version) : deletedCopiesReason(version.version)
 }
 
 /**

@@ -14,6 +14,22 @@ const CORRUPTION_TEXT: Record<CorruptionReason, string> = {
   Inconsistent: 'a recovery share that disagrees with the shares the secret was rebuilt from',
 }
 
+/**
+ * What the owner should make of each reason, after "It was set aside…".
+ *
+ * `Malformed` has an innocent cause the others do not: a share protected
+ * before an SDK upgrade that changed the share format no longer decodes, while
+ * verification — a hash over the bytes the helper still holds — keeps passing.
+ * Blaming the helper there sends the owner to unpair a healthy one.
+ */
+const CORRUPTION_ADVICE: Record<CorruptionReason, string> = {
+  Malformed:
+    'Either this version was protected before an SDK upgrade that changed the share format — ' +
+    'protecting a new version replaces it — or the helper is damaged or compromised.',
+  InvalidProof: 'An honest helper never does this — the helper may be damaged or compromised; consider unpairing it.',
+  Inconsistent: 'An honest helper never does this — the helper may be damaged or compromised; consider unpairing it.',
+}
+
 /** The helper on `channelId` by name, for a sentence. */
 function helperName(vault: Vault, channelId: string): string {
   return vault.participants.find(p => p.channelId === channelId)?.name ?? `The helper on channel ${channelId}`
@@ -50,12 +66,16 @@ function settleIfEveryAnswerIsIn(current: Vault, next: RecoveryProgress, ctx: Fo
     return { ...current, recoveryProgress: next }
   }
   const withoutShare = (next.refusals?.length ?? 0) + (next.corrupted?.length ?? 0)
+  const unreadable = (next.corrupted ?? []).some(c => c.reason === 'Malformed')
   const error =
     'Not enough shares to reconstruct the secret' +
     (withoutShare > 0
       ? ` — ${withoutShare} helper${withoutShare === 1 ? '' : 's'} answered without a usable share`
       : '') +
-    '. Pair with more helpers and try again.'
+    (unreadable
+      ? '. Unreadable shares usually mean this version was protected before an SDK upgrade that ' +
+        'changed the share format: protect a new version, then recover that one.'
+      : '. Pair with more helpers and try again.')
   ctx.log({
     role: 'owner',
     flow: 'recovery',
@@ -177,10 +197,10 @@ export const recoveryHandlers = {
     return settleIfEveryAnswerIsIn(current, next, ctx)
   },
 
-  // A helper answered with a share that cannot be part of the secret. An
-  // honest helper never does, so beyond setting the share aside — which the
-  // library has done — the owner is told which helper and why, and offered to
-  // unpair it. `Inconsistent` arrives alongside `SecretRecovered`, after the
+  // A helper answered with a share that cannot be part of the secret. Beyond
+  // setting the share aside — which the library has done — the owner is told
+  // which helper and why, and offered to unpair it (see `CORRUPTION_ADVICE`
+  // for the one reason an honest helper can cause). `Inconsistent` arrives alongside `SecretRecovered`, after the
   // recovery has already succeeded without it, so only the arrival-time
   // reasons count as an answer on the progress.
   RecoveryShareCorrupted: (current, event, ctx) => {
@@ -195,8 +215,7 @@ export const recoveryHandlers = {
     })
     ctx.notify.error(
       `${peerName} sent ${CORRUPTION_TEXT[reason]} for v${version}. It was set aside and did not ` +
-        'count towards the recovery. An honest helper never does this — the helper may be damaged ' +
-        'or compromised; consider unpairing it.',
+        `count towards the recovery. ${CORRUPTION_ADVICE[reason]}`,
       undefined,
       { channelId, version, reason },
     )

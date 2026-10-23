@@ -8,6 +8,8 @@ import { errorText } from '../errorText'
 import { committedVersionsOf } from './heldShares'
 import { EyeIcon, EyeOffIcon } from './icons'
 import { ClickToCopyCode } from './primitives'
+import { JoinGroupModal } from './JoinGroupModal'
+import { joinableMembers } from './replicaJoin'
 import { decodeSecretText } from './recoveredSecret'
 import { findRecoveryFailure } from './recoveryFailures'
 import { isReplicaChannel } from '../ownerPairing'
@@ -17,6 +19,7 @@ import type {
   Vault,
   PairedParticipant,
   RecoveredSecret,
+  RecoveredSecretReplica,
   RecoveryProgress,
 } from '../types'
 
@@ -73,13 +76,20 @@ function RecoveryParticipantCard({
 function RecoveredSecretCard({
   secret,
   onRestoreFromBag,
+  onJoinGroup,
+  onJoinThrough,
 }: {
   secret: RecoveredSecret
   onRestoreFromBag: (secret: RecoveredSecret) => Promise<void>
+  onJoinGroup: () => void
+  onJoinThrough: (secret: RecoveredSecret, member: RecoveredSecretReplica) => Promise<void>
 }) {
   const [revealedSecrets, setRevealedSecrets] = useState<Set<string>>(new Set())
   const [restoring, setRestoring] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
+  const [joinOpen, setJoinOpen] = useState(false)
+  // Live replicas mean joining is the library's recommendation over restoring.
+  const canJoin = joinableMembers(secret).length > 0
 
   function toggle(id: string) {
     setRevealedSecrets(prev => {
@@ -116,7 +126,30 @@ function RecoveredSecretCard({
         >
           {restoring ? 'Restoring…' : 'Recover'}
         </button>
+        {canJoin && (
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => setJoinOpen(true)}
+            disabled={restoring}
+            title="This vault still lives on other replica devices: join the group as a new replica instead of restoring."
+          >
+            Join group…
+          </button>
+        )}
       </div>
+
+      {joinOpen && (
+        <JoinGroupModal
+          secret={secret}
+          onClose={() => setJoinOpen(false)}
+          onJoin={() => {
+            setJoinOpen(false)
+            onJoinGroup()
+          }}
+          onJoinThrough={member => onJoinThrough(secret, member)}
+        />
+      )}
 
       {/* The most destructive action in the app, so it is confirmed the same
           way its peers are — an in-app dialog whose default is Cancel. It used
@@ -412,11 +445,17 @@ export function RecoveryPanel({
   onRequestDiscovery,
   onRecover,
   onRestoreFromBag,
+  onJoinGroup,
+  onJoinThrough,
 }: {
   vault: Vault
   onRequestDiscovery: () => Promise<void>
   onRecover: (secretId: string, version: number, label: string, participantChannelIds: bigint[]) => Promise<void>
   onRestoreFromBag: (secret: RecoveredSecret) => Promise<void>
+  /** Start joining a recovered vault's replica group: pair as its replica destination. */
+  onJoinGroup: () => void
+  /** Join through a member this node runs, without copying a contact. */
+  onJoinThrough: (secret: RecoveredSecret, member: RecoveredSecretReplica) => Promise<void>
 }) {
   const [discovering, setDiscovering] = useState(false)
   const [discoveryError, setDiscoveryError] = useState<string | null>(null)
@@ -518,6 +557,8 @@ export function RecoveryPanel({
                 key={`${s.secretId}-${s.version}`}
                 secret={s}
                 onRestoreFromBag={onRestoreFromBag}
+                onJoinGroup={onJoinGroup}
+                onJoinThrough={onJoinThrough}
               />
             ))}
           </div>

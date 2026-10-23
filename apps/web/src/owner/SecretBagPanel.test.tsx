@@ -65,6 +65,9 @@ function render(
         onAddSecret={() => {}}
         onRemoveSecret={() => {}}
         removeDisabledReason={null}
+        onRepublish={() => {}}
+        onCleanUp={() => {}}
+        defaultThreshold={2}
       />,
     ),
   )
@@ -137,5 +140,67 @@ describe('verifying shares from the Secrets tab', () => {
     expect(host.textContent).toContain('0 of 2 verified · 2 failed')
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('restored from a recovered bag')
     expect(host.querySelector('.verify-spinner')).toBeNull()
+  })
+})
+
+describe('the threshold is per version (SDK 0.0.9)', () => {
+  const noVerify = async (): Promise<VerifyDispatch> => ({ failedChannelIds: [] })
+
+  it('shows each version its own threshold, not the bag default', () => {
+    const bag: SecretBag = {
+      secretId: '42',
+      threshold: 2,
+      currentVersion: bagVersion(4, { threshold: 3 }),
+      previousVersions: [],
+    }
+
+    render(bag, noVerify)
+
+    const row = Array.from(host.querySelectorAll('.field-row')).find(r => r.textContent?.startsWith('Threshold'))
+    expect(row?.textContent).toContain('3')
+    expect(row?.textContent).not.toContain('2')
+  })
+
+  it('measures a round still publishing against its own threshold', () => {
+    const bag: SecretBag = { secretId: '42', threshold: 2, currentVersion: bagVersion(3), previousVersions: [] }
+    const pending: PendingProtectRound = {
+      version: 4,
+      protocolSecretId: '42',
+      bag: { ...bag, currentVersion: bagVersion(4, { participantIds: ['h1', 'h2'], threshold: 3 }) },
+      channelIds: [],
+      threshold: 3,
+    }
+
+    render(bag, noVerify, [pending])
+
+    expect(host.textContent).toContain('2 of 2 confirmed (need 3)')
+  })
+})
+
+describe('recoverability per version (SDK 0.0.9)', () => {
+  const noVerify = async (): Promise<VerifyDispatch> => ({ failedChannelIds: [] })
+  const at = (overrides: Partial<BagVersion>): SecretBag => ({
+    secretId: '42',
+    threshold: 2,
+    currentVersion: bagVersion(4, overrides),
+    previousVersions: [],
+  })
+
+  it('says a version is recoverable from its verified helpers, in subshares', () => {
+    render(at({ verifiedParticipantIds: ['h1', 'h2'], verifiedSubshares: { h1: 2, h2: 1 }, verifiedThreshold: 3 }), noVerify)
+
+    expect(host.textContent).toContain('v4 recoverable — 3 of 3 subshares verified')
+  })
+
+  it('says when the verified helpers alone fall short', () => {
+    render(at({ verifiedParticipantIds: ['h1'], verifiedSubshares: { h1: 1 }, verifiedThreshold: 3 }), noVerify)
+
+    expect(host.textContent).toContain('not recoverable from verified helpers alone — 1 of 3')
+  })
+
+  it('says unknown rather than guessing for a version published before counts were recorded', () => {
+    render(at({ verifiedParticipantIds: ['h1'], verifiedSubshares: { h1: null }, verifiedThreshold: null }), noVerify)
+
+    expect(host.textContent).toContain('recoverability unknown')
   })
 })

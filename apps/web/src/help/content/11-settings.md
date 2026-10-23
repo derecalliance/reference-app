@@ -2,6 +2,8 @@
 
 What the Settings section shows: the node's own configuration (read-only), and this browser's overrides of the protocol defaults, field by field.
 
+These are browser- and node-wide. A vault's own publishing choices (default threshold, versions helpers keep, cleanup of verification copies, periodic verification) are under **Vault Settings** on the vault page; see *Protecting secrets* and *Verification*.
+
 ## Two halves
 
 | Section | Editable | Where it lives |
@@ -28,7 +30,7 @@ A table per config section, `[server]` and `[defaults]`, with every setting, its
 | Field | Node key | Default | Range | Effect |
 | --- | --- | --- | --- | --- |
 | **Participants** | `participant_count` | 7 | 2 to 255 | Target pool size for **Provision up to N**. |
-| **Minimum** | `min_participants` | 3 | 2 to the pool size | The threshold of vaults set up from now on: shares needed to recover, and paired helpers needed before protecting. Frozen into each vault at setup. |
+| **Minimum** | `min_participants` | 3 | 2 to the pool size | The starting threshold of vaults set up from now on: subshares needed to recover. Each vault then keeps its own default threshold under **Vault Settings**, and each publish can change it. |
 | **Recommended** | `recommended_participants` | 5 | Minimum to the pool size | Below this many paired helpers, a vault shows a warning. Advisory. |
 
 ## Transport mix

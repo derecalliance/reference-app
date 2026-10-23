@@ -14,9 +14,8 @@
 //! failure this behaviour exists to remove.
 //!
 //! Driven over real HTTP against `build_router`, because the actors' transport
-//! is `HttpTransport` and the responder aborts the handshake if its reply
-//! cannot be delivered — a stubbed transport would not exercise the path that
-//! emits `PairingCompleted` at all.
+//! is `HttpTransport`, and a stubbed transport would not exercise the delivery
+//! path a real handshake's replies take.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,6 +32,7 @@ use derec_backend::infrastructure::bootstrap::Node;
 use derec_backend::models::Actor;
 use derec_backend::models::Defaults;
 use derec_backend::models::{Role, TransportMode, UnpairAck};
+use derec_backend::repositories::sdk::channel::SqlChannelStore;
 use derec_backend::services::ports::{ActorGateway, InboxDirectory};
 use derec_library::protocol::types::ReplicaFilter;
 use derec_library::protocol::{
@@ -126,20 +126,6 @@ struct Owner {
 }
 
 async fn register_owner(state: &Arc<Node>, name: &str) -> Owner {
-    build_owner(state, name, true).await
-}
-
-/// An owner the helper's replies cannot reach.
-///
-/// The actor is minted with a real transport URI but is never registered, so
-/// `deliver_message` answers `404` and `HttpTransport::send` turns that into an
-/// error. See `the_tick_backstop_confirms_a_channel_the_event_path_missed` for
-/// why a test wants that.
-async fn register_unreachable_owner(state: &Arc<Node>, name: &str) -> Owner {
-    build_owner(state, name, false).await
-}
-
-async fn build_owner(state: &Arc<Node>, name: &str, reachable: bool) -> Owner {
     let actor = Actor::mint(
         Role::Owner,
         name,
@@ -148,17 +134,15 @@ async fn build_owner(state: &Arc<Node>, name: &str, reachable: bool) -> Owner {
         TransportMode::Http,
     );
     let secret_id: u64 = actor.secret_id.parse().expect("secret id is a u64");
-    if reachable {
-        state
-            .actors
-            .register(actor.clone(), test_settings())
-            .await
-            .expect("the registry is writable");
-        // A browser inbox, so the helper's replies are buffered rather than
-        // handed to an in-process actor. `pump` below drains it, standing in
-        // for the front end's poll loop.
-        state.inboxes.register_browser(actor.id);
-    }
+    state
+        .actors
+        .register(actor.clone(), test_settings())
+        .await
+        .expect("the registry is writable");
+    // A browser inbox, so the helper's replies are buffered rather than
+    // handed to an in-process actor. `pump` below drains it, standing in
+    // for the front end's poll loop.
+    state.inboxes.register_browser(actor.id);
 
     let config = ProtocolConfig {
         secret_id,
@@ -560,68 +544,88 @@ async fn a_no_keys_pairing_is_confirmed_by_the_helper_but_not_by_the_owner() {
 #[actix_rt::test]
 async fn the_tick_backstop_confirms_a_channel_the_event_path_missed() {
     // `PairingCompleted` is the fast path, but it is a single self-notify with
-    // a ~2s retry budget: if the instance stays borrowed past it, or the
-    // confirmation fails on a transient error, nothing tries again and the
-    // channel sits `Pending` until the hour-long expiry sweep. The tick is the
-    // backstop, and this pins it.
+    // a ~2s retry budget: if the instance stays borrowed past it, the
+    // confirmation fails on a transient error, or the node stops between the
+    // library persisting the channel and the notify running, nothing tries
+    // again and the channel sits `Pending` until the hour-long expiry sweep.
+    // The tick is the backstop, and this pins it.
     //
-    // Producing a `Pending` channel the event path never saw is what makes the
-    // test possible, and the library hands it over: on the responder side
-    // `accept` persists the channel record *before* it sends its `PairResponse`
-    // and propagates a send failure with `?`. So an owner whose endpoint answers
-    // 404 leaves the helper holding a fully formed `Pending` channel while
-    // `process()` returns `Err` — and `ProcessDelayed` skips `handle_events`
-    // entirely on `Err`, so no notify is ever posted. That is the real shape of
-    // the gap, not a stub of it.
-    //
-    // Replica mode over an `InlineKeys` contact, because that is the only
-    // fingerprint-gated pairing with a single inbound leg at the responder: the
-    // failing send is therefore the handshake's *last* step, after the record
-    // exists. A `NoKeys` pairing would fail on its earlier `PrePair` leg, before
-    // any channel is persisted, and produce nothing to sweep.
+    // Every one of those leaves the same state behind: a fully formed channel
+    // whose record says `Pending` and for which no notify is outstanding. The
+    // test builds exactly that. A real `NoKeys` pairing completes and the fast
+    // path confirms it — proof the key material is real and confirmable —
+    // then the helper's record is put back to `Pending` through its own
+    // channel store, standing in for the crash. (Until SDK 0.0.9 a failed
+    // `PairResponse` send made `process()` return `Err` and skip the events,
+    // which produced this state organically; the library now reports that as
+    // `RequestFailed` alongside `PairingCompleted`, so the fast path runs.)
     let state = serve().await;
     let (helper_id, helper) = spawn_helper(&state, "Alex").await;
-    let mut owner = register_unreachable_owner(&state, "Alice").await;
-
-    helper
-        .send(EnsureReplicaInstanceMsg {
-            owner_secret_id: owner.secret_id,
-        })
-        .await
-        .expect("the helper actor is alive")
-        .expect("the replica instance is created");
+    let mut owner = register_owner(&state, "Alice").await;
 
     let contact = helper
         .send(CreateContactMsg {
-            contact_mode: derec_proto::ContactMode::InlineKeys,
+            contact_mode: derec_proto::ContactMode::NoKeys,
             nonce: None,
-            replica_for_owner_secret: Some(owner.secret_id),
+            replica_for_owner_secret: None,
             attempt: 0,
         })
         .await
         .expect("the helper actor is alive")
-        .expect("the replica instance mints a contact");
+        .expect("the helper mints a contact");
 
     owner
         .protocol
         .start(DeRecFlow::Pairing {
-            kind: derec_proto::SenderKind::ReplicaSource,
+            kind: derec_proto::SenderKind::Owner,
             contact,
             peer_communication_info: HashMap::from([("name".to_owned(), "Alex".to_owned())]),
         })
         .await
-        .expect("the owner starts a replica pairing");
+        .expect("the owner starts a NoKeys pairing");
 
-    let channel_id = await_one_pending_channel(&helper).await;
+    let channel_id = await_helper_channel(&state, helper_id, &mut owner).await;
+    assert_eq!(
+        await_helper_status(
+            &state,
+            &helper,
+            &mut owner,
+            channel_id,
+            ChannelStatus::Paired
+        )
+        .await,
+        Some(ChannelStatus::Paired),
+        "the fast path confirms the channel first, or the test has nothing real to revert"
+    );
 
-    // The premise, asserted rather than assumed: `helper_channels` is written by
-    // `handle_events`, which `ProcessDelayed` skips when `process()` returns
-    // `Err`. An empty index is proof the event path never ran, and so that no
-    // auto-confirm notify was ever posted for this channel.
-    assert!(
-        state.helper_channels.get(&helper_id).is_none(),
-        "this test is only meaningful if the completion event was missed; the \
-         helper recorded the channel, so the fast path ran after all"
+    let helper_secret_id = helper
+        .send(InstanceForChannelMsg { channel_id })
+        .await
+        .expect("the helper actor is alive")
+        .expect("the helper's own instance holds the channel");
+    let mut store = SqlChannelStore::new(state.pool.clone(), helper_id.to_string());
+    let Some(ChannelRecord::Helper(mut record)) = store
+        .load(
+            helper_secret_id,
+            ChannelQuery::Helper {
+                channel_id: ChannelId(channel_id),
+            },
+        )
+        .await
+        .expect("the helper's channel store is readable")
+    else {
+        panic!("the helper holds a helper-channel record for the pairing");
+    };
+    record.status = ChannelStatus::Pending;
+    store
+        .save(helper_secret_id, ChannelRecord::Helper(record))
+        .await
+        .expect("the helper's channel store is writable");
+
+    assert_eq!(
+        await_one_pending_channel(&helper).await,
+        channel_id,
+        "the reverted record is the one channel awaiting confirmation"
     );
 
     // The tick is driven here rather than waited for. Its 15 s period put the

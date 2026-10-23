@@ -1,6 +1,6 @@
 # Verification
 
-Checking that helpers still hold the shares they confirmed, and what each verification state means.
+Checking that helpers still hold the shares they confirmed, what each verification state means, whether a version is recoverable, and periodic verification.
 
 ## Verify Shares
 
@@ -25,12 +25,27 @@ The summary reads *X of N verified · R rejected · I invalid proofs · F failed
 
 On the version card, *Helper Shares* keeps the result: ✓ verified, ✗ *Rejected verification: …*, ✗ *Failed verification: its proof does not match the share sent*, ○ not yet verified, with *X/N verified* beside the heading.
 
+## Recoverable?
+
+From SDK 0.0.9 each verified helper also reports how many subshares it holds for that version, and the version's own threshold. Under *Helper Shares* the card then says:
+
+- *vN recoverable — X of T subshares verified*: the helpers that proved their share hold enough between them;
+- *vN not recoverable from verified helpers alone — X of T*: they do not; helpers that did not answer may still hold the rest;
+- *vN recoverability unknown*: the version was published before the counts were recorded, so the app does not guess.
+
+## Periodic verification
+
+Vault Settings → **Periodic verification** runs the same challenge automatically, every *amount* minutes, hours or days, on the current version. It runs while the vault is open in a tab; a run is skipped while another operation or verification is in flight, and for a version restored from recovery. Each run is logged in the Console.
+
 ## When Verify Shares is unavailable
 
 The button is disabled, with the reason beneath it, when:
 
 - a publishing round is still open: *Publishing vN is still in progress — verify once it completes.*
 - the version was **restored from a recovered bag**. Restoring keeps no proof material for the helpers' shares, so it cannot be verified. Publish a new version (add or remove a secret) and verify that one.
+- this device's **verification copies of the version were deleted**: the library deletes them for a version helpers were told to stop keeping, and **Clean up…** deletes them on request. The challenge is not sent, and each helper shows as failed with that reason.
+
+A version whose verification copies were cleaned up (see [Protecting secrets](04-protecting-secrets.md#cleaning-up-verification-copies)) answers *no proof* and sends no challenge.
 
 ## A vault acting as a helper
 

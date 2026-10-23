@@ -2,6 +2,8 @@
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
 import type { AuthenticationMethod, UnpairAck } from './config'
+import type { PublishPolicy } from './owner/publishPolicy'
+import type { VerificationSchedule } from './owner/verificationSchedule'
 import type { PairingRole } from './pairingRoles'
 
 export type TransportProtocol = 'https' | 'grpc'
@@ -33,6 +35,12 @@ export interface SecretShareRef {
    * `owner/shareFailure.ts`. Absent on records written before it was kept.
    */
   failure?: { status: number; memo: string }
+  /**
+   * Subshares this participant was sent in that round — its
+   * `ProtectSecretStarted.weight`. Absent means 1, which is also every share
+   * recorded before weighted helpers.
+   */
+  weight?: number
 }
 
 /**
@@ -98,6 +106,12 @@ export interface PairedParticipant {
   sharedKey?: string
   /** True for participants running WASM in their browser (no backend protocol) */
   browserManaged?: boolean
+  /**
+   * Subshares this helper receives in each round — the weight the library has
+   * stored on its channel record, as the last round reported it. Absent means
+   * 1. Only ever above 1 for a helper this vault protects with.
+   */
+  weight?: number
 }
 
 /** A single user-facing secret within the bag. */
@@ -113,6 +127,23 @@ export interface UserSecret {
 /** One version of the secret bag as distributed to helpers. */
 export interface BagVersion {
   version: number
+  /**
+   * Subshares each verified helper holds for this version, by participant id,
+   * as `ShareVerified.subshares` reported it; `null` when the SDK had no count
+   * (a share stored before SDK 0.0.9 recorded one).
+   */
+  verifiedSubshares?: Record<string, number | null>
+  /**
+   * The threshold this version was split with, as `ShareVerified.threshold`
+   * reported it; `null` when not recorded. See `recoverability`.
+   */
+  verifiedThreshold?: number | null
+  /**
+   * The threshold this version was split with (SDK 0.0.9: per version).
+   * Absent on versions recorded before it was; the bag's `threshold` then
+   * stands in.
+   */
+  threshold?: number
   /** IDs of participants that confirmed storage of this version's share */
   participantIds: string[]
   /** IDs of participants whose share passed verification for this version */
@@ -187,6 +218,8 @@ export interface PublishedRound {
   version: number
   /** Participants the round sent a share to. */
   recipientIds: string[]
+  /** The threshold the round was split with — what its progress is measured against. */
+  threshold: number
 }
 
 /** The single secret bag managed by the protocol. */
@@ -246,6 +279,13 @@ export interface RecoveredSecretHelper {
   communicationInfo?: Record<string, string>
   /** 32-byte channel key, base64url-encoded. */
   sharedKey: string
+  /**
+   * Shamir subshares this helper held in the round that wrote the roster.
+   * Handed back to `restore`, which writes it into the helper's channel record
+   * so the next publish keeps it. Absent on snapshots persisted before SDK
+   * 0.0.9 weighted helpers, which the library reads as 1.
+   */
+  weight?: number
 }
 
 /**
@@ -291,6 +331,11 @@ export interface RecoveredSecretSnapshot {
     /** 32-byte replica-group key, base64url-encoded. */
     sharedKey: string
   }
+  /**
+   * The threshold the roster's version was split with (SDK 0.0.9). Absent on
+   * rosters written before it was recorded.
+   */
+  threshold?: number
 }
 
 /** A successfully recovered secret. */
@@ -434,6 +479,20 @@ export interface Vault {
    */
   configOverrides: VaultConfigOverrides
   /**
+   * The owner's standing publish choices — default threshold, default helper
+   * weights, which versions helpers keep, and when old verification copies
+   * are deleted. Absent on vaults saved before it existed: resolve with
+   * `resolvePublishPolicy`, never read it directly.
+   */
+  publishPolicy?: PublishPolicy
+  /**
+   * Verify the current version automatically, every so often — the same
+   * challenge as Verify Shares. Absent or `null`: only by hand.
+   */
+  verificationSchedule?: VerificationSchedule | null
+  /** When the last scheduled verification ran (ms since the epoch). */
+  lastScheduledVerificationAt?: number
+  /**
    * Protect rounds dispatched but not yet resolved, oldest first, each with the
    * bag version it will commit. Several can be open at once — a secret added
    * while the previous round still waits on a slow helper.
@@ -527,6 +586,13 @@ export interface PendingProtectRound {
   bag: SecretBag
   /** Participant channels whose answer is still awaited. */
   channelIds: string[]
+  /**
+   * Subshares sent to each recipient, by participant id; absent means 1.
+   * Absent altogether on rounds persisted before weighted helpers.
+   */
+  weights?: Record<string, number>
+  /** The threshold the round was split with; absent or `null` on rounds persisted before it was recorded. */
+  threshold?: number | null
 }
 
 /**

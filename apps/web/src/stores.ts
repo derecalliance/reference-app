@@ -519,6 +519,12 @@ export interface StoredHelperChannel {
   peerRole: string | null
   /** Seconds since the epoch the record was created, or `null` when absent. */
   createdAtSecs: number | null
+  /**
+   * Subshares the library gives this helper each round. A record written
+   * before weighted helpers has no `weight`, and the library reads both that
+   * and a stored `0` as 1, so this does too.
+   */
+  weight: number
 }
 
 /**
@@ -542,17 +548,78 @@ export function listHelperChannels(namespace: string, secretId: string): StoredH
       if (!record) continue
       const status = record['status']
       const createdAt = record['created_at']
+      const weight = record['weight']
       channels.push({
         channelId,
         status: status === 'Pending' || status === 'Paired' || status === 'Unpairing' ? status : 'Paired',
         peerRole: typeof record['peer_role'] === 'string' ? (record['peer_role'] as string) : null,
         createdAtSecs: typeof createdAt === 'number' && createdAt > 0 ? createdAt : null,
+        weight: typeof weight === 'number' && Number.isInteger(weight) && weight > 0 ? weight : 1,
       })
     } catch {
       // A record that will not parse is the library's to report.
     }
   }
   return channels
+}
+
+/**
+ * The weight the library has stored for each paired helper this vault
+ * protects with, by channel id.
+ *
+ * A protect round's `weights` map is the *full* assignment: a helper it does
+ * not name goes back to 1. So every round passes this back unless the owner is
+ * changing it, or the weights they chose would be lost on the next publish.
+ * Channels where the peer is the owner — this vault helping someone else — are
+ * not this vault's to weight, and the library refuses them as keys.
+ */
+export function storedHelperWeights(namespace: string, secretId: string): Map<string, number> {
+  return new Map(
+    listHelperChannels(namespace, secretId)
+      .filter(c => c.status === 'Paired' && c.peerRole === 'Helper')
+      .map(c => [c.channelId, c.weight]),
+  )
+}
+
+/** How much this device stores for one version of its own secret. */
+export interface ProofVersionUsage {
+  version: number
+  /** Verification copies held for it — one per helper channel that has one. */
+  copies: number
+  /** Their size in storage, approximately (the decoded share bytes). */
+  bytes: number
+}
+
+/**
+ * The owner side's verification copies in one partition, per version, newest
+ * first: the exact share this device sent (or, on a replica, mirrored) to each
+ * of its helpers, kept only to check that helper's answers.
+ *
+ * Only this owner's helper channels — peer role `Helper` — are counted: a
+ * channel whose peer is an owner holds a share this vault keeps *for* someone
+ * else, which is theirs and never this vault's to delete.
+ */
+export function listOwnerProofVersions(namespace: string, secretId: string): ProofVersionUsage[] {
+  const byVersion = new Map<number, ProofVersionUsage>()
+  for (const channel of listHelperChannels(namespace, secretId)) {
+    if (channel.peerRole !== 'Helper') continue
+    for (const version of loadNumberArray(channelVersionsKey(namespace, secretId, channel.channelId))) {
+      const data = localStorage.getItem(shareDataKey(namespace, secretId, channel.channelId, version))
+      if (data === null) continue
+      const usage = byVersion.get(version) ?? { version, copies: 0, bytes: 0 }
+      usage.copies += 1
+      usage.bytes += Math.floor((data.length * 3) / 4)
+      byVersion.set(version, usage)
+    }
+  }
+  return [...byVersion.values()].sort((a, b) => b.version - a.version)
+}
+
+/** The channel ids of this owner's helper channels in one partition — see `listOwnerProofVersions`. */
+export function ownerHelperChannelIds(namespace: string, secretId: string): string[] {
+  return listHelperChannels(namespace, secretId)
+    .filter(c => c.peerRole === 'Helper')
+    .map(c => c.channelId)
 }
 
 /**
@@ -580,8 +647,7 @@ export function forgetHelperChannel(namespace: string, secretId: string, channel
 
   const cKey = channelVersionsKey(namespace, secretId, channelId)
   for (const version of loadNumberArray(cKey)) {
-    localStorage.removeItem(shareDataKey(namespace, secretId, channelId, version))
-    localStorage.removeItem(shareMetaKey(namespace, secretId, channelId, version))
+    removeShareRecords(namespace, secretId, channelId, version)
   }
   localStorage.removeItem(cKey)
   const sharesKey = shareChannelsKey(namespace, secretId)
@@ -783,6 +849,14 @@ export interface Share {
   secretId: string
   version: number
   bytes: Uint8Array
+  /**
+   * Subshares this share carries — owner side only (SDK 0.0.9). Absent on a
+   * helper's share and on owner shares stored before it was recorded; absent
+   * is "not recorded", never 0.
+   */
+  subshares?: number | null
+  /** The threshold this version was split with — owner side only, as `subshares`. */
+  threshold?: number | null
 }
 
 // ── Share storage keys ───────────────────────────────────────────────────────
@@ -813,6 +887,28 @@ function shareMetaKey(
   version: number,
 ): string {
   return `${partition(ns, secretId)}:share-meta:${channelId}:${version}`
+}
+
+/**
+ * The owner side's per-version subshare count and threshold, as JSON
+ * `{ subshares?, threshold? }`: derec:<ns>:<secretId>:share-counts:<channelId>:<version>.
+ * Written only when either is present, so a helper's share and every record
+ * from before SDK 0.0.9 simply has none.
+ */
+function shareCountsKey(ns: string, secretId: string, channelId: string, version: number): string {
+  return `${partition(ns, secretId)}:share-counts:${channelId}:${version}`
+}
+
+interface StoredShareCounts {
+  subshares?: number
+  threshold?: number
+}
+
+/** Remove every record one stored share is made of. */
+function removeShareRecords(ns: string, secretId: string, channelId: string, version: number): void {
+  localStorage.removeItem(shareDataKey(ns, secretId, channelId, version))
+  localStorage.removeItem(shareMetaKey(ns, secretId, channelId, version))
+  localStorage.removeItem(shareCountsKey(ns, secretId, channelId, version))
 }
 
 /** Version index per channel, within one secret partition. */
@@ -875,7 +971,14 @@ export function makeShareStore(namespace: string, options: ShareStoreOptions = {
     // before the metadata existed.
     const recordSecretId =
       localStorage.getItem(shareMetaKey(namespace, secretId, channelId, version)) ?? secretId
-    return { secretId: recordSecretId, version, bytes: fromBase64Url(dataVal) }
+    const share: Share = { secretId: recordSecretId, version, bytes: fromBase64Url(dataVal) }
+    const counts = localStorage.getItem(shareCountsKey(namespace, secretId, channelId, version))
+    if (counts) {
+      const { subshares, threshold } = JSON.parse(counts) as StoredShareCounts
+      if (subshares !== undefined) share.subshares = subshares
+      if (threshold !== undefined) share.threshold = threshold
+    }
+    return share
   }
 
   function versionsFor(secretId: string, channelId: string): number[] {
@@ -938,6 +1041,15 @@ export function makeShareStore(namespace: string, options: ShareStoreOptions = {
         shareMetaKey(namespace, secretId, channelId, share.version),
         share.secretId,
       )
+      // Persisted as given and returned unchanged, as the SDK requires; a
+      // re-save without them must not leave a stale count behind.
+      const counts: StoredShareCounts = {
+        ...(share.subshares != null ? { subshares: share.subshares } : {}),
+        ...(share.threshold != null ? { threshold: share.threshold } : {}),
+      }
+      const countsKey = shareCountsKey(namespace, secretId, channelId, share.version)
+      if (Object.keys(counts).length > 0) storeItem(countsKey, JSON.stringify(counts))
+      else localStorage.removeItem(countsKey)
 
       const cKey = channelVersionsKey(namespace, secretId, channelId)
       const storedVersions = loadNumberArray(cKey)
@@ -970,8 +1082,7 @@ export function makeShareStore(namespace: string, options: ShareStoreOptions = {
     async removeChannel(secretId: string, channelId: string): Promise<void> {
       const cKey = channelVersionsKey(namespace, secretId, channelId)
       for (const v of loadNumberArray(cKey)) {
-        localStorage.removeItem(shareDataKey(namespace, secretId, channelId, v))
-        localStorage.removeItem(shareMetaKey(namespace, secretId, channelId, v))
+        removeShareRecords(namespace, secretId, channelId, v)
       }
       localStorage.removeItem(cKey)
 
@@ -991,8 +1102,7 @@ export function makeShareStore(namespace: string, options: ShareStoreOptions = {
       if (versions.length === 0) return
       const doomed = new Set(versions)
       for (const v of doomed) {
-        localStorage.removeItem(shareDataKey(namespace, secretId, channelId, v))
-        localStorage.removeItem(shareMetaKey(namespace, secretId, channelId, v))
+        removeShareRecords(namespace, secretId, channelId, v)
       }
 
       const cKey = channelVersionsKey(namespace, secretId, channelId)
@@ -1039,6 +1149,14 @@ export interface UserSecrets {
   version: number
   secrets: UserSecretEntry[]
   description?: string
+  /**
+   * Decimal replica id of the member that published `version` — what replica
+   * members compare to tell a re-send from a conflicting copy. Store and
+   * return it unchanged.
+   */
+  author_replica_id?: string
+  /** The threshold the next publish splits at unless one is passed (SDK 0.0.9). */
+  threshold?: number | null
 }
 
 /** Persisted form — binary fields base64url-encoded so it survives JSON. */
@@ -1046,6 +1164,8 @@ interface StoredUserSecrets {
   version: number
   secrets: Array<{ id: string; name: string; data: string }>
   description?: string
+  author_replica_id?: string
+  threshold?: number
 }
 
 function userSecretKey(ns: string, secretId: string): string {
@@ -1071,6 +1191,8 @@ export function makeUserSecretStore(namespace: string) {
           name: s.name,
           data: fromBase64Url(s.data),
         })),
+        ...(stored.author_replica_id !== undefined ? { author_replica_id: stored.author_replica_id } : {}),
+        ...(stored.threshold !== undefined ? { threshold: stored.threshold } : {}),
       }
     },
 
@@ -1083,6 +1205,8 @@ export function makeUserSecretStore(namespace: string) {
           name: s.name,
           data: toBase64Url(s.data),
         })),
+        ...(value.author_replica_id !== undefined ? { author_replica_id: value.author_replica_id } : {}),
+        ...(value.threshold != null ? { threshold: value.threshold } : {}),
       }
       storeItem(userSecretKey(namespace, secretId), JSON.stringify(stored))
     },

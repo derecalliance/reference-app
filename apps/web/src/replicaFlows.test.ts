@@ -292,14 +292,14 @@ describe('formatFingerprint', () => {
 })
 
 describe('mirrored payload shape (spec risk R1)', () => {
-  it('keeps the mirrored secret identical to what recovery produces', () => {
+  it('keeps the mirrored secret passable to restore, field for field', () => {
     // The real assertion is the type of `REPLICA_PAYLOAD_MIRRORS_RECOVERY`,
-    // which only inhabits `true` when `ReplicaSecretReceived['secret']` and
-    // `SecretRecovered['secret']` are exactly the same type. If a WASM rebuild
-    // ever diverges them, its declared type becomes `false` and `typecheck`
-    // fails at the declaration. This asserts the value so the guard is also
-    // reachable from the suite rather than being dead-looking code.
-    expect(REPLICA_PAYLOAD_MIRRORS_RECOVERY).toBe(true)
+    // which only inhabits `[true, true, true, true]` while a mirrored secret is
+    // assignable to `SecretRecovered['secret']` and has the same fields at every
+    // level. If a WASM rebuild ever diverges them, an element's type becomes
+    // `false` and `typecheck` fails at the declaration. This asserts the value
+    // so the guard is also reachable from the suite rather than dead-looking.
+    expect(REPLICA_PAYLOAD_MIRRORS_RECOVERY).toEqual([true, true, true, true])
   })
 })
 
@@ -945,6 +945,19 @@ describe('adoptedVaultState', () => {
     expect(secretBag.currentVersion.participantIds).not.toContain(replica?.id)
     expect(secretBag.currentVersion.helpers.map(h => h.channelId)).not.toContain('950')
     expect(replica?.secretShares).toEqual([])
+  })
+
+  it('keeps the group\'s threshold and each helper\'s weight (review I3)', () => {
+    const weighted: PendingReplicaAdoption = {
+      ...adoption,
+      secret: { ...adoption.secret, threshold: 3, helpers: [{ ...adoption.secret.helpers[0], weight: 2 }] },
+    }
+
+    const { participants, secretBag } = adoptedVaultState(weighted, actors, 2)
+
+    expect(secretBag.threshold).toBe(3)
+    expect(secretBag.currentVersion.threshold).toBe(3)
+    expect(participants.find(p => p.channelId === '901')?.weight).toBe(2)
   })
 
   it('leaves the roster unchanged when the snapshot carries no group', () => {

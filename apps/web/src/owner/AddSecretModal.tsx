@@ -8,21 +8,23 @@ import { ModalFrame } from '../ModalFrame'
 import { ModalCloseButton } from './primitives'
 import { ProtectRoundProgress } from './ProtectRoundProgress'
 import { roundProgress } from './roundProgress'
-import { publishTargets } from '../ownerPairing'
 import { bagBytes, bagSizeProblem, formatBytes, MAX_BAG_SIZE_LABEL } from './secretLimits'
 import type { PairedParticipant, PublishedRound, SecretBag } from '../types'
+import type { PublishChoice, PublishContext } from '../vault/types'
+import { PublishOptionsPanel } from './PublishOptionsPanel'
+import { usePublishOptions } from './usePublishOptions'
 
 type AddSecretStatus =
   | { kind: 'idle' }
   | { kind: 'sending' }
-  | { kind: 'confirming'; participantIds: string[]; version: number }
+  | { kind: 'confirming'; participantIds: string[]; version: number; threshold: number }
   | { kind: 'error'; message: string }
 
 export function AddSecretModal({
   participants,
   pendingChannelIds,
   secretBag,
-  threshold,
+  publishContext,
   onClose,
   onAddSecret,
 }: {
@@ -30,15 +32,16 @@ export function AddSecretModal({
   /** Channels the library holds `Pending`, which a round sends nothing — see `publishTargets`. */
   pendingChannelIds: ReadonlySet<string>
   secretBag: SecretBag | null
-  threshold: number
+  /** What this publish starts from: defaults, committed versions, retention preview. */
+  publishContext: PublishContext
   onClose: () => void
-  onAddSecret: (name: string, data: string) => Promise<PublishedRound | null>
+  onAddSecret: (name: string, data: string, choice: PublishChoice) => Promise<PublishedRound | null>
 }) {
   // Exactly the participants the round will target: owner-role channels the
   // library does not hold `Pending` — see `publishTargets`. A helper whose
   // fingerprint was refused is sent nothing, so listing it here promised a
   // share the round never sends.
-  const pairedParticipants = publishTargets(participants, pendingChannelIds)
+  const options = usePublishOptions(participants, pendingChannelIds, publishContext)
 
   const [form, setForm] = useState({ name: '', data: '' })
   const [status, setStatus] = useState<AddSecretStatus>({ kind: 'idle' })
@@ -53,11 +56,11 @@ export function AddSecretModal({
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!draft.name || !draft.data || sizeProblem) return
+    if (!draft.name || !draft.data || sizeProblem || !options.choice) return
 
     setStatus({ kind: 'sending' })
     try {
-      const round = await onAddSecret(draft.name, draft.data)
+      const round = await onAddSecret(draft.name, draft.data, options.choice)
       if (round === null) {
         setStatus({
           kind: 'error',
@@ -75,7 +78,12 @@ export function AddSecretModal({
       // Followed for the participants the round was actually sent to, as the
       // library reported them, rather than the list above: the two agree
       // unless a channel changed state between listing and sending.
-      setStatus({ kind: 'confirming', participantIds: round.recipientIds, version: round.version })
+      setStatus({
+        kind: 'confirming',
+        participantIds: round.recipientIds,
+        version: round.version,
+        threshold: round.threshold,
+      })
     } catch (err) {
       setStatus({ kind: 'error', message: errorText(err) })
     }
@@ -86,7 +94,8 @@ export function AddSecretModal({
     ? roundProgress(participants, confirming.participantIds, confirming.version)
     : null
 
-  const canSubmit = draft.name.length > 0 && draft.data.length > 0 && sizeProblem === null
+  const canSubmit =
+    draft.name.length > 0 && draft.data.length > 0 && sizeProblem === null && options.choice !== null
   const isBlocking = status.kind === 'sending' || (progress !== null && !progress.allResolved)
   const isFirstSecret = !secretBag
 
@@ -107,7 +116,7 @@ export function AddSecretModal({
       {progress && confirming ? (
         <ProtectRoundProgress
           progress={progress}
-          threshold={threshold}
+          threshold={confirming.threshold}
           version={confirming.version}
           failureHeading="Secret protection failed."
           onClose={onClose}
@@ -154,21 +163,16 @@ export function AddSecretModal({
             )}
           </div>
 
-          <div className="form-field">
-            <span className="form-label">Participants ({pairedParticipants.length} paired)</span>
-            {pairedParticipants.length === 0 ? (
-              <p className="empty-hint">No participants paired yet.</p>
-            ) : (
-              <ul className="participant-check-list" role="list">
-                {pairedParticipants.map(h => (
-                  <li key={h.id} className="participant-check-item">
-                    <span className={`participant-dot ${h.connectionStatus}`} aria-hidden="true" />
-                    <span>{h.name}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+          <PublishOptionsPanel
+            helpers={options.helpers}
+            policy={publishContext.policy}
+            committedVersions={publishContext.committedVersions}
+            openVersions={publishContext.openVersions}
+            preview={publishContext.preview}
+            draft={options.draft}
+            onChange={options.setDraft}
+            disabled={status.kind === 'sending'}
+          />
 
           {status.kind === 'error' && (
             <p className="field-error">{status.message}</p>

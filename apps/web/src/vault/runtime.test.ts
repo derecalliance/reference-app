@@ -43,10 +43,10 @@ describe('VaultRuntime.removeSecret', () => {
     const r = new VaultRuntime(withBag(), deps())
     const protect = vi
       .spyOn(r, 'protect')
-      .mockResolvedValue({ version: 3, participants: [], replicaTargets: [] })
+      .mockResolvedValue({ version: 3, participants: [], replicaTargets: [], threshold: 2 })
 
-    await expect(r.removeSecret('aa')).resolves.toEqual({ version: 3, recipientIds: [] })
-    expect(protect).toHaveBeenCalledWith([secrets[1]])
+    await expect(r.removeSecret('aa')).resolves.toEqual({ version: 3, recipientIds: [], threshold: 2 })
+    expect(protect).toHaveBeenCalledWith([secrets[1]], {})
   })
 
   it('refuses a secret that is not in the current version, publishing nothing', async () => {

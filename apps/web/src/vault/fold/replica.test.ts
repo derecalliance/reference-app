@@ -34,6 +34,7 @@ function context(overrides: Partial<FoldContext> = {}): FoldContext {
     channelInfoOutcome: vi.fn(),
     awaitingIdentityAnswer: vi.fn(() => false),
     isShareHeld: vi.fn(() => true),
+    respondToFailure: vi.fn(),
     ...overrides,
   }
 }

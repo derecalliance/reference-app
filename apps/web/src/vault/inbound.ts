@@ -207,6 +207,21 @@ const INBOUND: Record<PendingActionKind, InboundHandler> = {
   Discovery: acceptAutomatically,
   GetShare: acceptAutomatically,
   UpdateChannelInfo: acceptAutomatically,
+
+  // The token of a failed request. It only ever arrives inside
+  // `RequestFailed`, which the fold answers with `reject`; `accept` refuses it.
+  // Should one surface as `ActionRequired` anyway, accepting is wrong and
+  // there is nothing to ask the owner, so it is logged and left.
+  Failed: (event, current, ctx) => {
+    ctx.log({
+      role: 'owner',
+      flow: 'protocol',
+      step: 'failed_action_required',
+      description: `A failed request on channel ${event.channel_id} surfaced as ActionRequired — not accepted`,
+      payload: { channelId: event.channel_id },
+    })
+    return { vault: current, holdBack: false }
+  },
 }
 
 /**

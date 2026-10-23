@@ -46,14 +46,23 @@ fn version_list(versions: &[i64]) -> String {
         .join(", ")
 }
 
-/// Turn `(version, share_secret_id, bytes)` rows into `Share`s.
+/// One stored share as selected: `(version, share_secret_id, bytes, subshares, threshold)`.
+type ShareRow = (i64, String, String, Option<i64>, Option<i64>);
+
+/// A nullable `u32` column back to its value: stored from a `u32`, so anything
+/// outside the range means the row was written by something else.
+fn optional_u32(value: Option<i64>) -> Result<Option<u32>, ShareStoreError> {
+    value.map(|v| u32::try_from(v).map_err(backend)).transpose()
+}
+
+/// Turn selected [`ShareRow`]s into `Share`s.
 ///
 /// `share_secret_id` is read back rather than reconstructed from the partition
 /// argument: a `Share` is self-describing and its `secret_id` is the secret the
 /// share belongs to, which on a helper is the owner's, not the partition's.
-fn to_shares(rows: Vec<(i64, String, String)>) -> Result<Vec<Share>, ShareStoreError> {
+fn to_shares(rows: Vec<ShareRow>) -> Result<Vec<Share>, ShareStoreError> {
     rows.into_iter()
-        .map(|(version, share_secret, encoded)| {
+        .map(|(version, share_secret, encoded, subshares, threshold)| {
             Ok(Share {
                 secret_id: super::text_to_id(&share_secret).map_err(backend)?,
                 // Stored from a u32 and never written any other way, so a
@@ -61,6 +70,8 @@ fn to_shares(rows: Vec<(i64, String, String)>) -> Result<Vec<Share>, ShareStoreE
                 // else — an error rather than a truncating cast.
                 version: u32::try_from(version).map_err(backend)?,
                 bytes: from_base64(&encoded).map_err(backend)?,
+                subshares: optional_u32(subshares)?,
+                threshold: optional_u32(threshold)?,
             })
         })
         .collect()
@@ -141,9 +152,9 @@ impl DeRecShareStore for SqlShareStore {
         Box::pin(async move {
             // An empty filter means "every version", matching the in-memory
             // store — not "no versions", which an `IN ()` would mean.
-            let rows: Vec<(i64, String, String)> = if versions.is_empty() {
+            let rows: Vec<ShareRow> = if versions.is_empty() {
                 sqlx::query_as(
-                    "SELECT version, share_secret_id, bytes FROM shares \
+                    "SELECT version, share_secret_id, bytes, subshares, threshold FROM shares \
                      WHERE secret_id = $1 AND channel_id = $2 AND actor_id = $3",
                 )
                 .bind(&secret)
@@ -155,7 +166,7 @@ impl DeRecShareStore for SqlShareStore {
             } else {
                 let list = version_list(&versions);
                 sqlx::query_as(&format!(
-                    "SELECT version, share_secret_id, bytes FROM shares \
+                    "SELECT version, share_secret_id, bytes, subshares, threshold FROM shares \
                      WHERE secret_id = $1 AND channel_id = $2 AND actor_id = $3 \
                      AND version IN ({list})"
                 ))
@@ -195,21 +206,21 @@ impl DeRecShareStore for SqlShareStore {
             let channel_list = in_list(&channels);
             let sql = if versions.is_empty() {
                 format!(
-                    "SELECT version, share_secret_id, bytes FROM shares \
+                    "SELECT version, share_secret_id, bytes, subshares, threshold FROM shares \
                      WHERE secret_id = $1 AND actor_id = $2 \
                      AND channel_id IN ({channel_list})"
                 )
             } else {
                 let version_list = version_list(&versions);
                 format!(
-                    "SELECT version, share_secret_id, bytes FROM shares \
+                    "SELECT version, share_secret_id, bytes, subshares, threshold FROM shares \
                      WHERE secret_id = $1 AND actor_id = $2 \
                      AND channel_id IN ({channel_list}) \
                      AND version IN ({version_list})"
                 )
             };
 
-            let rows: Vec<(i64, String, String)> = sqlx::query_as(&sql)
+            let rows: Vec<ShareRow> = sqlx::query_as(&sql)
                 .bind(&secret)
                 .bind(&actor)
                 .fetch_all(&pool)
@@ -236,8 +247,8 @@ impl DeRecShareStore for SqlShareStore {
             }
 
             let channel_list = in_list(&channels);
-            let rows: Vec<(i64, String, String)> = sqlx::query_as(&format!(
-                "SELECT version, share_secret_id, bytes FROM shares \
+            let rows: Vec<ShareRow> = sqlx::query_as(&format!(
+                "SELECT version, share_secret_id, bytes, subshares, threshold FROM shares \
                  WHERE secret_id = $1 AND actor_id = $2 \
                  AND channel_id IN ({channel_list})"
             ))
@@ -288,6 +299,8 @@ impl DeRecShareStore for SqlShareStore {
         let actor = self.actor_id.clone();
         // The share's own secret, which is not necessarily the partition.
         let share_secret = id_to_text(share.secret_id);
+        let subshares = share.subshares.map(i64::from);
+        let threshold = share.threshold.map(i64::from);
 
         Box::pin(async move {
             let mut tx = crate::repositories::begin_write(&pool)
@@ -308,8 +321,9 @@ impl DeRecShareStore for SqlShareStore {
 
             sqlx::query(
                 "INSERT INTO shares \
-                 (secret_id, channel_id, version, bytes, actor_id, share_secret_id) \
-                 VALUES ($1, $2, $3, $4, $5, $6)",
+                 (secret_id, channel_id, version, bytes, actor_id, share_secret_id, \
+                  subshares, threshold) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
             )
             .bind(&secret)
             .bind(&channel)
@@ -317,6 +331,8 @@ impl DeRecShareStore for SqlShareStore {
             .bind(&bytes)
             .bind(&actor)
             .bind(&share_secret)
+            .bind(subshares)
+            .bind(threshold)
             .execute(&mut *tx)
             .await
             .map_err(backend)?;

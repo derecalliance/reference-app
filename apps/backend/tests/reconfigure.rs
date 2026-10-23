@@ -104,6 +104,7 @@ fn helper_channel() -> HelperChannel {
         peer_role: derec_proto::SenderKind::Owner,
         status: Default::default(),
         created_at: 0,
+        weight: 1,
     }
 }
 

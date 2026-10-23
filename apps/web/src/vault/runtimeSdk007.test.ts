@@ -128,7 +128,7 @@ describe('a vault diverged from its replica group', () => {
     const r = new VaultRuntime(vault({ secretBag: bag(6), replicaConflict: conflict }), deps())
     const protect = vi
       .spyOn(r, 'protect')
-      .mockResolvedValue({ version: 7, participants: [], replicaTargets: [] })
+      .mockResolvedValue({ version: 7, participants: [], replicaTargets: [], threshold: 2 })
     const merged = [
       { id: 'aa', name: 'Seed', data: 'one two' },
       { id: 'dd', name: 'FromDest', data: 'y' },
@@ -236,7 +236,7 @@ describe('an identity change on a vault in a replica group', () => {
     stubInstance(r, protocol)
     const protect = vi.spyOn(r, 'protect').mockImplementation(async () => {
       order.push('publish')
-      return { version: 5, participants: [], replicaTargets: [] }
+      return { version: 5, participants: [], replicaTargets: [], threshold: 2 }
     })
     return { r, protect, order }
   }

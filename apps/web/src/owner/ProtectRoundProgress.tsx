@@ -35,13 +35,18 @@ function failureSummary(rows: RoundProgress['rows']): string {
  * The per-participant view of a protect round in flight: who confirmed, who
  * refused, who never answered or could not be reached, and whether enough did. Shared by adding and removing a secret,
  * which publish a new bag version the same way.
+ *
+ * "Enough" is counted in subshares, as the library counts it: with weighted
+ * helpers a heavier helper's confirmation counts for more. When nobody is
+ * weighted the two are the same and the view reads as it always did.
  */
 export function ProtectRoundProgress({ progress, threshold, version, failureHeading, onClose }: ProtectRoundProgressProps) {
-  const { rows, confirmedCount, failedCount, allResolved } = progress
+  const { rows, confirmedCount, confirmedWeight, failedCount, allResolved } = progress
   const resolvedCount = confirmedCount + failedCount
   const failures = failureSummary(rows)
   const waitingCount = rows.length - resolvedCount
-  const thresholdMet = allResolved && confirmedCount >= threshold
+  const thresholdMet = allResolved && confirmedWeight >= threshold
+  const weighted = rows.some(r => r.weight > 1)
 
   return (
     <div className="modal-body">
@@ -59,16 +64,17 @@ export function ProtectRoundProgress({ progress, threshold, version, failureHead
         <p className="share-progress-summary">
           {confirmedCount} of {rows.length} confirmed
           {failures && ` · ${failures}`}
-          {!allResolved && ` · ${waitingCount} waiting (need ${threshold})`}
+          {!allResolved && ` · ${waitingCount} waiting (need ${threshold}${weighted ? ' subshares' : ''})`}
         </p>
       </div>
 
       {!allResolved && (
         <RoundStillOpen
           version={version}
-          confirmedCount={confirmedCount}
+          confirmed={confirmedWeight}
           threshold={threshold}
           waitingCount={waitingCount}
+          weighted={weighted}
         />
       )}
 
@@ -90,7 +96,10 @@ export function ProtectRoundProgress({ progress, threshold, version, failureHead
                     : <span className="verify-spinner" role="status" aria-label="Waiting for confirmation" />
                 }
               </span>
-              <span className="share-progress-item-name">{h.name}</span>
+              <span className="share-progress-item-name">
+                {h.name}
+                {weighted && <span className="share-progress-item-weight"> ×{h.weight}</span>}
+              </span>
               <span className={`share-progress-item-status ${confirmed ? 'status--verified' : ''} ${failed ? 'status--failed' : ''}`}>
                 {label}
               </span>
@@ -102,7 +111,9 @@ export function ProtectRoundProgress({ progress, threshold, version, failureHead
       {allResolved && !thresholdMet && (
         <div className="threshold-failure-banner" role="alert">
           <strong>{failureHeading}</strong>{' '}
-          Only {confirmedCount} of the required {threshold} helpers confirmed.
+          {weighted
+            ? `Only ${confirmedWeight} of the required ${threshold} subshares were confirmed (${confirmedCount} helper${confirmedCount === 1 ? '' : 's'}).`
+            : `Only ${confirmedCount} of the required ${threshold} helpers confirmed.`}{' '}
           The secret bag has been rolled back.
         </div>
       )}
@@ -126,9 +137,12 @@ export function ProtectRoundProgress({ progress, threshold, version, failureHead
 
 interface RoundStillOpenProps {
   version: number
-  confirmedCount: number
+  /** Confirmed so far, in the threshold's unit: subshares. */
+  confirmed: number
   threshold: number
   waitingCount: number
+  /** Whether any helper holds more than one subshare, so the unit is worth naming. */
+  weighted: boolean
 }
 
 /**
@@ -141,23 +155,25 @@ interface RoundStillOpenProps {
  * threshold visibly met, the bag visibly unchanged. Naming the wait, and that
  * closing is safe, is what keeps an early close from looking like a failure.
  */
-function RoundStillOpen({ version, confirmedCount, threshold, waitingCount }: RoundStillOpenProps) {
+function RoundStillOpen({ version, confirmed, threshold, waitingCount, weighted }: RoundStillOpenProps) {
   const waiting = `${waitingCount} participant${waitingCount === 1 ? '' : 's'}`
-  if (confirmedCount >= threshold) {
+  const unit = weighted ? ' subshares' : ''
+  if (confirmed >= threshold) {
     return (
       <p className="round-pending-note" role="status">
-        Threshold reached — {confirmedCount} of the {threshold} needed have confirmed. Still waiting
+        Threshold reached — {confirmed} of the {threshold}{unit} needed have confirmed. Still waiting
         on {waiting}: v{version} is committed once{' '}
         {waitingCount === 1 ? 'it answers or times out' : 'they answer or time out'}. You can close
         this; the round keeps running.
       </p>
     )
   }
-  const needed = threshold - confirmedCount
+  const needed = threshold - confirmed
   return (
     <p className="round-pending-note" role="status">
-      Waiting on {waiting} — {needed} more confirmation{needed === 1 ? '' : 's'} needed before v
-      {version} can be committed.
+      Waiting on {waiting} — {needed} more{' '}
+      {weighted ? `subshare${needed === 1 ? '' : 's'}` : `confirmation${needed === 1 ? '' : 's'}`} needed
+      before v{version} can be committed.
     </p>
   )
 }

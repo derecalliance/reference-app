@@ -119,14 +119,21 @@ describe('verifyBlockedReason', () => {
 })
 
 describe('describeVerifyFailure', () => {
-  it('explains NoProof as a version restored from a recovered bag (SDK 0.0.9)', () => {
+  it('explains NoProof on a restored version as the restore (SDK 0.0.9)', () => {
     expect(
-      describeVerifyFailure({ reason: 'NoProof', error: 'no proof held for this channel at v3' }, 3),
-    ).toContain('v3 was restored from a recovered bag')
+      describeVerifyFailure({ reason: 'NoProof', error: 'no proof held for this channel at v3' }, version({ restoredFromRecovery: true })),
+    ).toContain('was restored from a recovered bag')
+  })
+
+  it('explains NoProof on any other version as deleted copies, not a restore', () => {
+    const text = describeVerifyFailure({ reason: 'NoProof', error: 'no proof' }, version({}))
+
+    expect(text).not.toContain('restored')
+    expect(text).toContain('no verification copies')
   })
 
   it('passes any other failure through in the library’s words', () => {
-    expect(describeVerifyFailure({ reason: 'NoSharedKey', error: 'boom' }, 3)).toBe('boom')
-    expect(describeVerifyFailure({ reason: 'DispatchFailed', error: 'down' }, 3)).toBe('down')
+    expect(describeVerifyFailure({ reason: 'NoSharedKey', error: 'boom' }, version({}))).toBe('boom')
+    expect(describeVerifyFailure({ reason: 'DispatchFailed', error: 'down' }, version({}))).toBe('down')
   })
 })

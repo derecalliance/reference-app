@@ -38,6 +38,7 @@ function context(overrides: Partial<FoldContext> = {}): FoldContext {
     channelInfoOutcome: vi.fn(),
     awaitingIdentityAnswer: vi.fn(() => false),
     isShareHeld: vi.fn(() => true),
+    respondToFailure: vi.fn(),
     ...overrides,
   }
 }
@@ -224,6 +225,23 @@ describe('recovery answers without a share', () => {
       expect.objectContaining({ channelId: '2', peerName: 'Helper 2', version: 3, reason: 'InvalidProof' }),
     ])
     expect(next.recoveryProgress?.corrupted).toEqual([{ channelId: '2', reason: 'InvalidProof' }])
+  })
+
+  it('points an unreadable share at the SDK-upgrade cause rather than only at the helper', () => {
+    const ctx = context()
+    const malformed = (channel: string): DeRecEvent => ({
+      type: 'RecoveryShareCorrupted',
+      channel_id: channel,
+      version: 3,
+      reason: 'Malformed',
+    })
+    const progress = { totalRequested: 2, requestedChannelIds: ['1', '2'] }
+    const once = foldEvent(recovering(progress), malformed('1'), ctx)
+    const next = foldEvent(once, malformed('2'), ctx)
+
+    expect(ctx.notify.error).toHaveBeenCalledWith(expect.stringContaining('before an SDK upgrade'), undefined, expect.anything())
+    expect(ctx.notify.error).not.toHaveBeenCalledWith(expect.stringContaining('An honest helper never'), undefined, expect.anything())
+    expect(next.recoveryProgress?.error).toMatch(/2 helpers answered without a usable share.*protect a new version/)
   })
 
   it('reports an inconsistent share without touching a recovery that already succeeded', () => {

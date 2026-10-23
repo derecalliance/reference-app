@@ -3,9 +3,9 @@
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { PairedParticipant, SecretBag, Vault } from '../types'
+import type { PairedParticipant, RecoveredSecret, RecoveredSecretReplica, SecretBag, Vault } from '../types'
 import { vault } from '../vault/testVault'
 import { RecoveryPanel } from './RecoveryPanel'
 
@@ -51,7 +51,10 @@ function bag(current: number, previous: number[], threshold: number): SecretBag 
   return { secretId: '42', threshold, currentVersion: version(current), previousVersions: previous.map(version) }
 }
 
-function render(record: Vault, handlers: { discover?: () => Promise<void> } = {}) {
+function render(
+  record: Vault,
+  handlers: { discover?: () => Promise<void>; join?: () => void; joinThrough?: (s: RecoveredSecret, m: RecoveredSecretReplica) => Promise<void> } = {},
+) {
   act(() =>
     root.render(
       <RecoveryPanel
@@ -59,6 +62,8 @@ function render(record: Vault, handlers: { discover?: () => Promise<void> } = {}
         onRequestDiscovery={handlers.discover ?? (async () => {})}
         onRecover={async () => {}}
         onRestoreFromBag={async () => {}}
+        onJoinGroup={handlers.join ?? (() => {})}
+        onJoinThrough={handlers.joinThrough ?? (async () => {})}
       />,
     ),
   )
@@ -117,3 +122,79 @@ describe('RecoveryPanel', () => {
     expect(tag?.getAttribute('title')).toBe('No answer within 30s')
   })
 })
+
+describe('restore or join (SDK 0.0.9)', () => {
+  function recovered(members: Array<{ replicaId: string; role: 'Source' | 'Destination'; name: string }>): RecoveredSecret {
+    return {
+      secretId: '77',
+      version: 3,
+      label: 'DeRec Vault',
+      restored: false,
+      snapshot: {
+        helpers: [],
+        secrets: [],
+        replicas: members.length
+          ? {
+              channelId: '5',
+              sharedKey: '',
+              members: members.map(m => ({ replicaId: m.replicaId, role: m.role, transports: [], communicationInfo: { name: m.name } })),
+            }
+          : undefined,
+      },
+    } as RecoveredSecret
+  }
+
+  const button = (name: string) => Array.from(host.querySelectorAll('button')).find(b => b.textContent?.trim() === name)
+
+  it('offers to join the group when the recovered vault names a live replica', () => {
+    const join = vi.fn()
+    render(vault({ recoveredSecrets: [recovered([
+      { replicaId: '1', role: 'Source', name: 'Old laptop' },
+      { replicaId: '2', role: 'Destination', name: 'Phone' },
+    ])] }), { join })
+
+    act(() => button('Join group…')?.click())
+
+    expect(host.textContent).toContain('Phone')
+    expect(host.textContent).toContain('do not restore')
+    act(() => button('Pair as replica destination')?.click())
+    expect(join).toHaveBeenCalled()
+  })
+
+  it('joins straight through a member this node runs, and says why when it cannot', async () => {
+    const joinThrough = vi.fn(async () => {
+      throw new Error('Phone is not a provisioned helper on this node')
+    })
+    render(vault({ recoveredSecrets: [recovered([
+      { replicaId: '1', role: 'Source', name: 'Old laptop' },
+      { replicaId: '2', role: 'Destination', name: 'Phone' },
+    ])] }), { joinThrough })
+
+    act(() => button('Join group…')?.click())
+    await act(async () => button('Join through Phone')?.click())
+
+    expect(joinThrough).toHaveBeenCalledWith(expect.objectContaining({ secretId: '77' }), expect.objectContaining({ replicaId: '2' }))
+    expect(host.textContent).toContain('not a provisioned helper on this node')
+  })
+
+  it('keeps Join through usable but ties it to the known SDK limitation (review I5)', () => {
+    render(vault({ recoveredSecrets: [recovered([
+      { replicaId: '1', role: 'Source', name: 'Old laptop' },
+      { replicaId: '2', role: 'Destination', name: 'Phone' },
+    ])] }))
+
+    act(() => button('Join group…')?.click())
+    const through = button('Join through Phone')
+    const note = host.querySelector(`#${through?.getAttribute('aria-describedby')}`)
+
+    expect(through?.disabled).toBe(false)
+    expect(note?.textContent).toContain('SDK 0.0.9 limitation')
+  })
+
+  it('offers only restore when the group has no other member', () => {
+    render(vault({ recoveredSecrets: [recovered([{ replicaId: '1', role: 'Source', name: 'Old laptop' }])] }))
+
+    expect(button('Join group…')).toBeUndefined()
+  })
+})
+

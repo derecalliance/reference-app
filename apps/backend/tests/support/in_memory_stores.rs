@@ -511,6 +511,7 @@ mod tests {
             peer_role,
             status,
             created_at: 0,
+            weight: 1,
         }
     }
 

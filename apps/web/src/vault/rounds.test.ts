@@ -90,8 +90,41 @@ describe('RoundTracker — persistence and late answers', () => {
     t.dropShare('c1', 3)
 
     expect(t.snapshotProtectRounds()).toEqual([
-      { version: 3, protocolSecretId: '42', bag: bag(3), channelIds: ['c2'] },
+      { version: 3, protocolSecretId: '42', bag: bag(3), channelIds: ['c2'], weights: {}, threshold: null },
     ])
+  })
+
+  it('remembers the threshold each round was split with, across a resume', () => {
+    const t = new RoundTracker()
+    t.beginProtectRound({ bag: bag(3), version: 3, protocolSecretId: '42', channelIds: ['c1'], threshold: 4 })
+
+    expect(t.roundThreshold(3)).toBe(4)
+    expect(t.roundThreshold(9)).toBeNull()
+
+    const resumed = new RoundTracker()
+    for (const round of t.snapshotProtectRounds()) resumed.beginProtectRound(round)
+    expect(resumed.roundThreshold(3)).toBe(4)
+  })
+
+  it('counts confirmed subshares by each recipient\'s weight, and keeps them across a resume', () => {
+    const t = new RoundTracker()
+    t.beginProtectRound({
+      bag: bag(3),
+      version: 3,
+      protocolSecretId: '42',
+      channelIds: ['c1', 'c2'],
+      weights: { p1: 2 },
+    })
+    t.recordShareConfirmed(3, 'p1', 'c1')
+    t.recordShareConfirmed(3, 'p2', 'c2')
+
+    expect(t.confirmedCount(3)).toBe(2)
+    expect(t.confirmedWeight(3)).toBe(3)
+
+    // A reload rebuilds the tracker from the persisted round.
+    const resumed = new RoundTracker()
+    for (const round of t.snapshotProtectRounds()) resumed.beginProtectRound(round)
+    expect(resumed.confirmedWeight(3)).toBe(3)
   })
 
   it('snapshots nothing once the round is resolved', () => {

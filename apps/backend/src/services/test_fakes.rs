@@ -292,6 +292,7 @@ pub fn helper_record(channel_id: u64, status: ChannelStatus, created_at: u64) ->
         peer_role: derec_proto::SenderKind::Owner,
         status,
         created_at,
+        weight: 1,
     }
 }
 

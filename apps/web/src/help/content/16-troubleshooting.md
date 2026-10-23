@@ -23,7 +23,8 @@ First stops for anything not listed: the **Console** (expand it, filter to the v
 | Message | Meaning | What to do |
 | --- | --- | --- |
 | *No participants are online on this node — provision some under Participants.* | The pool is empty or all offline. | **Participants** → **Provision up to N**. |
-| *Secret protection is disabled — X of N required participants paired.* | Fewer helper channels than the vault's threshold. | Pair more helpers from the side panel. |
+| *Secret protection is disabled. Need at least 2 paired participants (currently X).* | Fewer than two confirmed helper channels — no publish is possible. | Pair more helpers from the side panel. |
+| *Paired participants hold X of the N subshares the default threshold needs…* | The default threshold is above what the helpers hold together. | Lower the threshold or raise weights when you publish, or change the default in **Vault Settings**. |
 | *The minimum in Settings (…) cannot protect a secret* | Settings → *Minimum* is below 2 or invalid. | Fix it under Settings, or **Reset to node**. |
 | *"…" could not be opened — it is already open in another tab.* | Another tab took the vault. | Use that tab, or close it and **Claim** here. |
 | *a helper named "…" already exists; choose another name* | Helper names are unique on the node. | Pick another name. |
@@ -54,6 +55,9 @@ First stops for anything not listed: the **Console** (expand it, filter to the v
 | *The protocol dispatched no share requests…* | No helper channel could receive a share. | Pair helpers as Owner (not replica channels). |
 | *The vault's secrets would total …, over the 32 KB…* | The bag would exceed the browser limit. | Use a smaller secret, or remove one. |
 | *This browser's storage for the app is full…* | `localStorage` is out of room. | Remove vaults or secrets you no longer need. |
+| *A … request from X could not be handled* | A request a peer sent this vault failed here — the library reports it instead of erroring (SDK 0.0.9). The Console has the local reason. | The app has already answered the peer, so it does not wait out a timeout. If it repeats, the reason in the Console is what to fix. |
+| *Refused X's share of vN* | This vault, as a helper, refused a share that does not decode, does not verify, does not fit, or conflicts with one it already holds. The owner was told why. | Usually the owner runs a different SDK build; both sides need the same share format. |
+| *X could not process a message from this vault* | The peer answered with an error response, typically because it could not decode what was sent. | Check both sides run compatible SDK builds. |
 | *Last share: No answer* / *Last share: Not reachable* on a channel | The newest share to that helper failed. | Bring it online (Participants) or fix its address; the next publish retries. |
 
 ## Verification
@@ -62,6 +66,7 @@ First stops for anything not listed: the **Console** (expand it, filter to the v
 | --- | --- | --- |
 | *Publishing vN is still in progress — verify once it completes.* | A round is open. | Wait for it to commit or roll back. |
 | *vN was restored from a recovered bag… cannot be verified.* | A restore keeps no proof material. | Publish a new version, then verify it. |
+| *This device holds no verification copies for vN…* | The copies were deleted: the library deletes them when helpers are told to stop keeping vN, and Clean up deletes them by hand or automatically. | Verify a newer version. Recovery is not affected. |
 | *Rejected: …* | The helper refused the challenge (for example it no longer holds the version). | Check the helper; verify a newer version. |
 | *Proof invalid* / *…'s share of vN failed verification* | The helper's proof does not match the share this vault sent. | If vN was published before SDK 0.0.9, publish a new version and verify that. Otherwise treat the helper as damaged or dishonest: unpair it and publish a new version. |
 | *Verification timed out* | No answer within the protocol timeout. | Check the helper is online. |

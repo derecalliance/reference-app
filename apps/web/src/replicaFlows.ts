@@ -47,20 +47,15 @@ export type ReplicaSecretShares = Extract<DeRecEvent, { type: 'ReplicaSecretRece
 /** The typed `Secret` recovery produces, and the sole input `protocol.restore` accepts. */
 type RecoveredSecretPayload = Extract<DeRecEvent, { type: 'SecretRecovered' }>['secret']
 
-/**
- * True iff `X` and `Y` are the *same* type, not merely mutually assignable.
- *
- * The conditional is deferred behind an unresolved type parameter, so the
- * compiler compares the two identically rather than checking assignability in
- * each direction — which would also accept, say, a widened or optional-ised
- * variant of a field.
- */
-type ExactlyEqual<X, Y> =
-  (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y ? 1 : 2 ? true : false
+/** True iff `X` and `Y` have exactly the same keys. */
+type SameKeys<X, Y> = [keyof X] extends [keyof Y] ? ([keyof Y] extends [keyof X] ? true : false) : false
+
+/** The element type of an array-valued field, or `never`. */
+type Elem<T> = T extends readonly (infer E)[] ? E : never
 
 /**
- * Compile-time proof that a mirrored secret is byte-for-byte the shape
- * `protocol.restore` takes.
+ * Compile-time proof that a mirrored secret is the shape `protocol.restore`
+ * takes.
  *
  * `restore` is typed against `SecretRecovered['secret']` specifically, and the
  * whole point of mirroring is that a destination can install what it was sent
@@ -70,11 +65,22 @@ type ExactlyEqual<X, Y> =
  * drifting. If the shapes ever diverge, `npm run typecheck` fails *here*,
  * naming the reason, instead of a `restore` call somewhere downstream failing
  * with a shape error at runtime on a device that is mid-recovery.
+ *
+ * Two checks rather than one exact equality: SDK 0.0.9 lets `restore` accept
+ * a `null` `communication_info` that a mirrored copy never carries, so the two
+ * types are no longer identical — but a mirrored copy must still be *passable*
+ * to `restore` as-is, and must carry exactly the same fields at every level, so
+ * nothing `restore` reads can be missing from it.
  */
-export const REPLICA_PAYLOAD_MIRRORS_RECOVERY: ExactlyEqual<
-  ReplicaSecretPayload,
-  RecoveredSecretPayload
-> = true
+export const REPLICA_PAYLOAD_MIRRORS_RECOVERY: [
+  ReplicaSecretPayload extends RecoveredSecretPayload ? true : false,
+  SameKeys<ReplicaSecretPayload, RecoveredSecretPayload>,
+  SameKeys<Elem<ReplicaSecretPayload['helpers']>, Elem<RecoveredSecretPayload['helpers']>>,
+  SameKeys<
+    Elem<NonNullable<ReplicaSecretPayload['replicas']>['members']>,
+    Elem<NonNullable<RecoveredSecretPayload['replicas']>['members']>
+  >,
+] = [true, true, true, true]
 
 // ── Status machine ───────────────────────────────────────────────────────────
 
@@ -1491,13 +1497,23 @@ export function adoptedVaultState(
       connectionStatus: 'paired' as const,
       // Every peer in the owner's snapshot held a share for that owner.
       peerRole: 'helper' as const,
-      secretShares: [{ version: adoption.version, status: 'confirmed' as const, verified: false }],
+      secretShares: [
+        { version: adoption.version, status: 'confirmed' as const, verified: false, weight: h.weight },
+      ],
       browserManaged: actor?.browser_managed,
+      // Hydration writes the roster weight into the channel record, so this is
+      // what the next publish gives the helper (SDK 0.0.9).
+      weight: h.weight,
     }
   })
 
+  // The group's own threshold when the roster carries one — hydration stores
+  // it as the next publish's — otherwise this device's configured minimum.
+  const groupThreshold = adoption.secret.threshold ?? threshold
+
   const currentVersion: BagVersion = {
     version: adoption.version,
+    ...(adoption.secret.threshold !== undefined ? { threshold: adoption.secret.threshold } : {}),
     participantIds: participants.map(p => p.id),
     verifiedParticipantIds: [],
     failedParticipantIds: [],
@@ -1554,9 +1570,7 @@ export function adoptedVaultState(
       secretId: adoption.secretId,
       currentVersion,
       previousVersions: [],
-      // The threshold is not carried in the snapshot; the owner's configured
-      // minimum is the same value the source protected with.
-      threshold,
+      threshold: groupThreshold,
     },
   }
 }

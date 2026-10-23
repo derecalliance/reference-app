@@ -52,6 +52,7 @@ fn helper_channel(channel_id: u64) -> HelperChannel {
         peer_role: derec_proto::SenderKind::Owner,
         status: ChannelStatus::Paired,
         created_at: 0,
+        weight: 1,
     }
 }
 
@@ -267,6 +268,8 @@ pub async fn share_store_conforms<S: DeRecShareStore>(store: &mut S) {
                     secret_id: SECRET_A,
                     version,
                     bytes: vec![version as u8, 0xff, 0x00],
+                    subshares: Some(version),
+                    threshold: Some(2),
                 },
             )
             .await
@@ -294,6 +297,11 @@ pub async fn share_store_conforms<S: DeRecShareStore>(store: &mut S) {
         vec![3u8, 0xff, 0x00],
         "share bytes must round-trip exactly, including 0xff and 0x00"
     );
+    // SDK 0.0.9: the owner's per-version subshare count and threshold are
+    // stored on its copy and must come back unchanged — recoverability of an
+    // old version is judged from them.
+    assert_eq!(three.subshares, Some(3), "subshares must round-trip");
+    assert_eq!(three.threshold, Some(2), "threshold must round-trip");
 
     // An explicit version filter narrows; an empty one means "every version".
     let filtered = store.load(SECRET_A, channel, &[2]).await.expect("readable");
@@ -316,6 +324,8 @@ pub async fn share_store_conforms<S: DeRecShareStore>(store: &mut S) {
                 secret_id: SECRET_B,
                 version: 9,
                 bytes: vec![9],
+                subshares: None,
+                threshold: None,
             },
         )
         .await
@@ -323,6 +333,11 @@ pub async fn share_store_conforms<S: DeRecShareStore>(store: &mut S) {
 
     let foreign = store.load(SECRET_A, channel, &[9]).await.expect("readable");
     assert_eq!(foreign.len(), 1, "the share is filed under the partition");
+    assert_eq!(
+        (foreign[0].subshares, foreign[0].threshold),
+        (None, None),
+        "a share stored without a count reads back without one, never 0"
+    );
     assert_eq!(
         foreign[0].secret_id, SECRET_B,
         "a share's own secret_id must round-trip, not be replaced by the \
@@ -371,6 +386,8 @@ async fn remove_versions_conforms<S: DeRecShareStore>(store: &mut S, channel: Ch
                     secret_id: partition,
                     version: 1,
                     bytes: vec![1],
+                    subshares: None,
+                    threshold: None,
                 },
             )
             .await
@@ -459,6 +476,7 @@ pub async fn user_secret_store_conforms<S: DeRecUserSecretStore>(store: &mut S) 
                 secrets: Vec::new(),
                 description: Some("first".to_owned()),
                 author_replica_id: None,
+                threshold: Some(3),
             },
         )
         .await
@@ -471,6 +489,7 @@ pub async fn user_secret_store_conforms<S: DeRecUserSecretStore>(store: &mut S) 
         .expect("saved snapshot");
     assert_eq!(loaded.version, 4);
     assert_eq!(loaded.description.as_deref(), Some("first"));
+    assert_eq!(loaded.threshold, Some(3), "the snapshot's threshold must round-trip");
 
     // save_latest replaces rather than accumulating.
     store
@@ -481,6 +500,7 @@ pub async fn user_secret_store_conforms<S: DeRecUserSecretStore>(store: &mut S) 
                 secrets: Vec::new(),
                 description: Some("second".to_owned()),
                 author_replica_id: None,
+                threshold: None,
             },
         )
         .await

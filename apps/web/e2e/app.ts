@@ -67,7 +67,7 @@ export interface OwnerSetupOptions {
   participants?: number
   /** How many of those to auto-pair, skipping the QR exchange. */
   prePaired?: number
-  /** Paired participants below which secret protection is disabled. */
+  /** The vault's minimum, which seeds its default threshold. */
   minParticipants?: number
   /** Paired participants below which the app shows a warning. */
   recommendedParticipants?: number

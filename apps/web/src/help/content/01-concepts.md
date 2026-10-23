@@ -52,14 +52,14 @@ A **replica** is another device of the same owner that mirrors the **whole vault
 All of a vault's secrets travel together as one **secret bag**.
 
 - Every publish (adding or removing a secret, resolving a replica conflict, some pairings) creates a **new version** of the bag, split into one share per paired helper.
-- A version **commits** when at least *threshold* helpers confirm their share. Otherwise it is **rolled back** and the bag stays as it was.
+- A version **commits** when the helpers that confirmed their share hold at least *threshold* subshares between them — one each, unless a helper is weighted (see [Protecting secrets](04-protecting-secrets.md#helper-weights)). Otherwise it is **rolled back** and the bag stays as it was.
 - From SDK 0.0.7 each publish tells helpers which versions to keep (the owner's `keepList`). This app lists the **three newest committed versions** plus the one being distributed. Helpers delete anything else, including the shares of rolled-back rounds.
 
 ## Threshold and recommended count
 
 | Value | Set from | Effect |
 | --- | --- | --- |
-| **Threshold** (Minimum) | Settings → *Minimum*, copied into the vault when it is created and never changed afterwards | The number of shares needed to rebuild the secret, and the number of paired helpers needed before **Add Secret** is enabled. At least 2. |
+| **Threshold** (Minimum) | Settings → *Minimum*, copied into the vault when it is created and never changed afterwards | The number of subshares needed to rebuild the secret, and the number paired helpers must hold before **Add Secret** is enabled. With no weighted helpers, one per helper. At least 2. |
 | **Recommended** | Settings → *Recommended* | Below it the vault shows a warning banner. Advisory only. |
 
 ## Secret size limit

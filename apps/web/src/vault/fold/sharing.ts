@@ -52,7 +52,14 @@ export const sharingHandlers = {
     // The staged bag is not committed to the vault until the round completes.
     ctx.rounds.recordShareConfirmed(version, participant.id, channelId)
 
-    const shareRef: SecretShareRef = { version, status: 'confirmed', verified: false }
+    // The weight was stamped when the round went out; the answer keeps it.
+    const sent = participant.secretShares.find(s => s.version === version)
+    const shareRef: SecretShareRef = {
+      version,
+      status: 'confirmed',
+      verified: false,
+      ...(sent?.weight !== undefined ? { weight: sent.weight } : {}),
+    }
     return commitOnceHelpersAnswered(
       {
         ...current,
@@ -90,11 +97,13 @@ export const sharingHandlers = {
     // Recorded on the staged bag, which is not committed to the vault yet.
     ctx.rounds.recordShareFailed(version, { id: participant.id, status, memo })
 
+    const sent = participant.secretShares.find(s => s.version === version)
     const rejectedRef: SecretShareRef = {
       version,
       status: 'rejected',
       verified: false,
       failure: { status, memo },
+      ...(sent?.weight !== undefined ? { weight: sent.weight } : {}),
     }
     return commitOnceHelpersAnswered(
       {
@@ -222,7 +231,17 @@ export const sharingHandlers = {
     if (!participant) return current
 
     const bag = current.secretBag
-    const secretBag = bag ? updateBagVerified(bag, version, participant.id) : null
+    // What the SDK read off its own copy of this helper's share: how many
+    // subshares it holds for *this* version, and the version's threshold —
+    // together they say whether the version is still recoverable.
+    const verified = bag ? updateBagVerified(bag, version, participant.id) : null
+    const secretBag = verified
+      ? updateBagVersion(verified, version, v => ({
+          ...v,
+          verifiedSubshares: { ...v.verifiedSubshares, [participant.id]: event.subshares ?? null },
+          verifiedThreshold: event.threshold ?? v.verifiedThreshold ?? null,
+        }))
+      : null
 
     announceVerificationIfDone(secretBag, version, ctx)
 
@@ -359,7 +378,10 @@ function announceVerificationIfDone(
 function commitOnceHelpersAnswered(current: Vault, version: number, ctx: FoldContext): Vault {
   if (!ctx.rounds.helpersAnswered(version)) return current
   const confirmed = ctx.rounds.confirmedCount(version)
-  if (confirmed < current.minParticipants) return current
+  // Subshares, not helpers, are what the threshold counts — and the round's
+  // own threshold, which a publish may set apart from the vault's default.
+  const threshold = ctx.rounds.roundThreshold(version) ?? current.minParticipants
+  if (ctx.rounds.confirmedWeight(version) < threshold) return current
 
   const staged = ctx.rounds.completeRound(version)
   if (!staged) return current
@@ -371,7 +393,7 @@ function commitOnceHelpersAnswered(current: Vault, version: number, ctx: FoldCon
     description:
       `Sharing round v${version}: every helper answered and ${confirmed} confirmed — committed now. ` +
       'Any replica still being mirrored to is best-effort and does not hold the version back.',
-    payload: { version, confirmed, threshold: current.minParticipants },
+    payload: { version, confirmed, threshold },
   })
   return { ...current, secretBag: commitRoundVersion(current.secretBag, staged.bag) }
 }

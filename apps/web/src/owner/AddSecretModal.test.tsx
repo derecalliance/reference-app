@@ -4,12 +4,21 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { PublishContext } from '../vault/types'
 
 import type { PairedParticipant, PublishedRound } from '../types'
 import { publishTargets } from '../ownerPairing'
 import { AddSecretModal } from './AddSecretModal'
 import { ProtectRoundProgress } from './ProtectRoundProgress'
 import { roundProgress } from './roundProgress'
+
+/** A publish dialog's starting point: threshold 2, every helper at 1, keep the last 3. */
+const PUBLISH_CONTEXT: PublishContext = {
+  policy: { defaultThreshold: 2, defaultWeights: {}, helperRetention: { mode: 'lastN', n: 3 }, proofCleanup: { mode: 'manual' } },
+  committedVersions: [],
+  openVersions: [],
+  preview: { kept: [], dropped: [] },
+}
 
 function participant(id: string, status?: 'pending' | 'confirmed'): PairedParticipant {
   return {
@@ -59,12 +68,12 @@ describe('AddSecretModal and Escape', () => {
     act(() =>
       root.render(
         <AddSecretModal
-          participants={[participant('a')]}
+          participants={[participant('a'), participant('z')]}
           pendingChannelIds={new Set()}
           secretBag={null}
-          threshold={1}
+          publishContext={PUBLISH_CONTEXT}
           onClose={onClose}
-          onAddSecret={async () => ({ version: 4, recipientIds: ['a'] })}
+          onAddSecret={async () => ({ version: 4, recipientIds: ['a'], threshold: 2 })}
         />,
       ),
     )
@@ -80,10 +89,10 @@ describe('AddSecretModal and Escape', () => {
     act(() =>
       root.render(
         <AddSecretModal
-          participants={[participant('a')]}
+          participants={[participant('a'), participant('z')]}
           pendingChannelIds={new Set()}
           secretBag={null}
-          threshold={1}
+          publishContext={PUBLISH_CONTEXT}
           onClose={onClose}
           onAddSecret={() => new Promise<PublishedRound>(resolve => (finish = resolve))}
         />,
@@ -98,7 +107,7 @@ describe('AddSecretModal and Escape', () => {
     pressEscape()
     expect(onClose).not.toHaveBeenCalled()
 
-    await act(async () => finish({ version: 4, recipientIds: ['a'] }))
+    await act(async () => finish({ version: 4, recipientIds: ['a'], threshold: 2 }))
   })
 })
 
@@ -140,14 +149,14 @@ describe('ProtectRoundProgress while a participant has not answered', () => {
 
 describe('AddSecretModal size limit', () => {
   it('refuses a secret that would take the bag past the limit, before anything is sent', () => {
-    const onAddSecret = vi.fn(async () => ({ version: 4, recipientIds: ['a'] }))
+    const onAddSecret = vi.fn(async () => ({ version: 4, recipientIds: ['a'], threshold: 2 }))
     act(() =>
       root.render(
         <AddSecretModal
-          participants={[participant('a')]}
+          participants={[participant('a'), participant('z')]}
           pendingChannelIds={new Set()}
           secretBag={null}
-          threshold={1}
+          publishContext={PUBLISH_CONTEXT}
           onClose={() => {}}
           onAddSecret={onAddSecret}
         />,
@@ -168,10 +177,10 @@ describe('AddSecretModal size limit', () => {
     act(() =>
       root.render(
         <AddSecretModal
-          participants={[participant('a')]}
+          participants={[participant('a'), participant('z')]}
           pendingChannelIds={new Set()}
           secretBag={null}
-          threshold={1}
+          publishContext={PUBLISH_CONTEXT}
           onClose={() => {}}
           onAddSecret={async () => {
             throw new Error('None of the 1 share request(s) could be delivered')
@@ -199,12 +208,12 @@ describe('AddSecretModal following a round', () => {
     act(() =>
       root.render(
         <AddSecretModal
-          participants={[participant('a', 'confirmed'), participant('b')]}
+          participants={[participant('a', 'confirmed'), participant('b'), participant('c')]}
           pendingChannelIds={new Set(['9b'])}
           secretBag={null}
-          threshold={1}
+          publishContext={PUBLISH_CONTEXT}
           onClose={() => {}}
-          onAddSecret={async () => ({ version: 4, recipientIds: ['a'] })}
+          onAddSecret={async () => ({ version: 4, recipientIds: ['a'], threshold: 2 })}
         />,
       ),
     )
@@ -227,14 +236,15 @@ describe('AddSecretModal following a round', () => {
           participants={[participant('a'), participant('b'), participant('c'), replica]}
           pendingChannelIds={new Set(['9b'])}
           secretBag={null}
-          threshold={1}
+          publishContext={PUBLISH_CONTEXT}
           onClose={() => {}}
-          onAddSecret={async () => ({ version: 1, recipientIds: ['a', 'c'] })}
+          onAddSecret={async () => ({ version: 1, recipientIds: ['a', 'c'], threshold: 2 })}
         />,
       ),
     )
 
-    expect(host.textContent).toContain('Participants (2 paired)')
+    // One weight field per helper the round targets, and no other.
+    expect(host.querySelectorAll('[id^="po-weight-"]')).toHaveLength(2)
     const listed = Array.from(host.querySelectorAll('.participant-check-item')).map(li => li.textContent)
     expect(listed).toEqual(['A', 'C'])
   })

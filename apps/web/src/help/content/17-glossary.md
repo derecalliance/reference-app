@@ -12,7 +12,7 @@ Short definitions of the terms used in this app and its help, with a pointer to 
 | **Carrier** | What actually carried a message: `http`, `grpc`, `grpc_via_relay` or `http_via_relay`. |
 | **Channel** | One pairing between two actors, with its own shared key and id. |
 | **Claim** | Taking over an existing owner actor's mailbox (wizard), or opening a vault another tab has released (vault list). |
-| **Commit / rollback** | A publishing round commits when at least *threshold* helpers confirm; otherwise the bag is rolled back. See [Protecting secrets](04-protecting-secrets.md). |
+| **Commit / rollback** | A publishing round commits when the helpers that confirm hold at least *threshold* subshares; otherwise the bag is rolled back. See [Protecting secrets](04-protecting-secrets.md). |
 | **Contact** | What one side shares to be paired with: a QR code or its JSON payload. |
 | **Contact mode** | *Inline keys*, *Hashed keys* or *No keys*: how a contact delivers the keys. See [Pairing](03-pairing.md). |
 | **Discovery** | Asking paired helpers which secrets and versions they hold for you. See [Recovery and restore](06-recovery-and-restore.md). |
@@ -35,7 +35,12 @@ Short definitions of the terms used in this app and its help, with a pointer to 
 | **Replica source / destination** | The device that keeps and mirrors its vault / the device that receives it, giving up its own. |
 | **Round** | One publish of a bag version to every paired helper. |
 | **Share** | One helper's piece of a bag version. *Threshold* shares rebuild it. |
-| **Threshold** | Shares needed to rebuild a secret, and paired helpers needed to protect one. The vault's *Minimum*, frozen at setup; at least 2. |
+| **Keep-list** | The versions a publish tells helpers to keep; they delete the rest. Set by Vault Settings → *Versions helpers keep*. See [Protecting secrets](04-protecting-secrets.md#what-helpers-keep). |
+| **Recoverable** | A version whose verified helpers hold at least its threshold of subshares between them. See [Verification](05-verification.md#recoverable). |
+| **Verification copy** | This device's copy of what a helper holds for a version, used only to verify it. Deleting it never affects recovery. |
+| **Subshare** | One Shamir piece of a bag version. A helper's share holds one subshare per unit of its weight. |
+| **Threshold** | Subshares needed to rebuild a secret, and what paired helpers must hold between them to protect one. The vault's *Minimum*, frozen at setup; at least 2. |
+| **Weight** | How many subshares a helper holds, 1 by default and always below the threshold. Kept by the library across publishes. See [Protecting secrets](04-protecting-secrets.md#helper-weights). |
 | **Transport mode** | What a hosted helper advertises: `http`, `grpc` or `both`. Not what it can dial. |
 | **Vault** | One owner identity in a browser: an owner actor plus the keys, channels, bag and held shares stored for it. |
 | **Verification** | Challenging helpers to prove they still hold their shares. See [Verification](05-verification.md). |

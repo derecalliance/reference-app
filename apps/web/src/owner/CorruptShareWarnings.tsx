@@ -27,7 +27,9 @@ export interface CorruptShareWarningsProps {
  * The library sets such a share aside and recovers from the others, so nothing
  * is lost — but an honest helper never sends one, so the helper is either
  * damaged or compromised, and the owner is the one to decide what to do about
- * it. Kept on screen until they do: a toast would scroll away with the only
+ * it. The exception is `Malformed`: a share protected before an SDK upgrade
+ * that changed the share format is unreadable too, through no fault of the
+ * helper, so that warning names both causes. Kept on screen until they do: a toast would scroll away with the only
  * record of which helper it was.
  */
 export function CorruptShareWarnings({
@@ -67,8 +69,19 @@ export function CorruptShareWarnings({
                 {report.peerName} sent a corrupted recovery share ({report.reason})
               </AlertTitle>
               While recovering v{report.version}, {REASON_TEXT[report.reason]}. The share was set
-              aside and did not count towards the recovery. An honest helper never sends one, so{' '}
-              {report.peerName} may be damaged or compromised
+              aside and did not count towards the recovery.{' '}
+              {report.reason === 'Malformed' ? (
+                <>
+                  If this version was protected before an SDK upgrade that changed the share format,
+                  protecting a new version replaces it. Otherwise {report.peerName} may be damaged
+                  or compromised
+                </>
+              ) : (
+                <>
+                  An honest helper never sends one, so {report.peerName} may be damaged or
+                  compromised
+                </>
+              )}
               {participant
                 ? ' — consider unpairing it.'
                 : '. It is no longer paired with this vault.'}

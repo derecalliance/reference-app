@@ -8,6 +8,7 @@ import { bytesToHex } from '../../bytes'
 import { TRANSPORT_PROTOCOL_HTTPS, protocolName } from '../../contactDto'
 import { fromBase64Url } from '../../derecApi'
 import { buildProtocolInstance } from '../../owner/protocol'
+import { withGroupThreshold } from '../../owner/publishPolicy'
 import { decodeSecretText, snapshotToPayload } from '../../owner/recoveredSecret'
 import { pairingRoleLabel } from '../../pairingRoleOptions'
 import { isReplicaChannel } from '../../ownerPairing'
@@ -234,8 +235,13 @@ export async function restoreVault(
         connectionStatus: 'paired' as const,
         // Every peer in a recovered snapshot held a share for us.
         peerRole: 'helper' as const,
-        secretShares: [{ version: secret.version, status: 'confirmed' as const, verified: false }],
+        secretShares: [
+          { version: secret.version, status: 'confirmed' as const, verified: false, weight: h.weight },
+        ],
         browserManaged: actor?.browser_managed,
+        // `restore` writes the roster weight into the channel record, so this
+        // is what the next publish gives the helper.
+        weight: h.weight,
       }
     })
     const replicaRow =
@@ -260,6 +266,9 @@ export async function restoreVault(
       // `restore` writes no tracking shares, so this version cannot be verified
       // — the library's contract. The next published version can.
       restoredFromRecovery: true,
+      // The threshold the recovered version was split with (SDK 0.0.9); absent
+      // on rosters from before it was recorded.
+      ...(secret.snapshot.threshold !== undefined ? { threshold: secret.snapshot.threshold } : {}),
       helpers: helpers.map(p => ({ id: p.id, name: p.name, channelId: p.channelId })),
       // The group the recovered secret carried, as the library decoded it.
       replicas: secret.snapshot.replicas
@@ -277,10 +286,12 @@ export async function restoreVault(
       secretId: secret.secretId,
       currentVersion: bagVersion,
       previousVersions: [],
-      // The threshold is not carried in the bag; the vault's configured
-      // minimum is the most sensible default.
-      threshold: current.minParticipants,
+      // The roster's threshold when it carries one — `restore` stores it as
+      // the next publish's — otherwise the vault's configured minimum.
+      threshold: secret.snapshot.threshold ?? current.minParticipants,
     }
+    // The publish dialogs start from the same threshold the library will use.
+    const publishPolicy = withGroupThreshold(current, secret.snapshot.threshold)
 
     // 3. Announce our current endpoint to every restored helper. Not to the
     //    replica group: `UpdateChannelInfo` addresses helper channels, and a
@@ -337,6 +348,7 @@ export async function restoreVault(
         recoveryFailures: [],
         mainChannels: [],
         secretId: secret.secretId,
+        ...(publishPolicy ? { publishPolicy } : {}),
       })
     })
 

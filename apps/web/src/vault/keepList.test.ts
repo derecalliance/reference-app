@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { BagVersion, SecretBag, Vault } from '../types'
 import { foldEvent, type FoldContext } from './fold'
-import { KEPT_COMMITTED_VERSIONS, keepListFor } from './keepList'
+import { KEPT_COMMITTED_VERSIONS, keepListFor, retentionPreview } from './keepList'
 import { RoundTracker } from './rounds'
 import { vault } from './testVault'
 
@@ -57,6 +57,7 @@ function context(rounds = new RoundTracker(), getVault: () => Vault = () => vaul
     channelInfoOutcome: vi.fn(),
     awaitingIdentityAnswer: vi.fn(() => false),
     isShareHeld: vi.fn(() => true),
+    respondToFailure: vi.fn(),
   }
 }
 
@@ -177,5 +178,54 @@ describe('the keep list follows what the vault committed', () => {
     const committed = vi.mocked(ctx.commit).mock.calls[0][0]
     expect(committed.secretBag?.previousVersions.map(v => v.version)).toEqual([4, 3])
     expect(keepListFor(committed, '42', 6)).toEqual([5, 4, 3])
+  })
+})
+
+describe('keepListFor follows the owner\'s retention setting', () => {
+  const policy = (helperRetention: { mode: 'lastN'; n: number } | { mode: 'select' }) => ({
+    defaultThreshold: 2,
+    defaultWeights: {},
+    helperRetention,
+    proofCleanup: { mode: 'manual' as const },
+  })
+
+  it('keeps the N newest committed versions the owner chose', () => {
+    const v = vault({ secretBag: bag(4, 3, 2, 1), publishPolicy: policy({ mode: 'lastN', n: 2 }) })
+
+    expect(keepListFor(v, v.secretId, 5)).toEqual([4, 3])
+  })
+
+  it('in select mode, keeps what the owner selected for this round, plus rounds still open', () => {
+    const v = vault({ secretBag: bag(4, 3, 2, 1), publishPolicy: policy({ mode: 'select' }) })
+
+    expect(keepListFor(v, v.secretId, 6, [5], [2])).toEqual([5, 2])
+  })
+
+  it('in select mode with no selection, sends no list rather than dropping anything', () => {
+    const v = vault({ secretBag: bag(4, 3), publishPolicy: policy({ mode: 'select' }) })
+
+    expect(keepListFor(v, v.secretId, 5)).toBeNull()
+  })
+
+  it('an empty selection keeps only the new version and open rounds', () => {
+    const v = vault({ secretBag: bag(4, 3), publishPolicy: policy({ mode: 'select' }) })
+
+    expect(keepListFor(v, v.secretId, 5, [], [])).toEqual([])
+  })
+})
+
+describe('retentionPreview', () => {
+  it('names what helpers keep and what they drop, newest first', () => {
+    const v = vault({
+      secretBag: bag(4, 3, 2, 1),
+      publishPolicy: {
+        defaultThreshold: 2,
+        defaultWeights: {},
+        helperRetention: { mode: 'lastN', n: 3 },
+        proofCleanup: { mode: 'manual' },
+      },
+    })
+
+    expect(retentionPreview(v, [])).toEqual({ kept: [4, 3, 2], dropped: [1] })
   })
 })

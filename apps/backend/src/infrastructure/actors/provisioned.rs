@@ -670,6 +670,100 @@ impl ProvisionedActor {
                     );
                 }
 
+                // A request on an authenticated channel that failed. The library
+                // reports it here instead of failing `process`, and — since these
+                // actors run with `auto_respond_on_failure` — has already
+                // answered the peer whenever a reply target existed, so the log
+                // is all that is left. `message` is local detail; `status` is
+                // what the peer was (or would have been) sent.
+                DeRecEvent::RequestFailed {
+                    channel_id,
+                    action_kind,
+                    responded,
+                    status,
+                    memo,
+                    error_code,
+                    message,
+                    ..
+                } => {
+                    warn!(
+                        actor_id = %self.actor_id,
+                        channel_id = channel_id.0,
+                        action = ?action_kind,
+                        responded = responded,
+                        status = status,
+                        memo = %memo,
+                        error_code = %error_code,
+                        message = %message,
+                        "inbound request failed"
+                    );
+                }
+                // Refusals the library itself made and answered — the peer has
+                // been sent the same status and memo.
+                DeRecEvent::ShareRefused {
+                    channel_id,
+                    version,
+                    status,
+                    memo,
+                } => {
+                    warn!(
+                        actor_id = %self.actor_id,
+                        channel_id = channel_id.0,
+                        version = version,
+                        status = status,
+                        memo = %memo,
+                        "refused an inbound share"
+                    );
+                }
+                DeRecEvent::ReplicaSecretRefused {
+                    channel_id,
+                    from_replica_id,
+                    version,
+                    status,
+                    memo,
+                    ..
+                } => {
+                    warn!(
+                        actor_id = %self.actor_id,
+                        channel_id = channel_id.0,
+                        from_replica_id = from_replica_id,
+                        version = version,
+                        status = status,
+                        memo = %memo,
+                        "refused a replica copy of the secret"
+                    );
+                }
+                DeRecEvent::PairingRefused {
+                    channel_id,
+                    status,
+                    error_code,
+                    message,
+                    ..
+                } => {
+                    warn!(
+                        actor_id = %self.actor_id,
+                        channel_id = channel_id.0,
+                        status = status,
+                        error_code = %error_code,
+                        message = %message,
+                        "refused a pairing request"
+                    );
+                }
+                // The peer could not process something this actor sent.
+                DeRecEvent::ErrorResponseReceived {
+                    channel_id,
+                    status,
+                    memo,
+                } => {
+                    warn!(
+                        actor_id = %self.actor_id,
+                        channel_id = channel_id.0,
+                        status = status,
+                        memo = %memo,
+                        "peer answered with an error response"
+                    );
+                }
+
                 DeRecEvent::Unpaired { channel_id } => {
                     let cid = channel_id.0.to_string();
                     // Drop the channel from the per-actor index so the roster

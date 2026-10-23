@@ -76,17 +76,26 @@ pub struct ProtocolConfig {
 /// The settings half of the builder chain, shared by fresh construction and
 /// in-place rebuild.
 ///
-/// Stores are *not* set here, and neither is the own-transport URI: those
-/// setters are the ones that move the builder's typestate, so a helper generic
-/// over the slots cannot call them. A fresh instance gets empty stores, a
-/// rebuild moves the live ones across — everything else is identical, and
-/// keeping it in one place is what stops a settings change from being applied
-/// to one path and forgotten in the other.
-fn configure_builder<Cs, Sh, Se, Us, St, T, O>(
-    builder: DeRecProtocolBuilder<Cs, Sh, Se, Us, St, T, O>,
+/// Stores and the transport are *not* set here: those setters are the ones
+/// that move the builder's typestate, so a helper generic over the slots
+/// cannot call them. A fresh instance gets empty stores, a rebuild moves the
+/// live ones across — everything else is identical, and keeping it in one
+/// place is what stops a settings change from being applied to one path and
+/// forgotten in the other.
+fn configure_builder<Cs, Sh, Se, Us, St, T>(
+    builder: DeRecProtocolBuilder<Cs, Sh, Se, Us, St, T>,
     config: &ProtocolConfig,
-) -> DeRecProtocolBuilder<Cs, Sh, Se, Us, St, T, O> {
+) -> DeRecProtocolBuilder<Cs, Sh, Se, Us, St, T> {
     let builder = builder
+        // The singular setter is deprecated; the whole list is what gets
+        // advertised in `supportedTransports` at pairing.
+        .with_own_transports(
+            config
+                .own_transports
+                .iter()
+                .map(|t| t.uri.as_str())
+                .collect::<Vec<_>>(),
+        )
         // Derived, not hardcoded: serving every advertised endpoint over a
         // secure scheme turns the guardrail back on by itself.
         //
@@ -147,16 +156,7 @@ pub fn build_protocol(config: &ProtocolConfig) -> Result<ActorProtocol, derec_li
         .with_secret_store(SqlSecretStore::new(config.pool.clone(), actor))
         .with_user_secret_store(SqlUserSecretStore::new(config.pool.clone(), actor))
         .with_state_store(SqlStateStore::new(config.pool.clone(), actor))
-        .with_transport(transport_for(config))
-        // The singular setter is deprecated; the whole list is what gets
-        // advertised in `supportedTransports` at pairing.
-        .with_own_transports(
-            config
-                .own_transports
-                .iter()
-                .map(|t| t.uri.as_str())
-                .collect::<Vec<_>>(),
-        );
+        .with_transport(transport_for(config));
 
     configure_builder(builder, config).build()
 }

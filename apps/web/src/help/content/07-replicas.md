@@ -82,6 +82,12 @@ To resolve it:
 
 Removing the **source** promotes the first remaining member in this device's replica list to source, possibly this device.
 
+## Threshold, weights and versions across the group
+
+The threshold and each helper's weight travel with every mirrored version. A member that receives a version (or adopts the vault) publishes next with the same threshold and weights, and its publish dialogs start from them. The other choices in **Vault Settings** (which versions helpers keep, cleanup of verification copies, periodic verification) are each device's own: a replica keeps its own settings.
+
+Verification copies are pruned only on the member that publishes. A member that receives a version keeps the copies it is sent; in a browser, **Clean up…** (or automatic cleanup) deletes old ones there too. A replica hosted by the node (a provisioned helper acting as a replica) has no such control and keeps every version's copies.
+
 ## What the removed device sees
 
 The removed member is not asked and gets no warning. When it sees a roster without itself, the protocol on that device erases its whole copy of the vault: secrets, helper channels and shares. The app then shows *This vault was removed from its replica group by another member…* and the vault holds nothing. The secret survives on the remaining members and the helpers. To come back, the device must be paired and mirrored again.
