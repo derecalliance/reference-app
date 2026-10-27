@@ -10,13 +10,24 @@
 //! Keyed by `(secret_id, channel_id, version)`. There is deliberately no
 //! replica column: `save` takes no replica, so a column for one could never be
 //! populated.
+//!
+//! A provisioned helper's simulated failure ([`HelperFault`]) is applied here,
+//! through the SDK's own store contract: a share it "lost" is not found, a
+//! "corrupted" one is read back altered, and a refusal is the SDK's
+//! [`ShareStoreError::Refused`]. The library then answers the owner exactly
+//! as it would for a real helper in that state.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
-use derec_library::protocol::{DeRecShareStore, Share, ShareStoreError, ShareStoreFuture};
+use derec_library::protocol::{DeRecShareStore, Refusal, Share, ShareStoreError, ShareStoreFuture};
 use derec_library::types::ChannelId;
+use prost::Message;
+use uuid::Uuid;
 
 use super::{from_base64, id_to_text, to_base64};
+use crate::models::HelperFault;
+use crate::repositories::helper_faults::{HelperFaultRepository, SqlHelperFaultRepository};
 
 fn backend<E: std::error::Error + Send + Sync + 'static>(e: E) -> ShareStoreError {
     ShareStoreError::Backend(Box::new(e))
@@ -83,15 +94,85 @@ pub struct SqlShareStore {
     /// header: (actor_id, secret_id) identifies an instance, because two
     /// actors can hold instances bound to the same secret.
     actor_id: String,
+    faults: Arc<dyn HelperFaultRepository>,
 }
 
 impl SqlShareStore {
     pub fn new(pool: sqlx::AnyPool, actor_id: impl Into<String>) -> Self {
         Self {
+            faults: Arc::new(SqlHelperFaultRepository::new(pool.clone())),
             pool,
             actor_id: actor_id.into(),
         }
     }
+}
+
+/// The failure `actor_id` simulates. An id that is not a UUID — only test
+/// fixtures build one — and a lookup that fails both mean none: a fault is a
+/// test aid, and must never be what breaks a real read.
+async fn fault_of(faults: &dyn HelperFaultRepository, actor_id: &str) -> HelperFault {
+    let Ok(id) = Uuid::parse_str(actor_id) else {
+        return HelperFault::None;
+    };
+    match faults.fault(&id).await {
+        Ok(fault) => fault,
+        Err(e) => {
+            tracing::warn!(actor_id, error = %e, "could not read the helper's simulated fault; behaving normally");
+            HelperFault::None
+        }
+    }
+}
+
+/// A share held *for another owner*: its own secret is not the partition's.
+/// Only these are subject to a fault — a replica's owner-side copies, filed
+/// under the secret they mirror, never are.
+fn held_for_others(share: &Share, partition: u64) -> bool {
+    share.secret_id != partition
+}
+
+/// `shares` as a helper simulating `fault` reads them back.
+fn apply_fault(shares: Vec<Share>, partition: u64, fault: HelperFault) -> Vec<Share> {
+    match fault {
+        HelperFault::LostShares => shares
+            .into_iter()
+            .filter(|share| !held_for_others(share, partition))
+            .collect(),
+        HelperFault::CorruptedShares => shares
+            .into_iter()
+            .map(|share| {
+                if held_for_others(&share, partition) {
+                    corrupted(share)
+                } else {
+                    share
+                }
+            })
+            .collect(),
+        _ => shares,
+    }
+}
+
+/// `share` with one byte of its first subshare flipped, re-encoded so it still
+/// decodes. The stored bytes are a `StoreShareRequestMessage` wrapping a
+/// `CommittedDeRecShare` wrapping the `DeRecShare`; altering the subshare
+/// breaks the hash a verification proof is computed over and the Merkle proof
+/// recovery checks, which is what real corruption does. Bytes that do not
+/// decode are returned as they are: there is nothing to corrupt convincingly.
+fn corrupted(share: Share) -> Share {
+    match corrupt_bytes(&share.bytes) {
+        Some(bytes) => Share { bytes, ..share },
+        None => share,
+    }
+}
+
+fn corrupt_bytes(bytes: &[u8]) -> Option<Vec<u8>> {
+    let mut request = derec_proto::StoreShareRequestMessage::decode(bytes).ok()?;
+    let mut committed = derec_proto::CommittedDeRecShare::decode(request.share.as_slice()).ok()?;
+    let mut inner = derec_proto::DeRecShare::decode(committed.de_rec_share.as_slice()).ok()?;
+    let byte = inner.subshares.first_mut()?.y.last_mut()?;
+    *byte ^= 0xFF;
+    committed.de_rec_share = inner.encode_to_vec();
+    request.share = committed.encode_to_vec();
+    Some(request.encode_to_vec())
 }
 
 /// The versions helpers keep when `version` is distributed, given how this
@@ -146,6 +227,7 @@ impl DeRecShareStore for SqlShareStore {
         let secret = id_to_text(secret_id);
         let channel = id_to_text(channel_id.0);
         let actor = self.actor_id.clone();
+        let faults = Arc::clone(&self.faults);
         // Copied out of the borrowed slice: the future outlives the call.
         let versions: Vec<i64> = versions.iter().map(|v| i64::from(*v)).collect();
 
@@ -178,7 +260,8 @@ impl DeRecShareStore for SqlShareStore {
                 .map_err(backend)?
             };
 
-            to_shares(rows)
+            let fault = fault_of(faults.as_ref(), &actor).await;
+            Ok(apply_fault(to_shares(rows)?, secret_id, fault))
         })
     }
 
@@ -193,6 +276,7 @@ impl DeRecShareStore for SqlShareStore {
         let channels: Vec<String> = channel_ids.iter().map(|c| id_to_text(c.0)).collect();
         let versions: Vec<i64> = versions.iter().map(|v| i64::from(*v)).collect();
         let actor = self.actor_id.clone();
+        let faults = Arc::clone(&self.faults);
 
         Box::pin(async move {
             // No channels means no rows — unlike an empty *version* list,
@@ -227,7 +311,8 @@ impl DeRecShareStore for SqlShareStore {
                 .await
                 .map_err(backend)?;
 
-            to_shares(rows)
+            let fault = fault_of(faults.as_ref(), &actor).await;
+            Ok(apply_fault(to_shares(rows)?, secret_id, fault))
         })
     }
 
@@ -240,6 +325,7 @@ impl DeRecShareStore for SqlShareStore {
         let secret = id_to_text(secret_id);
         let channels: Vec<String> = channel_ids.iter().map(|c| id_to_text(c.0)).collect();
         let actor = self.actor_id.clone();
+        let faults = Arc::clone(&self.faults);
 
         Box::pin(async move {
             if channels.is_empty() {
@@ -258,7 +344,8 @@ impl DeRecShareStore for SqlShareStore {
             .await
             .map_err(backend)?;
 
-            to_shares(rows)
+            let fault = fault_of(faults.as_ref(), &actor).await;
+            Ok(apply_fault(to_shares(rows)?, secret_id, fault))
         })
     }
 
@@ -301,8 +388,18 @@ impl DeRecShareStore for SqlShareStore {
         let share_secret = id_to_text(share.secret_id);
         let subshares = share.subshares.map(i64::from);
         let threshold = share.threshold.map(i64::from);
+        let held_for_others = held_for_others(&share, secret_id);
+        let faults = Arc::clone(&self.faults);
 
         Box::pin(async move {
+            // The SDK answers a refused write with the refusal's status and
+            // memo, as for a real helper's full or rate-limited storage.
+            if held_for_others
+                && fault_of(faults.as_ref(), &actor).await == HelperFault::RefusesNewShares
+            {
+                return Err(ShareStoreError::Refused(Refusal::Rejected));
+            }
+
             let mut tx = crate::repositories::begin_write(&pool)
                 .await
                 .map_err(backend)?;
@@ -399,6 +496,24 @@ impl DeRecShareStore for SqlShareStore {
             .execute(&pool)
             .await
             .map_err(backend)?;
+            Ok(())
+        })
+    }
+
+    /// Called only for a challenge the helper is about to answer, so a refusal
+    /// here is always on a share held for another owner.
+    fn record_verification(
+        &mut self,
+        _secret_id: u64,
+        _channel_id: ChannelId,
+        _version: u32,
+    ) -> ShareStoreFuture<'_, ()> {
+        let actor = self.actor_id.clone();
+        let faults = Arc::clone(&self.faults);
+        Box::pin(async move {
+            if fault_of(faults.as_ref(), &actor).await == HelperFault::RefusesVerification {
+                return Err(ShareStoreError::Refused(Refusal::Rejected));
+            }
             Ok(())
         })
     }

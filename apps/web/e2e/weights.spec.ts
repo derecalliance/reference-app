@@ -5,7 +5,7 @@ import type { Page } from '@playwright/test'
 
 import { test, expect } from './fixtures'
 import {
-  BACKEND_API_URL,
+  actorIdFor,
   discoverAll,
   linkToPreviousOwner,
   newOwnerContext,
@@ -17,7 +17,7 @@ import {
   protectSecret,
   recoverOfferedSecret,
   restoreRecoveredBag,
-  resultOf,
+  setOffline,
   setUpOwner,
   tabCount,
   uniqueReplicaName,
@@ -33,27 +33,6 @@ import {
  * three. And the weight sticks: the library stores it, and every later
  * publish has to carry it, or it resets to 1.
  */
-
-interface BackendActor {
-  id: string
-  name: string
-}
-
-/** The provisioned actor behind a participant row, by its name. */
-async function actorIdFor(page: Page, name: string): Promise<string> {
-  const { actors } = await resultOf<{ actors: BackendActor[] }>(await page.request.get(`${BACKEND_API_URL}/actors`))
-  const actor = actors.find(a => a.name === name)
-  if (!actor) throw new Error(`no actor named ${name}`)
-  return actor.id
-}
-
-/** Make the backend drop everything to and from one provisioned helper. */
-async function setOffline(page: Page, actorId: string, disabled: boolean): Promise<void> {
-  const res = await page.request.post(`${BACKEND_API_URL}/helpers/${actorId}/toggle-status`, {
-    data: { disabled },
-  })
-  expect(res.ok(), `toggle-status ${disabled ? 'off' : 'on'}line`).toBe(true)
-}
 
 /**
  * Give `helper` default weight `weight` on the Channels list, then apply it

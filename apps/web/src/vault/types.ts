@@ -50,6 +50,12 @@ export interface VaultNotifier {
    * vault on screen already shows it — so the manager drops it otherwise.
    */
   outcome: (message: string) => void
+  /**
+   * Something the owner must not miss — a failed automatic verification: an
+   * alert that stays until dismissed, whichever vault is on screen. Optional
+   * so test doubles need not supply it; absent, `error` stands in.
+   */
+  alert?: (message: string) => void
 }
 
 /**
@@ -150,14 +156,22 @@ export interface PublishContext {
   preview: { kept: number[]; dropped: number[] } | null
 }
 
-/** What the Clean up dialog starts from — see `VaultRuntime.cleanupContext`. */
+/** What the Verification Copies tab shows — see `VaultRuntime.cleanupContext`. */
 export interface CleanupContext {
   /** Verification copies per version, newest first. */
   usage: ProofVersionUsage[]
   /** What must stay whatever is chosen; `null` before any version committed. */
   floor: CleanupFloor | null
-  /** The vault's criterion, resolved — what the dialog pre-selects by. */
+  /** The vault's criterion, resolved — what "Select by rule" selects by. */
   criterion: CleanupCriterion
+  /**
+   * The earlier versions helpers keep under the latest version's keep-list
+   * (the latest itself is always kept); `null` when no list applies, so
+   * helpers keep everything they hold.
+   */
+  helperKeep: readonly number[] | null
+  /** How many helper channels this vault has: the most copies a version can have. */
+  helperChannels: number
 }
 
 /** What one dispatched `ProtectSecret` round produced. */

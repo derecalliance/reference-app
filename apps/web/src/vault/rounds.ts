@@ -173,10 +173,6 @@ export class RoundTracker {
     return this.rounds.has(version)
   }
 
-  /** Whether any verification challenge is still awaiting its answer. */
-  get hasAnyVerification(): boolean {
-    return this.verifications.size > 0
-  }
 
   /** Whether any protect round is still open. */
   get hasAnyPendingRound(): boolean {

@@ -15,6 +15,7 @@ const api = vi.hoisted(() => ({
   apiGetActors: vi.fn(),
   apiGetServerDefaults: vi.fn(),
   apiToggleParticipantStatus: vi.fn(),
+  apiSetParticipantFault: vi.fn(),
 }))
 vi.mock('../api', () => api)
 
@@ -59,6 +60,7 @@ beforeEach(() => {
     .mockReset()
     .mockResolvedValue({ defaults: FALLBACK_SERVER_DEFAULTS, reachable: true, fromServer: true })
   api.apiToggleParticipantStatus.mockReset().mockRejectedValue(new Error('node said no'))
+  api.apiSetParticipantFault.mockReset().mockResolvedValue({ fault: 'corrupted_shares' })
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -97,5 +99,22 @@ describe('ParticipantsPane', () => {
       b.getAttribute('aria-label'),
     )
     expect(labels).toEqual(['Delete Alex (aaaaaaaa)', 'Delete Alex (bbbbbbbb)'])
+  })
+
+  it('shows the failure a participant simulates, and sets one from its row', async () => {
+    api.apiGetActors.mockResolvedValue([{ ...helper('aaaaaaaa-1', 'Alex'), fault: 'lost_shares' }, helper('bbbbbbbb-2', 'Bo')])
+    await renderPane()
+
+    expect(host.textContent).toContain('Lost shares')
+
+    // One failure-mode select per row, in row order: Bo's is the second.
+    const combobox = host.querySelectorAll<HTMLElement>('[role="combobox"]')[1]
+    await act(async () => {
+      combobox.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    })
+    const option = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]')).find(o => o.textContent === 'Corrupted shares')!
+    await act(async () => option.click())
+
+    expect(api.apiSetParticipantFault).toHaveBeenCalledWith('bbbbbbbb-2', 'corrupted_shares')
   })
 })

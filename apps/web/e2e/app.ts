@@ -32,6 +32,27 @@ export async function resultOf<T>(response: APIResponse): Promise<T> {
   return body.result
 }
 
+interface BackendActor {
+  id: string
+  name: string
+}
+
+/** The provisioned actor behind a participant row, by its name. */
+export async function actorIdFor(page: Page, name: string): Promise<string> {
+  const { actors } = await resultOf<{ actors: BackendActor[] }>(await page.request.get(`${BACKEND_API_URL}/actors`))
+  const actor = actors.find(a => a.name === name)
+  if (!actor) throw new Error(`no actor named ${name}`)
+  return actor.id
+}
+
+/** Make the backend drop everything to and from one provisioned helper. */
+export async function setOffline(page: Page, actorId: string, disabled: boolean): Promise<void> {
+  const res = await page.request.post(`${BACKEND_API_URL}/helpers/${actorId}/toggle-status`, {
+    data: { disabled },
+  })
+  expect(res.ok(), `toggle-status ${disabled ? 'off' : 'on'}line`).toBe(true)
+}
+
 /** Pool size for a spec that does not name one — enough for a threshold of 2. */
 const DEFAULT_POOL_SIZE = 3
 
@@ -703,7 +724,7 @@ export function replicaMemberRows(page: Page) {
 /** The count badge on a dashboard tab. */
 export async function tabCount(
   page: Page,
-  name: 'Channels' | 'Replicas' | 'Secrets' | 'Shares' | 'Recovery',
+  name: 'Channels' | 'Replicas' | 'Secrets' | 'Verification Copies' | 'Shares' | 'Recovery' | 'Notifications',
 ): Promise<number> {
   const text = await page.getByRole('tab', { name: new RegExp(`^${name}`) }).innerText()
   return Number(text.replace(/\D+/g, '') || '0')
@@ -712,7 +733,7 @@ export async function tabCount(
 /** Switch the owner dashboard to one of its tabs. */
 export async function openTab(
   page: Page,
-  name: 'Channels' | 'Replicas' | 'Secrets' | 'Shares' | 'Recovery',
+  name: 'Channels' | 'Replicas' | 'Secrets' | 'Verification Copies' | 'Shares' | 'Recovery' | 'Notifications',
 ): Promise<void> {
   await page.getByRole('tab', { name: new RegExp(`^${name}`) }).click()
 }

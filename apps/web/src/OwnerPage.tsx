@@ -74,7 +74,6 @@ import { contactMessageToDto, dtoToContactMessage } from './contactDto'
 import { AppMuiTheme } from './AppMuiTheme'
 import { ReplicaAdoptionDialog } from './ReplicaAdoptionDialog'
 import { effectiveRecommended } from './owner/recommendedParticipants'
-import { CleanupModal } from './owner/CleanupModal'
 import { RepublishModal } from './owner/RepublishModal'
 import { publishReadiness } from './owner/publishGate'
 import { defaultWeightFor, resolvePublishPolicy } from './owner/publishPolicy'
@@ -96,6 +95,9 @@ import { ReplicaAdoptionBlockedScreen } from './ReplicaAdoptionBlockedScreen'
 
 import { AddSecretModal } from './owner/AddSecretModal'
 import { RemoveSecretModal } from './owner/RemoveSecretModal'
+import { VerificationCopiesPanel } from './owner/VerificationCopiesPanel'
+import { NotificationsPanel } from './owner/NotificationsPanel'
+import { unreadCount } from './vault/notifications'
 import { EditIdentityModal } from './owner/EditIdentityModal'
 import { LinkChannelModal } from './owner/LinkChannelModal'
 import { OwnerParticipantPanel } from './owner/OwnerParticipantPanel'
@@ -111,6 +113,7 @@ import { SecretBagPanel } from './owner/SecretBagPanel'
 import { ShareContactModal } from './owner/ShareContactModal'
 import type { ProtocolInstance } from './owner/protocol'
 import { OwnerTabBar, type ActiveTab } from './owner/OwnerTabBar'
+import { replaceRoute, type VaultRouteTab } from './routing'
 import { useLinkGroups } from './owner/useLinkGroups'
 import { runtimeStateStore } from './vault/runtimeStateStore'
 import { groupMemberRows } from './owner/groupMembers'
@@ -123,6 +126,11 @@ interface Props {
    * same runtime for the page's whole life.
    */
   runtime: VaultRuntime
+  /**
+   * A tab the route asks to open — the notification bell links here. Opened
+   * once, then the route drops it, so clicking the bell again opens it again.
+   */
+  requestedTab?: VaultRouteTab
 }
 
 /**
@@ -132,7 +140,7 @@ interface Props {
  */
 export default memo(OwnerPage)
 
-function OwnerPage({ runtime }: Props) {
+function OwnerPage({ runtime, requestedTab }: Props) {
   /**
    * Follow the engine's state, which is the only writer of it — the vault record
    * included. Subscribing rather than keeping copies is what stops the engine and
@@ -193,11 +201,21 @@ function OwnerPage({ runtime }: Props) {
   const [activeTab, setActiveTab] = useState<ActiveTab>(
     'participants',
   )
+  // The route asks for a tab: open it while rendering (React's pattern for
+  // state that follows a prop), then hand the URL back without the request, so
+  // the next ask is a change again.
+  const [seenTabRequest, setSeenTabRequest] = useState<VaultRouteTab | undefined>(undefined)
+  if (requestedTab !== seenTabRequest) {
+    setSeenTabRequest(requestedTab)
+    if (requestedTab) setActiveTab(requestedTab)
+  }
+  useEffect(() => {
+    if (requestedTab) replaceRoute({ kind: 'vault', id: runtime.state().vault.id })
+  }, [requestedTab, runtime])
   const [shareOpen, setShareOpen] = useState(false)
   const [pairOpen, setPairOpen] = useState(false)
   const [protectOpen, setProtectOpen] = useState(false)
   const [republishOpen, setRepublishOpen] = useState(false)
-  const [cleanupOpen, setCleanupOpen] = useState(false)
   const [secretToRemove, setSecretToRemove] = useState<UserSecret | null>(null)
   const [identityOpen, setIdentityOpen] = useState(false)
   const [vaultSettingsOpen, setVaultSettingsOpen] = useState(false)
@@ -1502,6 +1520,9 @@ function OwnerPage({ runtime }: Props) {
   // render as ordinary rows; see `groupMemberRows` for what such a row can and
   // cannot do.
   const memberRows = groupMemberRows(storedMembers, ownReplicaId, knownReplicaIds)
+  // Read from the share store on every render, like the stored members above:
+  // a deletion emits, and the counts follow.
+  const copiesContext = runtime.cleanupContext()
 
   // The row the fingerprint modal is for. Resolved by channel because that is
   // what both the auto-raise and the row's own prompt carry — and because the
@@ -1748,14 +1769,6 @@ function OwnerPage({ runtime }: Props) {
         />
       )}
 
-      {cleanupOpen && (
-        <CleanupModal
-          context={runtime.cleanupContext()}
-          onCleanup={versions => runtime.cleanupProofs(versions)}
-          onClose={() => setCleanupOpen(false)}
-        />
-      )}
-
       {republishOpen && (
         <RepublishModal
           participants={vault.participants}
@@ -1823,8 +1836,10 @@ function OwnerPage({ runtime }: Props) {
                 count: pairedChannels.replicas.length + memberRows.length,
               },
               { id: 'secrets', label: 'Secrets', count: vault.secretBag?.currentVersion.secrets.length ?? 0 },
+              { id: 'copies', label: 'Verification Copies', count: copiesContext.usage.length },
               { id: 'shares', label: 'Shares', count: (vault.heldShares ?? []).length },
               { id: 'recovery', label: 'Recovery', count: (vault.recoveredSecrets ?? []).length },
+              { id: 'notifications', label: 'Notifications', count: unreadCount(vault.notifications).total },
             ]}
             active={activeTab}
             onSelect={setActiveTab}
@@ -1893,7 +1908,16 @@ function OwnerPage({ runtime }: Props) {
               />
             )}
             {activeTab === 'secrets' && (
-              <SecretBagPanel bag={vault.secretBag} participants={vault.participants} pendingRounds={vault.pendingProtectRounds ?? []} onVerify={ownerVerifyShares} onVerifyClose={() => runtimeRef.current?.setBusy(false)} onAddSecret={() => setProtectOpen(true)} onRemoveSecret={setSecretToRemove} removeDisabledReason={publishBlockedReason} onRepublish={() => setRepublishOpen(true)} onCleanUp={() => setCleanupOpen(true)} defaultThreshold={publishPolicy.defaultThreshold} />
+              <SecretBagPanel bag={vault.secretBag} participants={vault.participants} pendingRounds={vault.pendingProtectRounds ?? []} onVerify={ownerVerifyShares} onVerifyClose={() => runtimeRef.current?.setBusy(false)} onAddSecret={() => setProtectOpen(true)} onRemoveSecret={setSecretToRemove} removeDisabledReason={publishBlockedReason} onRemoveVersion={version => runtime.removeVersion(version)} lastAutoVerification={vault.verificationSchedule ? vault.lastAutoVerification : undefined} onRepublish={() => setRepublishOpen(true)} defaultThreshold={publishPolicy.defaultThreshold} />
+            )}
+            {activeTab === 'copies' && (
+              <VerificationCopiesPanel
+                context={copiesContext}
+                bag={vault.secretBag}
+                autoCleanup={publishPolicy.proofCleanup}
+                onDelete={versions => runtime.cleanupProofs(versions)}
+                onOpenSettings={() => setVaultSettingsOpen(true)}
+              />
             )}
             {activeTab === 'shares' && (
               <HeldSharesList
@@ -1901,6 +1925,13 @@ function OwnerPage({ runtime }: Props) {
                 participants={vault.participants}
                 vaultId={vault.id}
                 secretId={vault.secretId}
+              />
+            )}
+            {activeTab === 'notifications' && (
+              <NotificationsPanel
+                notifications={vault.notifications ?? []}
+                onMarkRead={ids => runtime.markNotificationsRead(ids)}
+                onOpenLink={setActiveTab}
               />
             )}
             {activeTab === 'recovery' && (

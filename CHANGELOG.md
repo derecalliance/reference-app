@@ -9,9 +9,9 @@ the SDK is compiled into both halves, so a different SDK means a different
 release rather than a different setting. Pre-releases of a version carry a
 suffix (`0.0.8-alpha.1`, `-beta.N`, `-rc.N`).
 
-## [0.0.8-alpha.1] — unreleased
+## [0.0.9] — unreleased
 
-First release. Built against DeRec SDK 0.0.8.
+First release. Built against DeRec SDK 0.0.9.
 
 ### Added
 
@@ -23,6 +23,10 @@ First release. Built against DeRec SDK 0.0.8.
   list, a header vault switcher, setting up a new vault or claiming an existing
   owner actor, Leave (stop running here, or remove from this browser) and
   Reset browser data. State persists in `localStorage`.
+- **Dark and light themes** with a toggle in the header. The app follows the
+  system's colour scheme until a theme is picked; the pick is remembered per
+  browser (`derec.theme`), applies to every open tab, and is set before the
+  first paint so a light page does not flash dark.
 - **Pairing** in all three contact modes — inline keys, hashed keys and no keys
   with fingerprint confirmation (including the refusal path) — by copy/paste or
   by scanning a QR code with the camera where the browser supports
@@ -34,6 +38,13 @@ First release. Built against DeRec SDK 0.0.8.
   the requested count is a target for the pool, not an order to create.
   Helpers can be provisioned, deleted and toggled offline from the
   Participants section or over HTTP.
+- **Simulated helper failures.** A provisioned participant can be set to
+  lose or corrupt the shares it holds, or to refuse to store or to verify
+  them (`PUT /api/v1/helpers/{id}/fault`, and a Failure mode select under
+  Participants). Applied through the SDK's share-store contract, so owners
+  get the library's real answers: rejected or invalid verifications, refused
+  shares, corrupted recovery shares set aside. Reversible and independent of
+  Take offline; owners' rows show what is simulated.
 - **Secret lifecycle.** Add a secret, protect it across paired helpers, verify
   shares, discover the versions helpers hold, and remove a secret (which
   publishes a new version without it). View Payload shows a version's secret
@@ -46,6 +57,13 @@ First release. Built against DeRec SDK 0.0.8.
   reported as having failed to store the version, and the Add Secret form does
   not list it among the participants. A secret bag is capped at 32 KB, which is what browser storage can
   hold across every kept version.
+- **Previous versions as a table.** On the Secrets tab, the current version
+  keeps its full card; earlier versions are one row each (version, secret
+  names, threshold, helpers verified and failed, recoverable, and Payload /
+  Verify / Remove actions), with the per-helper detail and subshare counts in
+  tooltips. Remove deletes a version from this device — its record and its
+  verification copies — and sends nothing, so helpers that keep it can still
+  recover it.
 - **Publish choices: weights, threshold and versions kept.** Every publish
   (Add Secret, Remove Secret, Republish) shows the threshold it splits at,
   every paired helper's weight (how many subshares it holds — the threshold
@@ -67,17 +85,32 @@ First release. Built against DeRec SDK 0.0.8.
   keep (the last N, default 3, or chosen at each publish — a publish the SDK
   starts on its own then sends no list); automatic or manual cleanup of old
   verification copies; and periodic verification.
-- **Cleaning up verification copies.** Clean up lists the copies this device
-  keeps per version (count and size), pre-selects what the vault's rule would
-  delete, and deletes the rest; automatic mode does it after each new version
-  lands, including on a replica, where the SDK never deletes them. The latest
-  version and open rounds are always kept; shares held for others are never
-  touched.
+- **Verification Copies tab.** Lists the copies this device keeps per
+  version, latest first: how many helpers' copies, their size, whether the
+  version is still in this device's history, whether helpers still keep it
+  and how many of its helpers verified. Delete one version from its row, or
+  check several and delete them together; Select by rule checks what the
+  vault's rule would delete. Automatic mode does the same after each new
+  version lands, including on a replica, where the SDK never deletes them. The
+  latest version and open rounds are always kept; shares held for others are
+  never listed.
 - **Recoverability and periodic verification.** Verifying a version shows
   whether its verified helpers hold its threshold of subshares (recoverable,
   not recoverable from verified helpers alone, or unknown for versions
   published before the counts were recorded). Shares can be verified
   automatically every N minutes, hours or days while the vault is open.
+- **Notifications.** A bell in the header counts unread notifications across
+  vaults, and rings with a red badge while one is critical. Each vault has a
+  Notifications tab (filter, mark read, link to the tab concerned). Automatic
+  verification announces every run: started and passed as toasts, and a failed
+  run (a helper rejected, sent an invalid proof, was unreachable or silent past
+  the run's report window, or the run could not start) as an alert that stays
+  until dismissed, plus a critical notification that stays until read. The
+  Secrets card shows the last automatic check. An invalid proof in any
+  verification is recorded as critical too. A run is reported at its report
+  window (the protocol timeout, capped at the schedule interval) although its
+  challenges stay open for late answers, and the next run is no longer held
+  back by them.
 - **Restore or join.** A recovered vault that still lives on a replica offers
   Join group next to Restore: join through a member this node runs, or pair
   as replica destination with any member. Joining is blocked by a known SDK

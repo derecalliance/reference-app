@@ -26,7 +26,7 @@ Without cloning anything, the published image runs on its own:
 
 ```
 docker run -d --name derec -p 5000:5000 -p 50051:50051 \
-  -v derec-data:/var/lib/derec ghcr.io/derecalliance/reference-app:0.0.8-alpha.1
+  -v derec-data:/var/lib/derec ghcr.io/derecalliance/reference-app:0.0.9
 ```
 
 ### Run it in Docker
@@ -73,7 +73,7 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173/reference-app/`. The front end finds the backend on
+Open `http://localhost:5173/`. The front end finds the backend on
 port 5000 of whatever host served the page, so nothing needs configuring; set
 `VITE_API_URL` only to point it elsewhere. Settings for the backend (ports,
 database, defaults) are covered in [Configuring it](#configuring-it).
@@ -125,7 +125,9 @@ decisions are flagged in the header and the list.
 | `#/vault/{id}` | One vault, by its owner actor's id. |
 
 In the header: a **vault switcher** to jump between vaults, **All vaults** back
-to the list (the vault keeps running), **Leave**, and **Reset browser data**.
+to the list (the vault keeps running), **Leave**, **Reset browser data**, and a
+sun/moon toggle between the dark and light themes (the system's setting until
+you pick one; the pick is remembered per browser).
 Leave offers two things: **Stop running here** (the vault stays saved and
 another tab can open it) or **Remove from browser** (erases its keys, channels
 and shares from this browser). Reset browser data erases every vault in this
@@ -209,7 +211,7 @@ volume. It is published as `ghcr.io/derecalliance/reference-app` for
 
 ```
 docker run -d --name derec -p 5000:5000 -p 50051:50051 \
-  -v derec-data:/var/lib/derec ghcr.io/derecalliance/reference-app:0.0.8-alpha.1
+  -v derec-data:/var/lib/derec ghcr.io/derecalliance/reference-app:0.0.9
 ```
 
 **[docs/DOCKER.md](docs/DOCKER.md) is the image's reference:** tags and
@@ -225,7 +227,7 @@ run it with plain Compose. Add `-f compose.build.yaml`, or use
 
 ### The SDK
 
-Both halves are built against SDK **0.0.8**, and the app's version is the same
+Both halves are built against SDK **0.0.9**, and the app's version is the same
 number.
 
 Both are taken from the registries: `derec-library` and `derec-proto` from
@@ -352,7 +354,7 @@ cd apps/web
 npm run dev:lan
 ```
 
-Then open `http://192.168.0.28:5173/reference-app/` on the phone, substituting
+Then open `http://192.168.0.28:5173/` on the phone, substituting
 your own address (`ipconfig getifaddr en0` on macOS; Vite also prints it as
 `Network:` on startup).
 
@@ -405,7 +407,7 @@ It is per-device and Chrome-only, and you redo it if the laptop's address
 changes. Two alternatives, both avoiding that:
 
 - **Android over USB.** `adb reverse tcp:5173 tcp:5173 && adb reverse tcp:5000
-  tcp:5000`, then open `http://localhost:5173/reference-app/` on the phone.
+  tcp:5000`, then open `http://localhost:5173/` on the phone.
   `localhost` *is* a secure context, so nothing else is needed.
 - **Real https**, which is what iOS would need. More involved than it looks:
   protocol messages are posted to peers' *absolute* transport URIs, so the

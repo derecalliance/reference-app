@@ -22,6 +22,10 @@ describe('parseHash', () => {
     })
   })
 
+  it('reads a vault opened on its Notifications tab', () => {
+    expect(parseHash('#/vault/abc/notifications')).toEqual({ kind: 'vault', id: 'abc', tab: 'notifications' })
+  })
+
   it('decodes an escaped id', () => {
     expect(parseHash('#/vault/a%20b')).toEqual({ kind: 'vault', id: 'a b' })
   })
@@ -41,6 +45,7 @@ describe('formatRoute', () => {
     { kind: 'new', flow: 'claim' },
     { kind: 'vault', id: 'abc-123' },
     { kind: 'vault', id: 'a b/c' },
+    { kind: 'vault', id: 'abc', tab: 'notifications' },
   ]
 
   it.each(routes)('round-trips %j', route => {
@@ -51,5 +56,6 @@ describe('formatRoute', () => {
     expect(formatRoute({ kind: 'list' })).toBe('#/')
     expect(formatRoute({ kind: 'new', flow: 'setup' })).toBe('#/new')
     expect(formatRoute({ kind: 'vault', id: 'abc' })).toBe('#/vault/abc')
+    expect(formatRoute({ kind: 'vault', id: 'abc', tab: 'notifications' })).toBe('#/vault/abc/notifications')
   })
 })

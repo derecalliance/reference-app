@@ -10,7 +10,8 @@ The node's shared pool of provisioned helpers: provisioning it, transport modes,
 | --- | --- |
 | **Name** | Unique on the node, 1 to 64 characters. |
 | **Transport** | `http`, `grpc` or `both`: the endpoints the helper advertises. |
-| **Status** | *online*, or an *offline* chip. |
+| **Status** | *online*, or an *offline* chip, plus a chip naming the failure it simulates, if any. |
+| **Failure mode** | *Healthy*, or the failure it simulates (below). |
 | **Actions** | **Take offline** / **Bring online**, **Delete**. |
 
 ## Provisioning
@@ -37,6 +38,19 @@ The mode is what a helper **advertises**, not what it can dial: every hosted hel
 ## Taking a participant offline
 
 **Take offline** simulates an unreachable peer without stopping anything. The node keeps accepting messages for it and discards them (outcome `dropped` in `/api/v1/debug/events`). Owners see its rounds end in *No answer*, and its rows tagged *Offline*. **Bring online** resumes delivery; nothing discarded meanwhile comes back.
+
+## Simulating a failure
+
+**Failure mode** makes a participant misbehave in ways other than going offline, to test how owners cope. It is a property of the participant, so every owner it holds shares for sees it, and owners' rows show a dashed *Simulated: …* tag.
+
+| Mode | The participant | Owners see |
+| --- | --- | --- |
+| **Lost shares** | answers as though its storage were wiped | Verify: *Rejected* (unknown share version). Recovery: refused. Discovery: nothing listed. |
+| **Corrupted shares** | hands out its shares with one byte flipped | Verify: *Proof invalid*, a critical notification. Recovery: its share is set aside as corrupted, and the secret still comes back from the others. |
+| **Refuses new shares** | refuses every share it is asked to store | Publish: *Rejected* for it; the round commits if the others meet the threshold. |
+| **Refuses verification** | rejects every challenge, still holding its shares | Verify: *Rejected*. Recovery still works. |
+
+The failures go through the SDK's own answers, so they look exactly like a real participant in that state. Only shares held for owners are affected (a participant acting as a replica keeps its own copies), and stored shares are never changed: **Healthy** restores it exactly. It is independent of **Take offline**.
 
 ## Deleting a participant
 

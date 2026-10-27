@@ -10,7 +10,8 @@
  *   protocol stores (channels, contacts, secrets, shares, state) written by
  *   `stores.ts`, and the per-vault replica bookkeeping beside them.
  * - `derec.` — browser-wide preferences: this browser's Settings overrides
- *   (`derec.protocolDefaults`) and the last section shown (`derec.section`).
+ *   (`derec.protocolDefaults`), the last section shown (`derec.section`) and
+ *   the picked colour scheme (`derec.theme`).
  *
  * Both are swept: the reset dialog promises a start from scratch, and leaving
  * the Settings overrides behind meant the next vault quietly inherited them.

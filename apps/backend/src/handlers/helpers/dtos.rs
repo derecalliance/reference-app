@@ -6,7 +6,7 @@ use serde_json::value::RawValue;
 
 use crate::handlers::errors::{ApiError, ErrorCode};
 use crate::models::{
-    Actor, AddHelper, ChannelSummary, EnsurePool, EnsuredPool, ProtocolSettings,
+    Actor, AddHelper, ChannelSummary, EnsurePool, EnsuredPool, HelperFault, ProtocolSettings,
     TransportBreakdown, TransportMode, UnpairAck,
 };
 
@@ -130,6 +130,60 @@ pub struct ToggleStatusResponse {
 impl From<bool> for ToggleStatusResponse {
     fn from(disabled: bool) -> Self {
         Self { disabled }
+    }
+}
+
+/// A simulated failure on the wire — see [`HelperFault`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HelperFaultDto {
+    None,
+    LostShares,
+    CorruptedShares,
+    RefusesNewShares,
+    RefusesVerification,
+}
+
+impl From<HelperFaultDto> for HelperFault {
+    fn from(fault: HelperFaultDto) -> Self {
+        match fault {
+            HelperFaultDto::None => Self::None,
+            HelperFaultDto::LostShares => Self::LostShares,
+            HelperFaultDto::CorruptedShares => Self::CorruptedShares,
+            HelperFaultDto::RefusesNewShares => Self::RefusesNewShares,
+            HelperFaultDto::RefusesVerification => Self::RefusesVerification,
+        }
+    }
+}
+
+impl From<HelperFault> for HelperFaultDto {
+    fn from(fault: HelperFault) -> Self {
+        match fault {
+            HelperFault::None => Self::None,
+            HelperFault::LostShares => Self::LostShares,
+            HelperFault::CorruptedShares => Self::CorruptedShares,
+            HelperFault::RefusesNewShares => Self::RefusesNewShares,
+            HelperFault::RefusesVerification => Self::RefusesVerification,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetFaultRequest {
+    pub fault: HelperFaultDto,
+}
+
+/// The failure the helper simulates once the call returns.
+#[derive(Debug, Serialize)]
+pub struct SetFaultResponse {
+    pub fault: HelperFaultDto,
+}
+
+impl From<HelperFault> for SetFaultResponse {
+    fn from(fault: HelperFault) -> Self {
+        Self {
+            fault: fault.into(),
+        }
     }
 }
 

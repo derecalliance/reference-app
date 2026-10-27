@@ -23,12 +23,12 @@ export function restoredVersionReason(version: number): string {
 /**
  * Why a version whose verification copies are gone cannot be verified. The
  * library deletes this device's copies of a version it tells helpers to drop
- * (SDK 0.0.9), and Clean up deletes them by hand or automatically.
+ * (SDK 0.0.9), and the Verification Copies tab deletes them by hand or automatically.
  */
 export function deletedCopiesReason(version: number): string {
   return (
     `This device holds no verification copies for v${version}: they were deleted, either when helpers ` +
-    'were told to stop keeping it or by Clean up. Recovery is not affected; verify a newer version.'
+    'were told to stop keeping it or from the Verification Copies tab. Recovery is not affected; verify a newer version.'
   )
 }
 

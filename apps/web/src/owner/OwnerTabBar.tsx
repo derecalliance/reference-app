@@ -2,7 +2,7 @@
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
 /** The owner page's tabs, in the order they are shown. */
-export type ActiveTab = 'participants' | 'replicas' | 'secrets' | 'shares' | 'recovery'
+export type ActiveTab = 'participants' | 'replicas' | 'secrets' | 'copies' | 'shares' | 'recovery' | 'notifications'
 
 export interface OwnerTab {
   id: ActiveTab

@@ -66,7 +66,7 @@ function render(
         onRemoveSecret={() => {}}
         removeDisabledReason={null}
         onRepublish={() => {}}
-        onCleanUp={() => {}}
+        onRemoveVersion={async () => {}}
         defaultThreshold={2}
       />,
     ),

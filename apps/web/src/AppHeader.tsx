@@ -6,6 +6,8 @@ import MoreVertIcon from '@mui/icons-material/MoreVert'
 import { Badge, Box, IconButton, Menu, MenuItem, useMediaQuery, useTheme } from '@mui/material'
 
 import type { VaultEntry } from './vault/manager'
+import { NotificationBell } from './NotificationBell'
+import { ThemeToggle } from './ThemeToggle'
 import { VaultSwitcher } from './VaultSwitcher'
 
 const BASE_PATH = import.meta.env.BASE_URL.replace(/\/$/, '') // e.g. "/reference-app"
@@ -33,6 +35,8 @@ export interface AppHeaderProps {
   othersWaiting: number
   onShowAll: () => void
   onSwitch: (id: string) => void
+  /** Open a vault's Notifications tab — from the bell — marking `notificationId` read when one was picked. */
+  onOpenNotifications: (vaultId: string, notificationId: string | null) => void
   onLeave: () => void
   onReset: () => void
 }
@@ -45,12 +49,14 @@ function othersWaitingLabel(count: number): string {
 }
 
 /**
- * The page header: logo, the vault switcher, and the app-wide actions.
+ * The page header: logo, the vault switcher, the theme toggle and the app-wide
+ * actions.
  *
  * Below `md` the actions fold into a menu. Laid out in one row they need about
  * 700px — the switcher alone may take 260 — and on a phone they ran off the
  * right edge of the page rather than wrapping. The switcher stays out of the
- * menu because getting to another vault is what the header is for.
+ * menu because getting to another vault is what the header is for; the theme
+ * toggle and the bell are icons, small enough to stay too.
  */
 export function AppHeader({
   entries,
@@ -59,6 +65,7 @@ export function AppHeader({
   othersWaiting,
   onShowAll,
   onSwitch,
+  onOpenNotifications,
   onLeave,
   onReset,
 }: AppHeaderProps) {
@@ -84,6 +91,8 @@ export function AppHeader({
           <Box component="span" aria-live="polite" sx={VISUALLY_HIDDEN}>
             {waitingLabel ?? ''}
           </Box>
+          <ThemeToggle />
+          <NotificationBell entries={entries} currentVaultId={vaultPageShown ? vaultId : null} onOpen={onOpenNotifications} />
           {entries.length > 0 && (
             <VaultSwitcher entries={entries} currentId={vaultId} onSelect={onSwitch} />
           )}
@@ -137,6 +146,8 @@ export function AppHeader({
               All vaults
             </button>
           )}
+          <ThemeToggle />
+          <NotificationBell entries={entries} currentVaultId={vaultPageShown ? vaultId : null} onOpen={onOpenNotifications} />
           {entries.length > 0 && (
             <VaultSwitcher entries={entries} currentId={vaultId} onSelect={onSwitch} />
           )}

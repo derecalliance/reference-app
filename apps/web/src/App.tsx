@@ -161,6 +161,16 @@ function AppContent() {
   }
 
   /** Go straight to a vault picked in the header. */
+  /**
+   * The bell: open the vault's Notifications tab and mark the picked one read.
+   * A vault another tab runs cannot be marked from here; its tab still opens
+   * once this tab takes it over.
+   */
+  function openNotifications(id: string, notificationId: string | null): void {
+    if (notificationId) manager.runtime(id)?.markNotificationsRead([notificationId])
+    navigate({ kind: 'vault', id, tab: 'notifications' })
+  }
+
   function switchToVault(id: string): void {
     const target = entries.find(e => e.id === id)
     if (target && OPEN_ON_SWITCH.has(target.state)) {
@@ -260,7 +270,9 @@ function AppContent() {
     }
     switch (screen?.kind) {
       case 'page':
-        return runtime && vaultId ? <OwnerPage key={vaultId} runtime={runtime} /> : null
+        return runtime && vaultId ? (
+          <OwnerPage key={vaultId} runtime={runtime} requestedTab={route.kind === 'vault' ? route.tab : undefined} />
+        ) : null
       case 'missing':
         return (
           <div className="shell-centered">
@@ -308,6 +320,7 @@ function AppContent() {
         othersWaiting={othersWaiting}
         onShowAll={() => navigate({ kind: 'list' })}
         onSwitch={switchToVault}
+        onOpenNotifications={openNotifications}
         onLeave={() => setLeaveDialogOpen(true)}
         onReset={() => setResetEntryCount(countLocalDataEntries())}
       />

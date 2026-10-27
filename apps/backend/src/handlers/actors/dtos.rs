@@ -4,7 +4,8 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
 
-use crate::models::{Actor, ActorListing, ContactOptions, PeerContact};
+use crate::handlers::helpers::dtos::HelperFaultDto;
+use crate::models::{Actor, ActorListing, ContactOptions, HelperFault, PeerContact};
 
 /// Actor enriched with live pairing state — used in `GET /api/v1/actors`.
 #[derive(Debug, Clone, Serialize)]
@@ -20,6 +21,10 @@ pub struct ActorWithStatus {
     /// Whether this actor is currently simulating offline status.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disabled: Option<bool>,
+    /// The failure a provisioned helper simulates; absent while it behaves
+    /// normally.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fault: Option<HelperFaultDto>,
     /// True when this actor's protocol instance runs in a browser rather than
     /// on the backend, so it has no backend instance to drive. Peers must fetch
     /// its contact from the signaling endpoint instead of `/api/v1/actors/{id}/contact`.
@@ -47,6 +52,7 @@ impl From<ActorListing> for ActorWithStatus {
                 .shared_key
                 .map(|key| URL_SAFE_NO_PAD.encode(&key[..])),
             disabled: listing.disabled.then_some(true),
+            fault: (listing.fault != HelperFault::None).then(|| listing.fault.into()),
             browser_managed: listing.browser_managed.then_some(true),
             last_polled_at: listing.browser_managed.then_some(listing.last_polled_at),
         }
@@ -290,6 +296,7 @@ mod tests {
             channel_id: None,
             shared_key: Some([0u8; 32]),
             disabled,
+            fault: HelperFault::None,
             browser_managed,
             last_polled_at: last_polled_at.map(str::to_owned),
         }
@@ -303,6 +310,16 @@ mod tests {
         assert!(json.get("browser_managed").is_none());
         assert!(json.get("last_polled_at").is_none());
         assert!(json.get("disabled").is_none());
+        assert!(json.get("fault").is_none(), "a helper behaving normally carries no fault");
+    }
+
+    #[test]
+    fn a_simulated_fault_is_listed_by_its_wire_name() {
+        let mut row = listing(false, false, None);
+        row.fault = HelperFault::RefusesVerification;
+        let json = serde_json::to_value(ActorWithStatus::from(row)).expect("serializes");
+
+        assert_eq!(json["fault"], serde_json::json!("refuses_verification"));
     }
 
     #[test]

@@ -5,6 +5,7 @@ import { useState } from 'react'
 
 import type { LinkGroup } from './linkGroups'
 import { TransportTag } from './TransportTag'
+import { HelperFaultTag } from './HelperFaultTag'
 import { SharedKeyRow } from './primitives'
 import { pairingRoleLabel } from '../pairingRoleOptions'
 import type { PairedParticipant } from '../types'
@@ -114,6 +115,7 @@ function ChannelStatusTags({ h }: { h: PairedParticipant }) {
   return (
     <>
       {h.offline && <span className="status-tag offline">Offline</span>}
+      {h.fault && <HelperFaultTag fault={h.fault} />}
       {problem && (
         <span className="status-tag available" title="How the most recent share sent over this channel went">
           Last share: {SHARE_FAILURE_LABEL[problem]}

@@ -33,6 +33,7 @@ function entry(overrides: Partial<VaultEntry> = {}): VaultEntry {
     bagVersion: 3,
     replicaCount: 1,
     attention: 0,
+    notifications: [],
     ...overrides,
   }
 }

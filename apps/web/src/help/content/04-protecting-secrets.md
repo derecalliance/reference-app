@@ -58,7 +58,7 @@ A helper whose newest share met silence or a send failure shows *Last share: No 
 - **Helper Shares**: who confirmed this version, with ✓ for verified, ✗ for a helper that refused verification, ○ for not yet verified, and a *Failed* list for helpers that did not store it.
 - **View Payload**: the version as it is distributed, structured or as raw bytes, values masked until you click **Reveal values**. It includes the replica group when there is one.
 - **Verify Shares**: see [Verification](05-verification.md).
-- **Show Previous Versions**: the earlier versions this device recorded.
+- **Show Previous Versions**: the earlier versions this device recorded, one row each, with their own Payload, Verify and Remove. Remove deletes a version from this device — its record and its verification copies — and sends nothing: helpers that keep it still hold their shares, so it can still be recovered.
 - **Secret ID** and **Threshold** of the bag, and **Helper weights** (below).
 
 ## Remove Secret
@@ -104,7 +104,7 @@ Every publish tells helpers which versions to keep (the protocol's `keepList`):
 This device keeps a copy of exactly what it sent each helper for a version — on a replica, what it mirrored — only to check that helper's answers. Deleting a version's copies never affects recovery; that version just can no longer be verified from here (*no proof*).
 
 - On the publishing device the library already removes copies that can no longer be verified. On a replica it never does, so they grow by one per helper per version.
-- **Clean up…** on the Secrets tab lists every stored version with how many copies it holds and their size, pre-selects what the vault's rule would delete, and deletes what you leave checked.
+- The **Verification Copies** tab lists every stored version, latest first, with how many helpers' copies it holds, their size, whether the version is still in this device's history, whether helpers still keep it (verifying it fails once they drop it) and how many of its helpers verified. Delete one version from its row, or check several and **Delete selected**; **Select by rule** checks what the vault's rule would delete.
 - In automatic mode, the same happens after each new version lands, and the Console logs what went.
 - The latest version and any round still open are always kept. Shares this vault holds *for* other owners are never listed: they are theirs.
 

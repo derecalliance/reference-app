@@ -16,7 +16,11 @@
 export type Route =
   | { kind: 'list' }
   | { kind: 'new'; flow: 'setup' | 'claim' }
-  | { kind: 'vault'; id: string }
+  /** `tab` opens one of the vault page's tabs — what the notification bell links to. */
+  | { kind: 'vault'; id: string; tab?: VaultRouteTab }
+
+/** The vault page tabs a route can open. */
+export type VaultRouteTab = 'notifications'
 
 const LIST: Route = { kind: 'list' }
 
@@ -36,9 +40,10 @@ export function parseHash(hash: string): Route {
     if (parts.length === 2 && parts[1] === 'claim') return { kind: 'new', flow: 'claim' }
     return LIST
   }
-  if (parts[0] === 'vault' && parts.length === 2 && parts[1] !== '') {
+  if (parts[0] === 'vault' && parts[1] !== '' && (parts.length === 2 || (parts.length === 3 && parts[2] === 'notifications'))) {
     try {
-      return { kind: 'vault', id: decodeURIComponent(parts[1]) }
+      const id = decodeURIComponent(parts[1])
+      return parts.length === 3 ? { kind: 'vault', id, tab: 'notifications' } : { kind: 'vault', id }
     } catch {
       return LIST
     }
@@ -54,11 +59,16 @@ export function formatRoute(route: Route): string {
     case 'new':
       return route.flow === 'claim' ? '#/new/claim' : '#/new'
     case 'vault':
-      return `#/vault/${encodeURIComponent(route.id)}`
+      return `#/vault/${encodeURIComponent(route.id)}${route.tab ? `/${route.tab}` : ''}`
   }
 }
 
 /** Go to a route. The `hashchange` it causes is what re-renders. */
 export function navigate(route: Route): void {
   window.location.hash = formatRoute(route)
+}
+
+/** Go to `route` in place of the current history entry. */
+export function replaceRoute(route: Route): void {
+  window.location.replace(formatRoute(route))
 }

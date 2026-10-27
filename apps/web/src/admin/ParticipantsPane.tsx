@@ -13,6 +13,7 @@ import {
   DialogContent,
   DialogContentText,
   DialogTitle,
+  MenuItem,
   Stack,
   Table,
   TableBody,
@@ -30,9 +31,11 @@ import {
   apiEnsureHelpers,
   apiGetActors,
   apiGetServerDefaults,
+  apiSetParticipantFault,
   apiToggleParticipantStatus,
   type BEActorWithStatus,
 } from '../api'
+import { HELPER_FAULTS, helperFaultOption, type HelperFault } from '../helperFaults'
 import { errorText } from '../errorText'
 import { FALLBACK_SERVER_DEFAULTS, type ServerDefaults } from '../config'
 import { effectiveDefaults } from '../protocolDefaults'
@@ -148,6 +151,19 @@ export function ParticipantsPane() {
       setActionError(errorText(err))
     } finally {
       setAdding(false)
+    }
+  }
+
+  async function handleFault(actor: BEActorWithStatus, fault: HelperFault) {
+    setBusyId(actor.id)
+    setActionError(null)
+    try {
+      await apiSetParticipantFault(actor.id, fault)
+      await refresh()
+    } catch (err) {
+      setActionError(errorText(err))
+    } finally {
+      setBusyId(null)
     }
   }
 
@@ -293,6 +309,7 @@ export function ParticipantsPane() {
                     <TableCell>Name</TableCell>
                     <TableCell>Transport</TableCell>
                     <TableCell>Status</TableCell>
+                    <TableCell>Failure mode</TableCell>
                     <TableCell align="right">Actions</TableCell>
                   </TableRow>
                 </TableHead>
@@ -306,13 +323,37 @@ export function ParticipantsPane() {
                           <Chip size="small" label={transportLabel(actor)} />
                         </TableCell>
                         <TableCell>
-                          {actor.disabled ? (
-                            <Chip size="small" color="warning" label="offline" />
-                          ) : (
-                            <Typography variant="body2" color="text.secondary">
-                              online
-                            </Typography>
-                          )}
+                          <Stack direction="row" spacing={0.5} alignItems="center">
+                            {actor.disabled ? (
+                              <Chip size="small" color="warning" label="offline" />
+                            ) : (
+                              <Typography variant="body2" color="text.secondary">
+                                online
+                              </Typography>
+                            )}
+                            {actor.fault && actor.fault !== 'none' && (
+                              <Chip size="small" color="error" variant="outlined" label={helperFaultOption(actor.fault).label} />
+                            )}
+                          </Stack>
+                        </TableCell>
+                        <TableCell>
+                          <TextField
+                            select
+                            size="small"
+                            value={actor.fault ?? 'none'}
+                            // The options are exactly HELPER_FAULTS' ids.
+                            onChange={e => void handleFault(actor, e.target.value as HelperFault)}
+                            disabled={busyId === actor.id}
+                            title={helperFaultOption(actor.fault ?? 'none').description}
+                            slotProps={{ htmlInput: { 'aria-label': `Failure mode of ${label}` } }}
+                            sx={{ minWidth: 190 }}
+                          >
+                            {HELPER_FAULTS.map(f => (
+                              <MenuItem key={f.id} value={f.id} title={f.description}>
+                                {f.label}
+                              </MenuItem>
+                            ))}
+                          </TextField>
                         </TableCell>
                         <TableCell align="right">
                           <Stack direction="row" spacing={1} justifyContent="flex-end">
@@ -352,6 +393,19 @@ export function ParticipantsPane() {
           accepts messages for it and drops them, which is how a helper going
           away is tested without stopping anything. Deleting one removes it from
           the node entirely.
+        </Typography>
+        <Typography variant="caption" color="text.secondary" component="div">
+          A failure mode makes a participant misbehave in other ways, for every
+          owner it holds shares for. Stored shares are never changed, so
+          setting it back to Healthy restores it exactly; it is independent of
+          offline.
+          <Box component="ul" sx={{ m: 0, pl: 2.5 }}>
+            {HELPER_FAULTS.filter(f => f.id !== 'none').map(f => (
+              <li key={f.id}>
+                <strong>{f.label}</strong>: {f.description}
+              </li>
+            ))}
+          </Box>
         </Typography>
       </Stack>
 

@@ -55,6 +55,7 @@ function entry(overrides: Partial<VaultEntry> = {}): VaultEntry {
     bagVersion: null,
     replicaCount: 0,
     attention: 0,
+    notifications: [],
     ...overrides,
   }
 }

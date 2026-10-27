@@ -22,7 +22,7 @@ export type HelperRetention =
 
 /** When this device deletes its old verification copies. */
 export type ProofCleanup =
-  /** Never automatically; the owner cleans up from the Secrets tab. */
+  /** Never automatically; the owner cleans up from the Verification Copies tab. */
   | { mode: 'manual' }
   /** After each version: keep only the versions helpers were told to keep. */
   | { mode: 'auto'; criterion: 'retention' }

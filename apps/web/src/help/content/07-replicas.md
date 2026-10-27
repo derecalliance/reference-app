@@ -86,7 +86,7 @@ Removing the **source** promotes the first remaining member in this device's rep
 
 The threshold and each helper's weight travel with every mirrored version. A member that receives a version (or adopts the vault) publishes next with the same threshold and weights, and its publish dialogs start from them. The other choices in **Vault Settings** (which versions helpers keep, cleanup of verification copies, periodic verification) are each device's own: a replica keeps its own settings.
 
-Verification copies are pruned only on the member that publishes. A member that receives a version keeps the copies it is sent; in a browser, **Clean up…** (or automatic cleanup) deletes old ones there too. A replica hosted by the node (a provisioned helper acting as a replica) has no such control and keeps every version's copies.
+Verification copies are pruned only on the member that publishes. A member that receives a version keeps the copies it is sent; in a browser, the **Verification Copies** tab (or automatic cleanup) deletes old ones there too. A replica hosted by the node (a provisioned helper acting as a replica) has no such control and keeps every version's copies.
 
 ## What the removed device sees
 

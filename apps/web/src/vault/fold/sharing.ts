@@ -3,6 +3,7 @@
 
 import { bagVersionOf, updateBagVerified, updateBagVersion } from '../../owner/bag'
 import type { SecretShareRef, Vault } from '../../types'
+import { withNotification } from '../notifications'
 import { UNANSWERED_MEMO, commitRoundVersion, settleUnansweredShares } from '../rounds'
 import type { EventHandlers, FoldContext } from './context'
 
@@ -334,7 +335,16 @@ export const sharingHandlers = {
         }))
       : null
     announceVerificationIfDone(secretBag, version, ctx)
-    return { ...current, secretBag }
+    // A dishonest or damaged helper outlives the toast: it stays on the bell.
+    return withNotification(
+      { ...current, secretBag },
+      {
+        severity: 'critical',
+        title: `${participant.name}'s share of v${version} failed verification`,
+        detail: 'Its proof does not match the share this vault sent. Consider unpairing it and publishing a new version.',
+        link: 'secrets',
+      },
+    )
   },
 } satisfies Partial<EventHandlers>
 

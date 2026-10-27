@@ -1,6 +1,6 @@
 # Verification
 
-Checking that helpers still hold the shares they confirmed, what each verification state means, whether a version is recoverable, and periodic verification.
+Checking that helpers still hold the shares they confirmed, what each verification state means, whether a version is recoverable, periodic verification and notifications.
 
 ## Verify Shares
 
@@ -35,7 +35,21 @@ From SDK 0.0.9 each verified helper also reports how many subshares it holds for
 
 ## Periodic verification
 
-Vault Settings → **Periodic verification** runs the same challenge automatically, every *amount* minutes, hours or days, on the current version. It runs while the vault is open in a tab; a run is skipped while another operation or verification is in flight, and for a version restored from recovery. Each run is logged in the Console.
+Vault Settings → **Periodic verification** runs the same challenge automatically, every *amount* minutes, hours or days, on the current version. It runs while the vault is open in a tab; a run is skipped while another operation or the previous run is in flight, and for a version restored from recovery. Each run is logged in the Console.
+
+Every run tells you how it went:
+
+- **Started**: a toast, *Automatic verification of vN started: K helpers challenged*.
+- **Passed**: every challenged helper proved its share. A toast says so, with whether the version is recoverable.
+- **Failed**: a helper rejected the challenge, sent an invalid proof, could not be reached, or did not answer in time, or the run could not start. A red toast stays until you dismiss it, and a **critical** notification rings the bell in the header until you read it.
+
+"In time" is the protocol timeout, capped at the schedule's interval. A helper that answers later is still recorded on the version; the run had already been reported. The Secrets card shows *Last automatic check of vN: passed / failed* with the same summary.
+
+## Notifications
+
+The bell in the header counts unread notifications across every vault in this tab. While one is **critical** it turns red and rings; with reduced motion turned on, only the badge changes. Its menu lists the latest ones by vault. Picking one opens that vault's **Notifications** tab and marks it read; dismissing a toast does not.
+
+The **Notifications** tab lists the vault's notifications newest first, filters to *Unread* or *Critical*, marks one or all read, and links to the tab a notification is about. It records automatic verification runs and any helper whose proof fails verification. A vault keeps its latest 200, and read ones are dropped first.
 
 ## When Verify Shares is unavailable
 
@@ -43,7 +57,7 @@ The button is disabled, with the reason beneath it, when:
 
 - a publishing round is still open: *Publishing vN is still in progress — verify once it completes.*
 - the version was **restored from a recovered bag**. Restoring keeps no proof material for the helpers' shares, so it cannot be verified. Publish a new version (add or remove a secret) and verify that one.
-- this device's **verification copies of the version were deleted**: the library deletes them for a version helpers were told to stop keeping, and **Clean up…** deletes them on request. The challenge is not sent, and each helper shows as failed with that reason.
+- this device's **verification copies of the version were deleted**: the library deletes them for a version helpers were told to stop keeping, and the **Verification Copies** tab (or removing the version on the Secrets tab) deletes them on request. The challenge is not sent, and each helper shows as failed with that reason.
 
 A version whose verification copies were cleaned up (see [Protecting secrets](04-protecting-secrets.md#cleaning-up-verification-copies)) answers *no proof* and sends no challenge.
 

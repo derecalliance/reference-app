@@ -5,8 +5,8 @@ import { test, expect } from './fixtures'
 import { newOwnerContext, openApp, openTab, setUpOwner } from './app'
 
 /**
- * Proves the end-to-end harness itself: the backend is up, Vite serves under
- * its `/reference-app/` base, the WASM protocol library loads in a headless
+ * Proves the end-to-end harness itself: the backend is up, Vite serves the app
+ * from its root, the WASM protocol library loads in a headless
  * browser, and a browser context can be taken from a cold start to a working
  * owner. Everything else builds on these.
  */

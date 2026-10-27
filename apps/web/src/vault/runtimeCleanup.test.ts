@@ -135,3 +135,28 @@ describe('automatic cleanup never deletes the version that just landed (review C
     expect(versionsLeft()).toContain(2)
   })
 })
+
+describe('removing an earlier version from this device', () => {
+  beforeEach(() => localStorage.clear())
+
+  it('drops it from the history and deletes its copies, never shares held for others', async () => {
+    await seedProofs(1, 2, 3)
+    const r = new VaultRuntime(vault({ secretBag: bagAt(3, 2, 1) }), deps())
+
+    await r.removeVersion(2)
+
+    expect(r.state().vault.secretBag?.previousVersions.map(v => v.version)).toEqual([1])
+    expect(versionsLeft()).toEqual([3, 1])
+    expect((await makeShareStore(NS).load(SECRET, '9', [])).map(s => s.version)).toEqual([1, 2, 3])
+  })
+
+  it('refuses the current version, and a version not in the history', async () => {
+    await seedProofs(1, 2)
+    const r = new VaultRuntime(vault({ secretBag: bagAt(2, 1) }), deps())
+
+    await expect(r.removeVersion(2)).rejects.toThrow('current version')
+    await expect(r.removeVersion(7)).rejects.toThrow('not in this vault')
+    expect(r.state().vault.secretBag?.previousVersions.map(v => v.version)).toEqual([1])
+    expect(versionsLeft()).toEqual([2, 1])
+  })
+})

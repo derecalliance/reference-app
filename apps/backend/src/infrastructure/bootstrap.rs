@@ -24,6 +24,7 @@ use crate::repositories::disabled_helpers::{
     DisabledHelperRepository, SqlDisabledHelperRepository,
 };
 use crate::repositories::helper_channels::{HelperChannelIndex, InMemoryHelperChannelIndex};
+use crate::repositories::helper_faults::{HelperFaultRepository, SqlHelperFaultRepository};
 use crate::repositories::mailbox_polls::{InMemoryMailboxPolls, MailboxPollRepository};
 use crate::repositories::mailboxes::{MailboxRepository, SqlMailboxRepository};
 use crate::repositories::participant_data::{
@@ -97,6 +98,8 @@ impl Node {
             Arc::new(SqlMailboxRepository::new(pool.clone()));
         let disabled_helpers: Arc<dyn DisabledHelperRepository> =
             Arc::new(SqlDisabledHelperRepository::new(pool.clone()));
+        let helper_faults: Arc<dyn HelperFaultRepository> =
+            Arc::new(SqlHelperFaultRepository::new(pool.clone()));
         let browser_contacts: Arc<dyn BrowserContactRepository> =
             Arc::new(SqlBrowserContactRepository::new(pool.clone()));
         let participant_data: Arc<dyn ParticipantDataRepository> =
@@ -169,6 +172,7 @@ impl Node {
                 Arc::clone(&actors),
                 Arc::clone(&protocol_records),
                 Arc::clone(&disabled_helpers),
+                Arc::clone(&helper_faults),
                 Arc::clone(&helper_channels),
                 Arc::clone(&mailbox_polls),
                 inboxes.clone(),
@@ -179,6 +183,7 @@ impl Node {
                 Arc::clone(&config),
                 Arc::clone(&actors),
                 Arc::clone(&disabled_helpers),
+                helper_faults,
                 Arc::clone(&browser_contacts),
                 participant_data,
                 Arc::clone(&protocol_records),

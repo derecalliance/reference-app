@@ -66,7 +66,7 @@ First stops for anything not listed: the **Console** (expand it, filter to the v
 | --- | --- | --- |
 | *Publishing vN is still in progress — verify once it completes.* | A round is open. | Wait for it to commit or roll back. |
 | *vN was restored from a recovered bag… cannot be verified.* | A restore keeps no proof material. | Publish a new version, then verify it. |
-| *This device holds no verification copies for vN…* | The copies were deleted: the library deletes them when helpers are told to stop keeping vN, and Clean up deletes them by hand or automatically. | Verify a newer version. Recovery is not affected. |
+| *This device holds no verification copies for vN…* | The copies were deleted: the library deletes them when helpers are told to stop keeping vN, and the Verification Copies tab deletes them by hand or automatically. | Verify a newer version. Recovery is not affected. |
 | *Rejected: …* | The helper refused the challenge (for example it no longer holds the version). | Check the helper; verify a newer version. |
 | *Proof invalid* / *…'s share of vN failed verification* | The helper's proof does not match the share this vault sent. | If vN was published before SDK 0.0.9, publish a new version and verify that. Otherwise treat the helper as damaged or dishonest: unpair it and publish a new version. |
 | *Verification timed out* | No answer within the protocol timeout. | Check the helper is online. |

@@ -7,6 +7,7 @@ import {
   type ServerDefaultsDto,
   type UnpairAck,
 } from './config'
+import type { HelperFault } from './helperFaults'
 import { DEFAULT_CONTACT_MODE, type ContactModeKey } from './contactModes'
 import type { TransportMix } from './transportMix'
 
@@ -42,6 +43,8 @@ export interface BEActorWithStatus extends BEActor {
   channel_id?: string
   shared_key?: string
   disabled?: boolean
+  /** The failure a provisioned helper simulates; absent while it behaves normally. */
+  fault?: HelperFault
   /** This actor's protocol instance runs in a browser, so it has no backend
    *  instance to drive: its contact comes from the signaling endpoint. Set for
    *  every browser actor whatever its role, including one mirroring another
@@ -488,6 +491,18 @@ export async function apiToggleParticipantStatus(
         body: JSON.stringify({ disabled }),
       }),
     },
+  )
+}
+
+/** Make a provisioned participant simulate `fault` (`'none'` restores it); answers the fault in force. */
+export async function apiSetParticipantFault(
+  participantId: string,
+  fault: HelperFault,
+): Promise<{ fault: HelperFault }> {
+  return call<{ fault: HelperFault }>(
+    `/helpers/${encodeURIComponent(participantId)}/fault`,
+    'Could not change the participant’s failure mode',
+    { method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ fault }) },
   )
 }
 

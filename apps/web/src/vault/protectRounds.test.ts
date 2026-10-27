@@ -534,6 +534,86 @@ describe('periodic verification', () => {
     expect(verify).not.toHaveBeenCalled()
   })
 
+  it('announces the start, then a pass once every challenged helper proved its share', async () => {
+    const held = { ...bagAt(1, [s1]), currentVersion: { ...bagAt(1, [s1]).currentVersion, participantIds: ['h1', 'h2'] } }
+    const { r, d } = runtime({ secretBag: held })
+    vi.spyOn(r, 'verifyShares').mockResolvedValue({ failedChannelIds: [] })
+    r.setVerificationSchedule({ every: 1, unit: 'minutes' }, 0)
+
+    await r.runScheduledVerification(60_000)
+
+    expect(d.notify.info).toHaveBeenCalledWith('Automatic verification of v1 started: 2 helpers challenged')
+    expect(r.state().vault.pendingAutoVerification).toMatchObject({ version: 1, channelIds: ['901', '902'] })
+
+    // Both proofs land; the stubbed run opened no challenges, so it is settled.
+    const bag = r.state().vault.secretBag!
+    r.commit({
+      ...r.state().vault,
+      secretBag: { ...bag, currentVersion: { ...bag.currentVersion, verifiedParticipantIds: ['h1', 'h2'] } },
+    })
+    const result = r.finishAutoVerification(70_000)
+
+    expect(result?.passed).toBe(true)
+    expect(r.state().vault.pendingAutoVerification).toBeUndefined()
+    expect(r.state().vault.lastAutoVerification).toMatchObject({ version: 1, passed: true, at: 70_000 })
+    expect(r.state().vault.notifications?.map(n => [n.severity, n.title])).toEqual([
+      ['info', 'Automatic verification of v1 passed'],
+      ['info', 'Automatic verification of v1 started'],
+    ])
+  })
+
+  it('raises a critical notification and an alert when a helper does not prove its share', async () => {
+    const held = { ...bagAt(1, [s1]), currentVersion: { ...bagAt(1, [s1]).currentVersion, participantIds: ['h1', 'h2'] } }
+    const { r, d } = runtime({ secretBag: held })
+    d.notify.alert = vi.fn()
+    vi.spyOn(r, 'verifyShares').mockResolvedValue({ failedChannelIds: ['902'] })
+    r.setVerificationSchedule({ every: 1, unit: 'minutes' }, 0)
+
+    await r.runScheduledVerification(60_000)
+    const result = r.finishAutoVerification(70_000)
+
+    expect(result?.passed).toBe(false)
+    expect(result?.summary).toContain('Helper 1 did not answer')
+    expect(result?.summary).toContain('Helper 2 could not be reached')
+    expect(d.notify.alert).toHaveBeenCalledWith(expect.stringContaining('Automatic verification of v1 failed'))
+    const [latest] = r.state().vault.notifications ?? []
+    expect(latest).toMatchObject({ severity: 'critical', read: false, title: 'Automatic verification of v1 failed' })
+  })
+
+  it('reports a silent helper at the report deadline, while its challenge stays open', async () => {
+    const held = { ...bagAt(1, [s1]), currentVersion: { ...bagAt(1, [s1]).currentVersion, participantIds: ['h1', 'h2'] } }
+    const { r } = runtime({
+      secretBag: { ...held, currentVersion: { ...held.currentVersion, verifiedParticipantIds: ['h1'] } },
+      verificationSchedule: { every: 5, unit: 'minutes', since: 0 },
+      // h2 was challenged and has not answered; its 24-hour window is open.
+      pendingVerifications: [{ channelId: '902', protocolSecretId: '42', version: 1, deadline: Date.now() + 86_400_000 }],
+      pendingAutoVerification: { version: 1, startedAt: 0, reportBy: 60_000, channelIds: ['901', '902'], notReachedChannelIds: [] },
+    })
+    r.resumeVerifications()
+
+    expect(r.finishAutoVerification(59_000)).toBeNull()
+    // The run still in its window holds the next one back.
+    expect(await r.runScheduledVerification(5 * 60_000)).toBeNull()
+
+    const result = r.finishAutoVerification(60_000)
+    expect(result?.passed).toBe(false)
+    expect(result?.summary).toContain('Helper 2 did not answer within 60 s')
+    expect(r.state().vault.pendingVerifications?.map(v => v.channelId)).toContain('902')
+  })
+
+  it('reports a run that could not start as a failure', async () => {
+    const { r, d } = runtime()
+    d.notify.alert = vi.fn()
+    vi.spyOn(r, 'verifyShares').mockRejectedValue(new Error('No participant confirmed v1'))
+    r.setVerificationSchedule({ every: 1, unit: 'minutes' }, 0)
+
+    await r.runScheduledVerification(60_000)
+
+    expect(r.state().vault.lastAutoVerification).toMatchObject({ passed: false, summary: 'It could not start: No participant confirmed v1' })
+    expect(d.notify.alert).toHaveBeenCalled()
+    expect(r.state().vault.notifications?.[0].severity).toBe('critical')
+  })
+
   it('skips a version restored from recovery, which cannot be verified', async () => {
     const restored = { ...bagAt(1, [s1]), currentVersion: { ...bagAt(1, [s1]).currentVersion, restoredFromRecovery: true } }
     const { r } = runtime({ secretBag: restored })

@@ -19,6 +19,7 @@ pub mod advertised_addresses;
 pub mod browser_contacts;
 pub mod disabled_helpers;
 pub mod helper_channels;
+pub mod helper_faults;
 pub mod mailbox_polls;
 pub mod mailboxes;
 pub mod participant_data;

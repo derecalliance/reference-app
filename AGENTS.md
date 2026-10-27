@@ -198,6 +198,20 @@ Messages to it are discarded, not queued. In the event log this shows as
 `outcome: "dropped"` — distinct from `refused`, which means there was nowhere
 to put it.
 
+### "Simulate a misbehaving helper"
+
+```
+PUT /api/v1/helpers/{id}/fault   { "fault": "corrupted_shares" }
+```
+
+`lost_shares`, `corrupted_shares`, `refuses_new_shares`,
+`refuses_verification`, or `none` to restore it. Applied in `SqlShareStore`
+through the SDK's own store contract (a share not found, read back altered,
+or `ShareStoreError::Refused`), so the library answers owners as a real
+helper in that state would — no protocol logic in the backend. A property of
+the helper, seen by every owner it serves; stored rows are never changed, and
+it is independent of `toggle-status`.
+
 ### "Poll for new activity"
 
 `/api/v1/debug/events` returns `latest_seq`. Pass it back as `after` to get only what

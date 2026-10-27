@@ -53,12 +53,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             t.origin?.vaultId === toast.origin?.vaultId,
         )
         if (dupe) {
-          arm(dupe.id)
+          if (!dupe.sticky) arm(dupe.id)
           return prev.map(t => (t.id === dupe.id ? { ...t, count: t.count + 1 } : t))
         }
-        arm(toast.id)
+        if (!toast.sticky) arm(toast.id)
         const next = [...prev, { ...toast, count: 1 }]
-        return next.length > MAX_VISIBLE ? next.slice(next.length - MAX_VISIBLE) : next
+        return capVisible(next)
       })
     })
 
@@ -141,4 +141,17 @@ function ToastText({ toast }: { toast: VisibleToast }) {
       {toast.count > 1 && <span className="toast-count"> ×{toast.count}</span>}
     </>
   )
+}
+
+/**
+ * At most `MAX_VISIBLE`, oldest dropped first — but never a sticky alert while
+ * a passing toast can go instead: an alert is what must not be missed.
+ */
+function capVisible(toasts: VisibleToast[]): VisibleToast[] {
+  const kept = [...toasts]
+  while (kept.length > MAX_VISIBLE) {
+    const oldestPassing = kept.findIndex(t => !t.sticky)
+    kept.splice(oldestPassing === -1 ? 0 : oldestPassing, 1)
+  }
+  return kept
 }

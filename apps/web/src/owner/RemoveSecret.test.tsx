@@ -86,7 +86,7 @@ function renderPanel(onRemoveSecret: (s: UserSecret) => void, removeDisabledReas
         onRemoveSecret={onRemoveSecret}
         removeDisabledReason={removeDisabledReason}
         onRepublish={() => {}}
-        onCleanUp={() => {}}
+        onRemoveVersion={async () => {}}
         defaultThreshold={2}
       />,
     ),

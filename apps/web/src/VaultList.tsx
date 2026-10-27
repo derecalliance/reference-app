@@ -140,7 +140,7 @@ export function VaultList({
         </TableContainer>
       )}
 
-      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
+      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} justifyContent="center">
         <Button variant="contained" onClick={() => onNew('setup')}>
           Set up a new vault
         </Button>

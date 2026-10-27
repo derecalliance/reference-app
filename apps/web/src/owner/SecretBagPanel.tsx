@@ -2,17 +2,19 @@
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
 import { BagPayloadModal } from './BagPayloadModal'
+import { PreviousVersionsTable } from './PreviousVersionsTable'
 import { VerifySharesModal } from './VerifySharesModal'
 import { useState } from 'react'
 import { EyeIcon, EyeOffIcon, TrashIcon } from './icons'
 import { verifyBlockedReason, type VerifyDispatch } from './verification'
 import { recoverability } from './recoverability'
-import type { BagVersion, PairedParticipant, PendingProtectRound, SecretBag, UserSecret } from '../types'
+import type { AutoVerificationResult, BagVersion, PairedParticipant, PendingProtectRound, SecretBag, UserSecret } from '../types'
 import { shareFailureLabel } from './shareFailure'
 
 /**
- * Removing a secret from the current version. Absent for earlier versions,
- * which are history: removal publishes a new version, it does not edit an old one.
+ * Removing a secret from the current version. Earlier versions are history
+ * (see `PreviousVersionsTable`): removal publishes a new version, it does not
+ * edit an old one.
  */
 interface SecretRemoval {
   onRemove: (secret: UserSecret) => void
@@ -33,7 +35,7 @@ function BagVersionDetails({
   onVerify: (version: number) => void
   /** Why Verify Shares is unavailable right now; `null` when it is available. */
   verifyDisabledReason: string | null
-  removal?: SecretRemoval
+  removal: SecretRemoval
 }) {
   const [revealedSecrets, setRevealedSecrets] = useState<Set<string>>(new Set())
   const [payloadOpen, setPayloadOpen] = useState(false)
@@ -98,18 +100,16 @@ function BagVersionDetails({
                         >
                           {visible ? <EyeOffIcon /> : <EyeIcon />}
                         </button>
-                        {removal && (
-                          <button
-                            type="button"
-                            className="secondary reveal-btn remove-secret-btn"
-                            onClick={() => removal.onRemove(s)}
-                            disabled={removal.disabledReason !== null}
-                            title={removal.disabledReason ?? `Remove ${s.name}`}
-                            aria-label={`Remove ${s.name}`}
-                          >
-                            <TrashIcon />
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          className="secondary reveal-btn remove-secret-btn"
+                          onClick={() => removal.onRemove(s)}
+                          disabled={removal.disabledReason !== null}
+                          title={removal.disabledReason ?? `Remove ${s.name}`}
+                          aria-label={`Remove ${s.name}`}
+                        >
+                          <TrashIcon />
+                        </button>
                       </td>
                     </tr>
                   )
@@ -235,9 +235,10 @@ export function SecretBagPanel({
   onVerifyClose,
   onAddSecret,
   onRemoveSecret,
+  onRemoveVersion,
+  lastAutoVerification,
   removeDisabledReason,
   onRepublish,
-  onCleanUp,
   defaultThreshold,
 }: {
   bag: SecretBag | null
@@ -248,13 +249,14 @@ export function SecretBagPanel({
   onVerifyClose?: () => void
   onAddSecret: () => void
   onRemoveSecret: (secret: UserSecret) => void
+  /** Remove an earlier version and its verification copies from this device. */
+  onRemoveVersion: (version: number) => Promise<void>
+  /** How the last automatic verification ended; absent when it is off or has not run. */
+  lastAutoVerification?: AutoVerificationResult
   /** Why secrets cannot be removed right now — e.g. too few paired participants. */
   removeDisabledReason: string | null
-  /** Open the helper-weights editor. A change publishes, so `removeDisabledReason` gates it too. */
   /** Open Republish: the current secrets again, with new weights, threshold or kept versions. */
   onRepublish: () => void
-  /** Open Clean up: delete old verification copies stored on this device. */
-  onCleanUp: () => void
   /** The threshold the next publish starts from (Vault Settings). */
   defaultThreshold: number
 }) {
@@ -290,6 +292,7 @@ export function SecretBagPanel({
         </div>
 
         <PendingRoundsNotice rounds={pendingRounds} participants={participants} />
+        {lastAutoVerification && <LastAutoVerificationLine result={lastAutoVerification} />}
 
         <BagVersionDetails
           version={bag.currentVersion}
@@ -300,25 +303,24 @@ export function SecretBagPanel({
         />
 
         {bag.previousVersions.length > 0 && (
-          <div className="card-body" style={{ borderTop: '1px solid var(--border)' }}>
+          <div className="card-body previous-versions">
             <button
               type="button"
-              className="secondary"
+              className="secondary previous-versions__toggle"
               onClick={() => setShowPreviousVersions(v => !v)}
-              style={{ width: '100%' }}
+              aria-expanded={showPreviousVersions}
             >
               {showPreviousVersions ? 'Hide' : 'Show'} Previous Versions ({bag.previousVersions.length})
             </button>
-            {showPreviousVersions && bag.previousVersions.map(v => (
-              <div key={v.version} style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid var(--border)' }}>
-                <BagVersionDetails
-                  version={v}
-                  participants={participants}
-                  onVerify={setVerifying}
-                  verifyDisabledReason={verifyBlockedReason(v, pendingRounds)}
-                />
-              </div>
-            ))}
+            {showPreviousVersions && (
+              <PreviousVersionsTable
+                versions={bag.previousVersions}
+                participants={participants}
+                pendingRounds={pendingRounds}
+                onVerify={setVerifying}
+                onRemove={onRemoveVersion}
+              />
+            )}
           </div>
         )}
 
@@ -340,14 +342,6 @@ export function SecretBagPanel({
                   title={removeDisabledReason ?? 'Publish the current secrets again with new weights, threshold or kept versions'}
                 >
                   Republish…
-                </button>{' '}
-                <button
-                  type="button"
-                  className="secondary small"
-                  onClick={onCleanUp}
-                  title="Delete old verification copies stored on this device; recovery is never affected"
-                >
-                  Clean up…
                 </button>
               </dd>
             </div>
@@ -366,6 +360,22 @@ export function SecretBagPanel({
           onVerify={onVerify}
         />
       )}
+    </div>
+  )
+}
+
+/**
+ * How the last automatic verification ended, kept on the card so a failure
+ * seen in a background tab, or before a reload, is still in front of the owner.
+ */
+function LastAutoVerificationLine({ result }: { result: AutoVerificationResult }) {
+  const at = new Date(result.at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  return (
+    <div className="card-body">
+      <p className={`auto-verification-line auto-verification-line--${result.passed ? 'passed' : 'failed'}`}>
+        <strong>Last automatic check of v{result.version}: {result.passed ? 'passed' : 'failed'}</strong> ({at}) —{' '}
+        {result.summary}
+      </p>
     </div>
   )
 }

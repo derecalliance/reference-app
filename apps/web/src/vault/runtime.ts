@@ -57,7 +57,7 @@ import { isShareTarget } from '../ownerPairing'
 import { bagBytes, bagSizeProblem } from '../owner/secretLimits'
 import { cleanupCandidates, type CleanupCriterion } from '../owner/proofCleanup'
 import { resolvePublishPolicy, type PublishPolicy } from '../owner/publishPolicy'
-import { describeSchedule, isVerificationDue, type VerificationSchedule } from '../owner/verificationSchedule'
+import { describeSchedule, isVerificationDue, scheduleIntervalMs, type VerificationSchedule } from '../owner/verificationSchedule'
 import { DEFAULT_WEIGHT } from '../owner/weights'
 import { senderKindFor, type PairingRole } from '../pairingRoles'
 import { resolveVaultConfig } from '../protocolDefaults'
@@ -112,6 +112,7 @@ import {
 } from '../stores'
 import { getOrCreateReplicaId } from '../replicaIdentity'
 import type {
+  AutoVerificationResult,
   BagVersion,
   CorruptShareReport,
   PendingPairing,
@@ -138,6 +139,7 @@ import type { CommandContext } from './commands/context'
 import { restoreVault } from './commands/restore'
 import { routeActionRequired, type InboundContext } from './inbound'
 import { keepListFor, retentionPreview } from './keepList'
+import { autoVerificationResult, withNotification, withNotificationsRead } from './notifications'
 import { replicaConflictBlockReason } from './replicaConflict'
 import { replicaMembershipProblem } from './replicaMembership'
 import { ReplicaCatchUp } from './replicaSync'
@@ -1618,7 +1620,9 @@ export class VaultRuntime {
     } finally {
       this.ticking = false
     }
-    // Outside the lock: verifying takes it itself.
+    // Outside the lock: verifying takes it itself. The run in flight is
+    // settled first, so its result is never overtaken by the next run.
+    this.finishAutoVerification()
     void this.runScheduledVerification()
   }
 
@@ -2282,7 +2286,11 @@ export class VaultRuntime {
     const schedule = this.vault.verificationSchedule
     if (!schedule || !isVerificationDue(schedule, this.vault.lastScheduledVerificationAt, now)) return null
     const version = this.vault.secretBag?.currentVersion
-    if (!version || version.restoredFromRecovery || this.busy || this.rounds.hasAnyVerification) return null
+    // Only a run still within its report window holds the next back: a
+    // challenge left open past it — a helper that never answered — is
+    // replaced by the next run's, so one silent helper does not stop the
+    // schedule for the day its answer window lasts.
+    if (!version || version.restoredFromRecovery || this.busy || this.vault.pendingAutoVerification) return null
 
     this.commit({ ...this.vault, lastScheduledVerificationAt: now })
     this.deps.log({
@@ -2293,13 +2301,36 @@ export class VaultRuntime {
       payload: { version: version.version },
     })
     try {
-      await this.verifyShares(version.version)
+      const { failedChannelIds } = await this.verifyShares(version.version)
       // A person closing the Verify dialog is what clears busy by hand; a
       // scheduled run has no dialog. Its answers still land through the fold,
       // and the library's own timeouts resolve any that never come — busy only
       // gates the owner's controls and arms the app watchdog, which would
       // otherwise call the run a timed-out operation.
       this.setBusy(false)
+      const holders = this.vault.participants
+        .filter(p => version.participantIds.includes(p.id) && p.channelId)
+        .map(p => p.channelId)
+      const channelIds = holders.filter(id => !failedChannelIds.includes(id))
+      const title = `Automatic verification of v${version.version} started`
+      const detail = `${channelIds.length} helper${channelIds.length === 1 ? '' : 's'} challenged`
+      this.commit(
+        withNotification(
+          {
+            ...this.vault,
+            pendingAutoVerification: {
+              version: version.version,
+              startedAt: now,
+              reportBy: now + Math.min(scheduleIntervalMs(schedule), this.protocolTimeoutMs()),
+              channelIds,
+              notReachedChannelIds: failedChannelIds,
+            },
+          },
+          { severity: 'info', title, detail, link: 'secrets' },
+          now,
+        ),
+      )
+      this.deps.notify.info(`${title}: ${detail}`)
     } catch (err) {
       this.deps.log({
         role: 'owner',
@@ -2308,18 +2339,73 @@ export class VaultRuntime {
         description: `Scheduled verification of v${version.version} could not start: ${errorText(err)}`,
         payload: { version: version.version },
       })
+      this.announceAutoVerification({
+        version: version.version,
+        at: now,
+        passed: false,
+        summary: `It could not start: ${errorText(err)}`,
+      })
     }
     return version.version
+  }
+
+  /**
+   * Announce the scheduled verification in flight once every challenge is
+   * answered, or its report window has passed. Run on every tick, so a helper
+   * that never answers is reported then rather than never.
+   */
+  finishAutoVerification(now = Date.now()): AutoVerificationResult | null {
+    const pending = this.vault.pendingAutoVerification
+    if (!pending) return null
+    const answered = pending.channelIds.every(id => !this.rounds.isAwaitingVerification(id, pending.version, now))
+    if (!answered && now < pending.reportBy) return null
+    const result = autoVerificationResult(this.vault, pending, now)
+    this.announceAutoVerification(result)
+    return result
+  }
+
+  /**
+   * Record how a scheduled verification ended and tell the owner: a passing
+   * one as an ordinary toast, a failing one as an alert that stays until it is
+   * dismissed and a critical notification that stays on the bell until read.
+   */
+  private announceAutoVerification(result: AutoVerificationResult): void {
+    const title = result.passed
+      ? `Automatic verification of v${result.version} passed`
+      : `Automatic verification of v${result.version} failed`
+    this.commit(
+      withNotification(
+        { ...this.vault, pendingAutoVerification: undefined, lastAutoVerification: result },
+        { severity: result.passed ? 'info' : 'critical', title, detail: result.summary, link: 'secrets' },
+        result.at,
+      ),
+    )
+    this.deps.log({
+      role: 'owner',
+      flow: 'verification',
+      step: result.passed ? 'scheduled_verification_passed' : 'scheduled_verification_failed',
+      description: `${title}: ${result.summary}`,
+      payload: { version: result.version },
+    })
+    if (result.passed) this.deps.notify.info(`${title}: ${result.summary}`)
+    else (this.deps.notify.alert ?? this.deps.notify.error)(`${title}: ${result.summary}`)
+  }
+
+  /** Mark notifications read — `ids`, or every one. */
+  markNotificationsRead(ids: readonly string[] | 'all'): void {
+    const next = withNotificationsRead(this.vault, ids)
+    if (next !== this.vault) this.commit(next)
   }
 
   // ── Verification copies ────────────────────────────────────────────────────
   //
   // The copies this device keeps of each helper's share, used only to verify
   // it. The library prunes them on the publishing device and never on a
-  // replica; deleting more is the owner's call (Vault Settings → Old
-  // verification copies), and never affects recovery.
+  // replica; deleting more is the owner's call (the Verification Copies tab,
+  // or automatically by Vault Settings → Old verification copies), and never
+  // affects recovery.
 
-  /** What the Clean up dialog starts from: usage per version, what must stay, and the vault's criterion. */
+  /** What the Verification Copies tab shows: usage per version, what must stay, the vault's criterion. */
   cleanupContext(): CleanupContext {
     const usage = listOwnerProofVersions(this.namespace, this.partition)
     const latest = this.newestVersion(usage)
@@ -2328,6 +2414,11 @@ export class VaultRuntime {
       usage,
       floor: latest === null ? null : { latest, open: openVersions },
       criterion: this.cleanupCriterion(latest),
+      helperKeep:
+        latest === null
+          ? null
+          : keepListFor(this.vault, this.vault.secretId, latest, openVersions, this.keepSelections.get(latest)),
+      helperChannels: ownerHelperChannelIds(this.namespace, this.partition).length,
     }
   }
 
@@ -2365,7 +2456,7 @@ export class VaultRuntime {
    * touched. Resolves with the versions actually removed, newest first.
    */
   cleanupProofs(versions: readonly number[]): Promise<number[]> {
-    return this.withLock(async () => this.removeProofs(versions, 'Clean up'))
+    return this.withLock(async () => this.removeProofs(versions, 'Verification Copies'))
   }
 
   private async removeProofs(versions: readonly number[], why: string): Promise<number[]> {
@@ -2388,6 +2479,37 @@ export class VaultRuntime {
     })
     this.emit()
     return doomed
+  }
+
+  /**
+   * Remove an earlier version from this device: its entry in the bag's
+   * history and its verification copies. Local only — helpers keep their
+   * shares, so the version stays recoverable. The current version is never
+   * removed: removing a secret publishes a new version instead.
+   */
+  removeVersion(version: number): Promise<void> {
+    return this.withLock(async () => {
+      const bag = this.vault.secretBag
+      if (!bag || !bag.previousVersions.some(v => v.version === version)) {
+        throw new Error(
+          bag?.currentVersion.version === version
+            ? `v${version} is the current version and cannot be removed.`
+            : `v${version} is not in this vault's history.`,
+        )
+      }
+      this.commit({
+        ...this.vault,
+        secretBag: { ...bag, previousVersions: bag.previousVersions.filter(v => v.version !== version) },
+      })
+      this.deps.log({
+        role: 'owner',
+        flow: 'sharing',
+        step: 'version_removed',
+        description: `Removed v${version} from this device's history. Helpers still hold it, so it can still be recovered.`,
+        payload: { version },
+      })
+      await this.removeProofs([version], `Removing v${version}`)
+    })
   }
 
   /**
@@ -3206,10 +3328,12 @@ export class VaultRuntime {
       // the truth: taking one offline is a node decision, and reconciling it
       // here is what keeps a second browser context from showing it online.
       const offline = actor.disabled ?? false
-      if (sharedKey === undefined && participant.offline === offline) continue
+      // A simulated failure is the node's too, and shown on the owner's row.
+      const fault = actor.fault && actor.fault !== 'none' ? actor.fault : undefined
+      if (sharedKey === undefined && participant.offline === offline && participant.fault === fault) continue
 
       participants = participants.map(h =>
-        h.id === actor.id ? { ...h, ...(sharedKey === undefined ? {} : { sharedKey }), offline } : h,
+        h.id === actor.id ? { ...h, ...(sharedKey === undefined ? {} : { sharedKey }), offline, fault } : h,
       )
     }
 

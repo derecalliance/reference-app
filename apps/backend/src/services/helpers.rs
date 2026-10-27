@@ -20,13 +20,14 @@ use super::ports::{ActorGateway, ChannelRoutes, InboxDirectory};
 use super::ServiceError;
 use crate::models::{
     Actor, ActorSettings, AddHelper, ChannelSummary, DisplayName, EnsurePool, EnsuredPool,
-    InboxKind, NameError, NewActor, NodeConfig, ProtocolSettings, Role, TransportBreakdown,
-    TransportMode, MAX_POOL_SIZE,
+    HelperFault, InboxKind, NameError, NewActor, NodeConfig, ProtocolSettings, Role,
+    TransportBreakdown, TransportMode, MAX_POOL_SIZE,
 };
 use crate::repositories::actors::ActorRepository;
 use crate::repositories::browser_contacts::BrowserContactRepository;
 use crate::repositories::disabled_helpers::DisabledHelperRepository;
 use crate::repositories::helper_channels::HelperChannelIndex;
+use crate::repositories::helper_faults::HelperFaultRepository;
 use crate::repositories::participant_data::ParticipantDataRepository;
 use crate::repositories::protocol_records::ProtocolRecordRepository;
 
@@ -55,6 +56,14 @@ pub trait HelperService: Send + Sync {
         helper_id: Uuid,
         disabled: Option<bool>,
     ) -> Result<bool, ServiceError>;
+
+    /// Set the failure a provisioned helper simulates — see [`HelperFault`].
+    /// Answers the fault now in force.
+    async fn set_fault(
+        &self,
+        helper_id: Uuid,
+        fault: HelperFault,
+    ) -> Result<HelperFault, ServiceError>;
 
     /// Every channel a provisioned helper holds, for the operator's link
     /// picker.
@@ -85,6 +94,7 @@ pub struct HelperServiceImpl {
     config: Arc<NodeConfig>,
     actors: Arc<dyn ActorRepository>,
     disabled_helpers: Arc<dyn DisabledHelperRepository>,
+    helper_faults: Arc<dyn HelperFaultRepository>,
     browser_contacts: Arc<dyn BrowserContactRepository>,
     participant_data: Arc<dyn ParticipantDataRepository>,
     records: Arc<dyn ProtocolRecordRepository>,
@@ -100,6 +110,7 @@ impl HelperServiceImpl {
         config: Arc<NodeConfig>,
         actors: Arc<dyn ActorRepository>,
         disabled_helpers: Arc<dyn DisabledHelperRepository>,
+        helper_faults: Arc<dyn HelperFaultRepository>,
         browser_contacts: Arc<dyn BrowserContactRepository>,
         participant_data: Arc<dyn ParticipantDataRepository>,
         records: Arc<dyn ProtocolRecordRepository>,
@@ -112,6 +123,7 @@ impl HelperServiceImpl {
             config,
             actors,
             disabled_helpers,
+            helper_faults,
             browser_contacts,
             participant_data,
             records,
@@ -419,6 +431,21 @@ impl HelperService for HelperServiceImpl {
         Ok(want_disabled)
     }
 
+    async fn set_fault(
+        &self,
+        helper_id: Uuid,
+        fault: HelperFault,
+    ) -> Result<HelperFault, ServiceError> {
+        // Only this node's own helpers read shares through the store that
+        // applies a fault; a browser-run one would accept it and ignore it.
+        self.helper(&helper_id).await?;
+        self.ensure_provisioned(&helper_id)?;
+
+        self.helper_faults.set_fault(&helper_id, fault).await?;
+        info!(helper_id = %helper_id, fault = fault.as_str(), "helper simulated fault updated");
+        Ok(fault)
+    }
+
     async fn list_channels(&self, helper_id: Uuid) -> Result<Vec<ChannelSummary>, ServiceError> {
         self.helper(&helper_id).await?;
         self.ensure_provisioned(&helper_id)?;
@@ -645,14 +672,15 @@ mod tests {
     use crate::repositories::helper_channels::InMemoryHelperChannelIndex;
     use crate::services::ports::ActorCallError;
     use crate::services::test_fakes::{
-        FakeActorRepository, FakeBrowserContacts, FakeDisabledHelpers, FakeGateway, FakeInboxes,
-        FakeParticipantData, FakeProtocolRecords, FakeRoutes,
+        FakeActorRepository, FakeBrowserContacts, FakeDisabledHelpers, FakeGateway,
+        FakeHelperFaults, FakeInboxes, FakeParticipantData, FakeProtocolRecords, FakeRoutes,
     };
 
     struct Fixture {
         defaults: Defaults,
         actors: Arc<FakeActorRepository>,
         disabled: Arc<FakeDisabledHelpers>,
+        faults: Arc<FakeHelperFaults>,
         contacts: Arc<FakeBrowserContacts>,
         data: Arc<FakeParticipantData>,
         records: Arc<FakeProtocolRecords>,
@@ -668,6 +696,7 @@ mod tests {
                 defaults: Defaults::default(),
                 actors: Arc::new(FakeActorRepository::default()),
                 disabled: Arc::new(FakeDisabledHelpers::default()),
+                faults: Arc::new(FakeHelperFaults::default()),
                 contacts: Arc::new(FakeBrowserContacts::default()),
                 data: Arc::new(FakeParticipantData::default()),
                 records: Arc::new(FakeProtocolRecords::default()),
@@ -691,6 +720,7 @@ mod tests {
                 )),
                 self.actors.clone(),
                 self.disabled.clone(),
+                self.faults.clone(),
                 self.contacts.clone(),
                 self.data.clone(),
                 self.records.clone(),
@@ -1189,6 +1219,60 @@ mod tests {
             ServiceError::BadRequest("actor is an owner, not a helper".to_owned())
         );
         assert!(!fixture.disabled.is_disabled_now(&alice.id));
+    }
+
+    #[tokio::test]
+    async fn a_helper_simulates_a_fault_until_it_is_cleared() {
+        let fixture = Fixture::new();
+        let alex = fixture.helper("Alex");
+
+        let set = fixture
+            .service()
+            .set_fault(alex.id, HelperFault::CorruptedShares)
+            .await
+            .expect("sets");
+        assert_eq!(set, HelperFault::CorruptedShares);
+        assert_eq!(fixture.faults.fault_now(&alex.id), HelperFault::CorruptedShares);
+
+        fixture
+            .service()
+            .set_fault(alex.id, HelperFault::None)
+            .await
+            .expect("clears");
+        assert_eq!(fixture.faults.fault_now(&alex.id), HelperFault::None);
+    }
+
+    #[tokio::test]
+    async fn only_a_helper_this_node_runs_can_simulate_a_fault() {
+        let fixture = Fixture::new();
+        let alice = fixture.owner();
+
+        let error = fixture
+            .service()
+            .set_fault(alice.id, HelperFault::LostShares)
+            .await
+            .expect_err("refused");
+        assert_eq!(
+            error,
+            ServiceError::BadRequest("actor is an owner, not a helper".to_owned())
+        );
+
+        // A browser-run helper has no store here to apply it.
+        let browser = Actor::mint(
+            Role::Helper,
+            "Bea",
+            "http://localhost:5000",
+            "localhost:50051",
+            TransportMode::Http,
+        );
+        fixture.actors.insert(browser.clone());
+        let error = fixture
+            .service()
+            .set_fault(browser.id, HelperFault::LostShares)
+            .await
+            .expect_err("refused");
+        assert!(matches!(error, ServiceError::NotFound(_)));
+        assert_eq!(fixture.faults.fault_now(&browser.id), HelperFault::None);
     }
 
     #[tokio::test]

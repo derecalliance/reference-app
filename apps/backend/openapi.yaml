@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: DeRec reference app — backend
-  version: "0.0.8-alpha.1"
+  version: "0.0.9"
   description: |
     The backend half of the DeRec reference app: an actor registry, a message
     relay, and a debug surface. It runs as a developer's local container and
@@ -771,6 +771,59 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
+  /api/v1/helpers/{helper_id}/fault:
+    put:
+      tags: [helpers]
+      summary: Make a provisioned helper simulate a failure
+      description: |
+        Failure modes other than going offline, applied through the SDK's own
+        share-store contract, so the library answers owners exactly as a real
+        helper in that state would:
+
+        - `lost_shares`: verification and recovery get `UNKNOWN_SHARE_VERSION`,
+          discovery lists nothing.
+        - `corrupted_shares`: shares are read back with a subshare byte
+          flipped, so verification reports an invalid proof and recovery sets
+          the share aside as corrupted.
+        - `refuses_new_shares`: every share it is asked to store is refused.
+        - `refuses_verification`: every verification challenge is refused.
+
+        `none` restores it. A property of the helper, seen by every owner it
+        holds shares for, and applied only to shares held for others. Stored
+        rows are never altered. Independent of `toggle-status`. An owner is
+        `400`; a browser-run participant, which has no store on this node,
+        `404`.
+      parameters:
+        - $ref: "#/components/parameters/HelperId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fault]
+              properties:
+                fault: { $ref: "#/components/schemas/HelperFault" }
+      responses:
+        "200":
+          description: The fault now in force
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    required: [result]
+                    properties:
+                      result:
+                        type: object
+                        required: [fault]
+                        properties:
+                          fault: { $ref: "#/components/schemas/HelperFault" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/helpers/{helper_id}/channels:
@@ -1151,6 +1204,10 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
 
   schemas:
+    HelperFault:
+      type: string
+      enum: [none, lost_shares, corrupted_shares, refuses_new_shares, refuses_verification]
+      description: A failure a provisioned helper simulates — see `PUT /api/v1/helpers/{helper_id}/fault`.
     SuccessEnvelope:
       type: object
       description: |
@@ -1263,6 +1320,10 @@ components:
             channel_id: { type: string }
             shared_key: { type: string, description: base64url }
             disabled: { type: boolean }
+            fault:
+              allOf:
+                - $ref: "#/components/schemas/HelperFault"
+              description: The failure a provisioned helper simulates; absent while it behaves normally.
             browser_managed: { type: boolean }
             last_polled_at:
               type: [string, "null"]

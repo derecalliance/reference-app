@@ -213,7 +213,11 @@ mod tests {
 
         assert_eq!(back.version, original.version);
         assert_eq!(back.author_replica_id, Some(u64::MAX - 7));
-        assert_eq!(back.threshold, Some(4), "the recorded threshold must survive");
+        assert_eq!(
+            back.threshold,
+            Some(4),
+            "the recorded threshold must survive"
+        );
         assert_eq!(back.description, original.description);
         assert_eq!(back.secrets.len(), 1);
         assert_eq!(back.secrets[0].name, "a name");

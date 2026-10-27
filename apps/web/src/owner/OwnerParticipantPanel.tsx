@@ -13,6 +13,7 @@ import { errorText } from '../errorText'
 import { canDrivePeerViaBackend } from '../ownerPairing'
 import { pairingErrorText, unreachableReason } from '../pairingReach'
 import { heldShareCount } from './heldShares'
+import { HelperFaultTag } from './HelperFaultTag'
 import { ChevronIcon } from './icons'
 import { ModalCloseButton, SharedKeyRow } from './primitives'
 import { participantPairingRoleOptions } from '../pairingRoleOptions'
@@ -156,6 +157,7 @@ function SidePanelParticipantItem({
             {connectionStatusLabel(participant.connectionStatus)}
           </span>
         )}
+        {participant.fault && <HelperFaultTag fault={participant.fault} />}
         <ChevronIcon expanded={expanded} />
       </button>
 

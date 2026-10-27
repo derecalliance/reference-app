@@ -112,7 +112,7 @@ FROM debian:bookworm-slim AS runtime
 
 # Set by scripts/publish-image.sh; VERSION follows apps/backend/Cargo.toml
 # (scripts/version.sh keeps them in step).
-ARG VERSION=0.0.8-alpha.1
+ARG VERSION=0.0.9
 ARG REVISION=unknown
 ARG CREATED=unknown
 

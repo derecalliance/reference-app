@@ -489,7 +489,11 @@ pub async fn user_secret_store_conforms<S: DeRecUserSecretStore>(store: &mut S) 
         .expect("saved snapshot");
     assert_eq!(loaded.version, 4);
     assert_eq!(loaded.description.as_deref(), Some("first"));
-    assert_eq!(loaded.threshold, Some(3), "the snapshot's threshold must round-trip");
+    assert_eq!(
+        loaded.threshold,
+        Some(3),
+        "the snapshot's threshold must round-trip"
+    );
 
     // save_latest replaces rather than accumulating.
     store

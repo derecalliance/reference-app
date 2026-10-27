@@ -14,7 +14,7 @@ import { apiGetServerDefaults } from '../api'
 import { FALLBACK_SERVER_DEFAULTS, type ServerDefaults } from '../config'
 import { useConsole } from '../ConsoleContext'
 import { eraseVaultLocalData } from '../localData'
-import { clearNotice, reportError, reportInfo, showNotice } from '../toastBus'
+import { clearNotice, reportAlert, reportError, reportInfo, showNotice } from '../toastBus'
 import { followReset } from '../browserReset'
 import { onTabMessage, postTabMessage } from '../tabSync'
 import { acquireVaultLock, heldVaultIds, vaultLockMode } from '../vaultLock'
@@ -63,6 +63,7 @@ export function VaultManagerProvider({ children }: { children: ReactNode }) {
         notify: {
           error: reportError,
           info: reportInfo,
+          alert: reportAlert,
           nodeUnreachable: unreachable => {
             if (unreachable) {
               showNotice(NODE_UNREACHABLE_NOTICE, 'error', NODE_UNREACHABLE_MESSAGE)

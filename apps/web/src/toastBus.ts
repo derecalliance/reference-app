@@ -26,6 +26,8 @@ export interface Toast {
   message: string
   /** Set for a vault off screen: the toast names it and clicking it opens it. */
   origin?: ToastOrigin
+  /** Stays until dismissed rather than fading after a few seconds. */
+  sticky?: boolean
 }
 
 type Listener = (toast: Toast) => void
@@ -39,8 +41,8 @@ export function subscribeToasts(listener: Listener): () => void {
   }
 }
 
-function emit(level: ToastLevel, message: string, origin?: ToastOrigin): void {
-  const toast: Toast = { id: randomId(), level, message, origin }
+function emit(level: ToastLevel, message: string, origin?: ToastOrigin, sticky?: boolean): void {
+  const toast: Toast = { id: randomId(), level, message, origin, sticky }
   for (const l of listeners) l(toast)
 }
 
@@ -89,6 +91,15 @@ export function reportError(
     { error: err, ...(context ?? {}), ...(origin ? { vaultId: origin.vaultId } : {}) },
   )
   emit('error', detail ? `${summary}: ${truncate(detail)}` : summary, origin)
+}
+
+/**
+ * Something the owner must not miss: an error toast that stays until it is
+ * dismissed. The Notifications tab keeps the lasting record.
+ */
+export function reportAlert(message: string, origin?: ToastOrigin): void {
+  console.warn(`[derec] ${message}`, origin ? { vaultId: origin.vaultId } : {})
+  emit('error', message, origin, true)
 }
 
 /** A non-error, informational toast — a banner, when it carries an origin. */

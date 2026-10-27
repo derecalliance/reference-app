@@ -186,7 +186,7 @@ export function VaultSettingsModal({ policy, schedule, lastPublishedThreshold, o
             name="vs-cleanup"
             checked={cleanup === 'manual'}
             label="Manually"
-            hint="Nothing is deleted on its own; use Clean up on the Secrets tab."
+            hint="Nothing is deleted on its own; delete them from the Verification Copies tab."
             onSelect={() => setCleanup('manual')}
           />
           <Choice

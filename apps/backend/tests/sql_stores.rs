@@ -20,8 +20,13 @@ use derec_backend::repositories::sdk::{
 use derec_backend::repositories::sharing_rounds::{
     SharingRoundRepository, SqlSharingRoundRepository,
 };
-use derec_library::protocol::{CollectedShare, DeRecShareStore, DeRecStateStore, StateItem};
+use derec_backend::models::HelperFault;
+use derec_backend::repositories::helper_faults::{HelperFaultRepository, SqlHelperFaultRepository};
+use derec_library::protocol::{
+    CollectedShare, DeRecShareStore, DeRecStateStore, Share, ShareStoreError, StateItem,
+};
 use derec_library::types::ChannelId;
+use prost::Message;
 
 /// A distinct `PendingVerification` item per `n` — the same factory
 /// `tests/store_conformance.rs` uses against the in-memory stores, so both
@@ -95,6 +100,7 @@ async fn reset(pool: &sqlx::AnyPool) {
         "shares",
         "sharing_rounds",
         "state_items",
+        "helper_faults",
     ] {
         sqlx::query(&format!("DELETE FROM {table}"))
             .execute(pool)
@@ -285,6 +291,76 @@ async fn a_pending_recovery_keeps_its_share_channels_and_an_older_row_still_load
             }
             other => panic!("expected a pending recovery, got {other:?}"),
         }
+    })
+    .await;
+}
+
+/// A helper-side share as the SDK stores it: a `StoreShareRequestMessage`
+/// wrapping a `CommittedDeRecShare` wrapping the `DeRecShare`.
+fn stored_share_bytes() -> Vec<u8> {
+    let inner = derec_proto::DeRecShare {
+        encrypted_secret: vec![1, 2, 3],
+        subshares: vec![derec_proto::de_rec_share::Subshare { x: vec![1], y: vec![9, 9, 9] }],
+        secret_id: 20,
+        version: 1,
+    };
+    let committed = derec_proto::CommittedDeRecShare {
+        de_rec_share: inner.encode_to_vec(),
+        commitment: vec![7; 32],
+        ..Default::default()
+    };
+    derec_proto::StoreShareRequestMessage {
+        share: committed.encode_to_vec(),
+        version: 1,
+        ..Default::default()
+    }
+    .encode_to_vec()
+}
+
+/// A simulated helper fault touches only the shares held for other owners —
+/// never the store's own owner-side rows — and only what is read or accepted:
+/// clearing it gives back exactly what was stored.
+#[tokio::test]
+async fn a_simulated_helper_fault_applies_to_shares_held_for_others_only() {
+    on_every_engine(|pool| async move {
+        const PARTITION: u64 = 10;
+        let (held, own) = (ChannelId(7), ChannelId(8));
+        let actor = uuid::Uuid::new_v4();
+        let mut store = SqlShareStore::new(pool.clone(), actor.to_string());
+        let faults = SqlHelperFaultRepository::new(pool);
+        let original = stored_share_bytes();
+
+        let share = |secret_id, bytes: Vec<u8>| Share { secret_id, version: 1, bytes, subshares: None, threshold: None };
+        store.save(PARTITION, held, share(20, original.clone())).await.expect("save held");
+        store.save(PARTITION, own, share(PARTITION, vec![42])).await.expect("save own");
+        let secrets_of = |shares: Vec<Share>| shares.into_iter().map(|s| s.secret_id).collect::<Vec<_>>();
+
+        faults.set_fault(&actor, HelperFault::LostShares).await.expect("set");
+        assert!(store.load(PARTITION, held, &[1]).await.expect("load").is_empty(), "a lost share is not found");
+        assert_eq!(secrets_of(store.load_all(PARTITION, &[held, own]).await.expect("load")), vec![PARTITION]);
+        assert_eq!(secrets_of(store.load_many(PARTITION, &[held, own], &[1]).await.expect("load")), vec![PARTITION]);
+
+        faults.set_fault(&actor, HelperFault::CorruptedShares).await.expect("set");
+        let corrupted = store.load(PARTITION, held, &[1]).await.expect("load").remove(0).bytes;
+        assert_ne!(corrupted, original, "a corrupted share is read back altered");
+        let request = derec_proto::StoreShareRequestMessage::decode(corrupted.as_slice()).expect("still decodes");
+        let committed = derec_proto::CommittedDeRecShare::decode(request.share.as_slice()).expect("still decodes");
+        let inner = derec_proto::DeRecShare::decode(committed.de_rec_share.as_slice()).expect("still decodes");
+        assert_eq!(inner.subshares[0].y, vec![9, 9, 0x09 ^ 0xFF], "one subshare byte is flipped");
+        assert_eq!(store.load(PARTITION, own, &[1]).await.expect("load")[0].bytes, vec![42], "own rows are untouched");
+
+        faults.set_fault(&actor, HelperFault::RefusesNewShares).await.expect("set");
+        let refused = store.save(PARTITION, held, share(20, original.clone())).await;
+        assert!(matches!(refused, Err(ShareStoreError::Refused(_))), "a share for another owner is refused");
+        store.save(PARTITION, own, share(PARTITION, vec![43])).await.expect("an own row is still written");
+
+        faults.set_fault(&actor, HelperFault::RefusesVerification).await.expect("set");
+        let refused = store.record_verification(PARTITION, held, 1).await;
+        assert!(matches!(refused, Err(ShareStoreError::Refused(_))), "the challenge is refused");
+
+        faults.set_fault(&actor, HelperFault::None).await.expect("set");
+        assert_eq!(store.load(PARTITION, held, &[1]).await.expect("load")[0].bytes, original, "cleared, the stored share is back");
+        store.record_verification(PARTITION, held, 1).await.expect("accepted again");
     })
     .await;
 }

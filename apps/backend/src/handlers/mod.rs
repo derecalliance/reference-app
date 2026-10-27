@@ -23,7 +23,7 @@ mod owners;
 
 use axum::{
     extract::DefaultBodyLimit,
-    routing::{delete, get, patch, post},
+    routing::{delete, get, patch, post, put},
     Router,
 };
 
@@ -65,6 +65,7 @@ pub fn routes() -> Router<AppState> {
             "/helpers/{helper_id}/toggle-status",
             post(helpers::status::toggle_status),
         )
+        .route("/helpers/{helper_id}/fault", put(helpers::fault::set_fault))
         .route(
             "/helpers/{helper_id}/channels",
             get(helpers::channels::channels),

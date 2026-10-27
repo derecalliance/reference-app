@@ -87,7 +87,7 @@ cd apps/backend && cargo run          # backend on http://localhost:5000, state 
 cd apps/web && npm install && npm run dev
 ```
 
-Open `http://localhost:5173/reference-app/`. The front end finds the backend on port 5000 of whatever host served the page; set `VITE_API_URL` only to point it elsewhere. Under `cargo run` the backend serves no UI (`static_dir` is empty), so it does not shadow the dev server.
+Open `http://localhost:5173/`. The front end finds the backend on port 5000 of whatever host served the page; set `VITE_API_URL` only to point it elsewhere. Under `cargo run` the backend serves no UI (`static_dir` is empty), so it does not shadow the dev server.
 
 The end-to-end suite (`npm run test:e2e`) starts its own backend on 5100 (gRPC 50151, in-memory database) and Vite on 5180, so it never touches a running session.
 
@@ -96,7 +96,7 @@ The end-to-end suite (`npm run test:e2e`) starts its own backend on 5100 (gRPC 5
 Peers post back to the address the node advertises, so it must be one the phone can reach.
 
 - **Docker**: `./start.sh --lan`, then open the *LAN* address it prints (for example `http://192.168.0.28:5000`) on the phone.
-- **From source**: start the backend with `DEREC_BASE_URL=http://192.168.0.28 cargo run` and the front end with `npm run dev:lan`, then open `http://192.168.0.28:5173/reference-app/`.
+- **From source**: start the backend with `DEREC_BASE_URL=http://192.168.0.28 cargo run` and the front end with `npm run dev:lan`, then open `http://192.168.0.28:5173/`.
 
 Find the address with `ipconfig getifaddr en0` on macOS; Vite also prints it as `Network:`. Left at `localhost`, pairing appears to work and then the peer sends messages to its own loopback.
 
@@ -107,7 +107,7 @@ Find the address with `ipconfig getifaddr en0` on macOS; Vite also prints it as 
 3. Add the exact origin the phone opens, for example `http://192.168.0.28:5000` or `http://192.168.0.28:5173`, and set it to **Enabled**.
 4. Relaunch Chrome.
 
-Alternatives: Android over USB with `adb reverse tcp:5173 tcp:5173 && adb reverse tcp:5000 tcp:5000`, then open `http://localhost:5173/reference-app/` (localhost is a secure context); or real https, which iOS would need and which the backend must serve too.
+Alternatives: Android over USB with `adb reverse tcp:5173 tcp:5173 && adb reverse tcp:5000 tcp:5000`, then open `http://localhost:5173/` (localhost is a secure context); or real https, which iOS would need and which the backend must serve too.
 
 ## Two nodes
 

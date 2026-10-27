@@ -24,8 +24,9 @@ Row actions: **Open**, **Claim** (open in another tab), **Retry** (failed), **Re
 | **All vaults** | Back to the list. The vault keeps running. |
 | **Leave** | Choose **Stop running here** (the vault stays saved and another tab can open it) or **Remove from browser** (erases its keys, channels and shares from this browser). |
 | **Reset browser data** | Erases every vault, pairing, protocol key and saved Settings override in this browser, in every tab of the app, then reloads. |
+| **Theme** (sun / moon) | Switches between the dark and light themes. Until you pick one the app follows your system's setting; a pick is remembered in this browser, applies to every tab, and is cleared by Reset browser data. |
 
-On narrow screens these fold into the ⋮ menu. None of them touches the actors on the node: a removed vault's owner actor stays registered.
+On narrow screens all but the theme toggle, the bell and the switcher fold into the ⋮ menu. None of them touches the actors on the node: a removed vault's owner actor stays registered.
 
 ## One tab per vault
 

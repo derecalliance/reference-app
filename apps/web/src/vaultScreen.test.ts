@@ -16,6 +16,7 @@ function entry(state: VaultEntry['state'], failure: string | null = null): Vault
     bagVersion: null,
     replicaCount: 0,
     attention: 0,
+    notifications: [],
   }
 }
 

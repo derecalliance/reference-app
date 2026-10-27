@@ -22,7 +22,7 @@ const LAN_HOST = process.env.LAN_HOST
 const ORIGIN = `http://${LAN_HOST}:5173`
 
 test.use({
-  baseURL: `${ORIGIN}/reference-app/`,
+  baseURL: `${ORIGIN}/`,
   launchOptions: {
     args: [
       `--unsafely-treat-insecure-origin-as-secure=${ORIGIN}`,

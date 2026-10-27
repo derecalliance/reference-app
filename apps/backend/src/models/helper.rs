@@ -47,3 +47,62 @@ pub struct AddHelper {
     /// Omitted settings fall back to the operator-supplied defaults.
     pub settings: ProtocolSettings,
 }
+
+/// A failure a provisioned helper simulates, for testing how owners cope with
+/// helpers that misbehave in ways other than going offline.
+///
+/// A property of the helper, not of a pairing: every owner it holds shares for
+/// sees the same behaviour. Applied only to shares the helper holds *for
+/// others*, never to a replica's own copies, and only to what it reads or
+/// accepts — stored rows are never altered, so [`HelperFault::None`] restores
+/// the helper exactly as it was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HelperFault {
+    /// Behaves normally.
+    #[default]
+    None,
+    /// Answers as though its storage were wiped: verification and recovery
+    /// get `UNKNOWN_SHARE_VERSION`, discovery lists nothing.
+    LostShares,
+    /// Hands out its shares with one subshare byte flipped: they still decode,
+    /// but no longer match their commitment, so verification reports an
+    /// invalid proof and recovery sets the share aside as corrupted.
+    CorruptedShares,
+    /// Refuses every share it is asked to store.
+    RefusesNewShares,
+    /// Refuses every verification challenge, while still holding its shares.
+    RefusesVerification,
+}
+
+impl HelperFault {
+    /// The stored and wire spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::LostShares => "lost_shares",
+            Self::CorruptedShares => "corrupted_shares",
+            Self::RefusesNewShares => "refuses_new_shares",
+            Self::RefusesVerification => "refuses_verification",
+        }
+    }
+}
+
+/// A spelling that names no fault.
+#[derive(Debug, thiserror::Error)]
+#[error("unknown helper fault {0:?}")]
+pub struct UnknownHelperFault(pub String);
+
+impl TryFrom<&str> for HelperFault {
+    type Error = UnknownHelperFault;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "none" => Ok(Self::None),
+            "lost_shares" => Ok(Self::LostShares),
+            "corrupted_shares" => Ok(Self::CorruptedShares),
+            "refuses_new_shares" => Ok(Self::RefusesNewShares),
+            "refuses_verification" => Ok(Self::RefusesVerification),
+            other => Err(UnknownHelperFault(other.to_owned())),
+        }
+    }
+}

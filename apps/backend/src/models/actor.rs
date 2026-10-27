@@ -7,7 +7,7 @@
 use serde::Serialize;
 use uuid::Uuid;
 
-use super::{Transport, TransportMode, TransportProtocol, UnpairAck};
+use super::{HelperFault, Transport, TransportMode, TransportProtocol, UnpairAck};
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -171,6 +171,8 @@ pub struct ActorListing {
     pub shared_key: Option<[u8; 32]>,
     /// Simulating offline.
     pub disabled: bool,
+    /// The failure it simulates; [`HelperFault::None`] for one behaving normally.
+    pub fault: HelperFault,
     /// The actor's protocol runs in a browser rather than on this backend.
     pub browser_managed: bool,
     /// When a browser-managed actor last drained its mailbox, as RFC 3339 UTC.

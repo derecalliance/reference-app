@@ -1129,6 +1129,14 @@
     color: var(--recovery);
     background: var(--recovery-bg);
   }
+
+  /* A failure the node simulates on purpose: dashed, so it does not read as a real one. */
+  &.fault {
+    color: var(--danger);
+    background: var(--danger-bg);
+    outline: 1px dashed var(--danger);
+    outline-offset: -1px;
+  }
 }
 /* ── Participant dot ────────────────────────────────────────────────────────────── */
 
@@ -1876,46 +1884,115 @@ button.secondary.remove-secret-btn:hover:not(:disabled) {
   color: var(--danger);
 }
 
-/* ── Previous version history list ──────────────────────────────────────────── */
+/* ── Previous versions table ─────────────────────────────────────────────────── */
 
-.version-history-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+.previous-versions {
+  border-top: 1px solid var(--border);
 }
 
-.version-history-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
+.previous-versions__toggle {
+  width: 100%;
 }
 
-.version-history-label {
-  color: var(--text);
-  font-family: var(--mono, monospace);
+/* Narrow screens scroll the table sideways rather than squeezing its columns. */
+.versions-table-wrap {
+  margin-top: 12px;
+  overflow-x: auto;
 }
 
-.version-history-note {
-  color: var(--muted);
-  font-style: italic;
+.versions-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+
+  th {
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    color: var(--muted);
+    padding: 4px 8px 6px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+
+  td {
+    padding: 6px 8px;
+    vertical-align: middle;
+    white-space: nowrap;
+  }
 }
 
-.version-history-verified {
-  font-size: 11px;
+.versions-table__row {
+  border-bottom: 1px solid var(--border);
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+
+.versions-table__actions-th {
+  width: 1%;
+}
+
+/* The names column takes the slack and truncates; the full list is the tooltip. */
+.versions-table__secrets {
+  max-width: 0;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.versions-table__count {
   font-weight: 600;
-  color: var(--success);
-  white-space: nowrap;
+  margin-right: 6px;
 }
-.version-verify-btn {
+
+.versions-table__names {
+  color: var(--muted);
+}
+
+.versions-table__failed {
+  color: var(--danger);
+}
+
+.versions-table__actions {
+  text-align: right;
+
+  button + button {
+    margin-left: 6px;
+  }
+}
+
+/* The trash button holds an icon, not text: line it up with its text neighbours. */
+.versions-table__remove {
+  display: inline-flex;
+  vertical-align: middle;
+  padding: 3px 6px;
+}
+
+.versions-table__check {
+  width: 1%;
+}
+
+/* ── Verification Copies tab ─────────────────────────────────────────────────── */
+
+.copies-auto-line {
+  margin: 8px 0 0;
+  font-size: 13px;
+}
+
+.copies-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.copies-lock {
   font-size: 11px;
-  padding: 2px 8px;
-  margin-left: auto;
-  white-space: nowrap;
-  flex-shrink: 0;
+  color: var(--muted);
 }
 
 /* ── Card actions with multiple buttons ──────────────────────────────────────── */
@@ -2990,3 +3067,80 @@ fieldset.form-field {
   gap: 8px;
 }
 
+
+/* ── Notifications tab ───────────────────────────────────────────────────────── */
+
+.notification-filters {
+  display: inline-flex;
+  gap: 4px;
+  margin-right: auto;
+}
+
+button.secondary.notification-filter--active {
+  border-color: var(--text);
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* The message wraps; the table's other columns stay on one line. */
+.versions-table td.notifications-table__message {
+  white-space: normal;
+  width: 100%;
+}
+
+.notifications-table__title {
+  display: block;
+  color: var(--text);
+}
+
+.notifications-table__detail {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* Unread rows: a bar in the gutter as well as bold text, so it is not colour alone. */
+.notification-row--unread {
+  box-shadow: inset 3px 0 0 var(--text);
+
+  .notifications-table__title {
+    font-weight: 600;
+  }
+}
+
+.notification-severity {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.notification-severity--critical {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.notification-severity--info {
+  background: var(--code-bg);
+  color: var(--muted);
+}
+
+/* Last automatic verification on the Secrets card. */
+.auto-verification-line {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+
+.auto-verification-line--passed {
+  color: var(--success);
+  background: var(--success-bg);
+}
+
+.auto-verification-line--failed {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border: 1px solid var(--danger);
+}

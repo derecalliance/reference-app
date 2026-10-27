@@ -3,6 +3,7 @@
 
 import type { AuthenticationMethod, UnpairAck } from './config'
 import type { PublishPolicy } from './owner/publishPolicy'
+import type { HelperFault } from './helperFaults'
 import type { VerificationSchedule } from './owner/verificationSchedule'
 import type { PairingRole } from './pairingRoles'
 
@@ -92,6 +93,8 @@ export interface PairedParticipant {
   peerRole?: ChannelRole
   /** When true, the backend silently drops all messages to/from this participant */
   offline?: boolean
+  /** The failure this provisioned helper simulates, as the node reports it; absent while healthy. */
+  fault?: Exclude<HelperFault, 'none'>
   /** Whether discovery has been requested and completed for this participant */
   discoveryComplete?: boolean
   /**
@@ -418,6 +421,53 @@ export interface RecoveryFailure {
  * This is the root of persisted app state, and `id` is what the storage key is
  * derived from.
  */
+/** A scheduled verification in flight — see `Vault.pendingAutoVerification`. */
+export interface PendingAutoVerification {
+  version: number
+  startedAt: number
+  /**
+   * When the run is reported, answered or not: the protocol timeout, capped at
+   * the schedule's interval. Its challenges stay open past it — a late answer
+   * is still recorded — but the owner hears about a silent helper now, not
+   * when the 24-hour answer window closes.
+   */
+  reportBy: number
+  /** The helper channels challenged. */
+  channelIds: string[]
+  /** Helper channels that confirmed the version but could not be challenged. */
+  notReachedChannelIds: string[]
+}
+
+/** How one scheduled verification ended — see `Vault.lastAutoVerification`. */
+export interface AutoVerificationResult {
+  version: number
+  /** When it ended (ms since the epoch). */
+  at: number
+  /** Every helper challenged proved its share. */
+  passed: boolean
+  /** One line for the owner: who failed and how, and whether the version is recoverable. */
+  summary: string
+}
+
+/**
+ * `critical` stays flagged on the header bell until read; `info` is a record
+ * of what happened.
+ */
+export type NotificationSeverity = 'info' | 'critical'
+
+/** One thing this vault told the owner — see `Vault.notifications`. */
+export interface VaultNotification {
+  id: string
+  /** When it was raised (ms since the epoch). */
+  at: number
+  severity: NotificationSeverity
+  title: string
+  detail?: string
+  read: boolean
+  /** The owner-page tab it is about, linked from the Notifications tab. */
+  link?: 'secrets'
+}
+
 export interface Vault {
   /**
    * The owner-role actor UUID this vault registered as. Also the storage key,
@@ -492,6 +542,19 @@ export interface Vault {
   verificationSchedule?: VerificationSchedule | null
   /** When the last scheduled verification ran (ms since the epoch). */
   lastScheduledVerificationAt?: number
+  /**
+   * The scheduled verification whose answers are still coming in, so its
+   * result is announced once every challenge is answered or expired — across
+   * a reload too. Absent when none is running.
+   */
+  pendingAutoVerification?: PendingAutoVerification
+  /** How the last scheduled verification ended. Absent before the first one. */
+  lastAutoVerification?: AutoVerificationResult
+  /**
+   * What this vault told the owner, newest first: the Notifications tab and the
+   * header bell. Absent before the first.
+   */
+  notifications?: VaultNotification[]
   /**
    * Protect rounds dispatched but not yet resolved, oldest first, each with the
    * bag version it will commit. Several can be open at once — a secret added

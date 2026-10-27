@@ -9,6 +9,7 @@ pub mod channels;
 pub mod delete;
 pub mod dtos;
 pub mod ensure;
+pub mod fault;
 pub mod link;
 pub mod provision;
 pub mod status;

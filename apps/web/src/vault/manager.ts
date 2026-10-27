@@ -7,7 +7,7 @@ import { isReplicaChannel } from '../ownerPairing'
 import { resolveVaultConfig } from '../protocolDefaults'
 import { loadReplicaState } from '../replicaFlows'
 import type { ToastOrigin } from '../toastBus'
-import type { Vault } from '../types'
+import type { Vault, VaultNotification } from '../types'
 import { VaultRuntime } from './runtime'
 import type { VaultLogger, VaultNotifier, VaultRuntimeDeps, VaultRuntimeState } from './types'
 
@@ -38,7 +38,11 @@ export interface VaultEntry {
   replicaCount: number
   /** Open attention items — what the row's badge counts. */
   attention: number
+  /** What the vault told the owner, newest first — the header bell lists these. */
+  notifications: readonly VaultNotification[]
 }
+
+const NO_NOTIFICATIONS: readonly VaultNotification[] = []
 
 /** An exclusive per-vault lock; `null` from `acquire` means another tab holds it. */
 export interface VaultLocks {
@@ -69,6 +73,8 @@ export interface VaultStorage {
 export interface VaultManagerNotifier {
   error: (message: string, cause?: unknown, context?: Record<string, unknown>, origin?: ToastOrigin) => void
   info: (message: string, origin?: ToastOrigin) => void
+  /** An alert that stays until dismissed — see `VaultNotifier.alert`. Absent, `error` stands in. */
+  alert?: (message: string, origin?: ToastOrigin) => void
   /**
    * The node stopped or resumed answering mailbox polls — one standing notice
    * for every vault, rather than one error per vault per poll. Optional:
@@ -552,6 +558,8 @@ export class VaultManager {
     return {
       error: (message, cause, context) => notify.error(message, cause, context, this.originOf(slot)),
       info: message => notify.info(message, this.originOf(slot)),
+      alert: message =>
+        notify.alert ? notify.alert(message, this.originOf(slot)) : notify.error(message, undefined, undefined, this.originOf(slot)),
       outcome: message => {
         const origin = this.originOf(slot)
         if (origin) notify.info(message, origin)
@@ -685,6 +693,8 @@ export class VaultManager {
       bagVersion: v.secretBag?.currentVersion.version ?? null,
       replicaCount: Object.keys(loadReplicaState(v.id).channels).length,
       attention: slot.attention,
+      // The record's own array, so an unchanged list keeps the row unchanged.
+      notifications: v.notifications ?? NO_NOTIFICATIONS,
     }
   }
 }
@@ -698,6 +708,7 @@ function sameEntry(a: VaultEntry, b: VaultEntry): boolean {
     a.pairedCount === b.pairedCount &&
     a.bagVersion === b.bagVersion &&
     a.replicaCount === b.replicaCount &&
+    a.notifications === b.notifications &&
     a.attention === b.attention
   )
 }

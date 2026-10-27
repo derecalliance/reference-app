@@ -4,7 +4,7 @@
 import type { Locator, Page } from '@playwright/test'
 
 import { test, expect } from './fixtures'
-import { openTab, protectSecret, setUpOwner } from './app'
+import { actorIdFor, openTab, participantName, protectSecret, setOffline, setUpOwner } from './app'
 
 /**
  * The owner's standing controls (SDK 0.0.9 share retention): Vault Settings
@@ -27,16 +27,10 @@ async function choose(dialog: Locator, id: string): Promise<void> {
   await expect(dialog.locator(`#${id}`)).toBeChecked()
 }
 
-/** The versions Clean up lists, i.e. those this device still holds copies of. */
+/** The versions the Verification Copies tab lists, i.e. those this device still holds copies of. */
 async function versionsWithCopies(page: Page): Promise<string[]> {
-  await openTab(page, 'Secrets')
-  await page.getByRole('button', { name: 'Clean up…' }).click()
-  const dialog = page.locator('.modal-overlay[aria-label="Clean up verification copies"]')
-  await expect(dialog).toBeVisible()
-  const ids = await dialog.locator('input[id^="cu-"]').evaluateAll(els => els.map(el => el.id.slice(3)))
-  await dialog.getByRole('button', { name: /^(Cancel|Done)$/ }).click()
-  await expect(dialog).toBeHidden()
-  return ids
+  await openTab(page, 'Verification Copies')
+  return page.locator('.tab-panel tbody .version-tag').allTextContents()
 }
 
 test('"choose at each publish" asks which versions to keep, and automatic cleanup keeps only the newest copies', async ({ page, pageErrors }) => {
@@ -70,9 +64,30 @@ test('"choose at each publish" asks which versions to keep, and automatic cleanu
   await overlay.getByRole('button', { name: 'Done' }).click()
 
   // Once the new version commits, "keep the last 1" deletes every earlier
-  // version's copies without the owner opening Clean up.
+  // version's copies without the owner deleting anything.
   await expect.poll(() => versionsWithCopies(page), { timeout: 120_000 }).toHaveLength(1)
 
+  expect(pageErrors).toEqual([])
+})
+
+test('removing an earlier version drops it from the history and deletes its copies', async ({ page, pageErrors }) => {
+  test.setTimeout(300_000)
+
+  await setUpOwner(page, { name: 'Carol', participants: 2, prePaired: 2, minParticipants: 2 })
+  await protectSecret(page, 'First', 'one')
+  await protectSecret(page, 'Second', 'two')
+  await expect.poll(() => versionsWithCopies(page), { timeout: 60_000 }).toEqual(['v2', 'v1'])
+
+  await openTab(page, 'Secrets')
+  await page.getByRole('button', { name: /Show Previous Versions/ }).click()
+  await page.getByRole('button', { name: 'Remove v1', exact: true }).click()
+  const dialog = page.locator('.modal-overlay[aria-label="Remove v1"]')
+  await expect(dialog).toContainText('can still be recovered')
+  await dialog.getByRole('button', { name: 'Remove v1', exact: true }).click()
+  await expect(dialog).toBeHidden()
+
+  await expect(page.getByRole('button', { name: /Show Previous Versions/ })).toBeHidden()
+  expect(await versionsWithCopies(page)).toEqual(['v2'])
   expect(pageErrors).toEqual([])
 })
 
@@ -96,6 +111,53 @@ test('periodic verification checks the shares on its own schedule', async ({ pag
   // Nobody presses Verify Shares.
   await expect(summary).toHaveText('2/2 verified', { timeout: 180_000 })
   await expect(page.getByText(/recoverable — 2 of 2 subshares verified/)).toBeVisible()
+
+  // The run is announced and recorded, and nothing calls for attention.
+  await expect(page.locator('.auto-verification-line--passed')).toContainText('Last automatic check of v1: passed', {
+    timeout: 60_000,
+  })
+  await openTab(page, 'Notifications')
+  await expect(page.locator('.tab-panel')).toContainText('Automatic verification of v1 passed')
+  await expect(page.locator('.tab-panel')).toContainText('Automatic verification of v1 started')
+  await expect(page.getByRole('button', { name: /^Notifications — 2 unread$/ })).toBeVisible()
+
+  expect(pageErrors).toEqual([])
+})
+
+test('a failed automatic verification rings the bell until it is read', async ({ page, pageErrors }) => {
+  // One interval to the run, then one more for the silent helper's report window.
+  test.setTimeout(360_000)
+
+  await setUpOwner(page, { name: 'Dave', participants: 2, prePaired: 2, minParticipants: 2 })
+  await protectSecret(page, 'Passphrase', 'hunter2')
+  const silent = await participantName(page, 1)
+  const silentId = await actorIdFor(page, silent)
+
+  await editVaultSettings(page, async dialog => {
+    await dialog.locator('#vs-verify-auto').check()
+    await dialog.locator('#vs-verify-every').fill('1')
+    await dialog.locator('#vs-verify-unit').selectOption('minutes')
+  })
+  await setOffline(page, silentId, true)
+  try {
+    const bell = page.getByRole('button', { name: /^Notifications — \d+ unread, 1 critical$/ })
+    await expect(bell).toBeVisible({ timeout: 240_000 })
+    await expect(page.locator('.toast--error', { hasText: 'Automatic verification of v1 failed' })).toBeVisible()
+
+    await openTab(page, 'Secrets')
+    // Undeliverable or unanswered, depending on where the node drops it.
+    await expect(page.locator('.auto-verification-line--failed')).toContainText(
+      new RegExp(`${silent} (did not answer|could not be reached)`),
+    )
+
+    // Read from the bell: the vault's tab opens and the alarm stops.
+    await bell.click()
+    await page.getByRole('menuitem', { name: /Automatic verification of v1 failed/ }).first().click()
+    await expect(page.locator('.tab-panel')).toContainText('Critical')
+    await expect(page.getByRole('button', { name: /^Notifications( — \d+ unread)?$/ })).toBeVisible()
+  } finally {
+    await setOffline(page, silentId, false)
+  }
 
   expect(pageErrors).toEqual([])
 })
