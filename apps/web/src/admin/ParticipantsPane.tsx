@@ -38,12 +38,20 @@ import {
 import { HELPER_FAULTS, helperFaultOption, type HelperFault } from '../helperFaults'
 import { errorText } from '../errorText'
 import { FALLBACK_SERVER_DEFAULTS, type ServerDefaults } from '../config'
-import { effectiveDefaults } from '../protocolDefaults'
+import { effectiveDefaults, SECRET_CONFIG_DEFAULTS } from '../protocolDefaults'
 import { randomParticipantName } from '../participantNames'
 import { participantLabel } from './participantLabel'
 
 /** How often the pool is refreshed while this pane is open. */
 const POLL_MS = 4000
+
+/**
+ * Why a paired participant cannot be deleted. Deleting it would leave each
+ * owner a channel nothing answers, which the protocol could no longer tear
+ * down; unpairing runs the protocol's teardown, and the owner's republish.
+ */
+const PAIRED_DELETE_REASON =
+  'Still paired with an owner. Unpair it from every owner’s secret first — the node refuses to delete a paired participant.'
 
 /** Every helper this node runs, newest last, in registration order. */
 function helpersOf(actors: BEActorWithStatus[]): BEActorWithStatus[] {
@@ -116,13 +124,14 @@ export function ParticipantsPane() {
   }, [refresh])
 
   useEffect(() => {
-    // Provisioning needs the node's protocol defaults. Unreachable is not worth
+    // Provisioning needs the node's pool defaults. Unreachable is not worth
     // blocking on — the built-in fallbacks are the same values the server
     // ships — but the answer is waited for: provisioning from the fallback a
     // moment before `/config` lands would size the pool from numbers the node
     // does not use.
     // Merged with any Settings overrides: provisioning from here must use the
-    // same values the wizard would.
+    // same values the wizard would. A helper's protocol settings are the app's
+    // defaults, as a new secret's are.
     let cancelled = false
     void apiGetServerDefaults().then(result => {
       if (cancelled) return
@@ -142,8 +151,8 @@ export function ParticipantsPane() {
     setActionError(null)
     try {
       await apiAddHelper(trimmed, {
-        protocolTimeoutSecs: defaults.protocolTimeoutSecs,
-        unpairAck: defaults.unpairAck,
+        protocolTimeoutSecs: SECRET_CONFIG_DEFAULTS.protocolTimeoutSecs,
+        unpairAck: SECRET_CONFIG_DEFAULTS.unpairAck,
       })
       setName('')
       await refresh()
@@ -197,8 +206,8 @@ export function ParticipantsPane() {
     try {
       const names = Array.from({ length: defaults.participantCount }, randomParticipantName)
       await apiEnsureHelpers(defaults.participantCount, names, defaults.helperTransports, {
-        protocolTimeoutSecs: defaults.protocolTimeoutSecs,
-        unpairAck: defaults.unpairAck,
+        protocolTimeoutSecs: SECRET_CONFIG_DEFAULTS.protocolTimeoutSecs,
+        unpairAck: SECRET_CONFIG_DEFAULTS.unpairAck,
       })
       await refresh()
     } catch (err) {
@@ -368,15 +377,19 @@ export function ParticipantsPane() {
                             >
                               {actor.disabled ? 'Bring online' : 'Take offline'}
                             </Button>
-                            <Button
-                              size="small"
-                              color="error"
-                              onClick={() => setPendingDelete(actor)}
-                              disabled={busyId === actor.id}
-                              aria-label={`Delete ${label}`}
-                            >
-                              Delete
-                            </Button>
+                            {/* A span, so the reason still shows on hover
+                                while the button is disabled. */}
+                            <span title={actor.channel_id ? PAIRED_DELETE_REASON : undefined}>
+                              <Button
+                                size="small"
+                                color="error"
+                                onClick={() => setPendingDelete(actor)}
+                                disabled={busyId === actor.id || !!actor.channel_id}
+                                aria-label={`Delete ${label}`}
+                              >
+                                Delete
+                              </Button>
+                            </span>
                           </Stack>
                         </TableCell>
                       </TableRow>
@@ -392,7 +405,8 @@ export function ParticipantsPane() {
           Taking a participant offline simulates an unreachable peer: the node
           accepts messages for it and drops them, which is how a helper going
           away is tested without stopping anything. Deleting one removes it from
-          the node entirely.
+          the node entirely, and is possible only once no owner is paired with
+          it: each owner unpairs it first.
         </Typography>
         <Typography variant="caption" color="text.secondary" component="div">
           A failure mode makes a participant misbehave in other ways, for every
@@ -424,13 +438,9 @@ export function ParticipantsPane() {
             undone, and the pool is shared, so it disappears for every owner on
             this node.
           </DialogContentText>
-          {pendingDelete?.channel_id && (
-            <Alert severity="warning" sx={{ mt: 2 }}>
-              This participant holds at least one channel — possibly with an
-              owner in another browser, since the pool is shared. Each of them
-              keeps its channel and will see this participant stop responding,
-              exactly as if it had gone offline; clearing the row means
-              unpairing from that owner’s side.
+          {actionError && (
+            <Alert severity="error" sx={{ mt: 2 }}>
+              {actionError}
             </Alert>
           )}
         </DialogContent>

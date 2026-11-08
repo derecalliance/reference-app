@@ -183,7 +183,7 @@ export function ChannelFingerprintDialog({
       setAttempt({
         kind: 'error',
         message:
-          'The channel key changed while you were comparing. Close this and confirm again with a freshly derived code.',
+          'The channel key changed while you were comparing, so the library revoked this pending pairing. Pair again.',
       })
       return
     }

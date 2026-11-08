@@ -175,45 +175,30 @@ fn corrupt_bytes(bytes: &[u8]) -> Option<Vec<u8>> {
     Some(request.encode_to_vec())
 }
 
-/// The versions helpers keep when `version` is distributed, given how this
-/// instance's earlier rounds ended (`version -> committed`).
+/// The one older version helpers keep when `version` is distributed, given
+/// how this instance's earlier rounds ended (`version -> committed`).
 ///
-/// The SDK numbers a round one above the latest snapshot it holds, so the
-/// latest version that can have committed is `version - 1`. Walking down from
-/// there finds the latest committed version:
+/// SDK 0.0.10 lets an owner name a single `keepVersion`; helpers delete every
+/// other version once `version` is stored, and `0` keeps none. The answer is
+/// the newest version that may be the latest committed one. The SDK numbers a
+/// round one above the latest snapshot it holds, so walking down from
+/// `version - 1`:
 ///
-/// - a round this instance saw commit ends the walk, and every committed
-///   version is listed — no cap is applied, so only abandoned rounds leave the
-///   helpers;
+/// - a round this instance saw commit is the answer;
 /// - a round this instance saw fall short is skipped, since it cannot be the
 ///   latest committed version;
-/// - a version with no recorded outcome is either still in flight here, or
-///   was not distributed here at all — another replica member published it,
-///   or recovery restored it. Either way it could still be (or become) the
-///   latest version, and the SDK's rule (0.0.7) is to list every version that
-///   could, so the answer is `None`, which keeps everything. An open round
-///   *below* a committed one needs no listing: it can no longer become the
-///   latest.
+/// - a version with no recorded outcome was not distributed here — another
+///   replica member published it, or recovery restored it — or is still in
+///   flight. Either way it may be (or become) the latest version, and keeping
+///   an older one instead could delete it from every helper, so it is the
+///   answer too.
 ///
-/// Nothing recorded at all is also `None`: there is nothing known to keep, and
-/// an empty list would tell helpers to drop whatever they hold.
-fn keep_list_from_rounds(version: u32, rounds: &BTreeMap<u32, bool>) -> Option<Vec<u32>> {
-    for candidate in (1..version).rev() {
-        match rounds.get(&candidate) {
-            Some(true) => {
-                return Some(
-                    rounds
-                        .range(..version)
-                        .filter(|(_, committed)| **committed)
-                        .map(|(v, _)| *v)
-                        .collect(),
-                );
-            }
-            Some(false) => continue,
-            None => return None,
-        }
-    }
-    None
+/// Every round below `version` having fallen short leaves nothing to keep.
+fn keep_version_from_rounds(version: u32, rounds: &BTreeMap<u32, bool>) -> u32 {
+    (1..version)
+        .rev()
+        .find(|candidate| rounds.get(candidate) != Some(&false))
+        .unwrap_or(0)
 }
 
 impl DeRecShareStore for SqlShareStore {
@@ -518,7 +503,7 @@ impl DeRecShareStore for SqlShareStore {
         })
     }
 
-    fn keep_list(&self, secret_id: u64, version: u32) -> ShareStoreFuture<'_, Option<Vec<u32>>> {
+    fn keep_version(&self, secret_id: u64, version: u32) -> ShareStoreFuture<'_, u32> {
         let pool = self.pool.clone();
         let secret = id_to_text(secret_id);
         let actor = self.actor_id.clone();
@@ -542,7 +527,7 @@ impl DeRecShareStore for SqlShareStore {
                     committed != 0,
                 );
             }
-            Ok(keep_list_from_rounds(version, &rounds))
+            Ok(keep_version_from_rounds(version, &rounds))
         })
     }
 }
@@ -556,40 +541,40 @@ mod tests {
     }
 
     #[test]
-    fn every_committed_version_is_kept_when_the_latest_one_committed() {
+    fn the_latest_committed_version_is_kept() {
         let rounds = rounds(&[(1, true), (2, false), (3, true)]);
-        assert_eq!(keep_list_from_rounds(4, &rounds), Some(vec![1, 3]));
+        assert_eq!(keep_version_from_rounds(4, &rounds), 3);
     }
 
     #[test]
     fn rounds_that_fell_short_are_skipped_to_find_the_latest_commit() {
         let rounds = rounds(&[(1, true), (2, true), (3, false), (4, false)]);
-        assert_eq!(keep_list_from_rounds(5, &rounds), Some(vec![1, 2]));
+        assert_eq!(keep_version_from_rounds(5, &rounds), 2);
     }
 
     /// Version 3 was published by another replica member (or restored), so
-    /// whether it is the latest committed version is unknown here — a list
-    /// without it could delete it from every helper.
+    /// it may be the latest committed version — keeping 2 instead could
+    /// delete it from every helper.
     #[test]
-    fn a_version_this_instance_did_not_distribute_keeps_everything() {
+    fn a_version_this_instance_did_not_distribute_is_kept() {
         let rounds = rounds(&[(1, true), (2, true)]);
-        assert_eq!(keep_list_from_rounds(4, &rounds), None);
+        assert_eq!(keep_version_from_rounds(4, &rounds), 3);
     }
 
     #[test]
-    fn nothing_known_to_have_committed_keeps_everything() {
-        assert_eq!(keep_list_from_rounds(1, &rounds(&[])), None);
+    fn nothing_that_may_have_committed_keeps_nothing() {
+        assert_eq!(keep_version_from_rounds(1, &rounds(&[])), 0);
         assert_eq!(
-            keep_list_from_rounds(3, &rounds(&[(1, false), (2, false)])),
-            None
+            keep_version_from_rounds(3, &rounds(&[(1, false), (2, false)])),
+            0
         );
     }
 
     /// The round being distributed has not committed yet, and a later round
-    /// recorded by a replayed event must not leak into an earlier list.
+    /// recorded by a replayed event must not leak into an earlier answer.
     #[test]
     fn only_versions_below_the_one_distributed_are_considered() {
         let rounds = rounds(&[(1, true), (2, true), (5, true)]);
-        assert_eq!(keep_list_from_rounds(3, &rounds), Some(vec![1, 2]));
+        assert_eq!(keep_version_from_rounds(3, &rounds), 2);
     }
 }

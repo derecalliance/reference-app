@@ -21,15 +21,15 @@ const { default: ConsolePanel } = await import('./ConsolePanel')
 const ALPHA = 'aaaaaaaa-0000-4000-8000-000000000001'
 const GONE = 'bbbbbbbb-0000-4000-8000-000000000002'
 
-function entry(step: string, vaultId?: string): ConsoleEntry {
+function entry(step: string, localSecretId?: string): ConsoleEntry {
   return {
     id: step,
     timestamp: new Date(0),
-    role: vaultId ? 'owner' : 'server',
+    role: localSecretId ? 'owner' : 'server',
     flow: 'setup',
     step,
     description: step,
-    vaultId,
+    localSecretId,
   }
 }
 
@@ -43,7 +43,7 @@ beforeEach(() => {
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
-  act(() => root.render(<ConsolePanel vaults={[{ id: ALPHA, name: 'Crypto Seeds' }]} />))
+  act(() => root.render(<ConsolePanel secrets={[{ id: ALPHA, name: 'Crypto Seeds' }]} />))
 })
 
 afterEach(() => {
@@ -62,16 +62,16 @@ function button(text: string): HTMLButtonElement {
 }
 
 describe('the console panel', () => {
-  it('names vaults in the filter, falling back to the id for one no longer here', () => {
+  it('names secrets in the filter, falling back to the id for one no longer here', () => {
     const labels = Array.from(filter().options).map(o => o.textContent)
 
-    // Entries are newest-first; vaults are listed by first appearance.
-    expect(labels).toEqual(['All vaults', 'Vault bbbbbbbb…', 'Crypto Seeds', 'Node only'])
+    // Entries are newest-first; secrets are listed by first appearance.
+    expect(labels).toEqual(['All secrets', 'Secret bbbbbbbb…', 'Crypto Seeds', 'Node only'])
   })
 
   it('copies what the filter shows, and says so on the button', async () => {
     act(() => {
-      filter().value = `vault:${ALPHA}`
+      filter().value = `secret:${ALPHA}`
       filter().dispatchEvent(new Event('change', { bubbles: true }))
     })
 

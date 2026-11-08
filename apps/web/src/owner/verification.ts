@@ -16,7 +16,7 @@ export function restoredVersionReason(version: number): string {
   return (
     `v${version} was restored from a recovered bag. Restoring keeps no proof material for ` +
     'the shares the helpers hold, so this version cannot be verified. Publish a new version ' +
-    '— add or remove a secret — and verify that one.'
+    '— add or remove an item — and verify that one.'
   )
 }
 

@@ -20,13 +20,13 @@ cd reference-app
 
 That is all it takes with [Docker](https://docs.docker.com/get-docker/)
 (Compose v2.24 or newer) — no Node or Rust needed. Then open the address it
-prints and set up your first vault.
+prints and set up your first secret.
 
 Without cloning anything, the published image runs on its own:
 
 ```
 docker run -d --name derec -p 5000:5000 -p 50051:50051 \
-  -v derec-data:/var/lib/derec ghcr.io/derecalliance/reference-app:0.0.9
+  -v derec-data:/var/lib/derec ghcr.io/derecalliance/reference-app:0.0.10
 ```
 
 ### Run it in Docker
@@ -96,46 +96,46 @@ The left navigation has four sections:
 
 | | |
 | --- | --- |
-| **Owner** | Your vaults (see below). Inside a vault: **Channels** (pair with helpers or other vaults, by paste or QR), **Replicas**, **Secrets** (**Add Secret**, protect, verify, **View Payload**, **Remove Secret**), **Shares** held for others, and **Recovery**. |
+| **Owner** | Your secrets (see below). Inside a secret: **Channels** (pair with helpers or other secrets, by paste or QR), **Replicas**, **Items** (**Add Item**, protect, verify, **View Payload**, **Remove Item**), **Shares** held for others, **Recovery**, and **Settings** — the secret's own protocol settings (timeout, unpair acknowledgement, whether incoming **unpair**, **share storage** and **verification** requests are auto-accepted or prompt) and publishing choices. |
 | **Participants** | The node's shared pool of provisioned helpers: provision up to a target, take one offline to simulate an unreachable peer (or bring it back), delete one. |
-| **Settings** | What the node is configured with and where each value came from, plus this browser's overrides of the protocol defaults — pool size and transport mix, unpair acknowledgement, and whether incoming **unpair**, **share storage** and **verification** requests are auto-accepted or prompt. Overrides live in this browser and travel on each provisioning request. |
+| **Settings** | What the node is configured with and where each value came from, plus this browser's overrides of its helper pool defaults — pool size, minimum, recommended, pre-paired and transport mix. Overrides live in this browser and travel on each provisioning request. |
 | **Inspect** | The server's own view of itself (see [Debugging it](#debugging-it)). |
 
-**View Payload** shows a published version of the secret bag as it is
-distributed — including its replica group, when there is one. **Remove Secret**
-publishes a new version without the secret; it does not reach back into earlier
+**View Payload** shows a published version of the item bag as it is
+distributed — including its replica group, when there is one. **Remove Item**
+publishes a new version without the item; it does not reach back into earlier
 versions, which still contain it. Each publish tells helpers which versions to
 keep — the three newest committed ones, plus the one being sent — so until three
-newer versions have committed, recovering an earlier version brings the secret
+newer versions have committed, recovering an earlier version brings the item
 back.
 
-### Vaults
+### Secrets
 
-A vault is one owner identity: an owner actor on the server, plus the keys,
-channels, secrets and shares this browser holds for it. A browser can hold
-several, and **one tab runs every vault it holds at once** — a vault that is not
+A secret is one owner identity: an owner actor on the server, plus the keys,
+channels, items and shares this browser holds for it. A browser can hold
+several, and **one tab runs every secret it holds at once** — a secret that is not
 on screen keeps polling and answering its counterparties, and its pending
 decisions are flagged in the header and the list.
 
 | Route | Screen |
 | --- | --- |
-| `#/` | The vault list: every vault saved in this browser, its status, paired helpers, bag version and replicas. |
-| `#/new` | **Set up a new vault** — registers a new owner actor. |
+| `#/` | The secret list: every secret saved in this browser, its status, paired helpers, bag version and replicas. |
+| `#/new` | **Set up a new secret** — registers a new owner actor. |
 | `#/new/claim` | **Claim an existing actor** — a testing shortcut that takes over an existing owner actor's mailbox instead of registering a new one. |
-| `#/vault/{id}` | One vault, by its owner actor's id. |
+| `#/secret/{id}` | One secret, by its owner actor's id. Older `#/vault/{id}` links still open. |
 
-In the header: a **vault switcher** to jump between vaults, **All vaults** back
-to the list (the vault keeps running), **Leave**, **Reset browser data**, and a
+In the header: a **secret switcher** to jump between secrets, **All secrets** back
+to the list (the secret keeps running), **Leave**, **Reset browser data**, and a
 sun/moon toggle between the dark and light themes (the system's setting until
 you pick one; the pick is remembered per browser).
-Leave offers two things: **Stop running here** (the vault stays saved and
+Leave offers two things: **Stop running here** (the secret stays saved and
 another tab can open it) or **Remove from browser** (erases its keys, channels
-and shares from this browser). Reset browser data erases every vault in this
+and shares from this browser). Reset browser data erases every secret in this
 browser, across all its tabs. None of these touch the actors on the server.
 
-**One tab per vault.** Two tabs driving one vault would split its mailbox, so
-each vault is held with an exclusive Web Lock that is released when its tab
-closes. A vault open elsewhere is listed as *Open in another tab* with a
+**One tab per secret.** Two tabs driving one secret would split its mailbox, so
+each secret is held with an exclusive Web Lock that is released when its tab
+closes. A secret open elsewhere is listed as *Open in another tab* with a
 **Claim** action that works once the other tab has let it go.
 
 ## Debugging it
@@ -186,7 +186,7 @@ never completed; `bound` means it did.
 
 ## Running it
 
-The backend serves a single local node. Every vault set up in any browser that
+The backend serves a single local node. Every secret set up in any browser that
 opens the app registers its own owner actor against it — another tab, an
 incognito window or another machine on the network simply adds more owners.
 There is no grouping above that: everything the server knows lives in one actor
@@ -211,7 +211,7 @@ volume. It is published as `ghcr.io/derecalliance/reference-app` for
 
 ```
 docker run -d --name derec -p 5000:5000 -p 50051:50051 \
-  -v derec-data:/var/lib/derec ghcr.io/derecalliance/reference-app:0.0.9
+  -v derec-data:/var/lib/derec ghcr.io/derecalliance/reference-app:0.0.10
 ```
 
 **[docs/DOCKER.md](docs/DOCKER.md) is the image's reference:** tags and
@@ -290,10 +290,10 @@ shares no `localStorage` with it, being a different origin).
 
 Two constraints shape how these tests are written:
 
-- **A separate device needs a separate browser context.** Vaults live in
+- **A separate device needs a separate browser context.** Secrets live in
   `localStorage`, which every page of a context shares, and each is held by one
-  tab through a Web Lock. Several vaults in one tab is a supported case
-  (`multi-vault.spec.ts`), but the other side of a pairing that should behave
+  tab through a Web Lock. Several secrets in one tab is a supported case
+  (`multi-secret.spec.ts`), but the other side of a pairing that should behave
   like another device — a replica device, a browser-to-browser peer — needs its
   own `BrowserContext`. `newOwnerContext()` in `e2e/app.ts` is the helper for
   that.
@@ -306,18 +306,18 @@ What the specs cover:
 | Spec | Covers |
 | --- | --- |
 | `smoke` | the app loads, the setup wizard, pre-pairing, independent owners in separate contexts |
-| `multi-vault` | several vaults in one tab kept apart; an off-screen vault flagging a decision |
+| `multi-secret` | several secrets in one tab kept apart; an off-screen secret flagging a decision |
 | `pairing` | all three contact modes, including the `NoKeys` fingerprint gate and its refusal path |
 | `browser-pairing` | two browsers pairing with `NoKeys` and confirming on both sides |
 | `share-contact` | the Share Contact modal's layout and superseded contacts |
 | `qr-scan` | pairing by camera, with a faked decoder, and releasing the camera |
-| `sharing` | the secret lifecycle: protect, verify, discover, a second secret, **Remove Secret** |
+| `sharing` | the secret lifecycle: protect, verify, discover, a second item, **Remove Item** |
 | `recovery` | reconstruction, every version found, `restore`, unpairing |
 | `replicas` | replica groups against provisioned helpers: fingerprint gate, a three-member group, mirroring, sync check, forget, eviction |
 | `browser-replica` | two browsers pairing as replicas in both directions, the mirrored copy arriving only after both confirm, the adoption dialog appearing, and the replica group in View Payload |
 | `grpc` | the transport matrix described below |
 | `participants` | the Participants section: provisioning, deleting, pre-pairing limits |
-| `settings` | the Settings section's protocol defaults and their reset |
+| `settings` | the Settings section's pool defaults and their reset, and a secret's own protocol settings |
 | `wasm-concurrency` | overlapping calls into the WASM SDK, across and within protocol instances |
 | `browser-check` | the run is really Google Chrome |
 | `lan`, `lan-secure` | opt-in, see below |
@@ -385,7 +385,7 @@ lot there — `getUserMedia`, `BarcodeDetector`, and `crypto.randomUUID` among
 them. The camera is the visible casualty; `randomUUID` is why plain LAN http
 broke the setup wizard outright until the app stopped depending on it. Web
 Locks is withheld too; without it the app still runs, but no longer stops two
-tabs from opening the same vault.
+tabs from opening the same secret.
 
 On Android, tell Chrome to treat the origin as secure. No certificates, nothing
 to change here:
@@ -557,8 +557,8 @@ configuration
 
   [defaults]
   participant_count         3                    env DEREC_PARTICIPANT_COUNT
-  protocol_timeout_secs     300                  default
-  unpair_ack                required             file
+  pre_paired_count          3                    default
+  grpc_enabled              true                 file
   ...
 ```
 
@@ -650,13 +650,13 @@ grpc-only helper's pairing request surfacing an error rather than hanging.
 
 ## Replicas
 
-A replica is a second device belonging to the same owner, kept in sync so it can take over if the primary device is lost. Pairing is unidirectional: the existing device is the `ReplicaSource` (it holds the secret), the new device is the `ReplicaDestination` (it receives a mirrored copy). Each side needs a stable per-device replica id, set when the protocol instance is built; the destination's id survives adoption deliberately — it identifies the device, not the vault it holds.
+A replica is a second device belonging to the same owner, kept in sync so it can take over if the primary device is lost. Pairing is unidirectional: the existing device is the `ReplicaSource` (it holds the secret), the new device is the `ReplicaDestination` (it receives a mirrored copy). Each side needs a stable per-device replica id, set when the protocol instance is built; the destination's id survives adoption deliberately — it identifies the device, not the secret it holds.
 
 ### Setting one up
 
-A replica is a pairing mode, not a kind of actor, so any helper can back one. **+ Add** in the Replicas tab provisions a helper under the name you type and pairs it in replica mode from this vault's `ReplicaSource` side — no second browser context involved. That is the primary path, and the one `replicas.spec.ts` exercises.
+A replica is a pairing mode, not a kind of actor, so any helper can back one. **+ Add** in the Replicas tab provisions a helper under the name you type and pairs it in replica mode from this secret's `ReplicaSource` side — no second browser context involved. That is the primary path, and the one `replicas.spec.ts` exercises.
 
-A replica backed by a *real second device* works too, and is what the feature ultimately models. To model a separate device, put the destination vault in **another browser context** — an incognito/private window, a different browser profile, a different browser or another machine — rather than beside the source in the same browser, whose storage every vault there shares. Set up a vault there, then pair it from the primary vault's `ReplicaSource` side. `browser-replica.spec.ts` covers this, in both directions.
+A replica backed by a *real second device* works too, and is what the feature ultimately models. To model a separate device, put the destination secret in **another browser context** — an incognito/private window, a different browser profile, a different browser or another machine — rather than beside the source in the same browser, whose storage every secret there shares. Set up a secret there, then pair it from the primary secret's `ReplicaSource` side. `browser-replica.spec.ts` covers this, in both directions.
 
 ### Fingerprint confirmation (required before syncing)
 
@@ -664,9 +664,9 @@ After the pairing handshake, the replica channel sits in `Pending` — it cannot
 
 Only once **both** sides have confirmed does the channel move to `Paired`. This gate is enforced by the protocol library itself — it selects share targets from its own `Paired` channel table — not by app code, so there is no client-side bypass. A mirrored copy pushed before the destination has confirmed is ignored; the destination pulls it once it confirms.
 
-### Adoption (destructive — erases the destination vault)
+### Adoption (destructive — erases the destination secret)
 
-The first time a `ReplicaDestination` receives the source's mirrored secret, adopting it **wipes that vault's existing contents** and replaces them with the source owner's — secrets, helper roster, everything. The destination keeps adopting the *source's* secret id (its own replica id is untouched, as noted above), and afterwards enables auto reply-to so helpers — whose stored endpoint still points at the source — route their responses to the new device instead.
+The first time a `ReplicaDestination` receives the source's mirrored secret, adopting it **wipes that secret's existing contents** and replaces them with the source owner's — items, helper roster, everything. The destination keeps adopting the *source's* secret id (its own replica id is untouched, as noted above), and afterwards enables auto reply-to so helpers — whose stored endpoint still points at the source — route their responses to the new device instead.
 
 Because this is destructive, adoption sits behind a confirmation dialog whose default action is **Cancel** (autofocused, and what Escape/backdrop-click resolve to). Confirming requires a deliberate click on a separate, clearly-marked destructive action. Cancelling discards the offered payload and destroys nothing — the source's next sync re-offers it.
 

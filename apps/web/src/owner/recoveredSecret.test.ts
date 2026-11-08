@@ -18,7 +18,7 @@ function snapshot(communicationInfo?: Record<string, string>): RecoveredSecretSn
         ...(communicationInfo ? { communicationInfo } : {}),
       },
     ],
-    secrets: [],
+    items: [],
     replicas: {
       channelId: '9',
       sharedKey: KEY,

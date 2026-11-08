@@ -10,8 +10,11 @@ import type { ProofVersionUsage } from '../stores'
  * longer be verified from this device.
  */
 export type CleanupCriterion =
-  /** Keep only the versions the latest round told helpers to keep; `null` keep-list keeps all. */
-  | { kind: 'retention'; keep: readonly number[] | null }
+  /**
+   * Keep only the version the latest round told helpers to keep (`0`: none
+   * beside the latest); `null`, when that is not known, keeps all.
+   */
+  | { kind: 'retention'; keep: number | null }
   /** Keep only the N newest versions. */
   | { kind: 'lastN'; n: number }
 
@@ -33,7 +36,7 @@ export function cleanupCandidates(
   let kept: Set<number>
   if (criterion.kind === 'retention') {
     if (criterion.keep === null) return []
-    kept = new Set(criterion.keep)
+    kept = new Set([criterion.keep])
   } else {
     kept = new Set(versions.slice(0, criterion.n))
   }

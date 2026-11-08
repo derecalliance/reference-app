@@ -37,13 +37,14 @@ function row(overrides: Partial<PairedParticipant>): PairedParticipant {
   }
 }
 
-function render(h: PairedParticipant, committedVersions?: ReadonlySet<number>) {
+function render(h: PairedParticipant, committedVersions?: ReadonlySet<number>, unpairDisabledReason: string | null = null) {
   const group: LinkGroup = { key: h.channelId, name: h.name, mainChannelId: h.channelId, channels: [h] }
   act(() =>
     root.render(
       <PairedParticipantsList
         groups={[group]}
         unpairingChannelIds={new Set()}
+        unpairDisabledReason={unpairDisabledReason}
         onTogglePair={() => {}}
         onLink={() => {}}
         committedVersions={committedVersions}
@@ -57,9 +58,16 @@ function hasButton(name: string): boolean {
 }
 
 describe('PairedParticipantsList', () => {
-  it('offers Unpair on a channel where this vault is the owner', () => {
+  it('offers Unpair on a channel where this secret is the owner', () => {
     render(row({ peerRole: 'helper' }))
     expect(hasButton('Unpair')).toBe(true)
+  })
+
+  it('holds Unpair back while a round is open — unpairing publishes a new version', () => {
+    render(row({ peerRole: 'helper' }), undefined, 'v4 is still being published.')
+    const unpair = Array.from(host.querySelectorAll('button')).find(b => b.textContent?.trim() === 'Unpair')
+    expect(unpair?.disabled).toBe(true)
+    expect(unpair?.title).toBe('v4 is still being published.')
   })
 
   it('does not offer Unpair where the peer is the owner — only it can unpair', () => {
@@ -108,7 +116,7 @@ describe('default weight per helper (SDK 0.0.9 weighted helpers)', () => {
           unpairingChannelIds={new Set()}
           onTogglePair={() => {}}
           onLink={() => {}}
-          defaultWeights={{ weightFor: () => defaultWeight, max: 3, onSet }}
+          defaultWeights={{ weightFor: () => defaultWeight, maxFor: () => 3, onSet, problemFor: () => null }}
         />,
       ),
     )
@@ -116,8 +124,8 @@ describe('default weight per helper (SDK 0.0.9 weighted helpers)', () => {
   }
 
   function weightField(): HTMLInputElement {
-    const el = host.querySelector<HTMLInputElement>('input[aria-label="Default weight for Bob"]')
-    if (!el) throw new Error('no default weight field')
+    const el = host.querySelector<HTMLInputElement>('input[aria-label="Weight for Bob"]')
+    if (!el) throw new Error('no weight field')
     return el
   }
 
@@ -160,9 +168,9 @@ describe('default weight per helper (SDK 0.0.9 weighted helpers)', () => {
     expect(host.textContent).toContain('last published 3')
   })
 
-  it('offers no default weight on a channel where this vault is the helper', () => {
+  it('offers no default weight on a channel where this secret is the helper', () => {
     renderWeights(row({ peerRole: 'owner' }), 1)
 
-    expect(host.querySelector('input[aria-label="Default weight for Bob"]')).toBeNull()
+    expect(host.querySelector('input[aria-label="Weight for Bob"]')).toBeNull()
   })
 })

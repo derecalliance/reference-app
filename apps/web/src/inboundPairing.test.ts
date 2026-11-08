@@ -11,7 +11,7 @@ import { complementRole, replicaRoleForSenderKind } from './pairingRoles'
  *
  * The bug this covers: the handler ignored `sender_kind` entirely, so a replica
  * pairing arrived behind the participant modal — which offers linking (a replica
- * channel cannot be linked) and says nothing about the responder's own vault
+ * channel cannot be linked) and says nothing about the responder's own secret
  * being replaced. `replica === null` is what routes to the participant modal, so
  * these assertions are the branch.
  */

@@ -13,9 +13,9 @@ use crate::services::helpers::HelperService;
 /// `DELETE /api/v1/helpers/{helper_id}` — erases a provisioned participant:
 /// its actor, its stores and its registry entry. Answers `204` with no body.
 ///
-/// The pool is server-wide, so this affects every owner using it — and an
-/// owner paired with it keeps its channel, which from then on behaves like a
-/// peer that has gone offline.
+/// The pool is server-wide, so this affects every owner using it. A
+/// participant still paired with any owner is refused with
+/// `PARTICIPANT_PAIRED`: each owner unpairs it first.
 #[tracing::instrument(skip(helpers))]
 pub async fn delete(
     State(helpers): State<Arc<dyn HelperService>>,

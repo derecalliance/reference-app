@@ -5,10 +5,10 @@ import { useState } from 'react'
 import MoreVertIcon from '@mui/icons-material/MoreVert'
 import { Badge, Box, IconButton, Menu, MenuItem, useMediaQuery, useTheme } from '@mui/material'
 
-import type { VaultEntry } from './vault/manager'
+import type { SecretEntry } from './secret/manager'
 import { NotificationBell } from './NotificationBell'
 import { ThemeToggle } from './ThemeToggle'
-import { VaultSwitcher } from './VaultSwitcher'
+import { SecretSwitcher } from './SecretSwitcher'
 
 const BASE_PATH = import.meta.env.BASE_URL.replace(/\/$/, '') // e.g. "/reference-app"
 
@@ -26,42 +26,42 @@ const VISUALLY_HIDDEN = {
 } as const
 
 export interface AppHeaderProps {
-  entries: readonly VaultEntry[]
-  /** The vault the route names, or `null` on the list and the wizard. */
-  vaultId: string | null
-  /** Whether that vault's own page is showing — what Leave acts on. */
-  vaultPageShown: boolean
-  /** Other vaults with a decision waiting; `0` hides the notice. */
+  entries: readonly SecretEntry[]
+  /** The secret the route names, or `null` on the list and the wizard. */
+  localSecretId: string | null
+  /** Whether that secret's own page is showing — what Leave acts on. */
+  secretPageShown: boolean
+  /** Other secrets with a decision waiting; `0` hides the notice. */
   othersWaiting: number
   onShowAll: () => void
   onSwitch: (id: string) => void
-  /** Open a vault's Notifications tab — from the bell — marking `notificationId` read when one was picked. */
-  onOpenNotifications: (vaultId: string, notificationId: string | null) => void
+  /** Open a secret's Notifications tab — from the bell — marking `notificationId` read when one was picked. */
+  onOpenNotifications: (localSecretId: string, notificationId: string | null) => void
   onLeave: () => void
   onReset: () => void
 }
 
-/** "1 other vault needs your decision" / "2 other vaults need your decision". */
+/** "1 other secret needs your decision" / "2 other secrets need your decision". */
 function othersWaitingLabel(count: number): string {
   return count === 1
-    ? '1 other vault needs your decision'
-    : `${count} other vaults need your decision`
+    ? '1 other secret needs your decision'
+    : `${count} other secrets need your decision`
 }
 
 /**
- * The page header: logo, the vault switcher, the theme toggle and the app-wide
+ * The page header: logo, the secret switcher, the theme toggle and the app-wide
  * actions.
  *
  * Below `md` the actions fold into a menu. Laid out in one row they need about
  * 700px — the switcher alone may take 260 — and on a phone they ran off the
  * right edge of the page rather than wrapping. The switcher stays out of the
- * menu because getting to another vault is what the header is for; the theme
+ * menu because getting to another secret is what the header is for; the theme
  * toggle and the bell are icons, small enough to stay too.
  */
 export function AppHeader({
   entries,
-  vaultId,
-  vaultPageShown,
+  localSecretId,
+  secretPageShown,
   othersWaiting,
   onShowAll,
   onSwitch,
@@ -92,9 +92,9 @@ export function AppHeader({
             {waitingLabel ?? ''}
           </Box>
           <ThemeToggle />
-          <NotificationBell entries={entries} currentVaultId={vaultPageShown ? vaultId : null} onOpen={onOpenNotifications} />
+          <NotificationBell entries={entries} currentLocalSecretId={secretPageShown ? localSecretId : null} onOpen={onOpenNotifications} />
           {entries.length > 0 && (
-            <VaultSwitcher entries={entries} currentId={vaultId} onSelect={onSwitch} />
+            <SecretSwitcher entries={entries} currentId={localSecretId} onSelect={onSwitch} />
           )}
           <IconButton
             aria-label={waitingLabel ? `More actions — ${waitingLabel}` : 'More actions'}
@@ -114,8 +114,8 @@ export function AppHeader({
             transformOrigin={{ vertical: 'top', horizontal: 'right' }}
           >
             {waitingLabel && <MenuItem onClick={fromMenu(onShowAll)}>{waitingLabel}</MenuItem>}
-            {vaultId && <MenuItem onClick={fromMenu(onShowAll)}>All vaults</MenuItem>}
-            {vaultPageShown && <MenuItem onClick={fromMenu(onLeave)}>Leave</MenuItem>}
+            {localSecretId && <MenuItem onClick={fromMenu(onShowAll)}>All secrets</MenuItem>}
+            {secretPageShown && <MenuItem onClick={fromMenu(onLeave)}>Leave</MenuItem>}
             <MenuItem onClick={fromMenu(onReset)} sx={{ color: 'error.main' }}>
               Reset browser data
             </MenuItem>
@@ -129,33 +129,33 @@ export function AppHeader({
               <button
                 className="secondary leave-btn attention-btn"
                 onClick={onShowAll}
-                title="Show every vault, with the ones waiting on you marked"
+                title="Show every secret, with the ones waiting on you marked"
               >
                 {waitingLabel}
               </button>
             )}
           </span>
-          {vaultId && (
-            // Back to the list. Nothing stops: every vault keeps running in the
+          {localSecretId && (
+            // Back to the list. Nothing stops: every secret keeps running in the
             // background, which is what lets it answer its counterparties.
             <button
               className="secondary leave-btn"
               onClick={onShowAll}
-              title="Show every vault in this browser. This one keeps running."
+              title="Show every secret in this browser. This one keeps running."
             >
-              All vaults
+              All secrets
             </button>
           )}
           <ThemeToggle />
-          <NotificationBell entries={entries} currentVaultId={vaultPageShown ? vaultId : null} onOpen={onOpenNotifications} />
+          <NotificationBell entries={entries} currentLocalSecretId={secretPageShown ? localSecretId : null} onOpen={onOpenNotifications} />
           {entries.length > 0 && (
-            <VaultSwitcher entries={entries} currentId={vaultId} onSelect={onSwitch} />
+            <SecretSwitcher entries={entries} currentId={localSecretId} onSelect={onSwitch} />
           )}
-          {vaultPageShown && (
+          {secretPageShown && (
             <button
               className="secondary leave-btn"
               onClick={onLeave}
-              title="Stop running this vault here, or remove it from this browser"
+              title="Stop running this secret here, or remove it from this browser"
             >
               Leave
             </button>

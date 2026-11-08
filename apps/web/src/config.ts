@@ -3,10 +3,12 @@
 
 // Single front-end protocol configuration.
 //
-// Configuration is owned by the front end: each browser context picks its own
-// settings in the setup wizard and sends them to the backend when provisioning
-// actors. The constants here are the last-resort fallbacks used when the
-// operator-supplied defaults (`GET /api/v1/config`) cannot be fetched.
+// Configuration is owned by the front end and sent to the backend when
+// provisioning actors. The protocol constants here (timeout, unpair
+// acknowledgement, auto-accept, authentication method) are the app's defaults
+// for every secret — see `SECRET_CONFIG_DEFAULTS`. The pool constants are the
+// last-resort fallbacks used when the operator-supplied defaults
+// (`GET /api/v1/config`) cannot be fetched.
 
 /**
  * General protocol timeout, in **seconds**. The one timeout the wizard exposes:
@@ -23,16 +25,20 @@
  * - App (active): the FE wall-clock watchdog and all FE auto-reject /
  *   pairing-wait timers use this same value as their deadline.
  *
- * User-configurable in the setup wizard. This is the fallback default.
+ * The app's default for every secret (`SECRET_CONFIG_DEFAULTS`); changed per
+ * secret in the setup wizard and on the owner's Settings tab.
  */
-export const DEFAULT_PROTOCOL_TIMEOUT_SECS = 300
+export const DEFAULT_PROTOCOL_TIMEOUT_SECS = 30
 
 /**
- * Lowest protocol timeout the app accepts, in seconds — in Settings and in the
- * wizard's stepper alike. Below this a handshake or a share round cannot finish
+ * Lowest protocol timeout the app accepts, in seconds — on a secret's Settings
+ * tab and in the wizard's stepper alike. Below this a handshake or a share round cannot finish
  * even against a local node, so every flow would time out on its own latency.
  */
 export const MIN_PROTOCOL_TIMEOUT_SECS = 10
+
+/** Highest protocol timeout the app accepts, in seconds — what the node accepts too. */
+export const MAX_PROTOCOL_TIMEOUT_SECS = 86_400
 
 /** Resolve a (possibly missing) seconds value to milliseconds. */
 export function protocolTimeoutMs(secs: number | undefined | null): number {
@@ -48,35 +54,25 @@ export function protocolTimeoutMs(secs: number | undefined | null): number {
  * - `user`: the helper manually links channels (today's flow), with an in-modal
  *   atomic "accept + link" path during incoming pairing.
  * - `application`: future automatic linking via app-provided identity. Shown in
- *   the wizard for now but not yet selectable.
+ *   the secret's Settings tab but not yet selectable.
  */
 export type AuthenticationMethod = 'user' | 'application'
 
 export const DEFAULT_AUTHENTICATION_METHOD: AuthenticationMethod = 'user'
 
-export function normalizeAuthenticationMethod(
-  value: string | undefined | null,
-): AuthenticationMethod {
-  return value === 'application' ? 'application' : 'user'
-}
-
 /**
- * Protocol-level acknowledgement policy for the unpair flow. Chosen in the
- * setup wizard, passed to the WASM `DeRecProtocol` constructor, and sent to the
- * backend with each provisioning request so backend-run actors agree.
+ * Protocol-level acknowledgement policy for the unpair flow. Set per secret on
+ * its Settings tab, passed to the WASM `DeRecProtocol` constructor, and sent to
+ * the backend with each provisioning request so backend-run actors agree.
  *
- * - `required` (default): the initiator keeps local state until the peer ACKs
- *   or the configured timeout elapses.
- * - `not_required`: fire-and-forget — state is dropped immediately on
- *   `start(Unpair)` and any later response is ignored.
+ * - `required`: the initiator keeps local state until the peer ACKs or the
+ *   configured timeout elapses.
+ * - `not_required` (default): fire-and-forget — state is dropped immediately
+ *   on `start(Unpair)` and any later response is ignored.
  */
 export type UnpairAck = 'required' | 'not_required'
 
-export const DEFAULT_UNPAIR_ACK: UnpairAck = 'required'
-
-export function normalizeUnpairAck(value: string | undefined | null): UnpairAck {
-  return value === 'not_required' ? 'not_required' : 'required'
-}
+export const DEFAULT_UNPAIR_ACK: UnpairAck = 'not_required'
 
 /**
  * FE-only UI preference: whether incoming Unpair requests from a peer are
@@ -86,13 +82,13 @@ export function normalizeUnpairAck(value: string | undefined | null): UnpairAck 
 export const DEFAULT_AUTO_ACCEPT_UNPAIR_REQUESTS = true
 
 /**
- * FE-only UI preferences for a vault acting as a helper: whether a peer's
+ * FE-only UI preferences for a secret acting as a helper: whether a peer's
  * request to store a share, or to verify one, is answered outright or shown as
- * a confirmation dialog first. Asking is the default — storing a share is a
- * commitment the person running the helper should see.
+ * a confirmation dialog first. Answering outright is the default; a secret's
+ * owner who wants to see each request turns it off on the Settings tab.
  */
-export const DEFAULT_AUTO_ACCEPT_STORE_SHARE_REQUESTS = false
-export const DEFAULT_AUTO_ACCEPT_VERIFY_SHARE_REQUESTS = false
+export const DEFAULT_AUTO_ACCEPT_STORE_SHARE_REQUESTS = true
+export const DEFAULT_AUTO_ACCEPT_VERIFY_SHARE_REQUESTS = true
 
 /** Fallback participant count for the setup wizard. */
 export const DEFAULT_PARTICIPANT_COUNT = 7
@@ -104,7 +100,9 @@ export const DEFAULT_MIN_PARTICIPANTS = 3
 export const DEFAULT_RECOMMENDED_PARTICIPANTS = 5
 
 /**
- * Starting values for the setup wizard, as served by the backend's `GET /api/v1/config`.
+ * Starting values for the setup wizard's helper pool, and what the node runs,
+ * as served by the backend's `GET /api/v1/config`. No protocol settings: those
+ * are each secret's, starting from `SECRET_CONFIG_DEFAULTS`.
  *
  * The app ships as a Docker image, so an operator can mount a config file to
  * change what a developer sees on first run instead of making them retype the
@@ -116,12 +114,6 @@ export interface ServerDefaults {
   prePairedCount: number
   minParticipants: number
   recommendedParticipants: number
-  protocolTimeoutSecs: number
-  authenticationMethod: AuthenticationMethod
-  unpairAck: UnpairAck
-  autoAcceptUnpairRequests: boolean
-  autoAcceptStoreShareRequests: boolean
-  autoAcceptVerifyShareRequests: boolean
   /** Prefills the wizard's transport breakdown for the helper pool. */
   helperTransports: { http: number; grpc: number; both: number }
   /** Whether the backend runs the gRPC ingress listener at all. */
@@ -135,12 +127,6 @@ export const FALLBACK_SERVER_DEFAULTS: ServerDefaults = {
   prePairedCount: DEFAULT_PRE_PAIRED_COUNT,
   minParticipants: DEFAULT_MIN_PARTICIPANTS,
   recommendedParticipants: DEFAULT_RECOMMENDED_PARTICIPANTS,
-  protocolTimeoutSecs: DEFAULT_PROTOCOL_TIMEOUT_SECS,
-  authenticationMethod: DEFAULT_AUTHENTICATION_METHOD,
-  unpairAck: DEFAULT_UNPAIR_ACK,
-  autoAcceptUnpairRequests: DEFAULT_AUTO_ACCEPT_UNPAIR_REQUESTS,
-  autoAcceptStoreShareRequests: DEFAULT_AUTO_ACCEPT_STORE_SHARE_REQUESTS,
-  autoAcceptVerifyShareRequests: DEFAULT_AUTO_ACCEPT_VERIFY_SHARE_REQUESTS,
   helperTransports: { http: DEFAULT_PARTICIPANT_COUNT, grpc: 0, both: 0 },
   grpcEnabled: true,
   grpcRelayEnabled: true,
@@ -152,12 +138,6 @@ export interface ServerDefaultsDto {
   pre_paired_count: number
   min_participants: number
   recommended_participants: number
-  protocol_timeout_secs: number
-  authentication_method: string
-  unpair_ack: string
-  auto_accept_unpair_requests: boolean
-  auto_accept_store_share_requests: boolean
-  auto_accept_verify_share_requests: boolean
   helper_transports: { http: number; grpc: number; both: number }
   grpc_enabled: boolean
   grpc_relay_enabled: boolean
@@ -195,24 +175,6 @@ export function toServerDefaults(dto: Partial<ServerDefaultsDto> | null | undefi
       dto?.recommended_participants,
       FALLBACK_SERVER_DEFAULTS.recommendedParticipants,
     ),
-    protocolTimeoutSecs: count(
-      dto?.protocol_timeout_secs,
-      FALLBACK_SERVER_DEFAULTS.protocolTimeoutSecs,
-    ),
-    authenticationMethod: normalizeAuthenticationMethod(dto?.authentication_method),
-    unpairAck: normalizeUnpairAck(dto?.unpair_ack),
-    autoAcceptUnpairRequests:
-      typeof dto?.auto_accept_unpair_requests === 'boolean'
-        ? dto.auto_accept_unpair_requests
-        : FALLBACK_SERVER_DEFAULTS.autoAcceptUnpairRequests,
-    autoAcceptStoreShareRequests:
-      typeof dto?.auto_accept_store_share_requests === 'boolean'
-        ? dto.auto_accept_store_share_requests
-        : FALLBACK_SERVER_DEFAULTS.autoAcceptStoreShareRequests,
-    autoAcceptVerifyShareRequests:
-      typeof dto?.auto_accept_verify_share_requests === 'boolean'
-        ? dto.auto_accept_verify_share_requests
-        : FALLBACK_SERVER_DEFAULTS.autoAcceptVerifyShareRequests,
     helperTransports: helperTransports(
       dto?.helper_transports,
       FALLBACK_SERVER_DEFAULTS.helperTransports,

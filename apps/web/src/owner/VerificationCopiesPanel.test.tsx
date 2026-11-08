@@ -5,15 +5,15 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { BagVersion, SecretBag } from '../types'
-import type { CleanupContext } from '../vault/types'
+import type { BagVersion, ItemBag } from '../types'
+import type { CleanupContext } from '../secret/types'
 import { VerificationCopiesPanel } from './VerificationCopiesPanel'
 
 const context: CleanupContext = {
   usage: [4, 3, 2, 1].map(version => ({ version, copies: 2, bytes: 1500 })),
   floor: { latest: 4, open: [] },
   criterion: { kind: 'lastN', n: 2 },
-  helperKeep: [3],
+  helperKeep: 3,
   helperChannels: 3,
 }
 
@@ -23,14 +23,14 @@ function bagVersion(version: number): BagVersion {
     participantIds: ['h1', 'h2'],
     verifiedParticipantIds: ['h1'],
     failedParticipantIds: [],
-    secrets: [],
+    items: [],
     rawBytes: '',
     helpers: [],
   }
 }
 
-// v1 is not in the history: removed from the Secrets tab, or never recorded here.
-const bag: SecretBag = { secretId: '42', threshold: 2, currentVersion: bagVersion(4), previousVersions: [bagVersion(3), bagVersion(2)] }
+// v1 is not in the history: removed from the Items tab, or never recorded here.
+const bag: ItemBag = { secretId: '42', threshold: 2, currentVersion: bagVersion(4), previousVersions: [bagVersion(3), bagVersion(2)] }
 
 let host: HTMLDivElement
 let root: Root
@@ -95,7 +95,7 @@ describe('VerificationCopiesPanel', () => {
     expect(rowOf(3).cells[6].textContent).toBe('1/2')
   })
 
-  it('selects by the vault\'s rule, and deletes the selection after confirming', async () => {
+  it('selects by the secret\'s rule, and deletes the selection after confirming', async () => {
     const onDelete = render(context)
 
     act(() => button('Select by rule').click())

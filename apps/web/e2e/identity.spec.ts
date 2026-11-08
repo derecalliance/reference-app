@@ -6,7 +6,7 @@ import { setUpOwner } from './app'
 import type { Browser, BrowserContext, Page } from '@playwright/test'
 
 /**
- * A vault changes how it presents itself — its name — and a paired peer sees
+ * A secret changes how it presents itself — its name — and a paired peer sees
  * the change: the protocol's `UpdateChannelInfo` round trip, end to end.
  *
  * Two browsers, because the receiving side is the half most likely to be
@@ -32,7 +32,7 @@ async function contactPayload(page: Page): Promise<string> {
   return payload
 }
 
-test('renaming a vault reaches its paired peer', async ({ browser }) => {
+test('renaming a secret reaches its paired peer', async ({ browser }) => {
   const alice = await newDevice(browser, 'Alice')
   const bob = await newDevice(browser, 'Bob')
 

@@ -117,7 +117,8 @@ pub trait ActorGateway: Send + Sync {
         -> Result<String, ActorCallError>;
 
     /// Compare `fingerprint` with the actor's own for `channel_id`, promoting
-    /// the channel out of `Pending` when they match.
+    /// the channel out of `Pending` when they match. `false` is a mismatch,
+    /// which revokes a `Pending` pairing: the devices must pair again.
     async fn verify_fingerprint(
         &self,
         actor_id: &Uuid,

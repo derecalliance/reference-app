@@ -4,7 +4,7 @@
 import { useState, useEffect } from 'react'
 import { errorText } from './errorText'
 import './SetupWizard.css'
-import type { Vault, PairedParticipant, TransportProtocol } from './types'
+import type { Secret, PairedParticipant, TransportProtocol } from './types'
 import {
   apiGetActors,
   apiGetServerDefaults,
@@ -14,23 +14,24 @@ import {
 import { effectiveDefaults } from './protocolDefaults'
 import { useConsole } from './ConsoleContext'
 import { FALLBACK_SERVER_DEFAULTS, type ServerDefaults } from './config'
-import { StepVaultSettings, type NodeCheck } from './wizard/StepVaultSettings'
+import { StepSecretSettings, type NodeCheck } from './wizard/StepSecretSettings'
 import { StepClaimActor, type ClaimableActor } from './wizard/StepClaimActor'
 import {
   actorAppearsActive,
   isActorId,
-  normalizeVaultName,
+  normalizeSecretName,
   ownerSettings,
   overridesFromEdits,
   prePairTarget,
-  vaultNameError,
+  secretNameError,
   type OwnerEdits,
 } from './wizard/wizardForm'
 import { parseWholeNumber, thresholdError } from './admin/defaultsValidation'
-import { isDuplicateVaultName } from './vaultLabels'
+import { isDuplicateSecretName } from './secretLabels'
+import { newSecretPublishPolicy } from './owner/publishPolicy'
 
 type Flow = 'setup' | 'claim'
-type StepKey = 'vaultName' | 'vaultSettings' | 'claimActor'
+type StepKey = 'secretName' | 'secretSettings' | 'claimActor'
 
 /**
  * The node as the wizard last found it: its own defaults, whether it answered,
@@ -63,7 +64,7 @@ function ServerUnreachableNotice({ onRetry }: { onRetry: () => void }) {
   )
 }
 
-function StepVaultName({
+function StepSecretName({
   value,
   onChange,
   onSubmit,
@@ -73,13 +74,13 @@ function StepVaultName({
   onChange: (v: string) => void
   /** Advance past this step — what Enter in the field does. */
   onSubmit: () => void
-  /** Names of the vaults this browser already holds, to warn on a repeat. */
+  /** Names of the secrets this browser already holds, to warn on a repeat. */
   existingNames: readonly string[]
 }) {
   // Nothing is said about an empty field: the disabled Next says it, and an
   // error before anything was typed reads as a scolding.
-  const error = value === '' ? null : vaultNameError(value)
-  const duplicate = error === null && isDuplicateVaultName(value, existingNames)
+  const error = value === '' ? null : secretNameError(value)
+  const duplicate = error === null && isDuplicateSecretName(value, existingNames)
   // A form, so Enter in the field submits the step the way it does in every
   // other form; the wizard's own Next button stays the visible control.
   return (
@@ -110,7 +111,7 @@ function StepVaultName({
       )}
       {duplicate && (
         <p id="wizard-name-hint" className="wizard-field-hint" role="status">
-          A vault in this browser already has this name. It will work, but the vault
+          A secret in this browser already has this name. It will work, but the secret
           list will tell them apart only by the start of their ids.
         </p>
       )}
@@ -146,7 +147,7 @@ const FLOW_STEPS: Record<Flow, StepKey[]> = {
   // Pool size, transport mix and protocol policy are the node's, not this
   // owner's: they are set in Settings and read from the effective defaults when
   // this wizard provisions. What is left is what an owner actually chooses.
-  setup: ['vaultName', 'vaultSettings'],
+  setup: ['secretName', 'secretSettings'],
   // A recovering owner pairs helpers manually, one at a time, by linking
   // against their old channels — so there is nothing to configure here beyond
   // which existing owner actor's mailbox this tab adopts.
@@ -154,17 +155,17 @@ const FLOW_STEPS: Record<Flow, StepKey[]> = {
 }
 
 interface Props {
-  /** Which flow this wizard runs — chosen on the vault list. */
+  /** Which flow this wizard runs — chosen on the secret list. */
   initialFlow: Flow
-  /** Hand the new vault to the app. Returns false if another tab took it first. */
-  onReady: (vault: Vault) => Promise<boolean>
-  /** Back out of the first step, to the vault list. */
+  /** Hand the new secret to the app. Returns false if another tab took it first. */
+  onReady: (secret: Secret) => Promise<boolean>
+  /** Back out of the first step, to the secret list. */
   onCancel: () => void
-  /** Names of the vaults this browser already holds — a repeat is warned about. */
-  existingVaultNames?: readonly string[]
+  /** Names of the secrets this browser already holds — a repeat is warned about. */
+  existingSecretNames?: readonly string[]
 }
 
-/** Shown where the threshold a vault would be created with is unusable. */
+/** Shown where the threshold a secret would be created with is unusable. */
 function invalidThresholdMessage(threshold: number, reason: string): string {
   return (
     `The minimum in Settings (${Number.isNaN(threshold) ? 'empty' : threshold}) cannot ` +
@@ -215,19 +216,19 @@ function toParticipant(
 }
 
 /**
- * Set up one new vault, or claim an existing owner actor as one.
+ * Set up one new secret, or claim an existing owner actor as one.
  *
- * The list of saved vaults lives on the home screen now; this does one job.
+ * The list of saved secrets lives on the home screen now; this does one job.
  */
 export default function SetupWizard({
   initialFlow,
   onReady,
   onCancel,
-  existingVaultNames = [],
+  existingSecretNames: existingSecretNames = [],
 }: Props) {
   const flow = initialFlow
   const [stepIndex, setStepIndex] = useState(0)
-  const [vaultName, setVaultName] = useState('')
+  const [secretName, setSecretName] = useState('')
   const [claimActorId, setClaimActorId] = useState('')
   // Only what the user changed — see `OwnerEdits` for why this is not a form
   // object seeded from the defaults.
@@ -239,8 +240,8 @@ export default function SetupWizard({
   // the choice changes: the acknowledgement was for that actor.
   const [confirmedActive, setConfirmedActive] = useState(false)
   const [loadingClaimable, setLoadingClaimable] = useState(flow === 'claim')
-  // The threshold a claimed vault runs with, as typed — `null` until edited,
-  // when the node's default stands in. The node does not record a vault's
+  // The threshold a claimed secret runs with, as typed — `null` until edited,
+  // when the node's default stands in. The node does not record a secret's
   // threshold, so the person recovering has to confirm it.
   const [claimThresholdText, setClaimThresholdText] = useState<string | null>(null)
   const { log } = useConsole()
@@ -291,15 +292,15 @@ export default function SetupWizard({
     setProbeNonce(n => n + 1)
   }
 
-  // The node's values with any Settings overrides on top, so the wizard and the
-  // Settings pane cannot disagree about what a default is. The fallback stands
+  // The node's pool values with any Settings overrides on top, so the wizard and
+  // the Settings pane cannot disagree about what a default is. The fallback stands
   // in only while the probe runs, and nothing on screen is editable meanwhile.
   const defaults = effectiveDefaults(
     probe.status === 'done' ? probe.defaults : FALLBACK_SERVER_DEFAULTS,
   )
   const settings = ownerSettings(defaults, edits)
   // A minimum saved in Settings before it was validated — or a node configured
-  // with 1 — would create a vault the library refuses to start.
+  // with 1 — would create a secret the library refuses to start.
   const defaultThresholdError = thresholdError(defaults.minParticipants)
   const claimThreshold =
     claimThresholdText === null ? defaults.minParticipants : parseWholeNumber(claimThresholdText)
@@ -348,7 +349,7 @@ export default function SetupWizard({
     if (probe.status !== 'done') return
     // Shown on the step, which also holds the button disabled.
     if (defaultThresholdError) return
-    const name = normalizeVaultName(vaultName)
+    const name = normalizeSecretName(secretName)
     setBusy(true)
     setError(null)
 
@@ -370,7 +371,7 @@ export default function SetupWizard({
       const shown = prePairTarget(settings.prePairedCount, probe.online ?? 0)
       const prePaired = prePairTarget(shown, onlineOf(provisioned).length)
 
-      const vault: Vault = {
+      const secret: Secret = {
         id: ownerActor.id,
         name,
         secretId: ownerActor.secret_id,
@@ -379,7 +380,7 @@ export default function SetupWizard({
           uri: ownerActor.transport.uri,
         },
         participants: provisioned.map(a => toParticipant(a, '')),
-        secretBag: null,
+        itemBag: null,
         pendingPairings: [],
         prePairedCount: prePaired > 0 ? prePaired : undefined,
         minParticipants: defaults.minParticipants,
@@ -389,24 +390,27 @@ export default function SetupWizard({
         recoveryFailures: [],
         heldShares: [],
         mainChannels: [],
-        configOverrides: overridesFromEdits(edits, defaults),
+        configOverrides: overridesFromEdits(edits),
+        // A new secret's threshold follows its helpers as a percentage; the
+        // node's starting threshold waits as the fixed value.
+        publishPolicy: newSecretPublishPolicy(defaults.minParticipants),
       }
 
       log({
         role: 'owner',
         flow: 'setup',
-        step: 'vault_created',
+        step: 'secret_created',
         description:
-          `Set up against ${vault.participants.length} participant(s) already ` +
+          `Set up against ${secret.participants.length} participant(s) already ` +
           `on this node, ${prePaired} to auto-pair` +
           (prePaired < shown ? ` (${shown} chosen; the rest went offline meanwhile)` : ''),
         payload: {
-          vaultId: vault.id,
-          vaultName: vault.name,
-          transport: vault.transport,
-          minParticipants: vault.minParticipants,
-          configOverrides: vault.configOverrides,
-          participants: vault.participants.map(h => ({
+          localSecretId: secret.id,
+          secretName: secret.name,
+          transport: secret.transport,
+          minParticipants: secret.minParticipants,
+          configOverrides: secret.configOverrides,
+          participants: secret.participants.map(h => ({
             id: h.id,
             name: h.name,
             transport: h.transport,
@@ -414,10 +418,10 @@ export default function SetupWizard({
         },
       })
 
-      if (!(await onReady(vault))) {
+      if (!(await onReady(secret))) {
         // Only possible if another tab took the new owner's lock first; the
-        // wizard must not sit on "Setting up…" for a vault that never opened.
-        setError(`"${vault.name}" could not be opened — it is already open in another tab.`)
+        // wizard must not sit on "Setting up…" for a secret that never opened.
+        setError(`"${secret.name}" could not be opened — it is already open in another tab.`)
         setBusy(false)
       }
     } catch (err) {
@@ -465,7 +469,7 @@ export default function SetupWizard({
       const actors = await apiGetActors()
       const peers = actors.filter(a => a.role === 'helper')
 
-      const vault: Vault = {
+      const secret: Secret = {
         id: ownerActor.id,
         name: ownerActor.name,
         secretId: ownerActor.secret_id,
@@ -474,9 +478,9 @@ export default function SetupWizard({
           uri: ownerActor.transport.uri,
         },
         participants: peers.map(a => toParticipant(a, '')),
-        secretBag: null,
+        itemBag: null,
         pendingPairings: [],
-        // What the person confirmed, not the node's default: a vault set up
+        // What the person confirmed, not the node's default: a secret set up
         // with 2 and claimed against a node defaulting to 3 read "0 of 3
         // required" for a secret two helpers could already rebuild.
         minParticipants: claimThreshold,
@@ -494,17 +498,17 @@ export default function SetupWizard({
         role: 'owner',
         flow: 'setup',
         step: 'owner_claimed',
-        description: `Claimed owner actor "${vault.name}" (recovery mode)`,
+        description: `Claimed owner actor "${secret.name}" (recovery mode)`,
         payload: {
-          vaultId: vault.id,
+          localSecretId: secret.id,
           participantCount: peers.length,
-          minParticipants: vault.minParticipants,
+          minParticipants: secret.minParticipants,
         },
       })
 
-      if (!(await onReady(vault))) {
+      if (!(await onReady(secret))) {
         // The claimed actor is already driven by another tab in this browser.
-        setError(`"${vault.name}" is already open in another tab.`)
+        setError(`"${secret.name}" is already open in another tab.`)
         setBusy(false)
       }
     } catch (err) {
@@ -517,8 +521,8 @@ export default function SetupWizard({
   const claimActiveElsewhere = actorAppearsActive(selectedClaimable?.lastPolledAt, claimable.readAt)
 
   const canProceed =
-    step === 'vaultName'
-      ? vaultNameError(vaultName) === null
+    step === 'secretName'
+      ? secretNameError(secretName) === null
       : step === 'claimActor'
         ? isActorId(claimActorId) &&
           (!claimActiveElsewhere || confirmedActive) &&
@@ -551,25 +555,25 @@ export default function SetupWizard({
         {probe.status === 'done' && !probe.reachable && (
           <ServerUnreachableNotice onRetry={retryProbe} />
         )}
-        {step === 'vaultName' && (
-          <StepVaultName
-            value={vaultName}
-            onChange={setVaultName}
+        {step === 'secretName' && (
+          <StepSecretName
+            value={secretName}
+            onChange={setSecretName}
             onSubmit={() => {
               if (canProceed && !busy) setStepIndex(i => i + 1)
             }}
-            existingNames={existingVaultNames}
+            existingNames={existingSecretNames}
           />
         )}
-        {step === 'vaultSettings' && (
-          <StepVaultSettings
+        {step === 'secretSettings' && (
+          <StepSecretSettings
             settings={settings}
             node={nodeCheck}
             onChangeProtocolTimeoutSecs={n => setEdits(e => ({ ...e, protocolTimeoutSecs: n }))}
             onChangePrePairedCount={n => setEdits(e => ({ ...e, prePairedCount: n }))}
           />
         )}
-        {step === 'vaultSettings' && probe.status === 'done' && defaultThresholdError && (
+        {step === 'secretSettings' && probe.status === 'done' && defaultThresholdError && (
           <p className="wizard-field-error" role="alert">
             {invalidThresholdMessage(defaults.minParticipants, defaultThresholdError)}
           </p>

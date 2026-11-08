@@ -14,7 +14,7 @@
 //! - `[server]` is how this node runs — addresses, ports, storage. Enforced.
 //! - `[defaults]` is mostly the setup wizard's starting values, served from
 //!   `GET /api/v1/config`. Those are defaults only: protocol settings travel on each
-//!   provisioning request, so the values a vault actually runs with are
+//!   provisioning request, so the values a secret actually runs with are
 //!   whatever the front end sent. Three keys are the exception and are
 //!   enforced by this process — `grpc_enabled` and `grpc_port` decide whether
 //!   and where the gRPC listener runs, and `grpc_relay_enabled` decides whether
@@ -33,13 +33,14 @@ use figment::{
     value::{Dict, Map, Value},
     Figment, Metadata, Profile, Provider,
 };
+use serde::de::IgnoredAny;
 use serde::Deserialize;
 
 // The configuration's data types live in `models` so services can read them
 // without depending on this loader.
 use crate::models::{
-    AuthenticationMethod, ConfigOrigin, ConfigSource, DatabaseUrl, Defaults, LoadedConfig,
-    RelayAllowlist, ServerSettings, Settings, UnpairAck, DEFAULT_DATABASE_URL,
+    ConfigOrigin, ConfigSource, DatabaseUrl, Defaults, LoadedConfig, RelayAllowlist,
+    ServerSettings, Settings, DEFAULT_DATABASE_URL,
 };
 
 /// Where to look for the config file when `DEREC_CONFIG_PATH` is unset.
@@ -102,9 +103,6 @@ const U8: Kind = Kind::Uint {
 const U16: Kind = Kind::Uint {
     max: u16::MAX as u64,
 };
-const U32: Kind = Kind::Uint {
-    max: u32::MAX as u64,
-};
 
 /// One setting: the variable that sets it, where it lives in the file, and the
 /// shape its value takes.
@@ -152,32 +150,6 @@ const ENV_KEYS: &[EnvKey] = &[
         "DEREC_RECOMMENDED_PARTICIPANTS",
         "defaults.recommended_participants",
         U8,
-    ),
-    key(
-        "DEREC_PROTOCOL_TIMEOUT_SECS",
-        "defaults.protocol_timeout_secs",
-        U32,
-    ),
-    key(
-        "DEREC_AUTHENTICATION_METHOD",
-        "defaults.authentication_method",
-        Kind::Text,
-    ),
-    key("DEREC_UNPAIR_ACK", "defaults.unpair_ack", Kind::Text),
-    key(
-        "DEREC_AUTO_ACCEPT_UNPAIR_REQUESTS",
-        "defaults.auto_accept_unpair_requests",
-        Kind::Bool,
-    ),
-    key(
-        "DEREC_AUTO_ACCEPT_STORE_SHARE_REQUESTS",
-        "defaults.auto_accept_store_share_requests",
-        Kind::Bool,
-    ),
-    key(
-        "DEREC_AUTO_ACCEPT_VERIFY_SHARE_REQUESTS",
-        "defaults.auto_accept_verify_share_requests",
-        Kind::Bool,
     ),
     key("DEREC_GRPC_ENABLED", "defaults.grpc_enabled", Kind::Bool),
     key("DEREC_GRPC_PORT", "defaults.grpc_port", U16),
@@ -485,6 +457,7 @@ impl Default for LoadedConfig {
             file_found: false,
             unknown_env: Vec::new(),
             empty_env: Vec::new(),
+            retired_keys: Vec::new(),
         }
     }
 }
@@ -504,16 +477,45 @@ struct RawDefaults {
     pre_paired_count: Option<u8>,
     min_participants: Option<u8>,
     recommended_participants: Option<u8>,
-    protocol_timeout_secs: Option<u32>,
-    authentication_method: Option<AuthenticationMethod>,
-    unpair_ack: Option<UnpairAck>,
-    auto_accept_unpair_requests: Option<bool>,
-    auto_accept_store_share_requests: Option<bool>,
-    auto_accept_verify_share_requests: Option<bool>,
+    // Retired: a secret's protocol settings belong to it in the front end, so
+    // the node no longer holds defaults for them. Read and ignored, so a file
+    // written for an older node still boots; `retired_keys` names them.
+    protocol_timeout_secs: Option<IgnoredAny>,
+    authentication_method: Option<IgnoredAny>,
+    unpair_ack: Option<IgnoredAny>,
+    auto_accept_unpair_requests: Option<IgnoredAny>,
+    auto_accept_store_share_requests: Option<IgnoredAny>,
+    auto_accept_verify_share_requests: Option<IgnoredAny>,
     grpc_enabled: Option<bool>,
     grpc_port: Option<u16>,
     helper_transports: Option<crate::models::TransportBreakdown>,
     grpc_relay_enabled: Option<bool>,
+}
+
+impl RawDefaults {
+    /// The retired `[defaults]` keys this file still sets, as dotted paths.
+    fn retired_keys(&self) -> Vec<&'static str> {
+        [
+            ("defaults.protocol_timeout_secs", self.protocol_timeout_secs.is_some()),
+            ("defaults.authentication_method", self.authentication_method.is_some()),
+            ("defaults.unpair_ack", self.unpair_ack.is_some()),
+            (
+                "defaults.auto_accept_unpair_requests",
+                self.auto_accept_unpair_requests.is_some(),
+            ),
+            (
+                "defaults.auto_accept_store_share_requests",
+                self.auto_accept_store_share_requests.is_some(),
+            ),
+            (
+                "defaults.auto_accept_verify_share_requests",
+                self.auto_accept_verify_share_requests.is_some(),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(path, set)| set.then_some(path))
+        .collect()
+    }
 }
 
 /// Why configuration could not be loaded. Every variant's message names the
@@ -648,22 +650,6 @@ impl Defaults {
             pre_paired_count,
             min_participants,
             recommended_participants,
-            protocol_timeout_secs: raw
-                .protocol_timeout_secs
-                .unwrap_or(base.protocol_timeout_secs),
-            authentication_method: raw
-                .authentication_method
-                .unwrap_or(base.authentication_method),
-            unpair_ack: raw.unpair_ack.unwrap_or(base.unpair_ack),
-            auto_accept_unpair_requests: raw
-                .auto_accept_unpair_requests
-                .unwrap_or(base.auto_accept_unpair_requests),
-            auto_accept_store_share_requests: raw
-                .auto_accept_store_share_requests
-                .unwrap_or(base.auto_accept_store_share_requests),
-            auto_accept_verify_share_requests: raw
-                .auto_accept_verify_share_requests
-                .unwrap_or(base.auto_accept_verify_share_requests),
             grpc_enabled: raw.grpc_enabled.unwrap_or(base.grpc_enabled),
             grpc_port: raw.grpc_port.unwrap_or(base.grpc_port),
             helper_transports: raw
@@ -694,12 +680,6 @@ impl Defaults {
             return Err(Violation::new(
                 "min_participants must be at least 1",
                 &[MIN],
-            ));
-        }
-        if self.protocol_timeout_secs == 0 {
-            return Err(Violation::new(
-                "protocol_timeout_secs must be greater than 0",
-                &["defaults.protocol_timeout_secs"],
             ));
         }
         if self.min_participants > self.participant_count {
@@ -993,6 +973,7 @@ impl Settings {
                 .collect(),
         })?;
 
+        let retired_keys = raw.defaults.retired_keys();
         let defaults = Defaults::resolve(raw.defaults);
         let settings = Settings {
             server: ServerSettings::resolve(raw.server, defaults.grpc_port),
@@ -1035,6 +1016,7 @@ impl Settings {
             file_found,
             unknown_env: env.unknown,
             empty_env: env.empty,
+            retired_keys,
         })
     }
 
@@ -1131,6 +1113,14 @@ pub fn report(loaded: &LoadedConfig, path: &Path) -> String {
     }
     for name in &loaded.empty_env {
         let _ = writeln!(out, "  env    {name} is set but empty; ignored");
+    }
+    for path in &loaded.retired_keys {
+        let _ = writeln!(
+            out,
+            "  file   {} is no longer a node setting (protocol settings belong to each \
+             secret in the app); ignored",
+            leaf_of(path)
+        );
     }
 
     let values = values_by_path(&loaded.settings);
@@ -1365,16 +1355,42 @@ mod tests {
     #[test]
     fn a_partial_file_overrides_only_what_it_names() {
         // The point of `#[serde(default)]` per field: a developer who only cares
-        // about the timeout should not have to restate the other seven values,
-        // and doing so must not reset them.
-        let parsed = parse("protocol_timeout_secs = 45").unwrap();
+        // about the gRPC port should not have to restate the other values, and
+        // doing so must not reset them.
+        let parsed = parse("grpc_port = 60051").unwrap();
 
-        assert_eq!(parsed.protocol_timeout_secs, 45);
+        assert_eq!(parsed.grpc_port, 60051);
         assert_eq!(
             parsed.participant_count,
             Defaults::default().participant_count
         );
-        assert_eq!(parsed.unpair_ack, Defaults::default().unpair_ack);
+        assert_eq!(parsed.grpc_enabled, Defaults::default().grpc_enabled);
+    }
+
+    #[test]
+    fn retired_protocol_keys_are_ignored_and_named() {
+        // A file written for a node that still held protocol defaults must
+        // keep booting: they now belong to each secret in the front end.
+        let loaded = settings_from(
+            "[defaults]\nprotocol_timeout_secs = 45\nunpair_ack = \"required\"\n\
+             auto_accept_store_share_requests = true\n",
+            &[],
+        );
+
+        assert_eq!(loaded.settings.defaults, Defaults::default());
+        assert_eq!(
+            loaded.retired_keys,
+            vec![
+                "defaults.protocol_timeout_secs",
+                "defaults.unpair_ack",
+                "defaults.auto_accept_store_share_requests",
+            ]
+        );
+        let banner = report(&loaded, Path::new("test.toml"));
+        assert!(
+            banner.contains("protocol_timeout_secs is no longer a node setting"),
+            "{banner}"
+        );
     }
 
     #[test]
@@ -1385,12 +1401,6 @@ mod tests {
             pre_paired_count = 4
             min_participants = 2
             recommended_participants = 6
-            protocol_timeout_secs = 120
-            authentication_method = "user"
-            unpair_ack = "not_required"
-            auto_accept_unpair_requests = false
-            auto_accept_store_share_requests = true
-            auto_accept_verify_share_requests = true
             grpc_enabled = true
             grpc_port = 60051
             helper_transports = { http = 5, grpc = 4, both = 0 }
@@ -1406,12 +1416,6 @@ mod tests {
                 pre_paired_count: 4,
                 min_participants: 2,
                 recommended_participants: 6,
-                protocol_timeout_secs: 120,
-                authentication_method: AuthenticationMethod::User,
-                unpair_ack: UnpairAck::NotRequired,
-                auto_accept_unpair_requests: false,
-                auto_accept_store_share_requests: true,
-                auto_accept_verify_share_requests: true,
                 grpc_enabled: true,
                 grpc_port: 60051,
                 helper_transports: crate::models::TransportBreakdown {
@@ -1501,12 +1505,8 @@ mod tests {
     }
 
     #[test]
-    fn zero_valued_counts_and_timeouts_are_rejected() {
-        for contents in [
-            "participant_count = 0",
-            "min_participants = 0",
-            "protocol_timeout_secs = 0",
-        ] {
+    fn zero_valued_counts_are_rejected() {
+        for contents in ["participant_count = 0", "min_participants = 0"] {
             assert!(
                 matches!(parse(contents).unwrap_err(), ConfigError::Invalid { .. }),
                 "expected rejection for: {contents}"
@@ -1644,18 +1644,18 @@ mod tests {
     #[test]
     fn env_beats_the_file() {
         let loaded = settings_from(
-            "[defaults]\nprotocol_timeout_secs = 45\n",
-            &[("DEREC_PROTOCOL_TIMEOUT_SECS", "99")],
+            "[defaults]\ngrpc_port = 6045\n",
+            &[("DEREC_GRPC_PORT", "6099")],
         );
 
-        assert_eq!(loaded.settings.defaults.protocol_timeout_secs, 99);
+        assert_eq!(loaded.settings.defaults.grpc_port, 6099);
     }
 
     #[test]
     fn the_file_is_used_where_the_env_is_silent() {
-        let loaded = settings_from("[defaults]\nprotocol_timeout_secs = 45\n", &[]);
+        let loaded = settings_from("[defaults]\ngrpc_port = 6045\n", &[]);
 
-        assert_eq!(loaded.settings.defaults.protocol_timeout_secs, 45);
+        assert_eq!(loaded.settings.defaults.grpc_port, 6045);
     }
 
     #[test]
@@ -1695,8 +1695,8 @@ mod tests {
         let loaded = settings_from("", &[]);
 
         assert_eq!(
-            loaded.settings.defaults.protocol_timeout_secs,
-            Defaults::default().protocol_timeout_secs
+            loaded.settings.defaults.grpc_port,
+            Defaults::default().grpc_port
         );
         assert_eq!(loaded.settings.server.port, 5000);
         assert_eq!(loaded.settings.server.base_url, "http://localhost");
@@ -1973,7 +1973,6 @@ mod tests {
             &[
                 ("DEREC_GRPC_ENABLED", "false"),
                 ("DEREC_GRPC_PORT", "60051"),
-                ("DEREC_AUTHENTICATION_METHOD", "user"),
                 ("DEREC_PARTICIPANT_COUNT", "2"),
                 ("DEREC_HELPER_TRANSPORTS_HTTP", "2"),
             ],
@@ -1981,10 +1980,7 @@ mod tests {
 
         assert!(!loaded.settings.defaults.grpc_enabled);
         assert_eq!(loaded.settings.defaults.grpc_port, 60051);
-        assert_eq!(
-            loaded.settings.defaults.authentication_method,
-            AuthenticationMethod::User
-        );
+        assert_eq!(loaded.settings.defaults.participant_count, 2);
     }
 
     #[test]
@@ -2017,7 +2013,6 @@ mod tests {
                 ("DEREC_PORT", " 6000 "),
                 ("DEREC_GRPC_ENABLED", "FALSE"),
                 ("DEREC_GRPC_RELAY_ENABLED", "No"),
-                ("DEREC_AUTO_ACCEPT_STORE_SHARE_REQUESTS", "1"),
                 ("DEREC_BASE_URL", " http://10.0.0.5 "),
             ],
         );
@@ -2025,7 +2020,6 @@ mod tests {
         assert_eq!(loaded.settings.server.port, 6000);
         assert!(!loaded.settings.defaults.grpc_enabled);
         assert!(!loaded.settings.defaults.grpc_relay_enabled);
-        assert!(loaded.settings.defaults.auto_accept_store_share_requests);
         assert_eq!(loaded.settings.server.base_url, "http://10.0.0.5");
     }
 
@@ -2048,15 +2042,6 @@ mod tests {
                 "{variable}={value}: {message}"
             );
         }
-    }
-
-    #[test]
-    fn an_unknown_enum_value_from_the_environment_names_the_variable() {
-        let message = error_from("", &[("DEREC_UNPAIR_ACK", "sometimes")]);
-
-        assert!(message.contains("env DEREC_UNPAIR_ACK"), "{message}");
-        assert!(message.contains("unpair_ack"), "{message}");
-        assert!(!message.contains("default."), "{message}");
     }
 
     #[test]
@@ -2083,10 +2068,10 @@ mod tests {
     fn a_misspelled_file_key_is_rejected_rather_than_ignored() {
         // `deny_unknown_fields` exists so a typo fails loudly. Silently ignoring
         // it would leave the developer staring at a value they thought they set.
-        let message = error_from("[defaults]\nprotocol_timeout_sec = 45\n", &[]);
+        let message = error_from("[defaults]\ngrpc_prot = 6045\n", &[]);
 
         assert!(
-            message.contains("protocol_timeout_sec"),
+            message.contains("grpc_prot"),
             "the error must name the offending key, got: {message}"
         );
         assert!(message.contains("file test.toml"), "{message}");
@@ -2155,7 +2140,7 @@ mod tests {
     #[test]
     fn origins_report_where_each_value_actually_came_from() {
         let loaded = settings_from(
-            "[defaults]\nunpair_ack = \"required\"\n",
+            "[defaults]\ngrpc_port = 6045\n",
             &[
                 ("DEREC_PARTICIPANT_COUNT", "3"),
                 ("DEREC_HELPER_TRANSPORTS_HTTP", "3"),
@@ -2176,23 +2161,20 @@ mod tests {
             origin("defaults.participant_count"),
             ConfigSource::Env("DEREC_PARTICIPANT_COUNT")
         );
-        assert_eq!(origin("defaults.unpair_ack"), ConfigSource::File);
-        assert_eq!(
-            origin("defaults.protocol_timeout_secs"),
-            ConfigSource::Default
-        );
+        assert_eq!(origin("defaults.grpc_port"), ConfigSource::File);
+        assert_eq!(origin("defaults.pre_paired_count"), ConfigSource::Default);
         assert_eq!(origin("server.port"), ConfigSource::Default);
     }
 
     #[test]
     fn a_file_value_equal_to_the_default_still_reports_as_file() {
         // The developer editing that line needs to see it took effect.
-        let loaded = settings_from("[defaults]\nprotocol_timeout_secs = 300\n", &[]);
+        let loaded = settings_from("[defaults]\ngrpc_port = 50051\n", &[]);
 
         let origin = loaded
             .origins
             .iter()
-            .find(|o| o.path == "defaults.protocol_timeout_secs")
+            .find(|o| o.path == "defaults.grpc_port")
             .expect("origin recorded");
 
         assert_eq!(origin.source, ConfigSource::File);
@@ -2275,7 +2257,7 @@ mod tests {
     #[test]
     fn the_banner_lists_every_setting_with_its_origin() {
         let loaded = settings_from(
-            "[defaults]\nunpair_ack = \"not_required\"\n",
+            "[defaults]\ngrpc_relay_enabled = false\n",
             &[
                 ("DEREC_PARTICIPANT_COUNT", "3"),
                 ("DEREC_HELPER_TRANSPORTS_HTTP", "3"),
@@ -2291,12 +2273,12 @@ mod tests {
         );
         // A file value reports the file.
         assert!(
-            banner.contains("unpair_ack") && banner.contains("not_required"),
+            banner.contains("grpc_relay_enabled") && banner.contains("false"),
             "{banner}"
         );
         // An untouched value is still listed, marked default — that is the
         // whole diagnostic: "I set it and nothing happened" looks like this.
-        assert!(banner.contains("protocol_timeout_secs"), "{banner}");
+        assert!(banner.contains("pre_paired_count"), "{banner}");
         assert!(banner.contains("default"), "{banner}");
     }
 

@@ -42,7 +42,7 @@ export function PreviousVersionsTable({
           <thead>
             <tr>
               <th scope="col">Version</th>
-              <th scope="col">Secrets</th>
+              <th scope="col">Items</th>
               <th scope="col">Threshold</th>
               <th scope="col">Helpers</th>
               <th scope="col">Recoverable</th>
@@ -98,16 +98,16 @@ function PreviousVersionRow({
   const confirmed = participants.filter(p => version.participantIds.includes(p.id))
   const verifiedCount = confirmed.filter(p => version.verifiedParticipantIds.includes(p.id)).length
   const failed = version.failedParticipantIds ?? []
-  const secretNames = version.secrets.map(s => s.name).join(', ')
+  const itemNames = version.items.map(s => s.name).join(', ')
 
   return (
     <tr className="versions-table__row">
       <td>
         <span className="version-tag">v{version.version}</span>
       </td>
-      <td className="versions-table__secrets" title={secretNames}>
-        <span className="versions-table__count">{version.secrets.length}</span>
-        <span className="versions-table__names">{secretNames}</span>
+      <td className="versions-table__secrets" title={itemNames}>
+        <span className="versions-table__count">{version.items.length}</span>
+        <span className="versions-table__names">{itemNames}</span>
       </td>
       <td>{version.threshold ?? '—'}</td>
       <td title={helperDetail(version, confirmed, participants)}>
@@ -146,7 +146,7 @@ function PreviousVersionRow({
         )}
         <button
           type="button"
-          className="secondary small remove-secret-btn versions-table__remove"
+          className="secondary small remove-item-btn versions-table__remove"
           onClick={() => onRemove(version)}
           title={`Remove v${version.version} from this device`}
           aria-label={`Remove v${version.version}`}

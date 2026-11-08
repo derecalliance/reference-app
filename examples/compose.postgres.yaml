@@ -43,7 +43,7 @@ services:
     # checkout, use the repo-root compose.postgres.yaml with -f compose.build.yaml.
     # DEREC_IMAGE points it at another registry — e.g. a local one used to try
     # an image before publishing it (`scripts/publish-image.sh --local`).
-    image: ${DEREC_IMAGE:-ghcr.io/derecalliance/reference-app}:0.0.9
+    image: ${DEREC_IMAGE:-ghcr.io/derecalliance/reference-app}:0.0.10
 
     env_file:
       - path: ../.env

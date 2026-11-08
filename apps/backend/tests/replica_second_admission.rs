@@ -307,14 +307,11 @@ async fn admit(state: &Node, source: &mut Source, helper: &Addr<ProvisionedActor
         .get_fingerprint(channel)
         .await
         .expect("a completed pairing has a fingerprint");
-    assert!(
-        source
-            .protocol
-            .verify_fingerprint(channel, &fingerprint)
-            .await
-            .expect("the source confirms its side"),
-        "the source's own code matches"
-    );
+    source
+        .protocol
+        .verify_fingerprint(channel, &fingerprint)
+        .await
+        .expect("the source's own code matches");
 
     Member {
         replica_id,

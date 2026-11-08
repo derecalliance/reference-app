@@ -12,7 +12,7 @@ import {
 /**
  * What the responder is actually told, and what it takes to say yes.
  *
- * The destination side of a replica pairing is agreeing to have its whole vault
+ * The destination side of a replica pairing is agreeing to have its whole secret
  * replaced. If that warning renders on the wrong side — or the accept button is
  * the one holding focus — the consent this dialog exists to collect is not
  * consent. Asserted against the rendered DOM rather than the props, because the
@@ -114,7 +114,7 @@ describe('what the dialog says', () => {
 describe('the erase warning', () => {
   it('warns prominently when this device will be the ReplicaDestination', () => {
     render({ localRole: 'replica_destination', peerRole: 'replica_source' })
-    expect(text()).toContain('Accepting replaces this device’s vault')
+    expect(text()).toContain('Accepting replaces this device’s secret')
     expect(text()).toContain('deleted and replaced')
     // A MUI Alert, so the warning carries an icon and a worded title rather
     // than resting on colour alone.
@@ -123,7 +123,7 @@ describe('the erase warning', () => {
 
   it('does not warn when this device will be the ReplicaSource', () => {
     render({ localRole: 'replica_source', peerRole: 'replica_destination' })
-    expect(text()).not.toContain('Accepting replaces this device’s vault')
+    expect(text()).not.toContain('Accepting replaces this device’s secret')
     expect(text()).not.toContain('deleted and replaced')
     expect(document.querySelector('.MuiAlert-root')).toBeNull()
   })

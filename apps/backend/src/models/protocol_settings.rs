@@ -1,39 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
-//! Protocol settings an actor is provisioned with, and the app-level
-//! authentication policy carried beside them.
+//! Protocol settings an actor is provisioned with, and the values it gets when
+//! its provisioning request names none.
 
 use serde::{Deserialize, Serialize};
-
-/// How the app decides that two pairing channels belong to the same user.
-///
-/// This is an **app-level** concern (the DeRec protocol is identity-blind). The
-/// backend never acts on it — it only carries it as an operator-supplied
-/// default for the front end.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AuthenticationMethod {
-    /// Helper manually links channels (the in-modal "accept + link" flow).
-    #[default]
-    User,
-    /// Reserved for a future automatic-linking mode; not yet implemented.
-    Application,
-}
 
 /// Protocol-level acknowledgement policy for the unpair flow. Mirrors
 /// `derec_library::protocol::UnpairAck`; supplied per provisioning request by
 /// the node that provisions the actor.
 ///
-/// - `Required` (default): the initiator keeps local state until the peer
-///   ACKs or the timeout elapses.
-/// - `NotRequired`: fire-and-forget — state drops immediately on
+/// - `Required`: the initiator keeps local state until the peer ACKs or the
+///   timeout elapses.
+/// - `NotRequired` (default): fire-and-forget — state drops immediately on
 ///   `start(Unpair)`.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum UnpairAck {
-    #[default]
     Required,
+    #[default]
     NotRequired,
 }
 
@@ -53,11 +38,19 @@ impl UnpairAck {
 /// still be accepted — so anything beyond a day is a typo, not a setting.
 pub const MAX_PROTOCOL_TIMEOUT_SECS: u32 = 86_400;
 
+/// The protocol timeout an actor gets when its provisioning request names
+/// none, in seconds — the front end's default for a secret too.
+///
+/// Fixed rather than configured: a protocol setting belongs to each secret in
+/// the front end, which starts from the same values, so the node holds no
+/// policy of its own about it.
+pub const DEFAULT_PROTOCOL_TIMEOUT_SECS: u32 = 30;
+
 /// Protocol settings a provisioning request carries for the actor it mints.
 ///
 /// The front end owns configuration, so these travel with each request rather
 /// than being read from server state. Both are optional: a caller that omits
-/// them gets the operator-supplied defaults.
+/// them gets [`DEFAULT_PROTOCOL_TIMEOUT_SECS`] and [`UnpairAck::default`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ProtocolSettings {
     pub protocol_timeout_secs: Option<u32>,
@@ -76,8 +69,7 @@ impl ProtocolSettings {
     ///
     /// Zero is the case that matters: as a replay window it refuses every
     /// inbound message, so the actor pairs with nothing and says nothing about
-    /// why. Only the request's own values are checked — the operator defaults
-    /// they fall back to are validated when the configuration is loaded.
+    /// why.
     pub fn validate(&self) -> Result<(), SettingsError> {
         match self.protocol_timeout_secs {
             Some(secs) if secs == 0 || secs > MAX_PROTOCOL_TIMEOUT_SECS => {
@@ -87,15 +79,12 @@ impl ProtocolSettings {
         }
     }
 
-    /// Fill the unset fields from the operator-supplied defaults.
-    pub fn resolve(
-        self,
-        default_timeout_secs: u32,
-        default_unpair_ack: UnpairAck,
-    ) -> (u32, UnpairAck) {
+    /// Fill the unset fields from the defaults.
+    pub fn resolve(self) -> (u32, UnpairAck) {
         (
-            self.protocol_timeout_secs.unwrap_or(default_timeout_secs),
-            self.unpair_ack.unwrap_or(default_unpair_ack),
+            self.protocol_timeout_secs
+                .unwrap_or(DEFAULT_PROTOCOL_TIMEOUT_SECS),
+            self.unpair_ack.unwrap_or_default(),
         )
     }
 }
@@ -126,9 +115,9 @@ mod tests {
 
     #[test]
     fn omitted_settings_resolve_to_the_defaults() {
-        let resolved = ProtocolSettings::default().resolve(300, UnpairAck::NotRequired);
+        let resolved = ProtocolSettings::default().resolve();
 
-        assert_eq!(resolved, (300, UnpairAck::NotRequired));
+        assert_eq!(resolved, (30, UnpairAck::NotRequired));
     }
 
     #[test]
@@ -138,10 +127,7 @@ mod tests {
             unpair_ack: Some(UnpairAck::Required),
         };
 
-        assert_eq!(
-            settings.resolve(300, UnpairAck::NotRequired),
-            (60, UnpairAck::Required)
-        );
+        assert_eq!(settings.resolve(), (60, UnpairAck::Required));
     }
 
     #[test]

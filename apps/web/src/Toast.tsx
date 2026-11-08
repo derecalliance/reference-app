@@ -19,8 +19,8 @@ interface VisibleToast extends Toast {
  * Identical messages are de-duplicated (count badge) so repeated failures
  * (e.g. a flapping mailbox poll) don't spam the UI.
  *
- * A toast with an origin is a banner for a vault not on screen: it names the
- * vault and is a button that opens it.
+ * A toast with an origin is a banner for a secret not on screen: it names the
+ * secret and is a button that opens it.
  */
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<VisibleToast[]>([])
@@ -50,7 +50,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           t =>
             t.message === toast.message &&
             t.level === toast.level &&
-            t.origin?.vaultId === toast.origin?.vaultId,
+            t.origin?.localSecretId === toast.origin?.localSecretId,
         )
         if (dupe) {
           if (!dupe.sticky) arm(dupe.id)
@@ -72,7 +72,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
   function open(toast: VisibleToast) {
     if (!toast.origin) return
-    navigate({ kind: 'vault', id: toast.origin.vaultId })
+    navigate({ kind: 'secret', id: toast.origin.localSecretId })
     dismiss(toast.id)
   }
 
@@ -108,7 +108,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               <button
                 type="button"
                 className="toast-message toast-link"
-                title={`Open ${t.origin.vaultName}`}
+                title={`Open ${t.origin.secretName}`}
                 onClick={() => open(t)}
               >
                 <ToastText toast={t} />
@@ -136,7 +136,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 function ToastText({ toast }: { toast: VisibleToast }) {
   return (
     <>
-      {toast.origin && <strong>{toast.origin.vaultName}: </strong>}
+      {toast.origin && <strong>{toast.origin.secretName}: </strong>}
       {toast.message}
       {toast.count > 1 && <span className="toast-count"> ×{toast.count}</span>}
     </>

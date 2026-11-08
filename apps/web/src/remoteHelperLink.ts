@@ -52,7 +52,7 @@ export function isThisNode(baseUrl: string, apiBase: string = API_BASE): boolean
 /**
  * Whether a channel row should offer linking on the helper's own node.
  *
- * Only where this vault is the owner — a helper links channels of owners it
+ * Only where this secret is the owner — a helper links channels of owners it
  * helps — and only for a peer this node's side panel cannot already link: one
  * whose mailbox is on another node, or whose endpoint is not known as a
  * mailbox at all (gRPC-only), where the URL can be typed in. A browser helper

@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import type { BagVersion, PendingProtectRound, SecretBag } from '../types'
+import type { BagVersion, PendingProtectRound, ItemBag } from '../types'
 import { describeVerifyFailure, verifyBlockedReason, verifyProgress } from './verification'
 
 const participants = ['1', '2', '3', '4'].map(n => ({ id: `h${n}`, name: `Helper ${n}`, channelId: `90${n}` }))
@@ -14,7 +14,7 @@ function version(overrides: Partial<BagVersion> = {}): BagVersion {
     participantIds: [],
     verifiedParticipantIds: [],
     failedParticipantIds: [],
-    secrets: [],
+    items: [],
     rawBytes: '',
     helpers: [],
     ...overrides,
@@ -103,7 +103,7 @@ describe('verifyProgress with invalid proofs (SDK 0.0.9 ShareVerifyInvalid)', ()
 })
 
 describe('verifyBlockedReason', () => {
-  const round = { version: 5, protocolSecretId: '42', bag: {} as SecretBag, channelIds: [] } satisfies PendingProtectRound
+  const round = { version: 5, protocolSecretId: '42', bag: {} as ItemBag, channelIds: [] } satisfies PendingProtectRound
 
   it('is available with no round open', () => {
     expect(verifyBlockedReason(version(), [])).toBeNull()

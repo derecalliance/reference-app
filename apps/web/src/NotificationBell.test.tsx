@@ -6,17 +6,17 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { NotificationBell } from './NotificationBell'
-import type { VaultNotification } from './types'
-import type { VaultEntry } from './vault/manager'
+import type { SecretNotification } from './types'
+import type { SecretEntry } from './secret/manager'
 
-function note(id: string, severity: VaultNotification['severity'], read = false, at = 1): VaultNotification {
+function note(id: string, severity: SecretNotification['severity'], read = false, at = 1): SecretNotification {
   return { id, at, severity, title: `Title ${id}`, read }
 }
 
-function entry(id: string, notifications: VaultNotification[]): VaultEntry {
+function entry(id: string, notifications: SecretNotification[]): SecretEntry {
   return {
     id,
-    name: `Vault ${id}`,
+    name: `Secret ${id}`,
     state: 'running',
     failure: null,
     pairedCount: 0,
@@ -42,15 +42,15 @@ afterEach(() => {
   host.remove()
 })
 
-function render(entries: VaultEntry[], onOpen = vi.fn()) {
-  act(() => root.render(<NotificationBell entries={entries} onOpen={onOpen} currentVaultId="a" />))
+function render(entries: SecretEntry[], onOpen = vi.fn()) {
+  act(() => root.render(<NotificationBell entries={entries} onOpen={onOpen} currentLocalSecretId="a" />))
   return onOpen
 }
 
 const bell = () => host.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')!
 
 describe('NotificationBell', () => {
-  it('counts unread across vaults and calls out critical ones', () => {
+  it('counts unread across secrets and calls out critical ones', () => {
     render([entry('a', [note('1', 'critical'), note('2', 'info', true)]), entry('b', [note('3', 'info')])])
 
     expect(bell().getAttribute('aria-label')).toBe('Notifications — 2 unread, 1 critical')
@@ -69,13 +69,13 @@ describe('NotificationBell', () => {
     act(() => bell().click())
     const items = Array.from(document.querySelectorAll('[role="menuitem"]'))
     expect(items[0].textContent).toContain('Title new')
-    expect(items[0].textContent).toContain('Vault b')
+    expect(items[0].textContent).toContain('Secret b')
 
     act(() => (items[0] as HTMLElement).click())
     expect(onOpen).toHaveBeenCalledWith('b', 'new')
   })
 
-  it('opens the current vault’s tab from "View all"', () => {
+  it('opens the current secret’s tab from "View all"', () => {
     const onOpen = render([entry('a', [note('1', 'info')])])
 
     act(() => bell().click())

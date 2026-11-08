@@ -151,6 +151,8 @@ export interface ContactMessageDto {
   mlkem_encapsulation_key?: string
   ecies_public_key?: string
   contact_binding_hash?: string
+  /** The creator's commitment to its fingerprint nonce (SDK 0.0.10); inline-keys contacts only. */
+  fingerprint_commitment?: string
 }
 
 // ── Server-supplied defaults ─────────────────────────────────────────────────
@@ -362,7 +364,7 @@ export async function apiCreateActorContact(
 }
 
 /**
- * Mint a contact from a helper's instance for *this owner's* vault, so pairing
+ * Mint a contact from a helper's instance for *this owner's* secret, so pairing
  * against it produces a replica rather than a helper relationship.
  *
  * A replica is a pairing mode, not a kind of actor. The counterparty is an
@@ -526,7 +528,7 @@ export type RenameOwnerResult =
   | { kind: 'renamed'; name: string }
   /**
    * The node predates `PATCH /api/v1/owners/{id}` (404 / 405). Not a failure of the
-   * rename — the vault's own name changed and peers were told — only of keeping
+   * rename — the secret's own name changed and peers were told — only of keeping
    * the node's roster label in step.
    */
   | { kind: 'unsupported' }
@@ -534,10 +536,10 @@ export type RenameOwnerResult =
 /**
  * PATCH /owners/{id} — change the name the node lists this owner under.
  *
- * A browser vault's name lives in two places: its own record and protocol
+ * A browser secret's name lives in two places: its own record and protocol
  * instance, which `updateIdentity` changes and announces, and the node's
  * roster, which every other browser context reads names from. Without this the
- * roster kept the name the vault registered with forever.
+ * roster kept the name the secret registered with forever.
  */
 export async function apiRenameOwner(ownerId: string, name: string): Promise<RenameOwnerResult> {
   const res = await request(`/owners/${encodeURIComponent(ownerId)}`, {
@@ -547,7 +549,7 @@ export async function apiRenameOwner(ownerId: string, name: string): Promise<Ren
   })
   if (res.status === 404 || res.status === 405) return { kind: 'unsupported' }
   if (!res.ok) {
-    throw await responseError(res, 'Could not rename the vault on the node')
+    throw await responseError(res, 'Could not rename the secret on the node')
   }
   const body = await readResult<{ name?: unknown }>(res)
   return { kind: 'renamed', name: typeof body.name === 'string' ? body.name : name }

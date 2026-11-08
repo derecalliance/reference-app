@@ -33,8 +33,8 @@ describe('replicaIdentity', () => {
     expect(getOrCreateReplicaId('owner-a')).not.toBe(getOrCreateReplicaId('owner-b'))
   })
 
-  it('survives a namespace wipe, because identity outlives the vault', () => {
-    // Adoption clears `derec:owner:{id}:` to take on another device's vault.
+  it('survives a namespace wipe, because identity outlives the secret', () => {
+    // Adoption clears `derec:owner:{id}:` to take on another device's secret.
     // The identity key sits outside that partition deliberately.
     const before = getOrCreateReplicaId(OWNER)
     localStorage.setItem(`derec:owner:${OWNER}:123:contact-index`, '[]')

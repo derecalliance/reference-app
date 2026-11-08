@@ -3,9 +3,8 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { vault } from '../vault/testVault'
+import { secret } from '../secret/testSecret'
 import {
-  DEFAULT_RETAINED_VERSIONS,
   defaultWeightFor,
   publishPolicyProblems,
   resolvePublishPolicy,
@@ -14,19 +13,33 @@ import {
 } from './publishPolicy'
 
 describe('resolvePublishPolicy', () => {
-  it('reads a vault saved before the policy existed as today\'s behaviour', () => {
-    const policy = resolvePublishPolicy(vault({ minParticipants: 3 }))
+  it('reads a secret saved before the policy existed as today\'s behaviour', () => {
+    const policy = resolvePublishPolicy(secret({ minParticipants: 3 }))
 
     expect(policy).toEqual({
       defaultThreshold: 3,
       defaultWeights: {},
-      helperRetention: { mode: 'lastN', n: DEFAULT_RETAINED_VERSIONS },
+      helperRetention: { mode: 'latestCommitted' },
       proofCleanup: { mode: 'manual' },
     })
-    expect(DEFAULT_RETAINED_VERSIONS).toBe(3)
   })
 
-  it('keeps what the vault saved', () => {
+  it('reads "keep the last N", saved before SDK 0.0.10, as "keep the newest committed version"', () => {
+    const saved = {
+      defaultThreshold: 4,
+      defaultWeights: {},
+      helperRetention: { mode: 'lastN', n: 3 },
+      proofCleanup: { mode: 'manual' },
+    }
+
+    // A record written by an earlier build: its shape is no longer a valid type.
+    const policy = resolvePublishPolicy(secret({ publishPolicy: saved as unknown as PublishPolicy }))
+
+    expect(policy.helperRetention).toEqual({ mode: 'latestCommitted' })
+    expect(policy.defaultThreshold).toBe(4)
+  })
+
+  it('keeps what the secret saved', () => {
     const saved: PublishPolicy = {
       defaultThreshold: 4,
       defaultWeights: { '901': 2 },
@@ -34,13 +47,13 @@ describe('resolvePublishPolicy', () => {
       proofCleanup: { mode: 'auto', criterion: 'lastN', n: 2 },
     }
 
-    expect(resolvePublishPolicy(vault({ publishPolicy: saved }))).toEqual(saved)
+    expect(resolvePublishPolicy(secret({ publishPolicy: saved }))).toEqual(saved)
   })
 })
 
 describe('defaultWeightFor', () => {
   it('is 1 for a helper nobody weighted', () => {
-    expect(defaultWeightFor(resolvePublishPolicy(vault()), '901')).toBe(1)
+    expect(defaultWeightFor(resolvePublishPolicy(secret()), '901')).toBe(1)
   })
 })
 
@@ -48,7 +61,7 @@ describe('publishPolicyProblems', () => {
   const ok: PublishPolicy = {
     defaultThreshold: 2,
     defaultWeights: {},
-    helperRetention: { mode: 'lastN', n: 3 },
+    helperRetention: { mode: 'latestCommitted' },
     proofCleanup: { mode: 'manual' },
   }
 
@@ -56,12 +69,7 @@ describe('publishPolicyProblems', () => {
     expect(publishPolicyProblems(ok)).toEqual({})
   })
 
-  it('refuses a threshold one helper could meet alone', () => {
-    expect(publishPolicyProblems({ ...ok, defaultThreshold: 1 }).defaultThreshold).toMatch(/at least 2/)
-  })
-
-  it('refuses keeping fewer than one version', () => {
-    expect(publishPolicyProblems({ ...ok, helperRetention: { mode: 'lastN', n: 0 } }).retentionN).toMatch(/at least 1/)
+  it('refuses keeping fewer than one verification copy', () => {
     expect(
       publishPolicyProblems({ ...ok, proofCleanup: { mode: 'auto', criterion: 'lastN', n: 0 } }).cleanupN,
     ).toMatch(/at least 1/)
@@ -75,7 +83,7 @@ describe('withGroupThreshold (review I3)', () => {
     expect(withGroupThreshold(legacy, 3)?.defaultThreshold).toBe(3)
   })
 
-  it('keeps the vault\'s own policy when the roster carries no threshold', () => {
+  it('keeps the secret\'s own policy when the roster carries no threshold', () => {
     expect(withGroupThreshold(legacy, undefined)).toBeUndefined()
   })
 })

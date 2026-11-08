@@ -67,6 +67,9 @@ pub enum ServiceError {
     /// A display name another participant already holds.
     #[error("{0}")]
     NameTaken(String),
+    /// The participant is still paired with an owner, who must unpair first.
+    #[error("{0}")]
+    ParticipantPaired(String),
 }
 
 impl ServiceError {

@@ -43,6 +43,7 @@ pub struct PeerContact {
     pub mlkem_encapsulation_key: Option<String>,
     pub ecies_public_key: Option<String>,
     pub contact_binding_hash: Option<String>,
+    pub fingerprint_commitment: Option<String>,
 }
 
 /// A contact minted and not yet paired against.

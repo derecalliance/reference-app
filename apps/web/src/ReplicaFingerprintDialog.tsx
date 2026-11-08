@@ -63,7 +63,7 @@ export interface ReplicaFingerprintDialogProps {
   /** Persist a confirmation for one or both sides of this replica. */
   onConfirm: (patch: Partial<ReplicaRecord>) => void
   /**
-   * On a destination: the person declined to adopt the peer's vault, so the
+   * On a destination: the person declined to adopt the peer's secret, so the
    * fingerprint is not confirmed. Recorded on this device only.
    */
   onDeclineAdoption: () => void
@@ -77,7 +77,7 @@ export interface ReplicaFingerprintDialogProps {
 
 /**
  * Which question the dialog is asking. A destination answers two — the codes
- * match, and it adopts the peer's vault — and confirms only after both.
+ * match, and it adopts the peer's secret — and confirms only after both.
  */
 type Stage = 'compare' | 'adopt'
 
@@ -123,7 +123,7 @@ function messageOf(err: unknown, fallback: string): string {
  */
 function afterConfirmText(direction: ReplicaPairingRole, name: string, peerIsHelper: boolean): string {
   if (direction !== 'replica_source') {
-    return `Confirmed on this device. ${name}’s vault is adopted here as soon as it arrives — once ${name} has confirmed on theirs.`
+    return `Confirmed on this device. ${name}’s secret is adopted here as soon as it arrives — once ${name} has confirmed on theirs.`
   }
   return peerIsHelper
     ? `Confirmed on this device. ${name} confirms itself as a helper, so the mirror goes out now — their row shows the version once they acknowledge it.`
@@ -133,9 +133,9 @@ function afterConfirmText(direction: ReplicaPairingRole, name: string, peerIsHel
 /** What confirming this channel unlocks, from this device's side of the mirror. */
 function mirrorDirectionText(direction: ReplicaPairingRole, peerIsHelper: boolean): string {
   if (direction !== 'replica_source') {
-    return 'confirming is also agreeing to adopt the peer’s vault in place of this one, and you are asked about that before anything is confirmed.'
+    return 'confirming is also agreeing to adopt the peer’s secret in place of this one, and you are asked about that before anything is confirmed.'
   }
-  const base = 'this device will not mirror its vault to the replica until you confirm here'
+  const base = 'this device will not mirror its secret to the replica until you confirm here'
   // For a helper peer, what happens on its end is already covered above — it
   // has no screen and nothing to wait on, so there is nothing further to add.
   return peerIsHelper
@@ -176,10 +176,10 @@ export function ReplicaFingerprintDialog({
 }: ReplicaFingerprintDialogProps) {
   const { channelId } = replica
   // On a destination, confirming the fingerprint is the decision to adopt the
-  // source's vault: from SDK 0.0.7 its publishes are installed as they arrive,
+  // source's secret: from SDK 0.0.7 its publishes are installed as they arrive,
   // with no further prompt. So the adoption question comes first, and a "no"
   // is given by never confirming.
-  const adoptsPeerVault = replica.direction === 'replica_destination'
+  const adoptsPeerSecret = replica.direction === 'replica_destination'
   const [stage, setStage] = useState<Stage>('compare')
   // Opened on a channel this device already confirmed — "View fingerprint".
   // Captured once: a confirmation made *in* this dialog lands in `local-only`,
@@ -266,7 +266,7 @@ export function ReplicaFingerprintDialog({
       setAttempt({
         kind: 'error',
         message:
-          'The channel key changed while you were comparing. Close this and confirm again with a freshly derived code.',
+          'The channel key changed while you were comparing, so the library revoked this pending pairing. Pair again.',
       })
       return
     }
@@ -275,7 +275,7 @@ export function ReplicaFingerprintDialog({
     // earned on an earlier attempt.
     // A refusal recorded earlier was a misreading, by the person's own account.
     onConfirm(
-      adoptsPeerVault
+      adoptsPeerSecret
         ? { local: true, refused: false, adoptionConsented: true, adoptionDeclined: false }
         : { local: true, refused: false },
     )
@@ -364,12 +364,12 @@ export function ReplicaFingerprintDialog({
 
           {askingAdoption && (
             <Alert severity="warning" role="alert">
-              <AlertTitle>Confirming adopts {replica.name}’s vault</AlertTitle>
-              Once this device confirms, {replica.name}’s vault is installed here as soon as it
-              arrives, without asking again: every secret, helper channel and share this vault
-              holds on this device is erased and replaced. Other vaults in this browser are not
+              <AlertTitle>Confirming adopts {replica.name}’s secret</AlertTitle>
+              Once this device confirms, {replica.name}’s secret is installed here as soon as it
+              arrives, without asking again: every item, helper channel and share this secret
+              holds on this device is erased and replaced. Other secrets in this browser are not
               affected, and it cannot be undone from this app. If you do not want that, do not
-              adopt — the channel stays unconfirmed and this vault is unchanged.
+              adopt — the channel stays unconfirmed and this secret is unchanged.
             </Alert>
           )}
 
@@ -427,7 +427,7 @@ export function ReplicaFingerprintDialog({
             </Button>
             <Button
               variant="contained"
-              onClick={() => (adoptsPeerVault ? setStage('adopt') : void handleConfirm())}
+              onClick={() => (adoptsPeerSecret ? setStage('adopt') : void handleConfirm())}
               disabled={!canConfirm}
             >
               {verifying ? 'Confirming…' : 'Codes match'}

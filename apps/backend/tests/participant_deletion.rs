@@ -34,12 +34,29 @@ use tower::ServiceExt;
 /// the independent statement of what "everything" means, so a table dropped
 /// from the production list still fails a test.
 fn seed_rows(actor: &str) -> Vec<(&'static str, String)> {
+    // A pairing that never completed: a real record, so the deletion's
+    // still-paired check can read it, and `Pending`, so it does not block.
+    let pending = serde_json::to_string(&derec_library::protocol::ChannelRecord::Helper(
+        derec_library::protocol::HelperChannel {
+            channel_id: derec_library::types::ChannelId(1),
+            transports: vec![derec_proto::TransportProtocol {
+                uri: "http://localhost:5000/derec/owner".to_owned(),
+                ..Default::default()
+            }],
+            communication_info: std::collections::HashMap::new(),
+            status: derec_library::protocol::ChannelStatus::Pending,
+            created_at: 0,
+            peer_role: derec_proto::SenderKind::Owner,
+            weight: 1,
+        },
+    ))
+    .expect("record serializes");
     vec![
         (
             "channels",
             format!(
                 "INSERT INTO channels (actor_id, secret_id, kind, entity_id, channel_id, record) \
-             VALUES ('{actor}', '1', 'helper', 'e1', 'c1', '{{}}')"
+             VALUES ('{actor}', '1', 'helper', 'e1', 'c1', '{pending}')"
             ),
         ),
         (

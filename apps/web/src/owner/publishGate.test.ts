@@ -3,24 +3,46 @@
 
 import { describe, expect, it } from 'vitest'
 
+import type { PairedParticipant } from '../types'
 import { publishReadiness } from './publishGate'
+import type { PublishPolicy } from './publishPolicy'
 
-const one = { weight: 1 }
+function helper(n: number, weight?: number): PairedParticipant {
+  return {
+    id: `h${n}`,
+    name: `Helper ${n}`,
+    channelId: `90${n}`,
+    transport: { protocol: 'https', uri: '' },
+    secretShares: [],
+    connectionStatus: 'paired',
+    peerRole: 'helper',
+    ...(weight !== undefined ? { weight } : {}),
+  }
+}
 
-describe('publishReadiness (review I4)', () => {
-  it('blocks only what no publish could satisfy: fewer than two helpers', () => {
-    expect(publishReadiness([one], 2).blocked).toMatch(/at least 2 paired participants \(currently 1\)/)
-    expect(publishReadiness([], 3).blocked).toMatch(/currently 0/)
+function policy(defaultThreshold: number, defaultWeights: Record<string, number> = {}): PublishPolicy {
+  return { defaultThreshold, defaultWeights, helperRetention: { mode: 'latestCommitted' }, proofCleanup: { mode: 'manual' } }
+}
+
+describe('publishReadiness', () => {
+  it('blocks with fewer than two helpers', () => {
+    expect(publishReadiness([helper(1)], policy(2)).blocked).toMatch(/at least 2 paired participants \(currently 1\)/)
+    expect(publishReadiness([], policy(3)).blocked).toMatch(/currently 0/)
   })
 
-  it('lets two helpers publish under a default threshold they fall short of — the dialog can lower it', () => {
-    const readiness = publishReadiness([one, one], 3)
-
-    expect(readiness.blocked).toBeNull()
-    expect(readiness.shortOfDefault).toMatch(/2 of the 3 subshares/)
+  it('blocks when the helpers fall short of the threshold — the dialogs can no longer lower it', () => {
+    expect(publishReadiness([helper(1), helper(2)], policy(3)).blocked).toMatch(/2 subshares.*below the threshold of 3.*Channels tab/)
   })
 
-  it('says nothing when the defaults already work', () => {
-    expect(publishReadiness([{ weight: 2 }, one], 3)).toEqual({ blocked: null, shortOfDefault: null })
+  it('blocks when a weight reaches the threshold', () => {
+    expect(publishReadiness([helper(1), helper(2)], policy(2, { '901': 2 })).blocked).toMatch(/1 helper weight is not valid.*Channels tab/)
+  })
+
+  it('reads a helper with no weight set from what the library last published', () => {
+    expect(publishReadiness([helper(1, 2), helper(2)], policy(3)).blocked).toBeNull()
+  })
+
+  it('says nothing when the threshold and weights work', () => {
+    expect(publishReadiness([helper(1), helper(2)], policy(3, { '901': 2 }))).toEqual({ blocked: null })
   })
 })

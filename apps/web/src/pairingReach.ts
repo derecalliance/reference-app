@@ -5,7 +5,7 @@ import { errorText } from './errorText'
 import type { Transport } from './types'
 
 /**
- * Whether a browser vault can reach a peer at all, and how to say it when it
+ * Whether a browser secret can reach a peer at all, and how to say it when it
  * cannot.
  *
  * A browser speaks HTTPS only. A peer that advertises nothing but gRPC is

@@ -20,11 +20,11 @@ import { AppMuiTheme } from './AppMuiTheme'
  * Consent, taken up front, for pairing as a replica destination.
  *
  * Picking `replica_destination` is the moment the user commits this device to
- * giving up its own vault, so it is the moment to say so. **Nothing is erased
+ * giving up its own secret, so it is the moment to say so. **Nothing is erased
  * here** — this dialog only decides whether the pairing is dispatched. The
  * fingerprint dialog asks again before this device confirms, because
  * confirming is the decision to adopt (SDK 0.0.7); the wipe follows when the
- * source's vault arrives.
+ * source's secret arrives.
  *
  * Cancel is the default action: it takes focus, carries the filled styling, and
  * is what Escape and a backdrop click resolve to. Cancelling starts no pairing
@@ -60,22 +60,22 @@ export function ReplicaPairingWarningDialog({
         <DialogContent>
           <Stack spacing={2.5} sx={{ pt: 1 }}>
             <Alert severity="warning">
-              <AlertTitle>This device’s vault will be erased</AlertTitle>
-              A replica destination does not keep anything of its own. Every secret,
+              <AlertTitle>This device’s secret will be erased</AlertTitle>
+              A replica destination does not keep anything of its own. Every item,
               helper channel and share stored on this device is deleted and replaced
-              with the source owner’s vault. It cannot be undone from this app.
+              with the source owner’s secret. It cannot be undone from this app.
             </Alert>
 
             <DialogContentText>
               Pick this side only on a device you are willing to give over to the other
-              owner’s vault. If you meant to send this device’s vault somewhere else,
+              owner’s secret. If you meant to send this device’s secret somewhere else,
               cancel and pair as <strong>replica source</strong> instead.
             </DialogContentText>
 
             <Typography variant="body2" color="text.secondary">
               Nothing is erased by continuing. The pairing is set up first; when you
               confirm the fingerprint you are asked once more whether to adopt the other
-              vault, and nothing on this device is replaced unless you agree.
+              secret, and nothing on this device is replaced unless you agree.
             </Typography>
           </Stack>
         </DialogContent>

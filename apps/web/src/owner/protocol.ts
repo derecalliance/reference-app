@@ -11,7 +11,7 @@ import {
   makeStateStore,
   makeTransport,
   makeUserSecretStore,
-  type KeepListSource,
+  type KeepVersionSource,
 } from '../stores'
 
 // ── Protocol instance registry ───────────────────────────────────────────────
@@ -66,7 +66,7 @@ export const PENDING_CHANNEL_TTL_SECS = 3600
 /**
  * `StatusEnum.VERSION_CONFLICT` — two members published the same version with
  * different content. The device must not publish again until the owner has
- * merged the two copies; see `Vault.replicaConflict`. An identical copy is
+ * merged the two copies; see `Secret.replicaConflict`. An identical copy is
  * accepted as a re-send — from SDK 0.0.7 even when the held one records no
  * author — so this only ever means a genuine divergence.
  */
@@ -88,17 +88,16 @@ interface BuildProtocolOptions {
   communicationInfo: Record<string, string>
   threshold: number
   /**
-   * Which versions helpers keep after each round — the owner's `keepList`.
-   * Required, so no instance that can act as an owner is built without a
-   * retention policy: from SDK 0.0.7 an absent list means helpers keep every
-   * version forever. See `vault/keepList.ts`.
+   * Which earlier version helpers keep after each round — the owner's
+   * `keepVersion`. Required, so no instance that can act as an owner is built
+   * without a retention policy. See `secret/keepVersion.ts`.
    */
-  keepList: KeepListSource
+  keepVersion: KeepVersionSource
   timeoutSecs: number
   unpairAck: 'required' | 'not_required'
   replicaId: bigint
   /**
-   * The owner actor this instance acts for — the vault's own id — sent with
+   * The owner actor this instance acts for — the secret's local id — sent with
    * every relayed message so the node can attribute it. Omitted, the relay
    * still works, unattributed.
    */
@@ -108,7 +107,7 @@ interface BuildProtocolOptions {
    * `replyTo = ownTransport`, overriding the channel's stored peer endpoint
    * for that exchange, so answers come back to wherever this instance is now.
    *
-   * On for every vault instance (runtime, restore, adoption). An adopted
+   * On for every secret instance (runtime, restore, adoption). An adopted
    * replica needs it outright — its helpers still have the *source's*
    * endpoint on file — and since SDK 0.0.7 it is also the documented way to
    * announce a new endpoint: `setOwnTransports` first, then a publish whose
@@ -123,7 +122,7 @@ interface BuildProtocolOptions {
 
 export function buildProtocolInstance(opts: BuildProtocolOptions): ProtocolInstance {
   const channelStore = makeChannelStore(opts.namespace)
-  const shareStore = makeShareStore(opts.namespace, { keepList: opts.keepList })
+  const shareStore = makeShareStore(opts.namespace, { keepVersion: opts.keepVersion })
 
   const builder = new DeRecProtocolBuilder(BigInt(opts.secretId))
     .withChannelStore(channelStore)
@@ -182,7 +181,7 @@ export function buildProtocolInstance(opts: BuildProtocolOptions): ProtocolInsta
  * The version the library assigned to the round this `start(ProtectSecret)`
  * call just dispatched.
  *
- * Version progression is anchored to the library's own user-secret snapshot,
+ * Version progression is anchored to the library's own snapshot of the items,
  * which also bumps on pair-completion auto-publish — so the app cannot derive
  * it from its own bag history without drifting out of step. Read it back from
  * the dispatch events instead.

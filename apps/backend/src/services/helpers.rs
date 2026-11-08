@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tracing::{info, warn};
+use tracing::info;
 use uuid::Uuid;
 
 use super::ports::{ActorGateway, ChannelRoutes, InboxDirectory};
@@ -183,9 +183,7 @@ impl HelperServiceImpl {
 
     /// Settings for a new helper, with omitted values from the defaults.
     fn settings_for(&self, requested: ProtocolSettings) -> ActorSettings {
-        let defaults = &self.config.defaults;
-        let (timeout_secs, unpair_ack) =
-            requested.resolve(defaults.protocol_timeout_secs, defaults.unpair_ack);
+        let (timeout_secs, unpair_ack) = requested.resolve();
         // Minted here, with the actor, so the value stored is the value the
         // actor runs with — a respawn reads it back rather than inventing a
         // new one, which would make this helper a stranger to every replica
@@ -294,10 +292,7 @@ impl HelperService for HelperServiceImpl {
             },
         };
 
-        let defaults = &self.config.defaults;
-        let (timeout_secs, unpair_ack) = request
-            .settings
-            .resolve(defaults.protocol_timeout_secs, defaults.unpair_ack);
+        let (timeout_secs, unpair_ack) = request.settings.resolve();
         let base_url = &self.config.base_url;
         let grpc_authority = self.config.grpc_authority();
         let names = &request.names;
@@ -380,6 +375,24 @@ impl HelperService for HelperServiceImpl {
         // browser-managed actor belongs to the page driving it.
         self.helper(&helper_id).await?;
 
+        // Only an unpaired participant goes. Deleting one that still holds a
+        // channel would leave its owners on a channel nothing answers, which
+        // they could only drop outside the protocol; unpairing first runs the
+        // protocol's own teardown, and the owner's republish with it. Read
+        // from its stores rather than the roster index, which an eviction from
+        // a replica group does not clear.
+        let paired = self
+            .records
+            .paired_channel_ids(&helper_id)
+            .await
+            .map_err(|e| ServiceError::internal("could not read the participant's channels", e))?;
+        if !paired.is_empty() {
+            return Err(ServiceError::ParticipantPaired(format!(
+                "still paired on {} channel(s); every owner must unpair it before it can be deleted",
+                paired.len()
+            )));
+        }
+
         // Ordering matters and is not arbitrary:
         //
         // 1. Stop the actor first. While it runs, its tick writes to the very
@@ -399,15 +412,6 @@ impl HelperService for HelperServiceImpl {
         self.actors.remove(&helper_id).await?;
 
         info!(actor_id = %helper_id, channels = channel_ids.len(), routes, "participant deleted");
-        if !channel_ids.is_empty() {
-            // Any owner paired over these keeps a channel that will now go
-            // unanswered — the documented behaviour, not an oversight.
-            warn!(
-                actor_id = %helper_id,
-                channels = channel_ids.len(),
-                "deleted participant had live channels; peers will see it as unreachable"
-            );
-        }
         Ok(())
     }
 
@@ -1301,6 +1305,20 @@ mod tests {
         assert_eq!(fixture.data.erased(), vec![alex.id]);
         assert_eq!(fixture.channels.get(&alex.id), None);
         assert!(fixture.actors.all_actors().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_helper_still_paired_is_not_deleted_until_its_owners_unpair() {
+        let fixture = Fixture::new();
+        let alex = fixture.helper("Alex");
+        fixture.records.hold(alex.id, 7);
+
+        let error = fixture.service().delete(alex.id).await.expect_err("refused");
+
+        assert!(matches!(error, ServiceError::ParticipantPaired(_)), "got {error:?}");
+        assert!(fixture.gateway.shut_down().is_empty());
+        assert!(fixture.data.erased().is_empty());
+        assert_eq!(fixture.actors.all_actors().len(), 1);
     }
 
     #[tokio::test]

@@ -168,14 +168,14 @@ async fn two_instances_over_one_database_do_not_see_each_other() {
     .await;
 }
 
-/// `keep_list` answers from the round outcomes the actor recorded, and from
+/// `keep_version` answers from the round outcomes the actor recorded, and from
 /// nothing else.
 ///
-/// The decision rule itself is unit-tested beside `keep_list_from_rounds`; this
-/// covers the part only an engine can get wrong — ids above `i64::MAX`, the
-/// upsert, the `version <` bound and the per-actor partition.
+/// The decision rule itself is unit-tested beside `keep_version_from_rounds`;
+/// this covers the part only an engine can get wrong — ids above `i64::MAX`,
+/// the upsert, the `version <` bound and the per-actor partition.
 #[tokio::test]
-async fn the_sql_share_store_keeps_the_versions_it_saw_commit() {
+async fn the_sql_share_store_keeps_the_latest_version_it_saw_commit() {
     on_every_engine(|pool| async move {
         let secret = conformance::HIGH_ID;
         // Outcomes are the app's record, written by the actor through the
@@ -186,41 +186,47 @@ async fn the_sql_share_store_keeps_the_versions_it_saw_commit() {
         let rounds = SqlSharingRoundRepository::new(pool);
 
         assert_eq!(
-            store.keep_list(secret, 1).await.expect("readable"),
-            None,
-            "with no recorded round, helpers keep everything"
+            store.keep_version(secret, 1).await.expect("readable"),
+            0,
+            "the first version has nothing older to keep"
         );
 
-        for (version, committed) in [(1, true), (2, false), (3, true)] {
+        for (version, committed) in [(1, true), (2, true), (3, false)] {
             rounds
                 .record(&actor_a, secret, version, committed)
                 .await
                 .expect("record");
         }
         assert_eq!(
-            store.keep_list(secret, 4).await.expect("readable"),
-            Some(vec![1, 3]),
-            "every committed version is kept, the abandoned one is not"
+            store.keep_version(secret, 4).await.expect("readable"),
+            2,
+            "the latest committed version is kept, the abandoned one is not"
         );
 
         // A second outcome for a version replaces the first.
         rounds
-            .record(&actor_a, secret, 3, false)
+            .record(&actor_a, secret, 2, false)
+            .await
+            .expect("record");
+        assert_eq!(store.keep_version(secret, 4).await.expect("readable"), 1);
+
+        // Version 4 was never distributed here — another member's, say — so
+        // it may be the latest committed version.
+        assert_eq!(store.keep_version(secret, 5).await.expect("readable"), 4);
+
+        rounds
+            .record(&actor_a, secret, 1, false)
             .await
             .expect("record");
         assert_eq!(
-            store.keep_list(secret, 4).await.expect("readable"),
-            Some(vec![1])
+            store.keep_version(secret, 4).await.expect("readable"),
+            0,
+            "no round that may have committed leaves nothing to keep"
         );
-
-        // Version 4 was never distributed here — another member's, say — so
-        // whether it committed is unknown.
-        assert_eq!(store.keep_list(secret, 5).await.expect("readable"), None);
-
         assert_eq!(
-            other_actor.keep_list(secret, 4).await.expect("readable"),
-            None,
-            "one actor's rounds must not decide another's keep list"
+            other_actor.keep_version(secret, 4).await.expect("readable"),
+            3,
+            "one actor's rounds must not decide another's answer"
         );
     })
     .await;
@@ -361,6 +367,47 @@ async fn a_simulated_helper_fault_applies_to_shares_held_for_others_only() {
         faults.set_fault(&actor, HelperFault::None).await.expect("set");
         assert_eq!(store.load(PARTITION, held, &[1]).await.expect("load")[0].bytes, original, "cleared, the stored share is back");
         store.record_verification(PARTITION, held, 1).await.expect("accepted again");
+    })
+    .await;
+}
+
+/// What `DELETE /helpers/{id}` checks: the channels an actor is still paired
+/// over, `Pending` ones left out, read straight from its channel rows.
+#[tokio::test]
+async fn paired_channel_ids_counts_only_completed_pairings_of_that_actor() {
+    use derec_backend::repositories::protocol_records::{
+        ProtocolRecordRepository, SqlProtocolRecordRepository,
+    };
+    use derec_library::protocol::{ChannelRecord, ChannelStatus, DeRecChannelStore, HelperChannel};
+    use std::collections::HashMap;
+
+    fn helper(channel: u64, status: ChannelStatus) -> ChannelRecord {
+        ChannelRecord::Helper(HelperChannel {
+            channel_id: ChannelId(channel),
+            transports: vec![derec_proto::TransportProtocol {
+                uri: "http://localhost:5000/derec/owner".to_owned(),
+                ..Default::default()
+            }],
+            communication_info: HashMap::new(),
+            status,
+            created_at: 0,
+            peer_role: derec_proto::SenderKind::Owner,
+            weight: 1,
+        })
+    }
+
+    on_every_engine(|pool| async move {
+        let alex = uuid::Uuid::new_v4();
+        let other = uuid::Uuid::new_v4();
+        let mut store = SqlChannelStore::new(pool.clone(), alex.to_string());
+        store.save(1, helper(7, ChannelStatus::Paired)).await.expect("save");
+        store.save(2, helper(9, ChannelStatus::Unpairing)).await.expect("save");
+        store.save(3, helper(8, ChannelStatus::Pending)).await.expect("save");
+        let mut theirs = SqlChannelStore::new(pool.clone(), other.to_string());
+        theirs.save(1, helper(5, ChannelStatus::Paired)).await.expect("save");
+
+        let records = SqlProtocolRecordRepository::new(pool);
+        assert_eq!(records.paired_channel_ids(&alex).await.expect("reads"), vec![7, 9]);
     })
     .await;
 }

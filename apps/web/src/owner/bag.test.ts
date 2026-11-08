@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { StoredReplicaMember } from '../stores'
 import type { BagVersion } from '../types'
-import { buildSecretContainerPayload, replicaGroupFromStore, userSecretIdHex } from './bag'
+import { buildSecretContainerPayload, replicaGroupFromStore, itemIdHex } from './bag'
 
 function member(overrides: Partial<StoredReplicaMember> = {}): StoredReplicaMember {
   return { replicaId: '11', channelId: '500', role: 'Source', status: 'Paired', name: 'Laptop', ...overrides }
@@ -17,7 +17,7 @@ function version(overrides: Partial<BagVersion> = {}): BagVersion {
     participantIds: [],
     verifiedParticipantIds: [],
     failedParticipantIds: [],
-    secrets: [],
+    items: [],
     rawBytes: '',
     helpers: [],
     ...overrides,
@@ -75,10 +75,10 @@ describe('buildSecretContainerPayload', () => {
 })
 
 describe('buildSecretContainerPayload masking', () => {
-  const withSecret = version({ secrets: [{ id: 'ab', name: 'seed', data: 'correct horse' }] })
+  const withSecret = version({ items: [{ id: 'ab', name: 'seed', data: 'correct horse' }] })
 
-  it('masks secret values unless asked to reveal them', () => {
-    const masked = JSON.stringify(buildSecretContainerPayload(withSecret, { maskSecrets: true }))
+  it('masks item values unless asked to reveal them', () => {
+    const masked = JSON.stringify(buildSecretContainerPayload(withSecret, { maskItems: true }))
     expect(masked).not.toContain('correct horse')
     expect(masked).toContain('seed')
 
@@ -86,10 +86,10 @@ describe('buildSecretContainerPayload masking', () => {
   })
 })
 
-describe('userSecretIdHex', () => {
+describe('itemIdHex', () => {
   it('shows a minted hex id and its base64url form from an adopted snapshot identically', () => {
     // 0xfb 0xff 0x10 in base64url is "-_8Q".
-    expect(userSecretIdHex('fbff10')).toBe('fbff10')
-    expect(userSecretIdHex('-_8Q')).toBe('fbff10')
+    expect(itemIdHex('fbff10')).toBe('fbff10')
+    expect(itemIdHex('-_8Q')).toBe('fbff10')
   })
 })

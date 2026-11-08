@@ -12,7 +12,7 @@
 //! calls.
 
 use async_trait::async_trait;
-use derec_library::protocol::{ChannelRecord, HelperChannel, SecretValue};
+use derec_library::protocol::{ChannelRecord, ChannelStatus, HelperChannel, SecretValue};
 use uuid::Uuid;
 
 use super::sdk::{id_to_text, text_to_id};
@@ -38,6 +38,15 @@ pub trait ProtocolRecordRepository: Send + Sync {
     /// `(created_at, channel_id)`, oldest first, so every caller sees the same
     /// sequence before and after a restart.
     async fn helper_channels(&self, actor_id: &Uuid) -> Result<Vec<(u64, HelperChannel)>>;
+
+    /// Every channel `actor_id` is still paired over — `Paired`, or
+    /// `Unpairing` while an unpair awaits its answer — across all its
+    /// instances, helper channels and replica groups alike. Ascending, without
+    /// duplicates (every member row of a group names the one shared channel).
+    ///
+    /// A pairing that never completed (`Pending`) is not counted: it holds no
+    /// share and expires on its own.
+    async fn paired_channel_ids(&self, actor_id: &Uuid) -> Result<Vec<u64>>;
 
     /// The raw shared key for a channel under `secret_id`, if present.
     async fn shared_key(
@@ -144,6 +153,26 @@ impl ProtocolRecordRepository for SqlProtocolRecordRepository {
         }
         out.sort_by_key(|(_, h)| (h.created_at, h.channel_id.0));
         Ok(out)
+    }
+
+    async fn paired_channel_ids(&self, actor_id: &Uuid) -> Result<Vec<u64>> {
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT record FROM channels WHERE actor_id = $1")
+                .bind(actor_id.to_string())
+                .fetch_all(&self.pool)
+                .await?;
+
+        let mut ids = Vec::new();
+        for (json,) in rows {
+            let record =
+                serde_json::from_str::<ChannelRecord>(&json).map_err(RepositoryError::corrupt)?;
+            if matches!(record.status(), ChannelStatus::Paired | ChannelStatus::Unpairing) {
+                ids.push(record.channel_id().0);
+            }
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        Ok(ids)
     }
 
     async fn shared_key(

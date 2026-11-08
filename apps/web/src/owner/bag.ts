@@ -3,10 +3,10 @@
 
 import { fromBase64Url } from '../derecApi'
 import type { StoredReplicaMember } from '../stores'
-import type { BagReplicaGroup, BagVersion, SecretBag } from '../types'
+import type { BagReplicaGroup, BagVersion, ItemBag } from '../types'
 
 /** Version `version` of `bag`, current or previous; `undefined` when it holds no such version. */
-export function bagVersionOf(bag: SecretBag | null, version: number): BagVersion | undefined {
+export function bagVersionOf(bag: ItemBag | null, version: number): BagVersion | undefined {
   if (!bag) return undefined
   return bag.currentVersion.version === version
     ? bag.currentVersion
@@ -14,10 +14,10 @@ export function bagVersionOf(bag: SecretBag | null, version: number): BagVersion
 }
 
 export function updateBagVersion(
-  bag: SecretBag,
+  bag: ItemBag,
   version: number,
   updater: (v: BagVersion) => BagVersion,
-): SecretBag {
+): ItemBag {
   if (bag.currentVersion.version === version) {
     return { ...bag, currentVersion: updater(bag.currentVersion) }
   }
@@ -28,10 +28,10 @@ export function updateBagVersion(
 }
 
 export function updateBagParticipant(
-  bag: SecretBag,
+  bag: ItemBag,
   version: number,
   participantId: string,
-): SecretBag {
+): ItemBag {
   return updateBagVersion(bag, version, v =>
     v.participantIds.includes(participantId)
       ? v
@@ -40,10 +40,10 @@ export function updateBagParticipant(
 }
 
 export function updateBagVerified(
-  bag: SecretBag,
+  bag: ItemBag,
   version: number,
   participantId: string,
-): SecretBag {
+): ItemBag {
   return updateBagVersion(bag, version, v =>
     v.verifiedParticipantIds.includes(participantId)
       ? v
@@ -78,15 +78,15 @@ export function replicaGroupFromStore(
 
 /** Builds a structured representation of the SecretContainer that gets protobuf-encoded and distributed. */
 /**
- * A user-secret id as hex, whichever form it is stored in.
+ * An item id as hex, whichever form it is stored in.
  *
  * Ids this app mints are hex; ids that came out of an adopted or recovered
  * snapshot are the library's base64url rendering of the same bytes. Shown
- * as stored, the source and its destination displayed one secret under two
+ * as stored, the source and its destination displayed one item under two
  * different-looking ids. The same test as the protect path's
- * `userSecretIdBytes`, so what is shown is what would be sent.
+ * `itemIdBytes`, so what is shown is what would be sent.
  */
-export function userSecretIdHex(id: string): string {
+export function itemIdHex(id: string): string {
   if (/^(?:[0-9a-f]{2})+$/i.test(id)) return id.toLowerCase()
   try {
     return Array.from(fromBase64Url(id), b => b.toString(16).padStart(2, '0')).join('')
@@ -95,12 +95,12 @@ export function userSecretIdHex(id: string): string {
   }
 }
 
-/** Placeholder for a secret value the payload view has not been asked to reveal. */
+/** Placeholder for an item value the payload view has not been asked to reveal. */
 export const MASKED_SECRET_VALUE = '••••••••'
 
 export function buildSecretContainerPayload(
   version: BagVersion,
-  { maskSecrets = false }: { maskSecrets?: boolean } = {},
+  { maskItems: maskItems = false }: { maskItems?: boolean } = {},
 ) {
   return {
     helpers: version.helpers.map(h => ({
@@ -109,12 +109,12 @@ export function buildSecretContainerPayload(
       name: h.name,
       shared_key: '(32-byte symmetric key)',
     })),
-    secrets: version.secrets.map(s => ({
-      id: userSecretIdHex(s.id),
+    secrets: version.items.map(s => ({
+      id: itemIdHex(s.id),
       name: s.name,
-      // Masked the same way the Secrets table masks them: a payload view is
+      // Masked the same way the Items table masks them: a payload view is
       // not a reason to put every value on screen at once.
-      data: maskSecrets ? MASKED_SECRET_VALUE : s.data,
+      data: maskItems ? MASKED_SECRET_VALUE : s.data,
     })),
     replicas: replicasPayload(version.replicas),
   }

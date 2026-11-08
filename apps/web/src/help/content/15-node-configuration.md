@@ -38,26 +38,22 @@ No file at the default path is fine: the node runs on defaults and the environme
 
 ## [defaults]: front-end defaults, plus three enforced keys
 
-Most of these are **defaults for the front end**: served from `GET /api/v1/config`, prefilled into the setup wizard and Settings, and editable there per browser. The values a vault or helper actually runs with are whatever the front end sends. The three gRPC keys are the exception: **the node enforces them**.
+Most of these are **defaults for the front end**: served from `GET /api/v1/config`, prefilled into the setup wizard and Settings, and editable there per browser. The values a secret or helper actually runs with are whatever the front end sends. The three gRPC keys are the exception: **the node enforces them**.
 
 | Key | Variable | Default | Meaning |
 | --- | --- | --- | --- |
 | `participant_count` | `DEREC_PARTICIPANT_COUNT` | `7` | Target pool size. At least 1. |
 | `pre_paired_count` | `DEREC_PRE_PAIRED_COUNT` | 3, or `participant_count` if lower | Helpers to pre-pair at setup. |
-| `min_participants` | `DEREC_MIN_PARTICIPANTS` | 3, or `participant_count` if lower | Threshold for new vaults. |
+| `min_participants` | `DEREC_MIN_PARTICIPANTS` | 3, or `participant_count` if lower | Fixed threshold new secrets start with (they start on 50% of subshares). |
 | `recommended_participants` | `DEREC_RECOMMENDED_PARTICIPANTS` | 5, kept between the minimum and the count | Warning level. |
-| `protocol_timeout_secs` | `DEREC_PROTOCOL_TIMEOUT_SECS` | `300` | The single protocol timeout. Greater than 0. |
-| `authentication_method` | `DEREC_AUTHENTICATION_METHOD` | `user` | `user` (channels linked by hand). `application` is reserved. |
-| `unpair_ack` | `DEREC_UNPAIR_ACK` | `required` | `required` or `not_required`. |
-| `auto_accept_unpair_requests` | `DEREC_AUTO_ACCEPT_UNPAIR_REQUESTS` | `true` | Accept incoming unpairs without a dialog. |
-| `auto_accept_store_share_requests` | `DEREC_AUTO_ACCEPT_STORE_SHARE_REQUESTS` | `false` | A vault acting as helper stores shares without a dialog. |
-| `auto_accept_verify_share_requests` | `DEREC_AUTO_ACCEPT_VERIFY_SHARE_REQUESTS` | `false` | A vault acting as helper answers verification without a dialog. |
 | `grpc_enabled` | `DEREC_GRPC_ENABLED` | `true` | **Enforced.** Runs the gRPC listener; off means HTTP-only helpers. |
 | `grpc_port` | `DEREC_GRPC_PORT` | `50051` | **Enforced.** gRPC listener port. |
 | `grpc_relay_enabled` | `DEREC_GRPC_RELAY_ENABLED` | `true` | **Enforced.** Whether `POST /derec/relay` answers. |
 | `helper_transports.http` | `DEREC_HELPER_TRANSPORTS_HTTP` | `participant_count` | Transport mix for provisioning. The three must sum to `participant_count`. |
 | `helper_transports.grpc` | `DEREC_HELPER_TRANSPORTS_GRPC` | `0` | gRPC-only helpers. Needs `grpc_enabled`. |
 | `helper_transports.both` | `DEREC_HELPER_TRANSPORTS_BOTH` | `0` | Helpers advertising both. Needs `grpc_enabled`. |
+
+There are no protocol settings here. A secret's timeout, unpair acknowledgement, auto-accept choices and authentication method are its own, set on its **Settings** tab and starting from the app's defaults. A helper the front end provisions gets the values it sends; one provisioned without them gets a 30-second timeout and `not_required`. A file that still sets `protocol_timeout_secs`, `unpair_ack`, `authentication_method` or an `auto_accept_*` key boots, and the boot report names each one as ignored.
 
 Leave the four derived counts and the transport mix unset unless you mean to pin them: unset, they adapt to `participant_count`; pinned, they are checked as written, so a later change of the count must change them too.
 

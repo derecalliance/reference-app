@@ -199,17 +199,17 @@ fn events_of(result: &Result<Vec<DeRecEvent>, ProcessError>) -> &[DeRecEvent] {
 }
 
 /// Persist how every sharing round in `events` ended, for
-/// [`DeRecShareStore::keep_list`](derec_library::protocol::DeRecShareStore::keep_list)
+/// [`DeRecShareStore::keep_version`](derec_library::protocol::DeRecShareStore::keep_version)
 /// to answer from.
 ///
 /// Called inside the async half of a handler, before the instance is put back:
-/// the next round this instance starts asks `keep_list` first, and recording
+/// the next round this instance starts asks `keep_version` first, and recording
 /// the outcome before anything else can borrow the instance is what guarantees
 /// that round sees it. `handle_events` runs too late for that guarantee.
 ///
 /// A failed write is logged and otherwise ignored. It costs nothing unsafe: a
-/// version with no recorded outcome makes `keep_list` answer `None`, and
-/// helpers keep every version.
+/// version with no recorded outcome may be the latest committed one, so
+/// `keep_version` keeps it, as it would a committed round.
 async fn record_round_outcomes(
     rounds: &dyn SharingRoundRepository,
     actor_id: &Uuid,
@@ -233,7 +233,7 @@ async fn record_round_outcomes(
                 secret_id = secret_id,
                 version = version,
                 error = %e,
-                "could not record a sharing round's outcome; helpers will keep every version"
+                "could not record a sharing round's outcome; helpers will keep it as if committed"
             );
         }
     }
@@ -249,7 +249,7 @@ pub struct ActorDependencies {
     pub channel_router: Arc<ChannelRouter>,
     /// The roster's index of the channels each helper holds.
     pub helper_channels: Arc<dyn HelperChannelIndex>,
-    /// How each sharing round ended, for the share store's `keep_list`.
+    /// How each sharing round ended, for the share store's `keep_version`.
     pub sharing_rounds: Arc<dyn SharingRoundRepository>,
 }
 
@@ -259,7 +259,7 @@ pub struct ActorDependencies {
 /// secret it protects as Owner. Helper-role channels for this actor's own
 /// secret all live in the own instance: shares are separated by `channel_id`
 /// and each carries its own Owner's `secret_id` on the record. Replica mode is
-/// the exception — a replica mirrors one named owner's vault, and the share
+/// the exception — a replica mirrors one named owner's secret, and the share
 /// store keys on `(secret_id, channel_id, version, replica_id)`, so mirroring
 /// several owners takes one instance per owner. `instances` below holds
 /// exactly that: the own instance plus any replica instances added on demand
@@ -586,7 +586,7 @@ impl ProvisionedActor {
                 }
 
                 // Owner-side outcomes. A provisioned actor rarely runs a round
-                // of its own, but an instance holding a vault — a replica
+                // of its own, but an instance holding a secret — a replica
                 // destination that adopted one — publishes to its helpers on
                 // pairing and confirmation, so these can reach it. The outcome
                 // itself is already recorded by `record_round_outcomes`.
@@ -1240,8 +1240,8 @@ async fn auto_confirm_fingerprint(
     };
 
     match protocol.verify_fingerprint(channel_id.into(), &local).await {
-        Ok(true) => AutoConfirmOutcome::Confirmed,
-        Ok(false) => AutoConfirmOutcome::Rejected,
+        Ok(()) => AutoConfirmOutcome::Confirmed,
+        Err(derec_library::Error::FingerprintMismatch { .. }) => AutoConfirmOutcome::Rejected,
         Err(e) => AutoConfirmOutcome::Failed(e),
     }
 }
@@ -1302,7 +1302,7 @@ pub struct PendingChannelIdsMsg;
 
 /// Ensure this actor holds an instance bound to `owner_secret_id`.
 ///
-/// A replica mirrors one named owner's vault, and the share store keys on
+/// A replica mirrors one named owner's secret, and the share store keys on
 /// `(secret_id, channel_id, version, replica_id)` — an instance under a
 /// different secret would miss every lookup. Replica-mode pairing therefore
 /// needs an instance bound to that owner's secret, which this creates on demand.
@@ -1778,10 +1778,16 @@ impl Handler<VerifyFingerprintMsg> for ProvisionedActor {
 
         Box::pin(
             async move {
-                let result = protocol
+                // From SDK 0.0.10 a mismatch is an error — and it has already
+                // revoked the `Pending` pairing — rather than `Ok(false)`.
+                let result = match protocol
                     .verify_fingerprint(channel_id.into(), &fingerprint)
                     .await
-                    .map_err(ActorError::from);
+                {
+                    Ok(()) => Ok(true),
+                    Err(derec_library::Error::FingerprintMismatch { .. }) => Ok(false),
+                    Err(e) => Err(ActorError::from(e)),
+                };
                 (protocol, result)
             }
             .into_actor(self)
@@ -2276,7 +2282,8 @@ mod tests {
     /// A failing `process()` still carries the rounds its timeout sweep
     /// settled (SDK 0.0.7), and those are the only report of them there will
     /// be. If the inbound path dropped them with the error, the round's outcome
-    /// would never be recorded and the next `keep_list` could not list it.
+    /// would never be recorded, and the next `keep_version` would keep a
+    /// round that fell short as if it might have committed.
     #[actix_rt::test]
     async fn a_failed_process_still_records_the_rounds_it_settled() {
         let config = config(pool().await);
@@ -2285,7 +2292,7 @@ mod tests {
             version: 1,
             confirmed_count: 2,
             failed_count: 0,
-            threshold_met: true,
+            threshold_met: false,
         };
         let result: Result<Vec<DeRecEvent>, ProcessError> = Err(ProcessError {
             channel_id: Some(ChannelId(CHANNEL_ID)),
@@ -2305,11 +2312,11 @@ mod tests {
         assert_eq!(
             protocol
                 .share_store
-                .keep_list(SECRET_ID, 2)
+                .keep_version(SECRET_ID, 2)
                 .await
                 .expect("readable"),
-            Some(vec![1]),
-            "the committed round settled by the failing call must be kept"
+            0,
+            "the round that fell short, settled by the failing call, must not be kept"
         );
     }
 }

@@ -2,7 +2,7 @@
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
 import { beforeEach, describe, expect, it } from 'vitest'
-import { clearAllLocalData, countLocalDataEntries, eraseVaultLocalData } from './localData'
+import { clearAllLocalData, countLocalDataEntries, eraseSecretLocalData } from './localData'
 
 describe('localData', () => {
   beforeEach(() => {
@@ -42,31 +42,31 @@ describe('localData — browser-wide preferences', () => {
   })
 
   it('leaves the cross-tab coordination keys to the tabs still using them', () => {
-    localStorage.setItem('derec-lock:derec:vault-lock:v1', '{}')
+    localStorage.setItem('derec-lock:derec:secret-lock:v1', '{}')
 
     expect(clearAllLocalData()).toBe(0)
-    expect(localStorage.getItem('derec-lock:derec:vault-lock:v1')).toBe('{}')
+    expect(localStorage.getItem('derec-lock:derec:secret-lock:v1')).toBe('{}')
   })
 })
 
-describe('eraseVaultLocalData', () => {
+describe('eraseSecretLocalData', () => {
   beforeEach(() => {
     localStorage.clear()
   })
 
-  it('removes the vault’s stores and the records kept beside them, replica id and adoption block included', () => {
-    localStorage.setItem('derec:vault:v1:42:channel:helper:7', 'x')
+  it('removes the secret’s stores and the records kept beside them, replica id and adoption block included', () => {
+    localStorage.setItem('derec:secret:v1:42:channel:helper:7', 'x')
     localStorage.setItem('derec:replica-adoption-block:v1', '{}')
     localStorage.setItem('derec:replica-adoption-block:v2', '{}')
     localStorage.setItem('derec:replica-state:v1', '{}')
     localStorage.setItem('derec:replica-offer:v1', '{}')
     localStorage.setItem('derec:replica-id:v1', '123')
-    // Another vault's identity is not this vault's to erase.
+    // Another secret's identity is not this secret's to erase.
     localStorage.setItem('derec:replica-id:v2', '456')
 
-    eraseVaultLocalData('v1')
+    eraseSecretLocalData('v1')
 
-    expect(localStorage.getItem('derec:vault:v1:42:channel:helper:7')).toBeNull()
+    expect(localStorage.getItem('derec:secret:v1:42:channel:helper:7')).toBeNull()
     expect(localStorage.getItem('derec:replica-state:v1')).toBeNull()
     expect(localStorage.getItem('derec:replica-offer:v1')).toBeNull()
     expect(localStorage.getItem('derec:replica-id:v1')).toBeNull()

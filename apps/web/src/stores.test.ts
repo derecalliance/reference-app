@@ -692,7 +692,7 @@ describe('helper channel housekeeping', () => {
     expect(listHelperChannels(NS, SECRET).map(c => c.weight)).toEqual([3, 1, 1])
   })
 
-  it('keeps stored weights only for paired helpers this vault protects with', () => {
+  it('keeps stored weights only for paired helpers this secret is protected with', () => {
     seed('1', 'Paired', 'Helper', 2)
     seed('2', 'Pending', 'Helper', 2)
     seed('3', 'Paired', 'Owner', 2)
@@ -709,7 +709,7 @@ describe('helper channel housekeeping', () => {
       await shares.save(SECRET, channel, { secretId: SECRET, version: 1, bytes: new Uint8Array(30) })
       await shares.save(SECRET, channel, { secretId: SECRET, version: 2, bytes: new Uint8Array(30) })
     }
-    // A share this vault holds *for* another owner: never a candidate.
+    // A share this secret's actor holds *for* another owner: never a candidate.
     await shares.save(SECRET, '9', { secretId: '77', version: 1, bytes: new Uint8Array(30) })
 
     const usage = listOwnerProofVersions(NS, SECRET)
@@ -847,12 +847,13 @@ describe('share store: retention (SDK 0.0.7)', () => {
     expect(await shares.load('43', '7', [])).toHaveLength(1)
   })
 
-  it('answers keepList from the injected policy, and with no list when there is none', async () => {
-    const policy = vi.fn(() => [3, 2])
-    expect(await makeShareStore(NS, { keepList: policy }).keepList(SECRET, 4)).toEqual([3, 2])
+  it('answers keepVersion from the injected policy, and with the version just below when there is none', async () => {
+    const policy = vi.fn(() => 2)
+    expect(await makeShareStore(NS, { keepVersion: policy }).keepVersion(SECRET, 4)).toBe(2)
     expect(policy).toHaveBeenCalledWith(SECRET, 4)
 
-    expect(await makeShareStore(NS).keepList(SECRET, 4)).toBeNull()
+    expect(await makeShareStore(NS).keepVersion(SECRET, 4)).toBe(3)
+    expect(await makeShareStore(NS).keepVersion(SECRET, 1)).toBe(0)
   })
 })
 

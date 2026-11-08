@@ -32,7 +32,7 @@ header {
       min-width: 0;
     }
 
-    select.vault-switcher {
+    select.secret-switcher {
       flex: 0 1 auto;
       min-width: 0;
       max-width: 50vw;
@@ -89,7 +89,7 @@ main.shell-host {
   justify-content: safe center;
   padding: 40px 24px;
   min-height: 0;
-  /* A flex item will not shrink below its content without this, so the vault
+  /* A flex item will not shrink below its content without this, so the secret
      list's table set the width of the whole screen and pushed it past a
      phone's edge instead of scrolling inside its own container. */
   min-width: 0;
@@ -120,15 +120,15 @@ button.secondary.reset-btn:hover:not(:disabled) {
   color: var(--danger);
 }
 
-/* Other vaults waiting on the owner. The words carry it; the colour only draws the eye. */
+/* Other secrets waiting on the owner. The words carry it; the colour only draws the eye. */
 button.secondary.attention-btn {
   border-color: var(--warning);
   background: var(--warning-bg);
   color: var(--warning);
 }
 
-/* The header's vault switcher, matched to the secondary buttons beside it. */
-select.vault-switcher {
+/* The header's secret switcher, matched to the secondary buttons beside it. */
+select.secret-switcher {
   font: inherit;
   font-size: 14px;
   font-weight: 500;

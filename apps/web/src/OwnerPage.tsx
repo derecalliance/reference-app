@@ -1,19 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
+import { secretNamespace } from './secretStorage'
 import { ModalFrame } from './ModalFrame'
 import { memo, useState, useEffect, useRef, useMemo, useCallback, useSyncExternalStore } from 'react'
 import { errorText } from './errorText'
 import { Alert, Button, Stack } from '@mui/material'
 import { advertisedEndpoints, type ContactMessage } from '@derec-alliance/web'
 import './OwnerPage.css'
-import type { Vault, PairedParticipant, PublishedRound, RecoveredSecret, RecoveredSecretReplica, UserSecret } from './types'
+import type { Secret, PairedParticipant, PublishedRound, RecoveredSecret, RecoveredSecretReplica, Item } from './types'
 import { useConsole, type ConsoleEntryInput } from './ConsoleContext'
 import { reportError, reportInfo } from './toastBus'
 import { protocolTimeoutMs } from './config'
-import { resolveVaultConfig } from './protocolDefaults'
-import type { VaultRuntime } from './vault/runtime'
-import { useServerDefaults, useVaultManager } from './vault/managerContext'
+import { resolveSecretConfig } from './protocolDefaults'
+import type { SecretRuntime } from './secret/runtime'
+import { useServerDefaults, useSecretManager } from './secret/managerContext'
 import type {
   Attention,
   AttentionKind,
@@ -21,7 +22,7 @@ import type {
   StoreShareRequest,
   UnpairRequest,
   VerifyShareRequest,
-} from './vault/types'
+} from './secret/types'
 import { ProtocolConfigProvider } from './ProtocolConfig'
 import {
   readHelperChannelStatus,
@@ -76,9 +77,13 @@ import { ReplicaAdoptionDialog } from './ReplicaAdoptionDialog'
 import { effectiveRecommended } from './owner/recommendedParticipants'
 import { RepublishModal } from './owner/RepublishModal'
 import { publishReadiness } from './owner/publishGate'
+import { maxWeightFor, sharingProblems, sharingTotal, thresholdOutcome, thresholdRaisedText } from './owner/sharingSettings'
+import { SharingSettingsPanel } from './owner/SharingSettingsPanel'
+import { UnsettledRoundBanner } from './owner/UnsettledRoundBanner'
 import { defaultWeightFor, resolvePublishPolicy } from './owner/publishPolicy'
-import { VaultSettingsModal } from './owner/VaultSettingsModal'
-import { maxWeight, participantWeight } from './owner/weights'
+import { SecretSettingsTab } from './owner/SecretSettingsTab'
+import { scheduleChanged, sameSettings, type SecretSettingsValues } from './owner/secretSettingsDraft'
+import { participantWeight } from './owner/weights'
 import { ReplicaFingerprintDialog } from './ReplicaFingerprintDialog'
 import { ChannelFingerprintDialog } from './ChannelFingerprintDialog'
 import { ReplicasTab } from './ReplicasTab'
@@ -93,11 +98,11 @@ import {
 import { OwnerReplicaSection } from './OwnerReplicaSection'
 import { ReplicaAdoptionBlockedScreen } from './ReplicaAdoptionBlockedScreen'
 
-import { AddSecretModal } from './owner/AddSecretModal'
-import { RemoveSecretModal } from './owner/RemoveSecretModal'
+import { AddItemModal } from './owner/AddItemModal'
+import { RemoveItemModal } from './owner/RemoveItemModal'
 import { VerificationCopiesPanel } from './owner/VerificationCopiesPanel'
 import { NotificationsPanel } from './owner/NotificationsPanel'
-import { unreadCount } from './vault/notifications'
+import { unreadCount } from './secret/notifications'
 import { EditIdentityModal } from './owner/EditIdentityModal'
 import { LinkChannelModal } from './owner/LinkChannelModal'
 import { OwnerParticipantPanel } from './owner/OwnerParticipantPanel'
@@ -106,81 +111,81 @@ import { PairedParticipantsList } from './owner/PairedParticipantsList'
 import { OutgoingUnpairDialog, type OutgoingUnpairConfirmation } from './owner/OutgoingUnpairDialog'
 import { CorruptShareWarnings } from './owner/CorruptShareWarnings'
 import { ReplicaConflictPanel } from './ReplicaConflictPanel'
-import { replicaConflictBlockReason } from './vault/replicaConflict'
+import { replicaConflictBlockReason } from './secret/replicaConflict'
 import { committedVersionsOf } from './owner/heldShares'
 import { HeldSharesList, RecoveryPanel } from './owner/RecoveryPanel'
-import { SecretBagPanel } from './owner/SecretBagPanel'
+import { ItemBagPanel } from './owner/ItemBagPanel'
 import { ShareContactModal } from './owner/ShareContactModal'
 import type { ProtocolInstance } from './owner/protocol'
 import { OwnerTabBar, type ActiveTab } from './owner/OwnerTabBar'
-import { replaceRoute, type VaultRouteTab } from './routing'
+import { replaceRoute, type SecretRouteTab } from './routing'
 import { useLinkGroups } from './owner/useLinkGroups'
-import { runtimeStateStore } from './vault/runtimeStateStore'
+import { runtimeStateStore } from './secret/runtimeStateStore'
 import { groupMemberRows } from './owner/groupMembers'
 
 interface Props {
   /**
-   * The vault's engine, run by the `VaultManager` whether or not this page is
+   * The secret's engine, run by the `SecretManager` whether or not this page is
    * mounted. The page attaches to it and renders what it holds; it never
-   * builds, starts or stops one. Keyed by vault id by the caller, so this is the
+   * builds, starts or stops one. Keyed by local secret id by the caller, so this is the
    * same runtime for the page's whole life.
    */
-  runtime: VaultRuntime
+  runtime: SecretRuntime
   /**
    * A tab the route asks to open — the notification bell links here. Opened
    * once, then the route drops it, so clicking the bell again opens it again.
    */
-  requestedTab?: VaultRouteTab
+  requestedTab?: SecretRouteTab
 }
 
 /**
- * Memoised: `App` re-renders whenever any vault's row changes, and this page
+ * Memoised: `App` re-renders whenever any secret's row changes, and this page
  * renders from its own runtime's state, which it subscribes to directly — so
- * another vault's row changing has nothing to tell it.
+ * another secret's row changing has nothing to tell it.
  */
 export default memo(OwnerPage)
 
 function OwnerPage({ runtime, requestedTab }: Props) {
   /**
-   * Follow the engine's state, which is the only writer of it — the vault record
+   * Follow the engine's state, which is the only writer of it — the secret record
    * included. Subscribing rather than keeping copies is what stops the engine and
    * the view disagreeing about the record, whether a flow is in flight, or which
    * confirmations are open.
    */
   const runtimeStore = useMemo(() => runtimeStateStore(runtime), [runtime])
   const runtimeState = useSyncExternalStore(runtimeStore.subscribe, runtimeStore.getSnapshot)
-  const vault = runtimeState.vault
-  const manager = useVaultManager()
+  const secret = runtimeState.secret
+  const manager = useSecretManager()
 
   const { log: consoleLog } = useConsole()
-  // Everything this page logs is about the vault it shows, so it carries that
-  // vault's id — as the engine's entries do — and a vault filter shows both.
+  // Everything this page logs is about the secret it shows, so it carries that
+  // secret's local id — as the engine's entries do — and a secret filter shows both.
   const log = useCallback(
-    (entry: ConsoleEntryInput) => consoleLog({ ...entry, vaultId: vault.id }),
-    [consoleLog, vault.id],
+    (entry: ConsoleEntryInput) => consoleLog({ ...entry, localSecretId: secret.id }),
+    [consoleLog, secret.id],
   )
 
-  // The node's own defaults, the bottom tier of the config merge — fetched once
-  // for the whole tab by the provider, which the runtimes read them from too.
+  // The node's own defaults — what it runs, such as the gRPC relay — fetched
+  // once for the whole tab by the provider.
   const serverDefaults = useServerDefaults()
 
   /**
-   * What this vault actually runs with: node defaults, this browser's overrides,
-   * then the vault's own. The single place the page reads configuration — reading
-   * `vault.configOverrides` directly would see nothing for a vault that
+   * What this secret actually runs with: the app's defaults, then the secret's
+   * own overrides. The single place the page reads configuration — reading
+   * `secret.configOverrides` directly would see nothing for a secret that
    * overrides nothing.
    */
-  const vaultConfig = useMemo(
-    () => resolveVaultConfig(vault.configOverrides, serverDefaults),
-    [vault.configOverrides, serverDefaults],
+  const secretConfig = useMemo(
+    () => resolveSecretConfig(secret.configOverrides),
+    [secret.configOverrides],
   )
   // The record as the engine holds it *now*, for closures that outlive a render.
   // Read through the runtime rather than copied into a ref: a handler running
   // after a commit but before the re-render must not build on the old record.
-  const vaultRef = useMemo(
+  const secretRef = useMemo(
     () => ({
-      get current(): Vault {
-        return runtime.state().vault
+      get current(): Secret {
+        return runtime.state().secret
       },
     }),
     [runtime],
@@ -189,14 +194,14 @@ function OwnerPage({ runtime, requestedTab }: Props) {
   // Single protocol timeout (ms) — drives the FE watchdog and all
   // app-level wall-clock timers; the same value (in seconds) is passed to the
   // WASM constructor for the library's passive process() expiry.
-  const flowTimeoutMs = protocolTimeoutMs(vaultConfig.protocolTimeoutSecs)
+  const flowTimeoutMs = protocolTimeoutMs(secretConfig.protocolTimeoutSecs)
 
   // Protocol settings this device pushes to the backend whenever it provisions
   // an actor. Configuration is FE-owned, so the backend has no policy of its
   // own for a new participant or replica to inherit.
   const provisioningSettings: ProvisioningSettings = {
-    protocolTimeoutSecs: vaultConfig.protocolTimeoutSecs,
-    unpairAck: vaultConfig.unpairAck,
+    protocolTimeoutSecs: secretConfig.protocolTimeoutSecs,
+    unpairAck: secretConfig.unpairAck,
   }
   const [activeTab, setActiveTab] = useState<ActiveTab>(
     'participants',
@@ -204,31 +209,30 @@ function OwnerPage({ runtime, requestedTab }: Props) {
   // The route asks for a tab: open it while rendering (React's pattern for
   // state that follows a prop), then hand the URL back without the request, so
   // the next ask is a change again.
-  const [seenTabRequest, setSeenTabRequest] = useState<VaultRouteTab | undefined>(undefined)
+  const [seenTabRequest, setSeenTabRequest] = useState<SecretRouteTab | undefined>(undefined)
   if (requestedTab !== seenTabRequest) {
     setSeenTabRequest(requestedTab)
     if (requestedTab) setActiveTab(requestedTab)
   }
   useEffect(() => {
-    if (requestedTab) replaceRoute({ kind: 'vault', id: runtime.state().vault.id })
+    if (requestedTab) replaceRoute({ kind: 'secret', id: runtime.state().secret.id })
   }, [requestedTab, runtime])
   const [shareOpen, setShareOpen] = useState(false)
   const [pairOpen, setPairOpen] = useState(false)
   const [protectOpen, setProtectOpen] = useState(false)
   const [republishOpen, setRepublishOpen] = useState(false)
-  const [secretToRemove, setSecretToRemove] = useState<UserSecret | null>(null)
+  const [itemToRemove, setItemToRemove] = useState<Item | null>(null)
   const [identityOpen, setIdentityOpen] = useState(false)
-  const [vaultSettingsOpen, setVaultSettingsOpen] = useState(false)
   /** The role the Pair dialog opens on — set by Join group, which pairs as a replica destination. */
   const [pairDefaultRole, setPairDefaultRole] = useState<PairingRole | undefined>(undefined)
   // Set of paired channel IDs watched by PairInitiatorModal to detect when pairing completes.
   const pairedChannelIds = useMemo(() => {
     const ids = new Set<string>()
-    for (const p of vault.participants) {
+    for (const p of secret.participants) {
       if (p.connectionStatus === 'paired' && p.channelId) ids.add(p.channelId)
     }
     return ids
-  }, [vault.participants])
+  }, [secret.participants])
 
   // Polled by PairInitiatorModal — incremented on process() errors with "non-ok status".
   const [pairingRejectionCount, setPairingRejectionCount] = useState(0)
@@ -244,7 +248,7 @@ function OwnerPage({ runtime, requestedTab }: Props) {
   // both verdicts share this one slot so the accept/reject handlers, and the
   // poll gate that holds back the destructive mailbox drain, stay single-path.
   // The confirmations themselves are engine state — see `attentionOf` below.
-  // They live there because a vault that is not on screen still has to raise
+  // They live there because a secret that is not on screen still has to raise
   // one, and because the drain gate reads the same queue.
 
   // ── Pairing modal: in-modal "accept + link" path (User auth method) ────────
@@ -261,7 +265,7 @@ function OwnerPage({ runtime, requestedTab }: Props) {
   // confirmation is derived from the engine's attention queue.
 
   // `StoreShareRequest`, `VerifyShareRequest` and `UnpairRequest` moved to
-  // `vault/types.ts` with the attention queue that now carries them.
+  // `secret/types.ts` with the attention queue that now carries them.
 
   /**
    * A helper channel that completed its handshake but is still `Pending`,
@@ -298,11 +302,11 @@ function OwnerPage({ runtime, requestedTab }: Props) {
    */
   const unconfirmedChannelIds = useMemo<ReadonlySet<string>>(() => {
     const pending = new Set<string>()
-    const namespace = `vault:${vault.id}`
+    const namespace = secretNamespace(secret.id)
 
-    for (const participant of vault.participants) {
+    for (const participant of secret.participants) {
       if (!participant.channelId) continue
-      if (readHelperChannelStatus(namespace, vault.secretId, participant.channelId) === 'Pending') {
+      if (readHelperChannelStatus(namespace, secret.secretId, participant.channelId) === 'Pending') {
         pending.add(participant.channelId)
       }
     }
@@ -311,7 +315,7 @@ function OwnerPage({ runtime, requestedTab }: Props) {
     // the status lives in the library's store, not in React state, so bumping
     // the nonce is the only way to make this recompute after a confirmation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vault.id, vault.secretId, vault.participants, channelStatusNonce])
+  }, [secret.id, secret.secretId, secret.participants, channelStatusNonce])
 
   /**
    * Raise the fingerprint gate if the library left `channelId` `Pending`.
@@ -321,8 +325,8 @@ function OwnerPage({ runtime, requestedTab }: Props) {
    * the contact and so never knew its mode. It is also the library's own answer
    * rather than the app's guess about it.
    */
-  function maybeRaiseFingerprintGate(channelId: string, snapshot: Vault): void {
-    const status = readHelperChannelStatus(`vault:${snapshot.id}`, secretIdRef.current, channelId)
+  function maybeRaiseFingerprintGate(channelId: string, snapshot: Secret): void {
+    const status = readHelperChannelStatus(secretNamespace(snapshot.id), secretIdRef.current, channelId)
     if (status !== 'Pending') return
 
     const peer = snapshot.participants.find(p => p.channelId === channelId)
@@ -346,14 +350,14 @@ function OwnerPage({ runtime, requestedTab }: Props) {
 
   // A mirrored secret this device (as a replica destination) has received but
   // not yet been asked to adopt. Deliberately plain component state, not part
-  // of `Vault` or persisted storage: adopting it — wiping this device's
-  // vault and calling `protocol.restore` — is Task 11's explicit, user-gated
+  // of `Secret` or persisted storage: adopting it — wiping this device's
+  // secret and calling `protocol.restore` — is Task 11's explicit, user-gated
   // step, and nothing here performs it or survives a reload to retry it
   // automatically. Losing an unconfirmed offer on refresh is the safe
   // direction; the source's next sync round re-offers it.
 
   // The last automatic replica sync round that sent nothing is the engine's
-  // (`runtimeState.replicaAutoSyncOutcome`): the trigger runs there, so a vault
+  // (`runtimeState.replicaAutoSyncOutcome`): the trigger runs there, so a secret
   // off screen still mirrors — and still records a round that sent nothing.
   const replicaAutoSyncOutcome = runtimeState.replicaAutoSyncOutcome
 
@@ -365,10 +369,10 @@ function OwnerPage({ runtime, requestedTab }: Props) {
   // mode — so it does not read this. Fed by the roster poll that already runs
   // below — an earlier version of the side panel ran a second poll of its own,
   // which is what let the two disagree about a row's status.
-  // Fed by the manager's shared roster poll, which reads once for every vault.
+  // Fed by the manager's shared roster poll, which reads once for every secret.
   const [replicaRows, setReplicaRows] = useState<ReplicaView[]>(() => {
     const roster = manager.roster()
-    return roster ? replicaViews(roster, loadReplicaState(vault.id)) : []
+    return roster ? replicaViews(roster, loadReplicaState(secret.id)) : []
   })
   /**
    * A helper provisioned for an Add Replica attempt whose pairing then failed.
@@ -393,8 +397,8 @@ function OwnerPage({ runtime, requestedTab }: Props) {
   const refreshStoredMembers = useCallback(() => {
     const secretId = secretIdRef.current
     if (!secretId) return
-    setStoredMembers(listReplicaMembers(`vault:${vault.id}`, secretId))
-  }, [vault.id])
+    setStoredMembers(listReplicaMembers(secretNamespace(secret.id), secretId))
+  }, [secret.id])
 
   /**
    * Recompute the projection from the roster already in hand.
@@ -412,10 +416,10 @@ function OwnerPage({ runtime, requestedTab }: Props) {
 
     const snapshot = manager.roster()
     if (!snapshot) return
-    setReplicaRows(replicaViews(snapshot, loadReplicaState(vault.id)))
+    setReplicaRows(replicaViews(snapshot, loadReplicaState(secret.id)))
     // `refreshStoredMembers` is itself a stable callback over the same owner id.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vault.id])
+  }, [secret.id])
 
   /**
    * Every actor id the node's latest roster lists, or `null` before the first
@@ -433,16 +437,16 @@ function OwnerPage({ runtime, requestedTab }: Props) {
   useEffect(() => {
     refreshStoredMembers()
     return manager.subscribeRoster(actors => {
-      setReplicaRows(replicaViews(actors, loadReplicaState(vault.id)))
+      setReplicaRows(replicaViews(actors, loadReplicaState(secret.id)))
       setNodeActorIds(new Set(actors.map(a => a.id)))
       refreshStoredMembers()
     })
-  }, [manager, vault.id, refreshStoredMembers])
+  }, [manager, secret.id, refreshStoredMembers])
 
-  // A restore rebinds the vault to the recovered secret, and the group it
-  // restored lives in that secret's partition: read it once the vault names it,
+  // A restore rebinds this secret to the recovered DeRec secret id, and the group it
+  // restored lives in that id's partition: read it once the record names it,
   // rather than on whichever roster change happens to come next.
-  useEffect(() => refreshStoredMembers(), [vault.secretId, refreshStoredMembers])
+  useEffect(() => refreshStoredMembers(), [secret.secretId, refreshStoredMembers])
 
   /**
    * The replica channel whose fingerprint comparison is on screen, or `null`.
@@ -461,7 +465,7 @@ function OwnerPage({ runtime, requestedTab }: Props) {
    * Both are confirmed. Forget is silent on the wire, so the user has to be
    * told the peer keeps mirroring before it happens; Remove from group erases
    * the evicted device's copy, and when that device is the source it erases
-   * the vault's original. See `ReplicaRemovalDialog`.
+   * the secret's original. See `ReplicaRemovalDialog`.
    */
   const [removalRequest, setRemovalRequest] = useState<ReplicaRemovalRequest | null>(null)
 
@@ -480,7 +484,7 @@ function OwnerPage({ runtime, requestedTab }: Props) {
   /**
    * Spent adoption verdicts, keyed by channel — deliberately not by version.
    *
-   * The source re-sends the mirrored vault every round, so a failed attempt is
+   * The source re-sends the mirrored secret every round, so a failed attempt is
    * always followed by a v+1 offer. Keying by channel is what stops that newer
    * offer from re-arming the destructive confirm with the prior failure's
    * evidence erased.
@@ -488,7 +492,7 @@ function OwnerPage({ runtime, requestedTab }: Props) {
   const [adoptionFailures, setAdoptionFailures] = useState<Record<string, RestoreFailure>>({})
 
 
-  // Outgoing-unpair confirmation: when the Vault clicks "Unpair" on a paired
+  // Outgoing-unpair confirmation: when the owner clicks "Unpair" on a paired
   // channel, surface a modal so the user sees an immediate response (and
   // can't fire a second request before the first is processed).
   const [outgoingUnpairConfirmation, setOutgoingUnpairConfirmation] = useState<OutgoingUnpairConfirmation | null>(null)
@@ -513,14 +517,14 @@ function OwnerPage({ runtime, requestedTab }: Props) {
   const [linkVersion, setLinkVersion] = useState(0)
   // Paired channels grouped by their channel-link connected component.
   const linkGroups = useLinkGroups({
-    participants: vault.participants,
-    mainChannels: vault.mainChannels,
+    participants: secret.participants,
+    mainChannels: secret.mainChannels,
     linkVersion,
     getChannelStore: () => ownInstance()?.channelStore ?? null,
     getSecretId: () => secretIdRef.current,
   })
 
-  // ── Vault engine ───────────────────────────────────────────────────────────
+  // ── Secret engine ──────────────────────────────────────────────────────────
   //
   // The engine is the manager's, not this page's. The page attaches the things
   // only a DOM can do; while it is not mounted they are no-ops and the engine
@@ -556,30 +560,30 @@ function OwnerPage({ runtime, requestedTab }: Props) {
     [runtime],
   )
 
-  /** The vault's protocol instance, or null before it has started. */
+  /** The secret's protocol instance, or null before it has started. */
   function ownInstance(): ProtocolInstance | null {
     return runtimeRef.current?.instance() ?? null
   }
 
   /**
-   * The secret this vault protects.
+   * The DeRec secret id this secret protects under.
    *
    * Still a ref so the ~20 store-reading call sites are untouched, but sourced
    * from the runtime: refs initialise during render where effects do not, and
    * anything reading a secret-partitioned store on mount would otherwise
    * address the empty partition and find nothing.
    */
-  const secretIdRef = useRef<string>(vault.secretId)
-  secretIdRef.current = vault.secretId
+  const secretIdRef = useRef<string>(secret.secretId)
+  secretIdRef.current = secret.secretId
 
-  /** The replica flows' view of this vault's protocol, lock-guarded; owned by the engine. */
+  /** The replica flows' view of this secret's protocol, lock-guarded; owned by the engine. */
   const replicaProtocol = runtime.replicaProtocol
 
   // Set when a wipe-and-adopt erased this device's namespace and then failed.
   // The page is then not merely showing an error — it is unusable, and says so.
   // Terminal by design: no retry, no automatic repair, and no path back until
   // the user erases this browser's DeRec data. The engine persists it, so a
-  // reload of the unchanged vault record stays blocked.
+  // reload of the unchanged secret record stays blocked.
   const adoptionBlock = runtimeState.blockedBy
 
   /** The open item of `kind`, if any. The engine owns these; this only reads. */
@@ -661,7 +665,7 @@ function OwnerPage({ runtime, requestedTab }: Props) {
   const createOwnerContact = (mode?: ContactModeKey) => runtime.createContact(mode)
 
   function getParticipantFunctions(participantId: string) {
-    const participant = vault.participants.find(h => h.id === participantId)
+    const participant = secret.participants.find(h => h.id === participantId)
 
     // Browser-managed participants (other owners) post their own contact via the
     // browser-contact endpoint. Pairing is always initiated by Alice's WASM.
@@ -738,28 +742,42 @@ function OwnerPage({ runtime, requestedTab }: Props) {
   const ownerStartPairing = (contact: ContactMessage, role: PairingRole, peerName?: string) =>
     runtime.startPairing(contact, role, peerName)
 
-  async function ownerAddSecret(name: string, data: string, choice: PublishChoice): Promise<PublishedRound | null> {
-    const round = await runtime.addSecret(name, data, choice)
+  async function ownerAddItem(name: string, data: string, choice: PublishChoice): Promise<PublishedRound | null> {
+    const round = await runtime.addItem(name, data, choice)
     if (round !== null) setActiveTab('secrets')
     return round
   }
 
-  const ownerRemoveSecret = (secretId: string, choice: PublishChoice) => runtime.removeSecret(secretId, choice)
+  const ownerRemoveItem = (itemId: string, choice: PublishChoice) => runtime.removeItem(itemId, choice)
 
-  // Adding and removing a secret both publish a new bag version, so both need
+  // Adding and removing an item both publish a new bag version, so both need
   // enough channels that can actually receive a share. A channel the library
   // still holds `Pending` — a fingerprint nobody confirmed, or one refused — is
   // sent nothing, so it does not count towards that.
   //
-  // Only what no publish could satisfy blocks: the dialogs can change the
-  // threshold and the weights, so falling short of the defaults only warns.
-  const publishPolicy = resolvePublishPolicy(vault)
-  const shareTargets = publishTargets(vault.participants, unconfirmedChannelIds)
+  // The threshold and weights are set on the Channels tab and every publish
+  // takes them as they are, so anything wrong with them blocks publishing.
+  const publishPolicy = resolvePublishPolicy(secret)
+  const shareTargets = publishTargets(secret.participants, unconfirmedChannelIds)
+  const thresholdShown = thresholdOutcome(shareTargets, publishPolicy)
   const shareTargetCount = shareTargets.length
-  const readiness = publishReadiness(shareTargets, publishPolicy.defaultThreshold)
-  const publishBlockedReason = vault.replicaConflict
-    ? replicaConflictBlockReason(vault.replicaConflict)
-    : readiness.blocked
+  const readiness = publishReadiness(shareTargets, publishPolicy)
+  const sharingIssues = sharingProblems(shareTargets, publishPolicy)
+  // Rounds are settled one at a time: nothing that publishes starts while one
+  // is open — see `roundInProgressReason`.
+  const roundBusyReason = runtime.roundInProgressReason()
+  const publishBlockedReason = secret.replicaConflict
+    ? replicaConflictBlockReason(secret.replicaConflict)
+    : roundBusyReason ?? readiness.blocked
+
+  // The Settings tab saves everything at once; each part is stored only when it
+  // changed, so saving one does not log the others or restart the schedule's clock.
+  const saveSecretSettings = (next: SecretSettingsValues) => {
+    const current = { protocol: secretConfig, policy: publishPolicy, schedule: secret.verificationSchedule ?? null }
+    if (!sameSettings({ ...current, protocol: next.protocol }, current)) runtime.setProtocolSettings(next.protocol)
+    if (!sameSettings({ ...current, policy: next.policy }, current)) runtime.updatePublishPolicy(next.policy)
+    if (scheduleChanged(current.schedule, next.schedule)) runtime.setVerificationSchedule(next.schedule)
+  }
 
   const ownerVerifyShares = (version: number) => runtime.verifyShares(version)
   const ownerRequestDiscovery = () => runtime.requestDiscovery()
@@ -770,15 +788,15 @@ function OwnerPage({ runtime, requestedTab }: Props) {
     participantChannelIds: bigint[],
   ) => runtime.recover(secretId, version, label, participantChannelIds)
 
-  /** Restore this vault from a recovered secret, then return to the participants. */
-  async function handleRestoreFromBag(secret: RecoveredSecret): Promise<void> {
-    if (await runtime.restoreFromRecovered(secret)) setActiveTab('participants')
+  /** Restore this secret from a recovered one, then return to the participants. */
+  async function handleRestoreFromBag(recovered: RecoveredSecret): Promise<void> {
+    if (await runtime.restoreFromRecovered(recovered)) setActiveTab('participants')
   }
 
   // ── Replica actions ────────────────────────────────────────────────────────
 
   /**
-   * Pair a helper as a replica of this owner's vault.
+   * Pair a helper as a replica of this owner's secret.
    *
    * There is no such thing as a provisioned *replica* any more: a replica is a
    * pairing mode, and the counterparty is an ordinary helper that gains a
@@ -810,13 +828,13 @@ function OwnerPage({ runtime, requestedTab }: Props) {
    * goes through `pairReplica`, which resolves it via `senderKindFor`.
    */
   /**
-   * Join a recovered vault's replica group through `member`, when this node
+   * Join a recovered secret's replica group through `member`, when this node
    * runs it: find its actor by the endpoint it advertised, and pair with it as
    * its replica destination. The node mints the member's contact from its
    * replica instance for the recovered secret, so nothing is copied by hand.
-   * Adoption then asks before this device's vault is replaced.
+   * Adoption then asks before this device's secret is replaced.
    */
-  async function handleJoinThrough(secret: RecoveredSecret, member: RecoveredSecretReplica): Promise<void> {
+  async function handleJoinThrough(recovered: RecoveredSecret, member: RecoveredSecretReplica): Promise<void> {
     const memberUris = new Set(member.transports.map(t => t.uri))
     const actors = await apiGetActors()
     const actor = actors.find(a =>
@@ -830,11 +848,11 @@ function OwnerPage({ runtime, requestedTab }: Props) {
     }
     await pairReplica({
       protocol: replicaProtocol,
-      vaultId: vault.id,
+      localSecretId: secret.id,
       replicaId: actor.id,
       replicaName: name,
       role: 'replica_destination',
-      ownerSecretId: secret.secretId,
+      ownerSecretId: recovered.secretId,
     })
   }
 
@@ -857,12 +875,12 @@ function OwnerPage({ runtime, requestedTab }: Props) {
 
     await pairReplica({
       protocol: replicaProtocol,
-      vaultId: vault.id,
+      localSecretId: secret.id,
       replicaId: helperId,
       replicaName: name,
       role: 'replica_source',
-      // What makes this a replica of *this* vault rather than a helper of it.
-      ownerSecretId: vault.secretId,
+      // What makes this a replica of *this* secret rather than a helper of it.
+      ownerSecretId: secret.secretId,
     })
 
     pendingReplicaHelperRef.current = null
@@ -950,16 +968,13 @@ function OwnerPage({ runtime, requestedTab }: Props) {
   ): Promise<void> {
     setRemovingReplicaIds(prev => new Set(prev).add(peerReplicaId))
     try {
-      await runtime.announceReplicaEviction(peerReplicaId)
-
-      // Publish the roster the announcement just changed. A vault with no
-      // secret has no roster to publish, so the eviction stays pending until
-      // one exists — there is nothing to carry it.
-      if (runtime.state().vault.secretBag) {
-        await runtime.syncReplicasNow()
-      } else {
+      // Announces the removal, then publishes the roster that omits the member
+      // as the next version. A secret with no items has no roster to publish,
+      // so the removal stays pending until one exists.
+      const outcome = await runtime.evictReplica(peerReplicaId)
+      if (outcome === 'announced') {
         reportInfo(
-          'Eviction announced. It completes on the next protect round — this vault holds no secret to publish yet.',
+          'Removal announced. It completes on the next publish — this secret holds no items to publish yet.',
         )
       }
 
@@ -1000,11 +1015,11 @@ function OwnerPage({ runtime, requestedTab }: Props) {
    * That is a real cost, which is why the confirmation says so.
    */
   function handleForgetReplica(channelId: string, name: string): void {
-    forgetReplicaChannel(vault.id, channelId)
+    forgetReplicaChannel(secret.id, channelId)
 
-    const next: Vault = {
-      ...vaultRef.current,
-      participants: vaultRef.current.participants.filter(p => p.channelId !== channelId),
+    const next: Secret = {
+      ...secretRef.current,
+      participants: secretRef.current.participants.filter(p => p.channelId !== channelId),
     }
     runtime.commit(next)
 
@@ -1064,7 +1079,7 @@ function OwnerPage({ runtime, requestedTab }: Props) {
     patch: Partial<ReplicaRecord>,
     channelId: string | null,
   ) {
-    recordConfirmation(vault.id, replicaId, patch)
+    recordConfirmation(secret.id, replicaId, patch)
     refreshReplicaRows()
     // A mirrored copy that arrived before this device confirmed was held back;
     // this confirmation is what makes it safe to offer.
@@ -1078,7 +1093,7 @@ function OwnerPage({ runtime, requestedTab }: Props) {
    * kept visible; without this the channel looked merely unanswered.
    */
   function handleReplicaRefused(replica: ReplicaView): void {
-    recordConfirmation(vault.id, replica.id, { refused: true })
+    recordConfirmation(secret.id, replica.id, { refused: true })
     refreshReplicaRows()
     log({
       role: 'owner',
@@ -1091,24 +1106,24 @@ function OwnerPage({ runtime, requestedTab }: Props) {
 
   /**
    * Record that the person, on a destination, declined to adopt the peer's
-   * vault. The fingerprint was not confirmed — that is the refusal, as far as
+   * secret. The fingerprint was not confirmed — that is the refusal, as far as
    * the library is concerned — so this only keeps the row from reading as an
    * unanswered prompt.
    */
   function handleReplicaAdoptionDeclined(replica: ReplicaView): void {
-    recordConfirmation(vault.id, replica.id, { adoptionDeclined: true, adoptionConsented: false })
+    recordConfirmation(secret.id, replica.id, { adoptionDeclined: true, adoptionConsented: false })
     refreshReplicaRows()
     log({
       role: 'owner',
       flow: 'pairing',
       step: 'replica_adoption_declined',
-      description: `Declined to adopt ${replica.name}'s vault (channel ${replica.channelId}) — the fingerprint was not confirmed, so this vault is unchanged`,
+      description: `Declined to adopt ${replica.name}'s secret (channel ${replica.channelId}) — the fingerprint was not confirmed, so this secret is unchanged`,
       payload: { channelId: replica.channelId, peerName: replica.name },
     })
   }
 
   /**
-   * Mirror this vault on demand, from a replica row.
+   * Mirror this secret on demand, from a replica row.
    *
    * The round reaches every `Paired` destination, not just this row — the
    * library picks its own targets — so the row is only where the request is
@@ -1166,10 +1181,10 @@ function OwnerPage({ runtime, requestedTab }: Props) {
   }
 
   /**
-   * Adopt a mirrored vault offered by a replica source.
+   * Adopt a mirrored secret offered by a replica source.
    *
    * Destructive, and gated behind `ReplicaAdoptionDialog` — this only runs on an
-   * explicit confirmation. A failure blocks the vault inside the engine and is
+   * explicit confirmation. A failure blocks the secret inside the engine and is
    * re-thrown unchanged, so the dialog shows the library's own words.
    */
   async function handleAdoptReplicaSecret(adoption: PendingReplicaAdoption): Promise<void> {
@@ -1192,10 +1207,10 @@ function OwnerPage({ runtime, requestedTab }: Props) {
       secretShares: [],
     }
 
-    // Committed before pairing starts, onto the vault as it is now rather than
+    // Committed before pairing starts, onto the secret as it is now rather than
     // the one this render saw: the poll keeps folding while the node answers,
     // and an early reply needs this row to land on.
-    const current = runtime.state().vault
+    const current = runtime.state().secret
     runtime.commit({ ...current, participants: [...current.participants, newParticipant] })
 
     log({
@@ -1236,6 +1251,15 @@ function OwnerPage({ runtime, requestedTab }: Props) {
     peerName: string,
     participantId: string,
   ): Promise<void> {
+    // Unpairing a helper publishes a new version, so it waits for an open
+    // round like any publish. Said here rather than in the dialog: the
+    // dialog's failure state offers to forget the channel, which this is not.
+    const busy = runtime.roundInProgressReason()
+    if (busy) {
+      setOutgoingUnpairConfirmation(null)
+      reportError(`Unpair of ${peerName} not sent`, new Error(busy), { channelId })
+      return
+    }
     setUnpairingChannelIds(prev => new Set(prev).add(channelId))
     const result = await runtime.unpair(channelId, peerName, participantId)
     if (result.dispatched) return
@@ -1284,13 +1308,13 @@ function OwnerPage({ runtime, requestedTab }: Props) {
    * have no protocol state to tear down, so we drop them locally.
    */
   function handleTogglePair(participantId: string) {
-    const participant = vault.participants.find(h => h.id === participantId)
+    const participant = secret.participants.find(h => h.id === participantId)
     if (!participant) return
 
     if (participant.connectionStatus !== 'paired' || !participant.channelId) {
       runtime.commit({
-        ...vault,
-        participants: vault.participants.filter(p => p.id !== participantId),
+        ...secret,
+        participants: secret.participants.filter(p => p.id !== participantId),
       })
       return
     }
@@ -1299,7 +1323,7 @@ function OwnerPage({ runtime, requestedTab }: Props) {
     // click (the button is also disabled in the UI, but guard anyway).
     if (unpairingChannelIds.has(participant.channelId)) return
 
-    const unpairAck = vaultConfig.unpairAck
+    const unpairAck = secretConfig.unpairAck
     if (unpairAck === 'not_required') {
       void dispatchUnpair(participant.channelId, participant.name, participantId)
       return
@@ -1361,7 +1385,7 @@ function OwnerPage({ runtime, requestedTab }: Props) {
       const seconds = Math.round(flowTimeoutMs / 1000)
       // What is reported has to match what happened: the library may already
       // have torn the channel down on its own deadline.
-      const stillPaired = vaultRef.current.participants.some(p => p.channelId === cid)
+      const stillPaired = secretRef.current.participants.some(p => p.channelId === cid)
       if (!stillPaired) {
         setOutgoingUnpairConfirmation(cur => (cur?.channelId === cid ? null : cur))
         reportInfo(
@@ -1413,21 +1437,21 @@ function OwnerPage({ runtime, requestedTab }: Props) {
     }
   }
 
-  // A wipe-and-adopt erased this device's vault and then failed. Everything
+  // A wipe-and-adopt erased this device's secret and then failed. Everything
   // below this point would operate over the erased namespace, so nothing below
   // renders. The library's own words are shown verbatim — this screen is the
   // only place they now live, since the dialog that raised them is unmounted
   // with the rest of the page.
   if (adoptionBlock) {
     return (
-      <ReplicaAdoptionBlockedScreen failure={adoptionBlock} vaultName={vault.name} />
+      <ReplicaAdoptionBlockedScreen failure={adoptionBlock} secretName={secret.name} />
     )
   }
 
   // Show a setup gate while auto-pairing is in progress.
   if (autoPairingIds.length > 0) {
     const pairedCount = autoPairingIds.filter(id =>
-      vault.participants.some(h => h.id === id && h.connectionStatus === 'paired'),
+      secret.participants.some(h => h.id === id && h.connectionStatus === 'paired'),
     ).length
     const total = autoPairingIds.length
 
@@ -1454,7 +1478,7 @@ function OwnerPage({ runtime, requestedTab }: Props) {
 
         <ul className="share-progress-list" role="list">
           {autoPairingIds.map(id => {
-            const participant = vault.participants.find(h => h.id === id)
+            const participant = secret.participants.find(h => h.id === id)
             const isPaired = participant?.connectionStatus === 'paired'
             return (
               <li
@@ -1483,7 +1507,7 @@ function OwnerPage({ runtime, requestedTab }: Props) {
   // countdown runs against the deadline the library will actually drop the
   // channel on.
   const protocolTimeoutSecs =
-    vaultConfig.protocolTimeoutSecs
+    secretConfig.protocolTimeoutSecs
 
   const replicaViewByChannelId = new Map(
     replicaRows.flatMap(view => (view.channelId === null ? [] : [[view.channelId, view] as const])),
@@ -1498,7 +1522,7 @@ function OwnerPage({ runtime, requestedTab }: Props) {
   // messages, so counting one here would put a channel in the tally of what
   // protects this secret when it protects nothing.
   const pairedChannels = splitPairedChannels(
-    vault.participants.filter(p => !p.channelId || !unconfirmedChannelIds.has(p.channelId)),
+    secret.participants.filter(p => !p.channelId || !unconfirmedChannelIds.has(p.channelId)),
   )
 
   /**
@@ -1511,7 +1535,7 @@ function OwnerPage({ runtime, requestedTab }: Props) {
    * and turning that peer away on every attempt to pair again.
    */
   // Read, never minted, here: see `readReplicaId`. Empty matches no member.
-  const ownReplicaId = readReplicaId(vault.id)?.toString() ?? ''
+  const ownReplicaId = readReplicaId(secret.id)?.toString() ?? ''
   const knownReplicaIds = new Set(
     replicaRows.flatMap(view => (view.peerReplicaId === null ? [] : [view.peerReplicaId])),
   )
@@ -1530,21 +1554,21 @@ function OwnerPage({ runtime, requestedTab }: Props) {
   const fingerprintReplica =
     fingerprintChannelId === null ? null : replicaViewByChannelId.get(fingerprintChannelId) ?? null
 
-  // Provisioned helpers this vault still holds a channel to that the node no
+  // Provisioned helpers this secret still holds a channel to that the node no
   // longer lists. The roster prunes unpaired placeholders on its own; a paired
   // row is protocol state and stays, marked rather than counted as on the node.
   const removedFromNodeIds: ReadonlySet<string> =
     nodeActorIds === null
       ? new Set()
       : new Set(
-          vault.participants
+          secret.participants
             .filter(p => p.channelId !== '' && !p.browserManaged && !nodeActorIds.has(p.id))
             .map(p => p.id),
         )
 
-  // Who holds the rival copy of a diverged vault, by the name this device
+  // Who holds the rival copy of a diverged secret, by the name this device
   // knows them under.
-  const replicaConflict = vault.replicaConflict ?? null
+  const replicaConflict = secret.replicaConflict ?? null
   const conflictRivalId = replicaConflict?.rivalReplicaId ?? null
   const conflictRivalLabel =
     conflictRivalId === null
@@ -1565,13 +1589,13 @@ function OwnerPage({ runtime, requestedTab }: Props) {
     <div className="owner-page">
       <div className="owner-info-bar">
         <div className="owner-badge">
-          <span className="meta-label">Vault</span>
-          <span className="owner-name">{vault.name}</span>
+          <span className="meta-label">Secret</span>
+          <span className="owner-name">{secret.name}</span>
         </div>
 
         <div className="header-transport">
-          <span className="protocol-badge">{vault.transport.protocol.toUpperCase()}</span>
-          <code className="header-uri">{vault.transport.uri}</code>
+          <span className="protocol-badge">{secret.transport.protocol.toUpperCase()}</span>
+          <code className="header-uri">{secret.transport.uri}</code>
         </div>
 
         <div className="header-actions">
@@ -1579,46 +1603,45 @@ function OwnerPage({ runtime, requestedTab }: Props) {
             className="secondary"
             onClick={() => {
               setIdentityOpen(true)
-              // Read where the node lists this vault now, so the dialog does
+              // Read where the node lists this secret now, so the dialog does
               // not decide from a roster tick that has not run yet.
               void runtime.refreshNodeAddress()
             }}
-            title="Change this vault’s name or endpoint, and tell every paired peer"
+            title="Change this secret’s name or endpoint, and tell every paired peer"
           >
             Edit Identity
           </button>
+          {/* A completed pairing publishes the secret, so pairing waits for an
+              open round like every other publish. */}
           <button
-            className="secondary"
-            onClick={() => setVaultSettingsOpen(true)}
-            title="Default threshold, which versions helpers keep, and cleanup of old verification copies"
+            className="primary"
+            onClick={() => setShareOpen(true)}
+            disabled={roundBusyReason !== null}
+            title={roundBusyReason ?? undefined}
           >
-            Vault Settings
-          </button>
-          <button className="primary" onClick={() => setShareOpen(true)}>
             Share Contact
           </button>
-          <button className="secondary" onClick={() => setPairOpen(true)}>
+          <button
+            className="secondary"
+            onClick={() => setPairOpen(true)}
+            disabled={roundBusyReason !== null}
+            title={roundBusyReason ?? undefined}
+          >
             Pair
           </button>
-          {/* No guard against a round already being in flight: the library
-              keys each publishing round by its version, so concurrent rounds
-              accumulate independently. They are routine here — pairing a
-              helper auto-publishes, and confirming a gated channel publishes
-              from `verifyFingerprint` — so blocking on one would disable this
-              button for reasons the user never caused. */}
           <button
             className="primary"
             onClick={() => setProtectOpen(true)}
             disabled={publishBlockedReason !== null}
             title={publishBlockedReason ?? undefined}
           >
-            Add Secret
+            Add Item
           </button>
         </div>
       </div>
 
       {/*
-        The standing notice for a mirrored vault on offer, at the top of the
+        The standing notice for a mirrored secret on offer, at the top of the
         page where it cannot scroll out of sight. It is the way back into the
         decision whenever the dialog is not on screen — after a reload restores
         the offer, or while a fingerprint comparison is open over it.
@@ -1645,17 +1668,17 @@ function OwnerPage({ runtime, requestedTab }: Props) {
           >
             {adoptionFailure ? (
               <>
-                An earlier attempt to adopt {adoptionLabel}’s vault on this channel failed
-                after this device’s own vault was erased, and will not be retried.{' '}
+                An earlier attempt to adopt {adoptionLabel}’s secret on this channel failed
+                after this device’s own secret was erased, and will not be retried.{' '}
                 {adoptionLabel} has since re-sent the copy (v{pendingReplicaAdoption.version}),
                 but adopting it again is blocked until the device has been inspected.
               </>
             ) : (
               <>
-                {adoptionLabel} sent this device a mirrored copy of their vault (v
+                {adoptionLabel} sent this device a mirrored copy of their secret (v
                 {pendingReplicaAdoption.version}, {pendingReplicaAdoption.shares.length} helper
                 share{pendingReplicaAdoption.shares.length === 1 ? '' : 's'}). Adopting it
-                erases everything this vault holds on this device. Nothing has been erased yet. Dismiss to
+                erases everything this secret holds on this device. Nothing has been erased yet. Dismiss to
                 discard the offer; the source's next sync will re-offer it.
               </>
             )}
@@ -1666,16 +1689,16 @@ function OwnerPage({ runtime, requestedTab }: Props) {
       {replicaConflict && (
         <ReplicaConflictPanel
           conflict={replicaConflict}
-          mySecrets={vault.secretBag?.currentVersion.secrets ?? []}
+          myItems={secret.itemBag?.currentVersion.items ?? []}
           rivalLabel={conflictRivalLabel}
           onFetchRival={() => runtime.fetchReplicaConflictRival()}
-          onResolve={secrets => runtime.resolveReplicaConflict(secrets)}
+          onResolve={items => runtime.resolveReplicaConflict(items)}
         />
       )}
 
       <CorruptShareWarnings
-        reports={vault.corruptShareReports ?? []}
-        participants={vault.participants}
+        reports={secret.corruptShareReports ?? []}
+        participants={secret.participants}
         // Always confirmed, whatever the unpair policy: this is a suggestion
         // the app makes, not a click the owner made on the helper's row.
         onUnpair={participant =>
@@ -1691,7 +1714,7 @@ function OwnerPage({ runtime, requestedTab }: Props) {
       {shareOpen && (
         <ShareContactModal
           title="Share Contact"
-          transport={vault.transport}
+          transport={secret.transport}
           createContact={createOwnerContact}
           onClose={() => setShareOpen(false)}
         />
@@ -1713,12 +1736,12 @@ function OwnerPage({ runtime, requestedTab }: Props) {
             addPendingPairing(channelId, participantId, peerTransportUri)
           }
           resolveParticipantId={contact =>
-            vault.participants.find(p => p.transport.uri === advertisedEndpoints(contact)[0]?.uri)?.id
+            secret.participants.find(p => p.transport.uri === advertisedEndpoints(contact)[0]?.uri)?.id
           }
           startPairing={ownerStartPairing}
           // Browser-to-browser pairing does not go through the backend's
           // `start-pairing` route, so it is not bound by that route's
-          // Vault/Helper contract: all four roles are on offer here, and a
+          // Owner/Helper contract: all four roles are on offer here, and a
           // browser replica is established by picking one of them.
           roleOptions={BROWSER_PAIRING_ROLE_OPTIONS}
           defaultRole={pairDefaultRole}
@@ -1726,39 +1749,23 @@ function OwnerPage({ runtime, requestedTab }: Props) {
       )}
 
       {protectOpen && (
-        <AddSecretModal
-          participants={vault.participants}
+        <AddItemModal
+          participants={secret.participants}
           pendingChannelIds={unconfirmedChannelIds}
-          secretBag={vault.secretBag}
+          itemBag={secret.itemBag}
           publishContext={runtime.publishContext()}
           onClose={() => { setProtectOpen(false); runtimeRef.current?.setBusy(false) }}
-          onAddSecret={ownerAddSecret}
+          onAddItem={ownerAddItem}
         />
       )}
 
-      {vaultSettingsOpen && (
-        <VaultSettingsModal
-          policy={publishPolicy}
-          schedule={vault.verificationSchedule ?? null}
-          lastPublishedThreshold={vault.secretBag?.currentVersion.threshold ?? null}
-          onSave={(next, schedule) => {
-            runtime.updatePublishPolicy(next)
-            // Re-set only on a change, so saving other settings does not restart the clock.
-            const current = vault.verificationSchedule ?? null
-            if (current?.every !== schedule?.every || current?.unit !== schedule?.unit) {
-              runtime.setVerificationSchedule(schedule)
-            }
-          }}
-          onClose={() => setVaultSettingsOpen(false)}
-        />
-      )}
 
       {identityOpen && (
         <EditIdentityModal
-          vaultId={vault.id}
-          currentName={vault.name}
-          currentEndpoint={vault.transport.uri}
-          pinned={vault.ownTransportPinned ?? false}
+          localSecretId={secret.id}
+          currentName={secret.name}
+          currentEndpoint={secret.transport.uri}
+          pinned={secret.ownTransportPinned ?? false}
           nodeAddress={runtime.nodeAdvertisedAddress()}
           rosterLoaded={runtime.nodeListingRead()}
           timeoutSecs={protocolTimeoutSecs}
@@ -1771,7 +1778,7 @@ function OwnerPage({ runtime, requestedTab }: Props) {
 
       {republishOpen && (
         <RepublishModal
-          participants={vault.participants}
+          participants={secret.participants}
           pendingChannelIds={unconfirmedChannelIds}
           publishContext={runtime.publishContext()}
           onClose={() => { setRepublishOpen(false); runtimeRef.current?.setBusy(false) }}
@@ -1779,35 +1786,38 @@ function OwnerPage({ runtime, requestedTab }: Props) {
         />
       )}
 
-      {secretToRemove && (
-        <RemoveSecretModal
-          secret={secretToRemove}
-          participants={vault.participants}
+      {itemToRemove && (
+        <RemoveItemModal
+          item={itemToRemove}
+          participants={secret.participants}
           pendingChannelIds={unconfirmedChannelIds}
           publishContext={runtime.publishContext()}
-          onClose={() => { setSecretToRemove(null); runtimeRef.current?.setBusy(false) }}
-          onRemoveSecret={ownerRemoveSecret}
+          onClose={() => { setItemToRemove(null); runtimeRef.current?.setBusy(false) }}
+          onRemoveItem={ownerRemoveItem}
+        />
+      )}
+
+      {secret.unsettledRound && (
+        <UnsettledRoundBanner
+          key={secret.unsettledRound.version}
+          round={secret.unsettledRound}
+          onRetry={() => runtime.retryUnsettledRound()}
+          onDismiss={() => runtime.dismissUnsettledRound()}
+          retryDisabledReason={publishBlockedReason}
         />
       )}
 
       {(() => {
         const pairedCount = shareTargetCount
         const recommended = effectiveRecommended(
-          vault.recommendedParticipants,
-          vault.minParticipants,
-          vault.participants.length,
+          secret.recommendedParticipants,
+          secret.minParticipants,
+          secret.participants.length,
         )
         if (readiness.blocked) {
           return (
             <div className="owner-banner owner-banner--error" role="alert">
               Secret protection is disabled. {readiness.blocked}.
-            </div>
-          )
-        }
-        if (readiness.shortOfDefault) {
-          return (
-            <div className="owner-banner owner-banner--warning" role="status">
-              {readiness.shortOfDefault}
             </div>
           )
         }
@@ -1835,11 +1845,12 @@ function OwnerPage({ runtime, requestedTab }: Props) {
                 // the tab claim fewer replicas than it goes on to list.
                 count: pairedChannels.replicas.length + memberRows.length,
               },
-              { id: 'secrets', label: 'Secrets', count: vault.secretBag?.currentVersion.secrets.length ?? 0 },
+              { id: 'secrets', label: 'Items', count: secret.itemBag?.currentVersion.items.length ?? 0 },
               { id: 'copies', label: 'Verification Copies', count: copiesContext.usage.length },
-              { id: 'shares', label: 'Shares', count: (vault.heldShares ?? []).length },
-              { id: 'recovery', label: 'Recovery', count: (vault.recoveredSecrets ?? []).length },
-              { id: 'notifications', label: 'Notifications', count: unreadCount(vault.notifications).total },
+              { id: 'shares', label: 'Shares', count: (secret.heldShares ?? []).length },
+              { id: 'recovery', label: 'Recovery', count: (secret.recoveredSecrets ?? []).length },
+              { id: 'notifications', label: 'Notifications', count: unreadCount(secret.notifications).total },
+              { id: 'settings', label: 'Settings' },
             ]}
             active={activeTab}
             onSelect={setActiveTab}
@@ -1847,10 +1858,19 @@ function OwnerPage({ runtime, requestedTab }: Props) {
 
           <div className="tab-panel" role="tabpanel">
             {activeTab === 'participants' && (
+              <SharingSettingsPanel
+                helpers={shareTargets}
+                policy={publishPolicy}
+                lastPublishedThreshold={secret.itemBag?.currentVersion.threshold ?? null}
+                onSetThreshold={setting => runtime.setThreshold(setting)}
+              />
+            )}
+            {activeTab === 'participants' && (
               <PairedParticipantsList
                 groups={linkGroups}
-                committedVersions={committedVersionsOf(vault.secretBag)}
+                committedVersions={committedVersionsOf(secret.itemBag)}
                 unpairingChannelIds={unpairingChannelIds}
+                unpairDisabledReason={roundBusyReason}
                 onTogglePair={handleTogglePair}
                 onLink={handleLinkChannel}
                 defaultWeights={{
@@ -1858,10 +1878,11 @@ function OwnerPage({ runtime, requestedTab }: Props) {
                     defaultWeightFor(
                       publishPolicy,
                       channelId,
-                      participantWeight(vault.participants.find(p => p.channelId === channelId) ?? {}),
+                      participantWeight(secret.participants.find(p => p.channelId === channelId) ?? {}),
                     ),
-                  max: maxWeight(publishPolicy.defaultThreshold),
+                  maxFor: channelId => maxWeightFor(shareTargets, publishPolicy, channelId),
                   onSet: (channelId, weight) => runtime.setDefaultWeight(channelId, weight),
+                  problemFor: channelId => sharingIssues.weights[channelId] ?? null,
                 }}
               />
             )}
@@ -1887,11 +1908,12 @@ function OwnerPage({ runtime, requestedTab }: Props) {
                 replicaDiscoveryRunning={replicaDiscoveryRunning}
                 onRemoveFromGroup={handleRemoveFromGroup}
                 removingReplicaIds={removingReplicaIds}
+                publishBlockedReason={roundBusyReason}
                 onToggleOffline={replica => void handleToggleReplicaPeerOffline(replica)}
                 memberRows={memberRows}
-                vaultVersion={vault.secretBag?.currentVersion.version ?? null}
+                secretVersion={secret.itemBag?.currentVersion.version ?? null}
                 groupSourceReplicaId={
-                  vault.secretBag?.currentVersion.replicas?.members.find(m => m.role === 'Source')
+                  secret.itemBag?.currentVersion.replicas?.members.find(m => m.role === 'Source')
                     ?.replicaId ?? null
                 }
                 onRemoveMember={replicaId => {
@@ -1908,35 +1930,51 @@ function OwnerPage({ runtime, requestedTab }: Props) {
               />
             )}
             {activeTab === 'secrets' && (
-              <SecretBagPanel bag={vault.secretBag} participants={vault.participants} pendingRounds={vault.pendingProtectRounds ?? []} onVerify={ownerVerifyShares} onVerifyClose={() => runtimeRef.current?.setBusy(false)} onAddSecret={() => setProtectOpen(true)} onRemoveSecret={setSecretToRemove} removeDisabledReason={publishBlockedReason} onRemoveVersion={version => runtime.removeVersion(version)} lastAutoVerification={vault.verificationSchedule ? vault.lastAutoVerification : undefined} onRepublish={() => setRepublishOpen(true)} defaultThreshold={publishPolicy.defaultThreshold} />
+              <ItemBagPanel bag={secret.itemBag} participants={secret.participants} pendingRounds={secret.pendingProtectRounds ?? []} onVerify={ownerVerifyShares} onVerifyClose={() => runtimeRef.current?.setBusy(false)} onAddItem={() => setProtectOpen(true)} onRemoveItem={setItemToRemove} publishDisabledReason={publishBlockedReason} onRemoveVersion={version => runtime.removeVersion(version)} lastAutoVerification={secret.verificationSchedule ? secret.lastAutoVerification : undefined} onRepublish={() => setRepublishOpen(true)} defaultThreshold={thresholdShown.threshold} thresholdPercent={thresholdShown.percent} thresholdRaisedNote={thresholdRaisedText(thresholdShown, sharingTotal(shareTargets, publishPolicy))} />
             )}
             {activeTab === 'copies' && (
               <VerificationCopiesPanel
                 context={copiesContext}
-                bag={vault.secretBag}
+                bag={secret.itemBag}
                 autoCleanup={publishPolicy.proofCleanup}
                 onDelete={versions => runtime.cleanupProofs(versions)}
-                onOpenSettings={() => setVaultSettingsOpen(true)}
+                onOpenSettings={() => setActiveTab('settings')}
               />
             )}
             {activeTab === 'shares' && (
               <HeldSharesList
-                shares={vault.heldShares ?? []}
-                participants={vault.participants}
-                vaultId={vault.id}
-                secretId={vault.secretId}
+                shares={secret.heldShares ?? []}
+                participants={secret.participants}
+                localSecretId={secret.id}
+                secretId={secret.secretId}
+              />
+            )}
+            {activeTab === 'settings' && (
+              <SecretSettingsTab
+                key={secret.id}
+                values={{
+                  protocol: secretConfig,
+                  policy: publishPolicy,
+                  // Only what the tab edits: the stored schedule also carries
+                  // `since`, which would leave a saved form looking unsaved.
+                  schedule: secret.verificationSchedule
+                    ? { every: secret.verificationSchedule.every, unit: secret.verificationSchedule.unit }
+                    : null,
+                }}
+                awaitingRestart={runtime.settingsAwaitingRestart()}
+                onSave={saveSecretSettings}
               />
             )}
             {activeTab === 'notifications' && (
               <NotificationsPanel
-                notifications={vault.notifications ?? []}
+                notifications={secret.notifications ?? []}
                 onMarkRead={ids => runtime.markNotificationsRead(ids)}
                 onOpenLink={setActiveTab}
               />
             )}
             {activeTab === 'recovery' && (
               <RecoveryPanel
-                vault={vault}
+                secret={secret}
                 onRequestDiscovery={ownerRequestDiscovery}
                 onRecover={ownerRecoverSecret}
                 onRestoreFromBag={handleRestoreFromBag}
@@ -1954,7 +1992,7 @@ function OwnerPage({ runtime, requestedTab }: Props) {
           // Provisioned helpers only. Not `!p.browserManaged`: a browser peer
           // the roster could not identify has a synthetic id and no flag, and
           // would be listed here as if it lived on this node.
-          participants={vault.participants.filter(
+          participants={secret.participants.filter(
             p => canDrivePeerViaBackend(p) && !isReplicaChannel(p),
           )}
           replicaSection={
@@ -1971,9 +2009,10 @@ function OwnerPage({ runtime, requestedTab }: Props) {
           pairingCompletedSignal={pairingCompletedSignal}
           unconfirmedChannelIds={unconfirmedChannelIds}
           onConfirmFingerprint={channelId =>
-            maybeRaiseFingerprintGate(channelId, vaultRef.current)
+            maybeRaiseFingerprintGate(channelId, secretRef.current)
           }
           unpairingChannelIds={unpairingChannelIds}
+          unpairDisabledReason={roundBusyReason}
           removedFromNodeIds={removedFromNodeIds}
           grpcRelayEnabled={serverDefaults.grpcRelayEnabled}
         />
@@ -2047,7 +2086,7 @@ function OwnerPage({ runtime, requestedTab }: Props) {
       )}
 
       {/*
-        A mirrored vault offered by a replica source. Page-level because it is an
+        A mirrored secret offered by a replica source. Page-level because it is an
         offer to erase this device, which must not depend on which tab is open.
       */}
       {pendingReplicaAdoption && (
@@ -2056,7 +2095,7 @@ function OwnerPage({ runtime, requestedTab }: Props) {
           {/*
             Not over an open fingerprint comparison: confirming a channel is what
             releases a held offer, and the owner should finish that dialog
-            before being asked to erase their vault.
+            before being asked to erase their secret.
           */}
           {adoptionOpen && !fingerprintReplica && (
             <ReplicaAdoptionDialog
@@ -2111,11 +2150,11 @@ function OwnerPage({ runtime, requestedTab }: Props) {
           )
         }
 
-        const userAuthMethod = vaultConfig.authenticationMethod === 'user'
+        const userAuthMethod = secretConfig.authenticationMethod === 'user'
         // Linking declares two channels to belong to the same owner so shares
         // can be inherited. A replica channel holds no shares, so it is never a
         // candidate.
-        const linkCandidates = vault.participants.filter(
+        const linkCandidates = secret.participants.filter(
           p =>
             p.connectionStatus === 'paired' &&
             p.channelId &&
@@ -2365,11 +2404,11 @@ function OwnerPage({ runtime, requestedTab }: Props) {
 
       {/* Link channel modal */}
       {linkSourceChannelId && (() => {
-        const sourceChannel = vault.participants.find(
+        const sourceChannel = secret.participants.find(
           p => p.channelId === linkSourceChannelId,
         )
         if (!sourceChannel) return null
-        const candidates = vault.participants.filter(
+        const candidates = secret.participants.filter(
           p =>
             p.connectionStatus === 'paired' &&
             p.channelId &&

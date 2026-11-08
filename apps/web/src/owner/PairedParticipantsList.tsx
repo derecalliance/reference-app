@@ -17,45 +17,54 @@ import { isShareTarget } from '../ownerPairing'
 import { DEFAULT_WEIGHT, participantWeight } from './weights'
 
 /**
- * Each helper's default weight — how many subshares it gets unless a publish
- * says otherwise (SDK 0.0.9). An app preference: setting it sends nothing.
+ * Each helper's weight — how many subshares it gets in every publish (SDK
+ * 0.0.9). An app preference: setting it sends nothing until the next publish.
  */
 export interface DefaultWeightControls {
   weightFor: (channelId: string) => number
-  /** The highest weight the vault's default threshold allows. */
-  max: number
+  /**
+   * The highest weight the secret's threshold allows this helper — per helper,
+   * since a percentage threshold moves with the weights themselves.
+   */
+  maxFor: (channelId: string) => number
   onSet: (channelId: string, weight: number) => void
+  /** Why the helper's weight is not valid under the threshold, or `null`. */
+  problemFor: (channelId: string) => string | null
 }
 
-/** The default-weight field, with the weight the library last published when they differ. */
+/** The weight field, with the weight the library last published when they differ. */
 function DefaultWeight({ h, controls }: { h: PairedParticipant; controls: DefaultWeightControls }) {
   const value = controls.weightFor(h.channelId)
   const published = participantWeight(h)
   // What the owner is typing, so the field can be cleared and retyped; `null`
   // shows the saved default. Only whole numbers in range are saved.
   const [draft, setDraft] = useState<string | null>(null)
+  const problem = controls.problemFor(h.channelId)
+  const max = controls.maxFor(h.channelId)
   return (
     <div className="channel-prop">
-      <span className="channel-prop-label">Default weight</span>
+      <span className="channel-prop-label">Weight</span>
       <input
         className="helper-weight-input channel-weight-input"
         type="number"
         inputMode="numeric"
         min={DEFAULT_WEIGHT}
-        max={controls.max}
+        max={max}
         step={1}
         value={draft ?? value}
-        aria-label={`Default weight for ${h.name}`}
-        title="Subshares this helper gets by default; each publish can change it"
+        aria-label={`Weight for ${h.name}`}
+        aria-invalid={problem !== null}
+        title="Subshares this helper gets in every publish"
         onChange={e => {
           setDraft(e.target.value)
           const next = Number(e.target.value)
-          if (e.target.value.trim() !== '' && Number.isInteger(next) && next >= DEFAULT_WEIGHT && next <= controls.max) {
+          if (e.target.value.trim() !== '' && Number.isInteger(next) && next >= DEFAULT_WEIGHT && next <= max) {
             controls.onSet(h.channelId, next)
           }
         }}
         onBlur={() => setDraft(null)}
       />
+      {problem && <span className="field-error" role="alert">{problem}</span>}
       {published !== value && (
         <span className="channel-prop-value" title="The library reuses the last published weights for the publishes it starts on its own">
           · last published {published}
@@ -65,7 +74,7 @@ function DefaultWeight({ h, controls }: { h: PairedParticipant; controls: Defaul
   )
 }
 
-/** Channel detail line shown under a channel (shared key, share count, default weight). */
+/** Channel detail line shown under a channel (shared key, share count, weight). */
 function ChannelDetails({
   h,
   committedVersions,
@@ -126,10 +135,10 @@ function ChannelStatusTags({ h }: { h: PairedParticipant }) {
 }
 
 /**
- * What stands where Unpair would on a channel this vault cannot unpair.
+ * What stands where Unpair would on a channel this secret cannot unpair.
  *
  * Unpairing is the owner's to start: on a channel where the peer is the owner
- * — this vault holds shares *for* them — the library refuses it outright
+ * — this secret holds shares *for* them — the library refuses it outright
  * (`role_mismatch: expected Helper, got Owner`). Offering the button there was
  * a promise that always failed.
  */
@@ -137,7 +146,7 @@ function OwnerUnpairsNote() {
   return (
     <span
       className="channel-id-inline"
-      title="This vault is the helper on this channel. Only the owner can unpair it."
+      title="This secret is the helper on this channel. Only the owner can unpair it."
     >
       Only the owner can unpair
     </span>
@@ -155,20 +164,26 @@ function OwnerUnpairsNote() {
 export function PairedParticipantsList({
   groups,
   unpairingChannelIds,
+  unpairDisabledReason = null,
   onTogglePair,
   onLink,
   committedVersions,
   defaultWeights,
 }: {
   groups: LinkGroup[]
-  /** This vault's committed bag versions — see `committedVersionsOf`. */
+  /** This secret's committed bag versions — see `committedVersionsOf`. */
   committedVersions?: ReadonlySet<number>
   /** Channel IDs whose unpair request is currently in flight — disables the
    *  Unpair button so a repeated click doesn't send a second envelope. */
   unpairingChannelIds: Set<string>
+  /**
+   * Why Unpair is held back, or `null`: unpairing a helper publishes a new
+   * version to the rest, so it waits until no round is open.
+   */
+  unpairDisabledReason?: string | null
   onTogglePair: (id: string) => void
   onLink: (channelId: string) => void
-  /** Present on an owner's list: each helper's editable default weight. */
+  /** Present on an owner's list: each helper's editable weight. */
   defaultWeights?: DefaultWeightControls
 }) {
   // The channel whose helper is being linked on its own node, if any.
@@ -187,7 +202,8 @@ export function PairedParticipantsList({
       <button
         className="channel-unpair-btn"
         onClick={() => onTogglePair(participantId)}
-        disabled={inFlight}
+        disabled={inFlight || unpairDisabledReason !== null}
+        title={inFlight ? undefined : (unpairDisabledReason ?? undefined)}
         aria-busy={inFlight || undefined}
       >
         {inFlight ? 'Unpairing…' : 'Unpair'}

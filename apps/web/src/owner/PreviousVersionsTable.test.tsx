@@ -14,7 +14,7 @@ function bagVersion(version: number, overrides: Partial<BagVersion> = {}): BagVe
     participantIds: ['h1', 'h2'],
     verifiedParticipantIds: [],
     failedParticipantIds: [],
-    secrets: [
+    items: [
       { id: 'aa', name: 'Seed', data: 'one two' },
       { id: 'bb', name: 'PIN', data: '1234' },
     ],
@@ -81,7 +81,7 @@ function cells(row: HTMLTableRowElement): string[] {
 }
 
 describe('PreviousVersionsTable', () => {
-  it('renders one row per version, in the order given, without secret values', () => {
+  it('renders one row per version, in the order given, without item values', () => {
     render([bagVersion(3), bagVersion(2)])
 
     expect(rows()).toHaveLength(2)

@@ -88,7 +88,7 @@ export interface OwnerSetupOptions {
   participants?: number
   /** How many of those to auto-pair, skipping the QR exchange. */
   prePaired?: number
-  /** The vault's minimum, which seeds its default threshold. */
+  /** The secret's minimum, which seeds its default threshold. */
   minParticipants?: number
   /** Paired participants below which the app shows a warning. */
   recommendedParticipants?: number
@@ -137,34 +137,34 @@ export async function setUpOwner(page: Page, options: OwnerSetupOptions): Promis
 }
 
 /**
- * Set up one more vault in a browser that already holds some, from the list.
+ * Set up one more secret in a browser that already holds some, from the list.
  *
  * The node's pool and defaults were seeded by the first `setUpOwner`, and the
  * list — not the empty-state greeting — is the home screen now.
  */
-export async function setUpAnotherVault(page: Page, options: OwnerSetupOptions): Promise<void> {
-  await backToVaults(page)
+export async function setUpAnotherSecret(page: Page, options: OwnerSetupOptions): Promise<void> {
+  await backToSecrets(page)
   await runSetupWizard(page, options)
 }
 
-/** Leave the vault on screen for the list. Nothing stops: it keeps running. */
-export async function backToVaults(page: Page): Promise<void> {
-  if (!(await page.getByRole('heading', { name: 'Your vaults' }).isVisible())) {
-    await page.getByRole('button', { name: 'All vaults' }).click()
+/** Leave the secret on screen for the list. Nothing stops: it keeps running. */
+export async function backToSecrets(page: Page): Promise<void> {
+  if (!(await page.getByRole('heading', { name: 'Your secrets' }).isVisible())) {
+    await page.getByRole('button', { name: 'All secrets' }).click()
   }
-  await expect(page.getByRole('heading', { name: 'Your vaults' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Your secrets' })).toBeVisible()
 }
 
-/** Open a vault from the list by name, leaving `page` on its dashboard. */
-export async function openVault(page: Page, name: string): Promise<void> {
-  await backToVaults(page)
+/** Open a secret from the list by name, leaving `page` on its dashboard. */
+export async function openSecret(page: Page, name: string): Promise<void> {
+  await backToSecrets(page)
   await page.getByRole('button', { name: `Open ${name}`, exact: true }).click()
   await expectOwnerDashboard(page)
 }
 
-/** The wizard, from its first click to the new vault's dashboard. */
+/** The wizard, from its first click to the new secret's dashboard. */
 async function runSetupWizard(page: Page, options: OwnerSetupOptions): Promise<void> {
-  await page.getByRole('button', { name: 'Set up a new vault' }).click()
+  await page.getByRole('button', { name: 'Set up a new secret' }).click()
 
   await expect(page.getByRole('heading', { name: 'Your name' })).toBeVisible()
   await page.getByPlaceholder('e.g. Alice').fill(options.name)
@@ -259,7 +259,7 @@ async function seedNodeDefaults(page: Page, options: OwnerSetupOptions): Promise
 
 /** Assert that `page` is on the owner dashboard rather than the wizard. */
 export async function expectOwnerDashboard(page: Page): Promise<void> {
-  await expect(page.getByRole('tab', { name: /^Secrets/ })).toBeVisible({ timeout: 90_000 })
+  await expect(page.getByRole('tab', { name: /^Items/ })).toBeVisible({ timeout: 90_000 })
 }
 
 /**
@@ -385,7 +385,7 @@ export async function restoreRecoveredBag(page: Page, expectedSecret: string): P
   await expect
     .poll(
       async () => {
-        await openTab(page, 'Secrets')
+        await openTab(page, 'Items')
         return page.locator('.tab-panel').innerText()
       },
       { timeout: 120_000 },
@@ -429,23 +429,21 @@ export async function protectSecret(
   name: string,
   data: string,
 ): Promise<void> {
-  // No wait for other rounds to finish: they are keyed by version and run
-  // independently, so one already in flight — from a pairing auto-publish, say
-  // — neither blocks this one nor is disturbed by it. The button is disabled
-  // only for too few paired helpers, which is a standing condition.
-  const before = await tabCount(page, 'Secrets')
-  const start = page.getByRole('button', { name: 'Add Secret', exact: true })
+  // The button is disabled while any round is still open — one at a time,
+  // a pairing's auto-publish included — so this waits for it to settle.
+  const before = await tabCount(page, 'Items')
+  const start = page.getByRole('button', { name: 'Add Item', exact: true })
   await expect(start).toBeEnabled({ timeout: 120_000 })
   await start.click()
 
-  const form = page.locator('.modal-overlay[aria-label="Add secret"] .modal')
+  const form = page.locator('.modal-overlay[aria-label="Add item"] .modal')
   await form.locator('#ps-name').fill(name)
-  await form.getByLabel('Secret data').fill(data)
-  await form.getByRole('button', { name: 'Add Secret', exact: true }).click()
+  await form.getByLabel('Item data').fill(data)
+  await form.getByRole('button', { name: 'Add Item', exact: true }).click()
 
   // The form is replaced in place by a per-participant progress view, which
   // stays up (and keeps intercepting clicks) until dismissed.
-  const overlay = page.locator('.modal-overlay[aria-label="Add secret"]')
+  const overlay = page.locator('.modal-overlay[aria-label="Add item"]')
   const done = overlay.getByRole('button', { name: 'Done' })
   await expect(done).toBeVisible({ timeout: 90_000 })
   await done.click()
@@ -459,7 +457,7 @@ export async function protectSecret(
   // slow member therefore delays it by up to the sharing-round timeout, even
   // though every helper answered in milliseconds.
   await expect
-    .poll(() => tabCount(page, 'Secrets'), { timeout: 120_000 })
+    .poll(() => tabCount(page, 'Items'), { timeout: 120_000 })
     .toBeGreaterThan(before)
 }
 
@@ -473,16 +471,16 @@ export async function protectAndReadConfirmations(
   // confirming a gated channel publishes from `verifyFingerprint` — and the
   // library keeps one round per secret. The button stays disabled until the
   // one in flight resolves, so waiting on it is waiting for quiescence.
-  const start = page.getByRole('button', { name: 'Add Secret', exact: true })
+  const start = page.getByRole('button', { name: 'Add Item', exact: true })
   await expect(start).toBeEnabled({ timeout: 120_000 })
   await start.click()
 
-  const form = page.locator('.modal-overlay[aria-label="Add secret"] .modal')
+  const form = page.locator('.modal-overlay[aria-label="Add item"] .modal')
   await form.locator('#ps-name').fill(name)
-  await form.getByLabel('Secret data').fill(data)
-  await form.getByRole('button', { name: 'Add Secret', exact: true }).click()
+  await form.getByLabel('Item data').fill(data)
+  await form.getByRole('button', { name: 'Add Item', exact: true }).click()
 
-  const overlay = page.locator('.modal-overlay[aria-label="Add secret"]')
+  const overlay = page.locator('.modal-overlay[aria-label="Add item"]')
   await expect(overlay.getByRole('button', { name: 'Done' })).toBeVisible({ timeout: 90_000 })
   const summary = await overlay.innerText()
 
@@ -528,25 +526,33 @@ export async function recoverOfferedSecret(page: Page): Promise<void> {
  * Tear down a helper channel from this side.
  *
  * Destructive on both sides — it drops the shared key, the channel record and
- * every share stored under it — so the app puts it behind a confirmation, and
- * the peer must acknowledge before local state goes.
+ * every share stored under it. Under the default unpair acknowledgement (*Not
+ * required*) the click unpairs at once; with `ackRequired`, for a secret set
+ * to *Required*, the app asks first and the peer must acknowledge before local
+ * state goes.
  */
-export async function unpairParticipant(page: Page, index = 0): Promise<string> {
+export async function unpairParticipant(
+  page: Page,
+  index = 0,
+  { ackRequired = false }: { ackRequired?: boolean } = {},
+): Promise<string> {
   const row = await expandParticipant(page, index)
   const name = (await row.locator('.side-participant-name').innerText()).trim()
 
   await row.getByRole('button', { name: 'Unpair', exact: true }).click()
 
-  const dialog = page.locator('.modal-overlay').filter({ hasText: 'Unpair channel?' })
-  await expect(dialog).toBeVisible()
-  await dialog.getByRole('button', { name: 'Unpair', exact: true }).click()
+  if (ackRequired) {
+    const dialog = page.locator('.modal-overlay').filter({ hasText: 'Unpair channel?' })
+    await expect(dialog).toBeVisible()
+    await dialog.getByRole('button', { name: 'Unpair', exact: true }).click()
+  }
 
   return name
 }
 
 // ── Replicas ────────────────────────────────────────────────────────────────
 //
-// A replica is another device holding a mirror of the whole vault, not a share
+// A replica is another device holding a mirror of the whole secret, not a share
 // of it — and it is a pairing *mode*, not a kind of actor: the counterparty is
 // an ordinary provisioned helper that gains a protocol instance bound to this
 // owner's secret when its contact is minted.
@@ -611,7 +617,7 @@ export function uniqueReplicaName(prefix = 'Device'): string {
 }
 
 /**
- * Pair a helper as a replica of this vault, stopping short of confirming.
+ * Pair a helper as a replica of this secret, stopping short of confirming.
  *
  * Adding and pairing are one action: there is no replica actor to provision
  * first, so "+ Add" mints a replica-mode contact from a helper and runs the
@@ -724,7 +730,7 @@ export function replicaMemberRows(page: Page) {
 /** The count badge on a dashboard tab. */
 export async function tabCount(
   page: Page,
-  name: 'Channels' | 'Replicas' | 'Secrets' | 'Verification Copies' | 'Shares' | 'Recovery' | 'Notifications',
+  name: 'Channels' | 'Replicas' | 'Items' | 'Verification Copies' | 'Shares' | 'Recovery' | 'Notifications',
 ): Promise<number> {
   const text = await page.getByRole('tab', { name: new RegExp(`^${name}`) }).innerText()
   return Number(text.replace(/\D+/g, '') || '0')
@@ -733,9 +739,23 @@ export async function tabCount(
 /** Switch the owner dashboard to one of its tabs. */
 export async function openTab(
   page: Page,
-  name: 'Channels' | 'Replicas' | 'Secrets' | 'Verification Copies' | 'Shares' | 'Recovery' | 'Notifications',
+  name: 'Channels' | 'Replicas' | 'Items' | 'Verification Copies' | 'Shares' | 'Recovery' | 'Notifications' | 'Settings',
 ): Promise<void> {
   await page.getByRole('tab', { name: new RegExp(`^${name}`) }).click()
+}
+
+/**
+ * Switch the secret to a fixed threshold of `threshold` on the Channels tab.
+ *
+ * A new secret starts at a percentage of its helpers' subshares (50%), which
+ * leaves no room to weight a helper above 1 with three helpers; specs about a
+ * specific threshold or weights set it explicitly.
+ */
+export async function setFixedThreshold(page: Page, threshold: number): Promise<void> {
+  await openTab(page, 'Channels')
+  await page.locator('#ch-threshold-mode-fixed').check()
+  await page.locator('#ch-threshold').fill(String(threshold))
+  await expect(page.locator('#ch-threshold')).toHaveValue(String(threshold))
 }
 
 /**

@@ -783,3 +783,20 @@ item 1. The app's workaround remains in place.
 - `withConfig` could replace the backend's hand-written builder chain in
   `configure_builder` with a `DeRecProtocolConfig` built from the node config.
 - `withMaxSubshares` has no use until weights are exposed.
+
+## Round 4 (2026-10-23): Docker build against the current branch
+
+### R4-1. Declared MSRV no longer builds
+
+`derec-library` declares `rust-version = "1.88"`, but
+`library/src/protocol/obligation.rs:505` uses an `if let` guard in a `match`
+arm (`(Err(error), Some(obligation)) if let Some(sent) = obligation.answered()`),
+which is newer than that. The app's image pins `rust:1.89-bookworm` and fails
+with `error[E0658]: 'if let' guards are experimental`. Either raise
+`rust-version` to the release that stabilised the feature (and say so in the
+changelog, since the app's Dockerfile and anyone on 1.88/1.89 break), or
+rewrite the arm as a nested `if let` inside the match arm. The app's local
+test image was built with `rust:1-bookworm` to work around it.
+
+The rebuilt web tarball's public `.d.ts` is identical to the previous build's.
+Only the WASM changed, and the app's `tsc` and 1351 vitest tests pass on it.

@@ -9,15 +9,15 @@ import {
   loadPendingReplicaOffer,
   savePendingReplicaOffer,
 } from './replicaOfferStore'
-import { VaultRuntime } from './vault/runtime'
-import { deps, vault } from './vault/testVault'
+import { SecretRuntime } from './secret/runtime'
+import { deps, secret } from './secret/testSecret'
 
 const offer: PendingReplicaAdoption = {
   channelId: '1234',
   fromReplicaId: '77',
   secretId: '9',
   version: 3,
-  secret: {
+  payload: {
     helpers: [
       {
         channel_id: '5',
@@ -39,7 +39,15 @@ describe('the persisted adoption offer', () => {
 
     expect(loaded).toEqual(offer)
     expect(loaded?.shares[0].committed_share).toBeInstanceOf(Uint8Array)
-    expect(loaded?.secret.secrets[0].data).toEqual(new Uint8Array([104, 105]))
+    expect(loaded?.payload.secrets[0].data).toEqual(new Uint8Array([104, 105]))
+  })
+
+  it('reads an offer saved under the old key for its payload', () => {
+    const { payload, ...rest } = offer
+    localStorage.setItem('derec:replica-offer:v1', JSON.stringify({ ...rest, secret: { helpers: [], secrets: [] } }))
+
+    expect(loadPendingReplicaOffer('v1')?.payload).toEqual({ helpers: [], secrets: [] })
+    expect(payload).toBeDefined()
   })
 
   it('is gone once cleared, and unreadable rows read as none', () => {
@@ -54,23 +62,23 @@ describe('the persisted adoption offer', () => {
   it('puts the offer back in front of the owner after a reload', () => {
     savePendingReplicaOffer('v1', offer)
 
-    const r = new VaultRuntime(vault(), deps())
+    const r = new SecretRuntime(secret(), deps())
 
     const item = r.state().attention.find(a => a.kind === 'replica-adoption')
     expect(item?.payload).toEqual(offer)
   })
 
-  it('drops an offer for the secret the vault already runs — it was adopted', () => {
+  it('drops an offer for a secret this device already runs — it was adopted', () => {
     savePendingReplicaOffer('v1', { ...offer, secretId: '42' })
 
-    const r = new VaultRuntime(vault({ secretId: '42' }), deps())
+    const r = new SecretRuntime(secret({ secretId: '42' }), deps())
 
     expect(r.state().attention).toEqual([])
     expect(loadPendingReplicaOffer('v1')).toBeNull()
   })
 
   it('stops persisting an offer the owner rejects', async () => {
-    const r = new VaultRuntime(vault(), deps())
+    const r = new SecretRuntime(secret(), deps())
     r.stageReplicaAdoption(offer)
     expect(loadPendingReplicaOffer('v1')).not.toBeNull()
 

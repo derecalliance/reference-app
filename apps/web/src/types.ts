@@ -112,22 +112,27 @@ export interface PairedParticipant {
   /**
    * Subshares this helper receives in each round — the weight the library has
    * stored on its channel record, as the last round reported it. Absent means
-   * 1. Only ever above 1 for a helper this vault protects with.
+   * 1. Only ever above 1 for a helper this secret is protected with.
    */
   weight?: number
 }
 
-/** A single user-facing secret within the bag. */
-export interface UserSecret {
+/**
+ * One item in the bag: an entry the user added, with a name and a value.
+ *
+ * The app's name for what DeRec calls a `UserSecret`; the library carries the
+ * bag of them inside the protected secret.
+ */
+export interface Item {
   /** Hex-encoded application-defined identifier */
   id: string
   /** Human-readable label */
   name: string
-  /** The secret value (UTF-8 string) */
+  /** The item's value (UTF-8 string) */
   data: string
 }
 
-/** One version of the secret bag as distributed to helpers. */
+/** One version of the item bag as distributed to helpers. */
 export interface BagVersion {
   version: number
   /**
@@ -168,8 +173,8 @@ export interface BagVersion {
   invalidProofParticipantIds?: string[]
   /** Participants that rejected or timed out for this version */
   failedParticipantIds: { id: string; status: number; memo: string }[]
-  /** User secrets contained in this version */
-  secrets: UserSecret[]
+  /** Items contained in this version */
+  items: Item[]
   /** Raw bag bytes (hex), for display */
   rawBytes: string
   /**
@@ -183,7 +188,7 @@ export interface BagVersion {
   helpers: { id: string; name: string; channelId: string }[]
   /**
    * The replica group this version carries, as the library put it in the
-   * secret: `null` when the vault had no group. Absent on versions recorded
+   * secret: `null` when the secret had no group. Absent on versions recorded
    * before the app tracked it — unknown, not empty.
    */
   replicas?: BagReplicaGroup | null
@@ -225,8 +230,11 @@ export interface PublishedRound {
   threshold: number
 }
 
-/** The single secret bag managed by the protocol. */
-export interface SecretBag {
+/**
+ * The secret's single item bag — the items the protocol splits into shares
+ * and distributes, one version per protect round.
+ */
+export interface ItemBag {
   /** Protocol-level secret identifier (u64 as decimal string) */
   secretId: string
   /** Current (latest) version */
@@ -313,18 +321,18 @@ export interface RecoveredSecretReplica {
   role: 'Source' | 'Destination'
 }
 
-export interface RecoveredSecretEntry {
+export interface RecoveredItem {
   /** App-defined identifier, base64url-encoded. */
   id: string
   name: string
-  /** Raw secret bytes, base64url-encoded (decoded to text only for display). */
+  /** The item's raw value bytes, base64url-encoded (decoded to text only for display). */
   data: string
 }
 
 /** The roster + contents snapshot captured at distribution time. */
 export interface RecoveredSecretSnapshot {
   helpers: RecoveredSecretHelper[]
-  secrets: RecoveredSecretEntry[]
+  items: RecoveredItem[]
   /** Absent when this secret has no replica setup. */
   replicas?: {
     /** The one channel every member of the group is addressed on. */
@@ -341,7 +349,7 @@ export interface RecoveredSecretSnapshot {
   threshold?: number
 }
 
-/** A successfully recovered secret. */
+/** A successfully recovered secret: one version of a DeRec secret, with the items it carried. */
 export interface RecoveredSecret {
   secretId: string
   version: number
@@ -409,19 +417,7 @@ export interface RecoveryFailure {
 }
 
 
-/**
- * One vault: a DeRec instance bound to a single `secret_id`, holding its own bag
- * of user secrets, its own paired participants, and its own replica group.
- *
- * A vault is an owner-role actor on the backend — `id` is that actor's UUID —
- * but the app never calls it an owner at the user. Counterparties see unrelated
- * owners protecting unrelated secrets; only this app knows several vaults belong
- * to one person.
- *
- * This is the root of persisted app state, and `id` is what the storage key is
- * derived from.
- */
-/** A scheduled verification in flight — see `Vault.pendingAutoVerification`. */
+/** A scheduled verification in flight — see `Secret.pendingAutoVerification`. */
 export interface PendingAutoVerification {
   version: number
   startedAt: number
@@ -438,7 +434,7 @@ export interface PendingAutoVerification {
   notReachedChannelIds: string[]
 }
 
-/** How one scheduled verification ended — see `Vault.lastAutoVerification`. */
+/** How one scheduled verification ended — see `Secret.lastAutoVerification`. */
 export interface AutoVerificationResult {
   version: number
   /** When it ended (ms since the epoch). */
@@ -455,8 +451,8 @@ export interface AutoVerificationResult {
  */
 export type NotificationSeverity = 'info' | 'critical'
 
-/** One thing this vault told the owner — see `Vault.notifications`. */
-export interface VaultNotification {
+/** One thing this secret told the owner — see `Secret.notifications`. */
+export interface SecretNotification {
   id: string
   /** When it was raised (ms since the epoch). */
   at: number
@@ -468,32 +464,48 @@ export interface VaultNotification {
   link?: 'secrets'
 }
 
-export interface Vault {
+/**
+ * One secret: a DeRec instance bound to a single `secret_id`, holding its own
+ * bag of items, its own paired participants, and its own replica group. This is
+ * what DeRec calls a Secret; the entries in its bag are the app's `Item`s
+ * (DeRec's `UserSecret`s).
+ *
+ * A secret is an owner-role actor on the backend — `id`, the local secret id,
+ * is that actor's UUID — but the app never calls it an owner at the user.
+ * Counterparties see unrelated owners protecting unrelated secrets; only this
+ * app knows several secrets belong to one person.
+ *
+ * This is the root of persisted app state, and `id` is what the storage key is
+ * derived from.
+ */
+export interface Secret {
   /**
-   * The owner-role actor UUID this vault registered as. Also the storage key,
-   * the lock name and the URL segment.
+   * The local secret id: the owner-role actor UUID this secret registered as.
+   * Also the storage key, the lock name and the URL segment. Not DeRec's
+   * secret id — that is `secretId`.
    */
   id: string
   name: string
   /**
-   * This vault's own `secret_id` (u64 decimal string) — the secret it protects
-   * as Owner, allocated by the backend and published on its actor record.
+   * This secret's DeRec `secret_id` (u64 decimal string) — what it is
+   * protected under as Owner, allocated by the backend and published on its
+   * actor record.
    *
-   * The vault runs one protocol instance bound to this value. Helper-role
+   * The secret runs one protocol instance bound to this value. Helper-role
    * channels live in that same instance: shares are separated by channel and
    * each carries its own Owner's `secret_id` on the record.
    */
   secretId: string
-  /** This vault's own transport endpoint, shared with participants for contact */
+  /** This secret's own transport endpoint, shared with participants for contact */
   transport: Transport
   /**
    * `transport` was set by hand (Edit identity), so it no longer follows the
-   * address the node advertises for this vault. Absent or false: it follows.
+   * address the node advertises for this secret. Absent or false: it follows.
    */
   ownTransportPinned?: boolean
   participants: PairedParticipant[]
-  /** The single secret bag, null until the first protect_secret call */
-  secretBag: SecretBag | null
+  /** The single item bag, null until the first protect_secret call */
+  itemBag: ItemBag | null
   /** Pairing attempts in progress — drives mailbox polling */
   pendingPairings: PendingPairing[]
   /** Number of participants to auto-pair on load (testing convenience). */
@@ -502,7 +514,7 @@ export interface Vault {
   minParticipants: number
   /** Recommended paired participants for safe secret protection. */
   recommendedParticipants: number
-  /** Successfully recovered secrets */
+  /** Successfully recovered secrets (DeRec secret versions recovered from helpers) */
   recoveredSecrets: RecoveredSecret[]
   /** Live progress of the current recovery attempt (null when idle) */
   recoveryProgress: RecoveryProgress | null
@@ -512,7 +524,7 @@ export interface Vault {
    * that specific version, or globally on entering/exiting recovery mode.
    */
   recoveryFailures: RecoveryFailure[]
-  /** Shares this vault holds on behalf of other owners (helper role) */
+  /** Shares this secret's actor holds on behalf of other owners (helper role) */
   heldShares: HeldShare[]
   /**
    * Presentation hint for linked-channel groups: channel IDs designated as the
@@ -522,16 +534,16 @@ export interface Vault {
    */
   mainChannels: string[]
   /**
-   * What this vault overrides, not what it runs with.
+   * What this secret overrides, not what it runs with.
    *
-   * Resolve through `resolveVaultConfig` — never read these values directly, or
-   * a vault that overrides nothing reads as having no configuration at all.
+   * Resolve through `resolveSecretConfig` — never read these values directly, or
+   * a secret that overrides nothing reads as having no configuration at all.
    */
-  configOverrides: VaultConfigOverrides
+  configOverrides: SecretConfigOverrides
   /**
    * The owner's standing publish choices — default threshold, default helper
    * weights, which versions helpers keep, and when old verification copies
-   * are deleted. Absent on vaults saved before it existed: resolve with
+   * are deleted. Absent on secrets saved before it existed: resolve with
    * `resolvePublishPolicy`, never read it directly.
    */
   publishPolicy?: PublishPolicy
@@ -551,24 +563,24 @@ export interface Vault {
   /** How the last scheduled verification ended. Absent before the first one. */
   lastAutoVerification?: AutoVerificationResult
   /**
-   * What this vault told the owner, newest first: the Notifications tab and the
+   * What this secret told the owner, newest first: the Notifications tab and the
    * header bell. Absent before the first.
    */
-  notifications?: VaultNotification[]
+  notifications?: SecretNotification[]
   /**
    * Protect rounds dispatched but not yet resolved, oldest first, each with the
-   * bag version it will commit. Several can be open at once — a secret added
+   * bag version it will commit. Several can be open at once — an item added
    * while the previous round still waits on a slow helper.
    *
    * Persisted because a round outlives the page: the library has already
    * assigned the version and sent the shares, and the helpers' answers wait in
    * the mailbox across a reload. Held only in memory, a reload mid-round lost
    * the staged bag, and the round's eventual `SharingComplete` was then taken
-   * for an auto-publish — advancing the version with the old secrets, so the
-   * secret just added silently disappeared. Absent when no round is open.
+   * for an auto-publish — advancing the version with the old items, so the
+   * item just added silently disappeared. Absent when no round is open.
    *
    * Records saved before rounds could overlap carry a single
-   * `pendingProtectRound`; `vaultPersistence` folds it into this list on load.
+   * `pendingProtectRound`; `secretPersistence` folds it into this list on load.
    */
   pendingProtectRounds?: PendingProtectRound[]
   /**
@@ -587,11 +599,42 @@ export interface Vault {
    */
   corruptShareReports?: CorruptShareReport[]
   /**
-   * This vault's copy has diverged from its replica group's, and publishing
+   * This secret's copy has diverged from its replica group's, and publishing
    * from this device is paused until the owner resolves it — see
    * `ReplicaConflict`. Absent when there is no conflict.
    */
   replicaConflict?: ReplicaConflict
+  /**
+   * The latest publishing round closed without every helper storing its
+   * share — see `UnsettledRound`. Absent once a later round settles fully,
+   * or the owner dismisses it.
+   */
+  unsettledRound?: UnsettledRound
+}
+
+/**
+ * A publishing round that closed (`SharingComplete`) with helpers that never
+ * stored their share.
+ *
+ * Settling rounds is the application's job: with SDK 0.0.10 helpers hold at
+ * most the version being shared and one earlier version, so the owner is told
+ * before publishing again, and can retry — publish the same items as a new
+ * round.
+ */
+export interface UnsettledRound {
+  version: number
+  /**
+   * The helpers that stored their share hold enough subshares to recover this
+   * version (`SharingComplete.threshold_met`). Otherwise the round rolled back
+   * and the version is not recoverable.
+   */
+  recoverable: boolean
+  confirmedCount: number
+  failedCount: number
+  /** What the round published, so a retry publishes the same items. */
+  items: Item[]
+  /** Epoch ms. */
+  closedAt: number
 }
 
 /**
@@ -617,19 +660,18 @@ export interface ReplicaConflict {
   /** The member holding the rival copy (decimal replica id), when known. */
   rivalReplicaId: string | null
   /**
-   * The rival copy's secrets, once this device has received it — `null` until
+   * The rival copy's items, once this device has received it — `null` until
    * then. A `ReplicaSyncRejected` says only that a rival exists; a replica
    * discovery fetches it.
    */
-  rivalSecrets: UserSecret[] | null
+  rivalItems: Item[] | null
   /** Epoch ms. */
   detectedAt: number
 }
 
-/** A dispatched protect round, as persisted on the vault — see `Vault.pendingProtectRounds`. */
 /**
  * A verification challenge sent and not yet answered, persisted so an answer
- * that lands after a reload is still applied — see `Vault.pendingVerifications`.
+ * that lands after a reload is still applied — see `Secret.pendingVerifications`.
  */
 export interface PendingVerification {
   /** The participant channel challenged. */
@@ -641,12 +683,13 @@ export interface PendingVerification {
   deadline: number
 }
 
+/** A dispatched protect round, as persisted on the secret — see `Secret.pendingProtectRounds`. */
 export interface PendingProtectRound {
   /** The bag version the library assigned to this round. */
   version: number
   protocolSecretId: string
   /** The bag the round commits when it succeeds, with confirmations so far. */
-  bag: SecretBag
+  bag: ItemBag
   /** Participant channels whose answer is still awaited. */
   channelIds: string[]
   /**
@@ -659,15 +702,15 @@ export interface PendingProtectRound {
 }
 
 /**
- * User-tunable protocol configuration, chosen when the vault is created and
+ * User-tunable protocol configuration, chosen when the secret is created and
  * fixed for its lifetime.
  *
  * Owned by the front end. `protocolTimeoutSecs` and `unpairAck` are sent to the
  * backend when provisioning actors so backend-run peers agree; the rest never
- * leave the browser. Two vaults on the same server may hold different settings —
+ * leave the browser. Two secrets on the same server may hold different settings —
  * they are independent owners, exactly as two devices would be.
  */
-export interface VaultConfig {
+export interface SecretConfig {
   /**
    * General protocol timeout in seconds. Drives both the library's passive
    * `process()` expiry (via the WASM constructor) and the app's active
@@ -696,26 +739,26 @@ export interface VaultConfig {
    */
   autoAcceptUnpairRequests: boolean
   /**
-   * FE-only UI preference for this vault as a helper: when `true`, a peer's
-   * request to store a share is accepted without the confirmation modal.
+   * FE-only UI preference for this secret's actor as a helper: when `true`, a
+   * peer's request to store a share is accepted without the confirmation modal.
    */
   autoAcceptStoreShareRequests: boolean
   /**
-   * FE-only UI preference for this vault as a helper: when `true`, a peer's
-   * verification request is answered without the confirmation modal.
+   * FE-only UI preference for this secret's actor as a helper: when `true`, a
+   * peer's verification request is answered without the confirmation modal.
    */
   autoAcceptVerifyShareRequests: boolean
 }
 
 /**
- * What one vault overrides of [`VaultConfig`], not what it runs with.
+ * What one secret overrides of [`SecretConfig`], not what it runs with.
  *
  * A partial rather than a full copy, for the same reason the browser-level
- * `DefaultOverrides` is one: storing a resolved snapshot would strand a vault on
+ * `DefaultOverrides` is one: storing a resolved snapshot would strand a secret on
  * the values its node happened to hold the day it was created, and a later
- * reconfiguration would never reach it. Resolve with `resolveVaultConfig`.
+ * reconfiguration would never reach it. Resolve with `resolveSecretConfig`.
  *
  * Declared here rather than beside the resolver so `types.ts` needs no import
  * back from `protocolDefaults.ts`, which already imports from here.
  */
-export type VaultConfigOverrides = Partial<VaultConfig>
+export type SecretConfigOverrides = Partial<SecretConfig>

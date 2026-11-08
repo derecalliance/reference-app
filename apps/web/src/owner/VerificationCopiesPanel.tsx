@@ -5,8 +5,8 @@ import { useState } from 'react'
 
 import { errorText } from '../errorText'
 import { ModalFrame } from '../ModalFrame'
-import type { SecretBag } from '../types'
-import type { CleanupContext } from '../vault/types'
+import type { ItemBag } from '../types'
+import type { CleanupContext } from '../secret/types'
 import { bagVersionOf } from './bag'
 import { TrashIcon } from './icons'
 import { ModalCloseButton } from './primitives'
@@ -22,12 +22,12 @@ type DeleteStatus =
 
 interface VerificationCopiesPanelProps {
   context: CleanupContext
-  bag: SecretBag | null
-  /** The vault's automatic cleanup setting, summarised above the table. */
+  bag: ItemBag | null
+  /** The secret's automatic cleanup setting, summarised above the table. */
   autoCleanup: ProofCleanup
   /** Delete the copies of these versions; resolves with the ones actually deleted. */
   onDelete: (versions: readonly number[]) => Promise<number[]>
-  /** Open Vault Settings, where automatic cleanup is changed. */
+  /** Open the Settings tab, where automatic cleanup is changed. */
   onOpenSettings: () => void
 }
 
@@ -41,7 +41,7 @@ const versionList = (versions: readonly number[]) => versions.map(v => `v${v}`).
  *
  * One row per version, newest — the latest — first. The latest version and any
  * still being published are locked: their copies are what verifies the
- * current secret and the round in flight. Shares this vault holds for other
+ * current secret and the round in flight. Shares this secret holds for other
  * owners are a different thing (the Shares tab) and never listed.
  */
 export function VerificationCopiesPanel({
@@ -120,7 +120,7 @@ export function VerificationCopiesPanel({
               className="secondary small"
               onClick={() => setSelected(cleanupCandidates(usage, floor, criterion))}
               disabled={deleting}
-              title={`Select what the vault’s rule would delete: ${ruleText(criterion.kind, criterion.kind === 'lastN' ? criterion.n : null)}`}
+              title={`Select what the secret’s rule would delete: ${ruleText(criterion.kind, criterion.kind === 'lastN' ? criterion.n : null)}`}
             >
               Select by rule
             </button>
@@ -185,7 +185,7 @@ export function VerificationCopiesPanel({
                         <span className="version-tag">v{u.version}</span>
                         {lock && <span className="copies-lock"> {lock}</span>}
                       </td>
-                      <td title={recorded ? undefined : 'This device has no record of this version — received from a replica, or removed from the Secrets tab'}>
+                      <td title={recorded ? undefined : 'This device has no record of this version — received from a replica, or removed from the Items tab'}>
                         {recorded ? 'Yes' : <span className="empty-hint">No</span>}
                       </td>
                       <td>
@@ -208,7 +208,7 @@ export function VerificationCopiesPanel({
                         {lock === null && (
                           <button
                             type="button"
-                            className="secondary small remove-secret-btn versions-table__remove"
+                            className="secondary small remove-item-btn versions-table__remove"
                             onClick={() => setPendingDelete([u.version])}
                             disabled={deleting}
                             title={`Delete the verification copies of v${u.version}`}
@@ -275,12 +275,12 @@ function ConfirmDeleteCopiesModal({
 
 /**
  * Whether helpers still hold `version`, so verifying it can succeed. The
- * latest and an open round are always kept; otherwise the latest version's
- * keep-list decides, and with no list helpers keep everything.
+ * latest and an open round are held; otherwise only the one version the
+ * latest round's `keepVersion` named, and when that is not known, any.
  */
-function helpersKeep(version: number, lock: string | null, keep: readonly number[] | null): boolean {
+function helpersKeep(version: number, lock: string | null, keep: number | null): boolean {
   if (lock !== null || keep === null) return true
-  return keep.includes(version)
+  return keep === version
 }
 
 function ruleText(kind: 'retention' | 'lastN', n: number | null): string {

@@ -38,7 +38,7 @@ pub struct ProtocolConfig {
     /// the same instance and carry their own Owner's id on each share record.
     /// On a config clone that builds or rebuilds a *replica* instance this is
     /// instead the mirrored owner's secret, because a replica instance is bound
-    /// to the vault it mirrors rather than to this actor's own.
+    /// to the secret it mirrors rather than to this actor's own.
     pub secret_id: u64,
     /// Every endpoint this actor advertises, in preference order.
     pub own_transports: Vec<Transport>,

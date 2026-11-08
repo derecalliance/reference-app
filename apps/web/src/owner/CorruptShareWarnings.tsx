@@ -84,7 +84,7 @@ export function CorruptShareWarnings({
               )}
               {participant
                 ? ' — consider unpairing it.'
-                : '. It is no longer paired with this vault.'}
+                : '. It is no longer paired with this secret.'}
             </Alert>
           )
         })}

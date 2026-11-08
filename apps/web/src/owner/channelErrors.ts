@@ -74,3 +74,12 @@ export function eventsOfFailedProcess(err: unknown): DeRecEvent[] {
   // `DeRecEvent[]` by the SDK, so the array is taken at its declared type.
   return Array.isArray(events) ? (events as DeRecEvent[]) : []
 }
+
+/**
+ * A `verifyFingerprint` rejection for codes that differ — a possible
+ * man-in-the-middle. From SDK 0.0.10 it has already revoked the `Pending`
+ * pairing, so the devices must pair again.
+ */
+export function isFingerprintMismatchError(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as Record<string, unknown>).code === 'fingerprint_mismatch'
+}

@@ -3,17 +3,17 @@
 
 import { useState } from 'react'
 
-import type { VaultNotification } from '../types'
-import { unreadCount } from '../vault/notifications'
+import type { SecretNotification } from '../types'
+import { unreadCount } from '../secret/notifications'
 
 type NotificationFilter = 'all' | 'unread' | 'critical'
 
 interface NotificationsPanelProps {
-  notifications: readonly VaultNotification[]
+  notifications: readonly SecretNotification[]
   /** Mark `ids` — or every notification — read. */
   onMarkRead: (ids: readonly string[] | 'all') => void
   /** Open the tab a notification is about. */
-  onOpenLink: (link: NonNullable<VaultNotification['link']>) => void
+  onOpenLink: (link: NonNullable<SecretNotification['link']>) => void
 }
 
 const FILTERS: readonly { id: NotificationFilter; label: string }[] = [
@@ -22,12 +22,12 @@ const FILTERS: readonly { id: NotificationFilter; label: string }[] = [
   { id: 'critical', label: 'Critical' },
 ]
 
-const LINK_LABELS: Record<NonNullable<VaultNotification['link']>, string> = {
-  secrets: 'Secrets',
+const LINK_LABELS: Record<NonNullable<SecretNotification['link']>, string> = {
+  secrets: 'Items',
 }
 
 /**
- * Everything this vault told the owner, newest first. A critical one stays
+ * Everything this secret told the owner, newest first. A critical one stays
  * flagged on the header bell until it is marked read here or opened from the
  * bell; dismissing its toast does not count.
  */

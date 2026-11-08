@@ -11,7 +11,7 @@ const pairing = parseTopic(
   [
     '# Pairing',
     '',
-    'How to pair a vault with helpers.',
+    'How to pair a secret with helpers.',
     '',
     '## Contact modes',
     '',
@@ -23,7 +23,7 @@ const replicas = parseTopic(
   [
     '# Replicas',
     '',
-    'Mirroring a vault onto another device.',
+    'Mirroring a secret onto another device.',
     '',
     '## Conflicts',
     '',
@@ -40,7 +40,7 @@ describe('parseTopic', () => {
   it('reads the id, title, summary and headings', () => {
     expect(pairing.id).toBe('03-pairing')
     expect(pairing.title).toBe('Pairing')
-    expect(pairing.summary).toBe('How to pair a vault with helpers.')
+    expect(pairing.summary).toBe('How to pair a secret with helpers.')
     expect(pairing.headings).toEqual(['Contact modes'])
   })
 
@@ -102,7 +102,7 @@ describe('searchTopics', () => {
   })
 
   it('keeps the topics’ own order between equal scores', () => {
-    expect(searchTopics(topics, 'vault').map(h => h.topic.id)).toEqual(['03-pairing', '07-replicas'])
+    expect(searchTopics(topics, 'secret').map(h => h.topic.id)).toEqual(['03-pairing', '07-replicas'])
   })
 })
 

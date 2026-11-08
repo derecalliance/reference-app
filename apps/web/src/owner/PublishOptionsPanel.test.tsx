@@ -23,13 +23,13 @@ function helper(n: number): PairedParticipant {
 }
 
 const helpers = [helper(1), helper(2)]
-const lastN: PublishPolicy = {
+const latest: PublishPolicy = {
   defaultThreshold: 2,
   defaultWeights: {},
-  helperRetention: { mode: 'lastN', n: 2 },
+  helperRetention: { mode: 'latestCommitted' },
   proofCleanup: { mode: 'manual' },
 }
-const select: PublishPolicy = { ...lastN, helperRetention: { mode: 'select' } }
+const select: PublishPolicy = { ...latest, helperRetention: { mode: 'select' } }
 
 let host: HTMLDivElement
 let root: Root
@@ -49,7 +49,7 @@ afterEach(() => {
 function render(
   policy: PublishPolicy,
   draft: PublishOptionsDraft,
-  extra: { preview?: { kept: number[]; dropped: number[] } | null; open?: number[] } = {},
+  extra: { preview?: { kept: number | null; dropped: number[] } | null; open?: number[] } = {},
 ) {
   const onChange = vi.fn<(d: PublishOptionsDraft) => void>()
   act(() =>
@@ -77,40 +77,49 @@ function click(el: Element | null) {
 }
 
 describe('PublishOptionsPanel', () => {
-  it('names the versions helpers keep and the ones they drop under "keep the last N"', () => {
-    render(lastN, initialPublishOptions(helpers, lastN), { preview: { kept: [4, 3], dropped: [2] } })
+  it('names the version helpers keep and the ones they drop under "keep the newest committed version"', () => {
+    render(latest, initialPublishOptions(), { preview: { kept: 4, dropped: [3, 2] } })
 
-    expect(host.textContent).toContain('Helpers will keep v4, v3 and this new version')
-    expect(host.textContent).toContain('v2 will be dropped')
-    expect(host.textContent).toContain('keep the last 2')
+    expect(host.textContent).toContain('Helpers will keep v4 and this new version')
+    expect(host.textContent).toContain('v3, v2 will be dropped')
+    expect(host.textContent).toContain('keep the newest committed version')
   })
 
-  it('lets the owner pick the versions in "choose at each publish" mode', () => {
-    const onChange = render(select, initialPublishOptions(helpers, select))
+  it('starts "choose at each publish" on the newest committed version', () => {
+    render(select, initialPublishOptions())
+
+    expect(host.querySelector<HTMLInputElement>('#po-keep-4')?.checked).toBe(true)
+    expect(host.querySelector<HTMLInputElement>('#po-keep-3')?.checked).toBe(false)
+  })
+
+  it('lets the owner pick one version, or none, in "choose at each publish" mode', () => {
+    const onChange = render(select, initialPublishOptions())
 
     click(host.querySelector('#po-keep-3'))
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ keep: 3 }))
 
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ dropped: [3] }))
+    click(host.querySelector('#po-keep-none'))
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ keep: 0 }))
   })
 
-  it('keeps a round still being published, locked', () => {
-    render(select, initialPublishOptions(helpers, select), { open: [5] })
+  it('says a round still being published is dropped by helpers that store this one', () => {
+    render(select, initialPublishOptions(), { open: [5] })
 
-    const open = host.querySelector<HTMLInputElement>('#po-keep-5')
-    expect(open?.checked).toBe(true)
-    expect(open?.disabled).toBe(true)
+    expect(host.querySelector('#po-keep-5')).toBeNull()
+    expect(host.textContent).toContain('Still being published, and dropped by helpers that store this one: v5')
   })
 
-  it('asks whether to remember a threshold that differs from the default', () => {
-    const draft = { ...initialPublishOptions(helpers, lastN), threshold: '3' }
-    render(lastN, draft)
+  it('shows the secret\'s threshold and weights read-only, pointing to the Channels tab', () => {
+    render({ ...latest, defaultWeights: { '901': 2 }, defaultThreshold: 2 }, initialPublishOptions())
 
-    expect(host.textContent).toContain('Remember this threshold for future publishes')
+    expect(host.textContent).toContain('Threshold 2 of 3 subshares across 2 helpers: Helper 1 ×2, Helper 2 ×1')
+    expect(host.textContent).toContain('Set on the Channels tab')
+    expect(host.querySelector('input[type="number"]')).toBeNull()
   })
 
-  it('does not ask while the threshold is the default', () => {
-    render(lastN, initialPublishOptions(helpers, lastN))
+  it('says why a publish cannot go out when the threshold and weights do not work', () => {
+    render({ ...latest, defaultThreshold: 5 }, initialPublishOptions())
 
-    expect(host.textContent).not.toContain('Remember this threshold')
+    expect(host.querySelector('[role="alert"]')?.textContent).toMatch(/below the threshold of 5.*Channels tab/)
   })
 })

@@ -6,7 +6,7 @@ import { useState } from 'react'
 import { errorText } from '../errorText'
 import { ModalFrame } from '../ModalFrame'
 import type { PairedParticipant, PublishedRound } from '../types'
-import type { PublishChoice, PublishContext } from '../vault/types'
+import type { PublishChoice, PublishContext } from '../secret/types'
 import { ModalCloseButton } from './primitives'
 import { ProtectRoundProgress } from './ProtectRoundProgress'
 import { PublishOptionsPanel } from './PublishOptionsPanel'
@@ -25,14 +25,14 @@ interface RepublishModalProps {
   pendingChannelIds: ReadonlySet<string>
   publishContext: PublishContext
   onClose: () => void
-  /** Publish the current secrets again with `choice`. */
+  /** Publish the current items again with `choice`. */
   onRepublish: (choice: PublishChoice) => Promise<PublishedRound | null>
 }
 
 /**
- * Publish the current secrets again as a new version — how changed default
- * weights, a different threshold, or a different set of kept versions take
- * effect without changing the secrets. The library records weights and the
+ * Publish the current items again as a new version — how a threshold or
+ * weights changed on the Channels tab, or a different kept version, take
+ * effect without changing the items. The library records weights and the
  * threshold only as part of a round.
  */
 export function RepublishModal({ participants, pendingChannelIds, publishContext, onClose, onRepublish }: RepublishModalProps) {
@@ -91,8 +91,8 @@ export function RepublishModal({ participants, pendingChannelIds, publishContext
       ) : (
         <form className="modal-body" onSubmit={handleSubmit}>
           <p className="modal-description">
-            Publish the current secrets again as a new version, with the threshold, weights and kept
-            versions below. The secrets themselves do not change.
+            Publish the current items again as a new version, with the threshold and weights set on the
+            Channels tab. The items themselves do not change.
           </p>
 
           <PublishOptionsPanel

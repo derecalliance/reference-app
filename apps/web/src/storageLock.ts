@@ -9,7 +9,7 @@ import { randomId } from './randomId'
  *
  * Web Locks exists only in a secure context, so a page served over plain HTTP
  * from a LAN address — how a phone on the same network reaches a developer's
- * node — has none, and one-tab-per-vault silently stopped being enforced
+ * node — has none, and one-tab-per-secret silently stopped being enforced
  * there. Two tabs then drain one destructive mailbox and split its messages.
  *
  * `localStorage` is shared by every tab of the origin, secure or not, so a
@@ -21,7 +21,7 @@ import { randomId } from './randomId'
  *   `HEARTBEAT_MS`; one older than `STALE_MS` is free. The window is wide
  *   because browsers throttle timers in background tabs — to once a minute
  *   after a while in Chrome — and a holder that merely went to the background
- *   must not lose its lock. The cost is that a crashed tab's vaults stay
+ *   must not lose its lock. The cost is that a crashed tab's secrets stay
  *   "open in another tab" for about a minute.
  * - **Write, then read back.** Two tabs can both see a lock free and both
  *   write. `localStorage` writes are not atomic across tabs, so after writing,
@@ -30,7 +30,7 @@ import { randomId } from './randomId'
  *   closes the ordinary race of two tabs opening at once.
  *
  * Keys use a `derec-lock:` prefix, outside the `derec:` data prefix, so a
- * lock is never counted as stored data or mistaken for a vault record.
+ * lock is never counted as stored data or mistaken for a secret record.
  */
 
 const KEY_PREFIX = 'derec-lock:'
@@ -101,7 +101,7 @@ export async function acquireStorageLock(name: string): Promise<StorageLock | nu
     if (heldHere.has(key)) return null
   } catch {
     // Storage refused (private mode, quota). The lock is advisory; failing to
-    // take it must not stop the vault from running.
+    // take it must not stop the secret from running.
     return { release: async () => {} }
   }
 

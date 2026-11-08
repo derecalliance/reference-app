@@ -46,6 +46,14 @@ describe('contactMessageToDto', () => {
     expect(result.transport_protocol).toBeUndefined()
   })
 
+  it('round-trips the fingerprint commitment an inline-keys contact carries (SDK 0.0.10)', () => {
+    const commitment = new Uint8Array(32).map((_, i) => i)
+
+    const result = dtoToContactMessage(contactMessageToDto(contact({ fingerprint_commitment: commitment })))
+
+    expect(result.fingerprint_commitment).toEqual(commitment)
+  })
+
   it('keeps u64 ids as decimal strings', () => {
     // Above Number.MAX_SAFE_INTEGER — a number here would round silently.
     expect(contactMessageToDto(contact()).channel_id).toBe('18446744073709551615')

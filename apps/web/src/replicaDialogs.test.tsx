@@ -85,7 +85,7 @@ describe('removing a replica', () => {
     act(() => root.render(<ReplicaRemovalDialog request={request} onCancel={() => {}} onConfirm={() => {}} />))
 
     expect(text()).toContain('Remove the source, Alice?')
-    expect(text()).toContain('the device this vault came from')
+    expect(text()).toContain('the device this secret came from')
     expect(text()).toContain('which may be this device')
   })
 
@@ -146,7 +146,7 @@ describe('the adoption dialog', () => {
     fromReplicaId: '77',
     secretId: '9',
     version: 2,
-    secret: { helpers: [], secrets: [] },
+    payload: { helpers: [], secrets: [] },
     shares: [],
   }
 
@@ -311,7 +311,7 @@ describe('the fingerprint dialog', () => {
     expect(button(/Codes match/).disabled).toBe(false)
   })
 
-  describe('on a destination, where confirming adopts the source\'s vault', () => {
+  describe('on a destination, where confirming adopts the source\'s secret', () => {
     function renderDestination(handlers: {
       onConfirm?: () => void
       onDeclineAdoption?: () => void
@@ -346,7 +346,7 @@ describe('the fingerprint dialog', () => {
 
       await act(async () => button(/Codes match/).click())
 
-      expect(text()).toContain('Confirming adopts Alice’s vault')
+      expect(text()).toContain('Confirming adopts Alice’s secret')
       expect(verify).not.toHaveBeenCalled()
       expect(onConfirm).not.toHaveBeenCalled()
     })

@@ -20,11 +20,11 @@ import {
 } from './app'
 
 /**
- * Recover, then restore or join (SDK 0.0.9): when the recovered vault still
+ * Recover, then restore or join (SDK 0.0.9): when the recovered secret still
  * lives on a replica, the library recommends joining its group over restoring
  * next to it. Here the replica is a provisioned helper on this node, so
  * "Join through" pairs with it directly — the node mints its contact — and the
- * new device ends adopted with the vault, through the ordinary replica
+ * new device ends adopted with the secret, through the ordinary replica
  * fingerprint and adoption steps.
  */
 
@@ -38,7 +38,7 @@ function fingerprintDialog(page: Page, peerName: string) {
 // its catch-up then goes to a channel nobody owns. Every app step up to that
 // point is exercised and passes; un-fixme once the SDK keeps the handover
 // reachable.
-test.fixme('a recovered vault with a live replica is joined rather than restored', async ({ page, browser, pageErrors }) => {
+test.fixme('a recovered secret with a live replica is joined rather than restored', async ({ page, browser, pageErrors }) => {
   test.setTimeout(480_000)
 
   const oldDevice = uniqueReplicaName('Alice')
@@ -73,7 +73,7 @@ test.fixme('a recovered vault with a live replica is joined rather than restored
     await discoverAll(newDevice)
     await recoverOfferedSecret(newDevice)
 
-    // The recovered vault names a live replica: Join is offered next to Restore.
+    // The recovered secret names a live replica: Join is offered next to Restore.
     await newDevice.getByRole('button', { name: 'Join group…' }).click()
     const join = newDevice.locator('.modal-overlay[aria-label="Join the replica group"]')
     await expect(join).toContainText(replica)
@@ -90,11 +90,11 @@ test.fixme('a recovered vault with a live replica is joined rather than restored
     await dialog.getByRole('button', { name: 'Done' }).click()
     await expect(dialog).toBeHidden({ timeout: 30_000 })
 
-    // Adopted: the vault's secret is this device's now.
+    // Adopted: the secret is this device's now.
     await expect
       .poll(
         async () => {
-          await openTab(newDevice, 'Secrets')
+          await openTab(newDevice, 'Items')
           return newDevice.locator('.tab-panel').innerText()
         },
         { timeout: 120_000 },

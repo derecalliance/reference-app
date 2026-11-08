@@ -56,6 +56,7 @@ function render(props: { unpairing?: string[]; removed?: string[] } = {}) {
         unconfirmedChannelIds={new Set()}
         onConfirmFingerprint={() => {}}
         unpairingChannelIds={new Set(props.unpairing ?? [])}
+        unpairDisabledReason={null}
         removedFromNodeIds={new Set(props.removed ?? [])}
       />,
     ),

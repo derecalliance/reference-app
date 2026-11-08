@@ -4,18 +4,15 @@
 /* ── Panel shell ──────────────────────────────────────────────────────────── */
 
 .console-panel {
-  /* The console is a permanently dark surface — a terminal, not a page section
-   * — so it pins the dark-scheme values rather than following the colour
-   * scheme. Derived from the brand ink/gold family so it reads as part of the
-   * app rather than a devtool pasted in. */
+  /* Derived from the brand ink/gold family so it reads as part of the app
+   * rather than a devtool pasted in. These are the dark values; the light
+   * theme reassigns them below. */
   --c-bg: #0f1512;
   --c-header-bg: #141c17;
   --c-border: #26301f;
   --c-text: #f4eddd;
   --c-text-dim: #8a8267;
   --c-row-hover: #18211b;
-  --c-payload-bg: #0b100d;
-  --c-green: #86c070;
   --c-mono: ui-monospace, Consolas, monospace;
 
   flex-shrink: 0;
@@ -130,7 +127,7 @@
   }
 }
 
-/* The vault filter, styled to sit with the header buttons. */
+/* The secret filter, styled to sit with the header buttons. */
 .console-filter {
   max-width: 100%;
   background: var(--c-bg);
@@ -282,8 +279,8 @@
   }
 
   &.active {
-    color: var(--gold);
-    border-color: color-mix(in srgb, var(--gold) 40%, transparent);
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 40%, transparent);
   }
 }
 
@@ -393,7 +390,7 @@
   font-family: var(--c-mono);
   font-size: 11px;
   line-height: 1.65;
-  color: var(--gold);
+  color: var(--accent);
   white-space: pre-wrap;
   word-break: break-all;
   max-height: 300px;
@@ -406,6 +403,37 @@
    not a party to the protocol, and it must not read as `participant`. */
 .cbadge.role-server      { background: rgba(159, 165, 147, 0.18); color: #9fa593; }
 .cbadge.flow-transport   { background: rgba(159, 165, 147, 0.14); color: #9fa593; }
+
+/* ── Light theme ──────────────────────────────────────────────────────────── */
+
+/* The console follows the page's colour scheme. On cream, the badge hues above
+ * are too light to read, so each one takes the light theme's semantic colour
+ * for the same meaning (see `index.css`). */
+:root[data-theme='light'] {
+  .console-panel,
+  .cmodal {
+    --c-bg: var(--surface);
+    --c-header-bg: var(--code-bg);
+    --c-border: var(--cream-line);
+    --c-text: var(--ink-3);
+    --c-text-dim: var(--muted-2);
+    --c-row-hover: var(--code-bg);
+  }
+
+  .cmodal {
+    box-shadow: 0 24px 48px rgba(20, 32, 27, 0.18);
+  }
+
+  .cbadge.role-owner        { background: var(--accent-bg);   color: var(--accent); }
+  .cbadge.role-participant,
+  .cbadge.flow-pairing      { background: var(--info-bg);     color: var(--info); }
+  .cbadge.flow-sharing      { background: var(--success-bg);  color: var(--success); }
+  .cbadge.flow-verification { background: var(--warning-bg);  color: var(--warning); }
+  .cbadge.flow-recovery     { background: var(--recovery-bg); color: var(--recovery); }
+  .cbadge.flow-setup,
+  .cbadge.role-server,
+  .cbadge.flow-transport    { background: color-mix(in srgb, var(--muted) 12%, transparent); color: var(--muted); }
+}
 
 /* ── Phones ───────────────────────────────────────────────────────────────── */
 

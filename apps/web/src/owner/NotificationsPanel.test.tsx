@@ -5,10 +5,10 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { VaultNotification } from '../types'
+import type { SecretNotification } from '../types'
 import { NotificationsPanel } from './NotificationsPanel'
 
-const notifications: VaultNotification[] = [
+const notifications: SecretNotification[] = [
   { id: 'c', at: 3, severity: 'critical', title: 'Automatic verification of v2 failed', detail: 'Helper 1 did not answer', read: false, link: 'secrets' },
   { id: 'b', at: 2, severity: 'info', title: 'Automatic verification of v2 started', read: false },
   { id: 'a', at: 1, severity: 'info', title: 'Automatic verification of v1 passed', read: true },
@@ -69,7 +69,7 @@ describe('NotificationsPanel', () => {
     act(() => button('Mark all read').click())
     expect(onMarkRead).toHaveBeenCalledWith('all')
 
-    act(() => button('Open Secrets').click())
+    act(() => button('Open Items').click())
     expect(onMarkRead).toHaveBeenCalledWith(['c'])
     expect(onOpenLink).toHaveBeenCalledWith('secrets')
   })

@@ -2,17 +2,18 @@
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
 import { MIN_PROTOCOL_TIMEOUT_SECS, type ServerDefaults } from '../config'
-import type { VaultConfigOverrides } from '../types'
+import { SECRET_CONFIG_DEFAULTS } from '../protocolDefaults'
+import type { SecretConfigOverrides } from '../types'
 
 /**
  * The settings an owner can change in the wizard, holding only what the user
  * actually moved.
  *
  * Kept apart from the defaults rather than copied into one form object. The
- * defaults arrive asynchronously (`GET /api/v1/config`, then this browser's Settings
- * overrides on top), and a form seeded from the built-in fallback before they
+ * pool defaults arrive asynchronously (`GET /api/v1/config`, then this browser's
+ * Settings overrides on top), and a form seeded from the built-in fallback before they
  * land either clobbered what the user typed when they did, or — guarded by "only
- * while the name is empty" — kept the fallback for good: a vault created with a
+ * while the name is empty" — kept the fallback for good: a secret created with a
  * threshold of 3 when Settings said 2, and an override for a timeout nobody
  * chose. Holding the edits separately makes both impossible: the shown value is
  * always `edit ?? default`, whenever the default turns up.
@@ -22,7 +23,11 @@ export interface OwnerEdits {
   prePairedCount?: number
 }
 
-/** What the wizard shows and will use: the defaults, with the user's edits on top. */
+/**
+ * What the wizard shows and will use: the defaults, with the user's edits on
+ * top. The timeout starts from the app's default for every secret
+ * (`SECRET_CONFIG_DEFAULTS`); the pre-paired count from the node's pool.
+ */
 export interface OwnerSettings {
   protocolTimeoutSecs: number
   prePairedCount: number
@@ -35,26 +40,23 @@ export const TIMEOUT_STEP_SECS = 30
 
 export function ownerSettings(defaults: ServerDefaults, edits: OwnerEdits): OwnerSettings {
   return {
-    protocolTimeoutSecs: edits.protocolTimeoutSecs ?? defaults.protocolTimeoutSecs,
+    protocolTimeoutSecs: edits.protocolTimeoutSecs ?? SECRET_CONFIG_DEFAULTS.protocolTimeoutSecs,
     prePairedCount: edits.prePairedCount ?? defaults.prePairedCount,
   }
 }
 
 /**
- * What the new vault overrides: only a setting the user edited *and* left
- * different from the effective default.
+ * What the new secret overrides: only a setting the user edited *and* left
+ * different from the app's default.
  *
- * Recording an untouched value would freeze it — a later Settings edit or node
- * reconfiguration would never reach this vault. See `VaultConfigOverrides`.
+ * Recording an untouched value would freeze it — a later change to the app's
+ * defaults would never reach this secret. See `SecretConfigOverrides`.
  */
-export function overridesFromEdits(
-  edits: OwnerEdits,
-  defaults: ServerDefaults,
-): VaultConfigOverrides {
-  const overrides: VaultConfigOverrides = {}
+export function overridesFromEdits(edits: OwnerEdits): SecretConfigOverrides {
+  const overrides: SecretConfigOverrides = {}
   if (
     edits.protocolTimeoutSecs !== undefined &&
-    edits.protocolTimeoutSecs !== defaults.protocolTimeoutSecs
+    edits.protocolTimeoutSecs !== SECRET_CONFIG_DEFAULTS.protocolTimeoutSecs
   ) {
     overrides.protocolTimeoutSecs = edits.protocolTimeoutSecs
   }
@@ -78,7 +80,7 @@ export function prePairTarget(requested: number, online: number): number {
  * The longest name the node accepts, in Unicode code points — what Rust's
  * `str::chars().count()` counts on the trimmed name (`MAX_NAME_CHARS`).
  */
-export const MAX_VAULT_NAME_CHARS = 64
+export const MAX_SECRET_NAME_CHARS = 64
 
 /**
  * A name as it is sent: NFC-normalised and trimmed.
@@ -87,17 +89,17 @@ export const MAX_VAULT_NAME_CHARS = 64
  * twice — QA's 40-character name of decomposed letters was refused as 80.
  * Composing first means the count the node makes is the count a person sees.
  */
-export function normalizeVaultName(raw: string): string {
+export function normalizeSecretName(raw: string): string {
   return raw.normalize('NFC').trim()
 }
 
-/** What is wrong with a vault name, or `null` when the node will accept it. */
-export function vaultNameError(raw: string): string | null {
-  const name = normalizeVaultName(raw)
+/** What is wrong with a secret name, or `null` when the node will accept it. */
+export function secretNameError(raw: string): string | null {
+  const name = normalizeSecretName(raw)
   if (name === '') return 'Enter a name'
   const length = Array.from(name).length
-  if (length > MAX_VAULT_NAME_CHARS) {
-    return `At most ${MAX_VAULT_NAME_CHARS} characters (this is ${length})`
+  if (length > MAX_SECRET_NAME_CHARS) {
+    return `At most ${MAX_SECRET_NAME_CHARS} characters (this is ${length})`
   }
   // eslint-disable-next-line no-control-regex -- control characters are exactly what is refused
   if (/[\u0000-\u001f\u007f-\u009f]/.test(name)) return 'Remove the control characters'

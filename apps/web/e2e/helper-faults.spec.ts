@@ -58,7 +58,7 @@ async function withFault(page: Page, index: number, fault: Fault, body: (name: s
 
 /** Challenge the current version and wait until every helper has answered. */
 async function verifyCurrentVersion(page: Page, summary: string | RegExp) {
-  await openTab(page, 'Secrets')
+  await openTab(page, 'Items')
   await page.getByRole('button', { name: 'Verify Shares', exact: true }).first().click()
   const modal = page.locator('.verify-modal--progress')
   await expect(modal.locator('.share-progress-summary')).toHaveText(summary, { timeout: 90_000 })

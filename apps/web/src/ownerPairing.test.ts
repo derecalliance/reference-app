@@ -15,7 +15,7 @@ import {
   syntheticPeerId,
 } from './ownerPairing'
 import { loadReplicaState, replicaViews } from './replicaFlows'
-import type { ChannelRole, Vault, PairedParticipant } from './types'
+import type { ChannelRole, Secret, PairedParticipant } from './types'
 
 /**
  * The one invariant replica pairing exists to enforce: a replica channel never
@@ -40,14 +40,14 @@ const EXISTING: PairedParticipant = {
   peerRole: 'helper',
 }
 
-function owner(): Vault {
+function owner(): Secret {
   return {
     id: 'owner-1',
     name: 'Alice',
     secretId: '42',
     transport: { protocol: 'https', uri: 'https://example.test/owner-1' },
     participants: [EXISTING],
-    secretBag: null,
+    itemBag: null,
     // A pending pairing carrying a `participantId` keeps the fold off the
     // backend-identity lookup, so these tests make no network calls.
     pendingPairings: [{ channelId: 7n, participantId: 'device-2' }],
@@ -75,7 +75,7 @@ function event(kind: number): PairingCompletedEvent {
 function deps() {
   return {
     log: vi.fn(),
-    getVault: () => owner(),
+    getSecret: () => owner(),
     commit: vi.fn(),
     onReplicaChannelEstablished: vi.fn(),
   }
@@ -415,7 +415,7 @@ describe('canDrivePeerViaBackend', () => {
 
 describe('a peer that paired by accepting the request', () => {
   it('takes its endpoints from the channel record rather than leaving the row blank', () => {
-    const vault = { ...owner(), pendingPairings: [] }
+    const secret = { ...owner(), pendingPairings: [] }
     // No pending pairing and no roster match: the fold falls back to an
     // identity lookup, which is irrelevant here.
     vi.stubGlobal('fetch', vi.fn(async () => new Response('[]')))
@@ -424,7 +424,7 @@ describe('a peer that paired by accepting the request', () => {
       transports: [{ protocol: 'https' as const, uri: 'http://node/derec/bob' }],
     }))
 
-    const next = applyPairingCompleted(vault, event(SenderKind.Helper), { ...deps(), readChannelInfo })
+    const next = applyPairingCompleted(secret, event(SenderKind.Helper), { ...deps(), readChannelInfo })
 
     const row = next.participants.find(p => p.channelId === '1234')
     expect(row?.transport.uri).toBe('http://node/derec/bob')
@@ -464,8 +464,8 @@ describe('readLocalSharedKey', () => {
 
   it('finds the key in whichever secret partition holds the channel', () => {
     // A helper-role channel lives under the owner's secret id, not ours.
-    localStorage.setItem('derec:vault:v1:99887766:secret:1234:0', 'a2V5')
-    localStorage.setItem('derec:vault:v1:99887766:secret:12345:0', 'other')
+    localStorage.setItem('derec:secret:v1:99887766:secret:1234:0', 'a2V5')
+    localStorage.setItem('derec:secret:v1:99887766:secret:12345:0', 'other')
 
     expect(readLocalSharedKey('v1', '1234')).toBe('a2V5')
     expect(readLocalSharedKey('v1', '999')).toBeNull()

@@ -2,7 +2,8 @@
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
 import type { PairedParticipant } from '../types'
-import { totalWeight } from './weights'
+import type { PublishPolicy } from './publishPolicy'
+import { sharingProblems, sharingProblemSummary } from './sharingSettings'
 
 /**
  * The fewest helpers any publish can use: the threshold is at least 2 and no
@@ -12,34 +13,20 @@ import { totalWeight } from './weights'
 export const MIN_PUBLISH_TARGETS = 2
 
 export interface PublishReadiness {
-  /** Why no publish could succeed with these helpers, or `null`. */
+  /** Why no publish could succeed with these helpers and settings, or `null`. */
   blocked: string | null
-  /**
-   * Why the vault's defaults would not, though a publish dialog could
-   * (by lowering the threshold or raising weights), or `null`.
-   */
-  shortOfDefault: string | null
 }
 
 /**
  * Whether the helpers that would receive a share (`targets`) can carry a
- * publish. Only what the publish dialog cannot fix blocks it; a shortfall
- * against the default threshold is a warning, since the dialog lets the owner
- * change both the threshold and the weights.
+ * publish under the secret's threshold and weights. Publish dialogs cannot
+ * change either any more — they are set on the Channels tab — so anything
+ * wrong with them blocks every publish until it is fixed there.
  */
-export function publishReadiness(
-  targets: readonly Pick<PairedParticipant, 'weight'>[],
-  defaultThreshold: number,
-): PublishReadiness {
+export function publishReadiness(targets: readonly PairedParticipant[], policy: PublishPolicy): PublishReadiness {
   const count = targets.length
-  const blocked =
-    count < MIN_PUBLISH_TARGETS
-      ? `Need at least ${MIN_PUBLISH_TARGETS} paired participants (currently ${count})`
-      : null
-  const weight = totalWeight(targets)
-  const shortOfDefault =
-    blocked === null && weight < defaultThreshold
-      ? `Paired participants hold ${weight} of the ${defaultThreshold} subshares the default threshold needs — lower the threshold or raise weights when you publish.`
-      : null
-  return { blocked, shortOfDefault }
+  if (count < MIN_PUBLISH_TARGETS) {
+    return { blocked: `Need at least ${MIN_PUBLISH_TARGETS} paired participants (currently ${count})` }
+  }
+  return { blocked: sharingProblemSummary(sharingProblems(targets, policy)) }
 }

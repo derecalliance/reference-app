@@ -6,20 +6,21 @@
  *
  * The app's persistent state lives under two prefixes:
  *
- * - `derec:` — the vault records written by `vaultPersistence.ts`, the
+ * - `derec:` — the secret records written by `secretPersistence.ts`, the
  *   protocol stores (channels, contacts, secrets, shares, state) written by
- *   `stores.ts`, and the per-vault replica bookkeeping beside them.
+ *   `stores.ts`, and the per-secret replica bookkeeping beside them.
  * - `derec.` — browser-wide preferences: this browser's Settings overrides
  *   (`derec.protocolDefaults`), the last section shown (`derec.section`) and
  *   the picked colour scheme (`derec.theme`).
  *
  * Both are swept: the reset dialog promises a start from scratch, and leaving
- * the Settings overrides behind meant the next vault quietly inherited them.
+ * the Settings overrides behind meant the next secret quietly inherited them.
  * Keys owned by anything else on the origin are left alone — and so are the
  * coordination keys (`derec-lock:`, `derec-tabs:`), which hold no data and
  * belong to tabs that are still running.
  */
 
+import { secretNamespace } from './secretStorage'
 import { clearReplicaAdoptionBlock } from './replicaAdoptionBlock'
 import { clearReplicaState } from './replicaFlows'
 import { resetReplicaId } from './replicaIdentity'
@@ -58,22 +59,22 @@ export function clearAllLocalData(): number {
 }
 
 /**
- * Erase everything one vault left in this browser — "Remove from browser".
+ * Erase everything one secret left in this browser — "Remove from browser".
  *
- * The vault's protocol stores sit under its namespace, but four records sit
- * beside it on purpose, keyed by vault id so they survive an adoption that
+ * The secret's protocol stores sit under its namespace, but four records sit
+ * beside it on purpose, keyed by local secret id so they survive an adoption that
  * wipes the namespace: the replica bookkeeping, the pending adoption offer,
- * the vault's replica identity and the block a failed adoption raised.
- * Removal is not adoption — the vault is gone — so all four go too. Left
- * behind, `derec:replica-id:<vaultId>` outlived the vault it identified.
+ * the secret's replica identity and the block a failed adoption raised.
+ * Removal is not adoption — the secret is gone — so all four go too. Left
+ * behind, `derec:replica-id:<localSecretId>` outlived the secret it identified.
  */
-export function eraseVaultLocalData(vaultId: string): void {
-  clearNamespace(`vault:${vaultId}`)
-  clearReplicaState(vaultId)
-  clearPendingReplicaOffer(vaultId)
-  clearReplicaAdoptionBlock(vaultId)
+export function eraseSecretLocalData(localSecretId: string): void {
+  clearNamespace(secretNamespace(localSecretId))
+  clearReplicaState(localSecretId)
+  clearPendingReplicaOffer(localSecretId)
+  clearReplicaAdoptionBlock(localSecretId)
   try {
-    resetReplicaId(vaultId)
+    resetReplicaId(localSecretId)
   } catch {
     // Storage unavailable — nothing to remove.
   }

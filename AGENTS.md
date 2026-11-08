@@ -240,10 +240,11 @@ reference for how the screens fit together. `apps/web/e2e/app.ts` holds the
 helpers. Prefer the HTTP surface above unless you specifically need to exercise
 the browser-side SDK.
 
-The browser is multi-vault: each vault is one owner actor (`role: owner` in
-`/api/v1/debug/state`), a tab runs every vault its browser holds, and a Web Lock keeps
-any one vault to a single tab. Screens are hash routes — `#/` (vault list),
-`#/new`, `#/new/claim`, `#/vault/{owner actor id}`.
+The browser is multi-secret: each secret is one owner actor (`role: owner` in
+`/api/v1/debug/state`), a tab runs every secret its browser holds, and a Web Lock keeps
+any one secret to a single tab. Screens are hash routes — `#/` (secret list),
+`#/new`, `#/new/claim`, `#/secret/{owner actor id}` (older `#/vault/…` links
+still open).
 
 ## Changing this repository
 

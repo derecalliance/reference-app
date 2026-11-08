@@ -96,7 +96,7 @@ export class StorageQuotaError extends Error {
 /** What a full browser storage means for the person using the app. */
 export const STORAGE_FULL_MESSAGE =
   'This browser’s storage for the app is full, so the change could not be saved. ' +
-  'Remove vaults or secrets you no longer need (or use smaller secrets), then try again.'
+  'Remove secrets or items you no longer need (or use smaller items), then try again.'
 
 /** When storage last refused a write, or `null` if it has not since it was last read. */
 let lastQuotaFailureAt: number | null = null
@@ -154,7 +154,7 @@ const HEADROOM_PROBE_KEY = 'derec:storage-headroom-probe'
  * throwaway value of that size and removes it at once. Checked before work
  * whose writes cannot be taken back — a protect round sends each share to its
  * helper *before* storing this side's copy, so running out of space halfway
- * would leave the helpers holding a version this vault never recorded.
+ * would leave the helpers holding a version this secret never recorded.
  */
 export function hasStorageHeadroom(chars: number): boolean {
   if (chars <= 0) return true
@@ -564,14 +564,14 @@ export function listHelperChannels(namespace: string, secretId: string): StoredH
 }
 
 /**
- * The weight the library has stored for each paired helper this vault
- * protects with, by channel id.
+ * The weight the library has stored for each paired helper this secret is
+ * protected with, by channel id.
  *
  * A protect round's `weights` map is the *full* assignment: a helper it does
  * not name goes back to 1. So every round passes this back unless the owner is
  * changing it, or the weights they chose would be lost on the next publish.
- * Channels where the peer is the owner — this vault helping someone else — are
- * not this vault's to weight, and the library refuses them as keys.
+ * Channels where the peer is the owner — this secret's actor helping someone
+ * else — are not this secret's to weight, and the library refuses them as keys.
  */
 export function storedHelperWeights(namespace: string, secretId: string): Map<string, number> {
   return new Map(
@@ -596,8 +596,8 @@ export interface ProofVersionUsage {
  * of its helpers, kept only to check that helper's answers.
  *
  * Only this owner's helper channels — peer role `Helper` — are counted: a
- * channel whose peer is an owner holds a share this vault keeps *for* someone
- * else, which is theirs and never this vault's to delete.
+ * channel whose peer is an owner holds a share this secret's actor keeps *for*
+ * someone else, which is theirs and never this secret's to delete.
  */
 export function listOwnerProofVersions(namespace: string, secretId: string): ProofVersionUsage[] {
   const byVersion = new Map<number, ProofVersionUsage>()
@@ -665,7 +665,7 @@ export function forgetHelperChannel(namespace: string, secretId: string, channel
   }
 }
 
-/** What a peer last told this vault about itself, as its channel record holds it. */
+/** What a peer last told this secret about itself, as its channel record holds it. */
 export interface StoredChannelInfo {
   /** The peer's advertised `name`, or `null` when it sent none. */
   name: string | null
@@ -941,23 +941,22 @@ export function loadRawShare(
 // ── Share store ──────────────────────────────────────────────────────────────
 
 /**
- * The owner's answer to `ShareStore.keepList`: the versions every helper keeps
- * once the round distributing `version` lands, or `null` to send no list (the
- * helpers then keep everything they hold).
+ * The owner's answer to `ShareStore.keepVersion` (SDK 0.0.10): the one version
+ * other than `version` every helper keeps once the round distributing it
+ * lands, `0` for none. It must be below `version`.
  *
- * Injected rather than computed here: only the vault knows which versions
- * committed, and the store has no view of the vault record. See
- * `vault/keepList.ts` for the policy the app plugs in.
+ * Injected rather than computed here: only the secret knows which versions
+ * committed, and the store has no view of the secret record. See
+ * `secret/keepVersion.ts` for the policy the app plugs in.
  */
-export type KeepListSource = (secretId: string, version: number) => number[] | null
+export type KeepVersionSource = (secretId: string, version: number) => number
 
 export interface ShareStoreOptions {
   /**
-   * Defaults to "no list" — helpers keep every version. That is the library's
-   * own safe default, and the right one for an instance that never acts as an
-   * owner (a probe, a test).
+   * Defaults to the version just below, the newest that may have committed —
+   * right for an instance that never acts as an owner (a probe, a test).
    */
-  keepList?: KeepListSource
+  keepVersion?: KeepVersionSource
 }
 
 export function makeShareStore(namespace: string, options: ShareStoreOptions = {}) {
@@ -1094,7 +1093,7 @@ export function makeShareStore(namespace: string, options: ShareStoreOptions = {
 
     /**
      * Drop the shares stored under `(secretId, channelId)` at each of
-     * `versions` — how a helper applies the owner's `keepList`. Idempotent: a
+     * `versions` — how a helper applies the owner's `keepVersion`. Idempotent: a
      * version not stored is skipped, and an empty list does nothing. Other
      * channels and partitions are never touched.
      */
@@ -1123,9 +1122,9 @@ export function makeShareStore(namespace: string, options: ShareStoreOptions = {
       storeItem(shareChannelsKey(namespace, secretId), JSON.stringify(channels))
     },
 
-    /** Owner only — see `KeepListSource`. Asked once per sharing round. */
-    async keepList(secretId: string, version: number): Promise<number[] | null> {
-      return options.keepList?.(secretId, version) ?? null
+    /** Owner only — see `KeepVersionSource`. Asked once per sharing round. */
+    async keepVersion(secretId: string, version: number): Promise<number> {
+      return options.keepVersion?.(secretId, version) ?? Math.max(0, version - 1)
     },
 
     // Called once per verification challenge this helper accepts, after the
@@ -1352,14 +1351,29 @@ export function makeStateStore(namespace: string) {
  * replica or gated helper is confirmed — never pass through the app's round
  * tracker, and `verifyFingerprint` does not even return their events. Such a
  * round can stay open for a while after every helper stored its share, because
- * the library also waits on the replica leg; a newer round that left it out of
- * its `keepList` made the helpers delete a version that then committed.
+ * the library also waits on the replica leg.
  */
 export function openSharingRoundVersions(namespace: string, secretId: string): number[] {
   return loadStringArray(stateIndexKey(namespace, secretId, 3))
     .filter(composite => localStorage.getItem(stateRowKey(namespace, secretId, composite)) !== null)
     .map(composite => Number(composite.slice('3:'.length)))
     .filter(version => Number.isSafeInteger(version) && version > 0)
+}
+
+/**
+ * The channels with an unpair still waiting for the helper's answer — the
+ * library's `PendingUnpair` state rows (kind 2), written by `start(Unpair)`
+ * under `UnpairAck::Required` and removed on the answer or the timeout.
+ *
+ * Each one is a round about to start: when the unpair completes, inside
+ * `process` or `tick`, the app publishes a new version to the helpers that
+ * remain (`SecretRuntime.publishAfterUnpair`).
+ */
+export function pendingUnpairChannelIds(namespace: string, secretId: string): string[] {
+  return loadStringArray(stateIndexKey(namespace, secretId, 2))
+    .filter(composite => localStorage.getItem(stateRowKey(namespace, secretId, composite)) !== null)
+    .map(composite => composite.slice('2:'.length))
+    .filter(channelId => channelId !== '')
 }
 
 // ── Transport ────────────────────────────────────────────────────────────────
@@ -1379,7 +1393,7 @@ export function openSharingRoundVersions(namespace: string, secretId: string): n
  * each of `retryDelaysMs` before the next one is tried. Message handling is
  * idempotent on the receiving side, so a duplicate is harmless. The retry is
  * deliberately short and bounded: the library awaits this call while holding
- * the protocol lock, so a long one would stall every other flow on the vault.
+ * the protocol lock, so a long one would stall every other flow on the secret.
  * A peer down for longer is reported as not delivered, and each flow says so.
  */
 export function makeTransport(

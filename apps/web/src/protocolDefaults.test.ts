@@ -12,7 +12,7 @@ import {
 } from './protocolDefaults'
 
 /**
- * Protocol defaults are the node's until someone overrides them here.
+ * Pool defaults are the node's until someone overrides them here.
  *
  * The backend resolves its own set at boot and serves them from `GET /config`;
  * these overrides are a browser-local layer on top, which is what makes them
@@ -39,24 +39,31 @@ describe('protocolDefaults', () => {
   })
 
   it('applies only the keys that were overridden', () => {
-    // The server later changes its timeout; the override named only the count,
-    // so the new timeout must come through.
-    persistDefaultOverrides({ participantCount: 2 })
+    // The server later changes its recommendation; the override named only the
+    // count, so the new recommendation must come through.
+    persistDefaultOverrides({ participantCount: 6 })
 
-    const server = { ...FALLBACK_SERVER_DEFAULTS, protocolTimeoutSecs: 42 }
+    const server = { ...FALLBACK_SERVER_DEFAULTS, recommendedParticipants: 4 }
     const effective = effectiveDefaults(server)
 
-    expect(effective.participantCount).toBe(2)
-    expect(effective.protocolTimeoutSecs).toBe(42)
+    expect(effective.participantCount).toBe(6)
+    expect(effective.recommendedParticipants).toBe(4)
   })
 
   it('round-trips an override', () => {
-    persistDefaultOverrides({ protocolTimeoutSecs: 60, unpairAck: 'not_required' })
+    persistDefaultOverrides({ participantCount: 4, prePairedCount: 1 })
 
-    expect(loadDefaultOverrides()).toEqual({
-      protocolTimeoutSecs: 60,
-      unpairAck: 'not_required',
-    })
+    expect(loadDefaultOverrides()).toEqual({ participantCount: 4, prePairedCount: 1 })
+  })
+
+  it('keeps only the pool: protocol settings belong to each secret', () => {
+    localStorage.setItem(
+      'derec.protocolDefaults',
+      JSON.stringify({ participantCount: 4, protocolTimeoutSecs: 60, unpairAck: 'not_required' }),
+    )
+
+    expect(loadDefaultOverrides()).toEqual({ participantCount: 4 })
+    expect(effectiveDefaults(FALLBACK_SERVER_DEFAULTS)).not.toHaveProperty('protocolTimeoutSecs')
   })
 
   it('clears back to the server\'s values', () => {
@@ -128,7 +135,7 @@ describe('protocolDefaults', () => {
   })
 
   it('takes what the node runs from the node, never from an override', () => {
-    persistDefaultOverrides({ grpcEnabled: true, grpcRelayEnabled: true })
+    localStorage.setItem('derec.protocolDefaults', JSON.stringify({ grpcEnabled: true, grpcRelayEnabled: true }))
 
     const server = { ...FALLBACK_SERVER_DEFAULTS, grpcEnabled: false, grpcRelayEnabled: false }
     const effective = effectiveDefaults(server)

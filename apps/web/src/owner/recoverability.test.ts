@@ -12,7 +12,7 @@ function version(overrides: Partial<BagVersion>): BagVersion {
     participantIds: ['h1', 'h2', 'h3'],
     verifiedParticipantIds: [],
     failedParticipantIds: [],
-    secrets: [],
+    items: [],
     rawBytes: '',
     helpers: [],
     ...overrides,

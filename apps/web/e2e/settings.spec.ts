@@ -2,10 +2,11 @@
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
 import { test, expect } from './fixtures'
-import { expectOwnerDashboard, openApp } from './app'
+import { expectOwnerDashboard, openApp, openTab, setUpOwner } from './app'
 
 /**
- * The operator's Settings pane: node-level protocol defaults.
+ * The operator's Settings pane: the node's helper pool defaults — and, apart
+ * from it, each secret's own protocol settings on the owner's Settings tab.
  *
  * These moved out of the owner wizard, which is what makes this file necessary.
  * While the wizard owned the pool size it also rebalanced the transport
@@ -69,7 +70,7 @@ test('an owner sets up against a pool size overridden here', async ({ page, page
   await expect(page.getByText('Saved.')).toBeVisible()
 
   await page.getByRole('button', { name: 'Owner' }).click()
-  await page.getByRole('button', { name: 'Set up a new vault' }).click()
+  await page.getByRole('button', { name: 'Set up a new secret' }).click()
   await page.getByPlaceholder('e.g. Alice').fill('Alice')
   await page.getByRole('button', { name: /^Next/ }).click()
   await expect(page.getByRole('button', { name: 'Set up', exact: true })).toBeEnabled()
@@ -103,14 +104,44 @@ test('values the protocol cannot run with are refused, field by field', async ({
 
   await participantsField(page).fill('3')
   await page.getByLabel('Minimum', { exact: true }).fill('9')
-  await page.getByLabel('Protocol timeout (s)', { exact: true }).fill('0')
 
   await expect(page.getByText('Cannot exceed the pool of 3').first()).toBeVisible()
-  await expect(page.getByText('Must be at least 10')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Save' })).toBeDisabled()
 
   // Nothing reached storage: the pane still follows the node after a reload.
   await page.reload()
   await page.getByRole('button', { name: 'Settings' }).click()
   await expect(page.getByText('Following the node', { exact: false })).toBeVisible()
+})
+
+test('protocol settings belong to each secret, starting from the app defaults', async ({ page, pageErrors }) => {
+  await setUpOwner(page, { name: 'Alice', participants: 2 })
+
+  // Not on the node-level pane any more.
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Pool defaults' })).toBeVisible()
+  await expect(page.getByLabel('Protocol timeout (s)', { exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Owner', exact: true }).click()
+  await expectOwnerDashboard(page)
+
+  await openTab(page, 'Settings')
+  const form = page.locator('form[aria-label="Secret settings"]')
+  await expect(form.locator('#ss-timeout')).toHaveValue('30')
+  await expect(form.locator('#ss-auto-verify option:checked')).toHaveText('Accept automatically (default)')
+
+  await form.locator('#ss-timeout').fill('120')
+  await form.locator('#ss-auto-verify').selectOption('prompt')
+  await form.getByRole('button', { name: 'Save', exact: true }).click()
+  await expect(form.getByText('Saved.', { exact: true })).toBeVisible()
+  // The timeout is fixed into the running protocol instance.
+  await expect(form.getByRole('status')).toContainText('the protocol timeout applies when this secret next starts')
+
+  // Kept with the secret, and in effect once it starts again.
+  await page.reload()
+  await openTab(page, 'Settings')
+  await expect(form.locator('#ss-timeout')).toHaveValue('120')
+  await expect(form.locator('#ss-auto-verify')).toHaveValue('prompt')
+  await expect(form.getByRole('status')).toHaveCount(0)
+
+  expect(pageErrors).toEqual([])
 })

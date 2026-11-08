@@ -160,7 +160,7 @@ export function InspectTab() {
                   </td>
                   <td>
                     {/* More than one means this actor mirrors another owner's
-                        vault as a replica, beyond protecting its own. */}
+                        secret as a replica, beyond protecting its own. */}
                     {actor.instance_secret_ids.length}
                   </td>
                 </tr>

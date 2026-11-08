@@ -25,7 +25,7 @@ it:
 | Docker image: tags, ports, volumes, **every setting with its default**, precedence, Compose, recipes | `docs/DOCKER.md` (the canonical settings reference) |
 | Commented examples | `examples/config.example.toml`, `examples/.env.example`, `examples/compose.sqlite.yaml`, `examples/compose.postgres.yaml`, `examples/README.md` |
 | HTTP API (routes, envelope, error codes) | `apps/backend/openapi.yaml`, `AGENTS.md` (error-code table, driving the app over HTTP) |
-| In-app Help, written for end users | `apps/web/src/help/content/*.md` (00 getting started, 02 vault setup, 03 pairing, 04 protecting secrets, 05 verification, 06 recovery, 07 replicas, 11 settings, 13 transports, 14 running the app, 16 troubleshooting, 17 glossary) |
+| In-app Help, written for end users | `apps/web/src/help/content/*.md` (00 getting started, 02 secret setup, 03 pairing, 04 protecting secrets, 05 verification, 06 recovery, 07 replicas, 11 settings, 13 transports, 14 running the app, 16 troubleshooting, 17 glossary) |
 | Version | `apps/backend/Cargo.toml` (`scripts/version.sh check`) |
 
 Current facts. Re-check them in the files above before you use them:
@@ -66,7 +66,7 @@ Also make these small edits, and nothing else outside `reference-app/`:
 
 - What it is: a minimal reference implementation that provides both an **Owner** and a **Helper**, for interoperability testing against your own DeRec implementation.
 - Shape: a static React front end (runs the protocol in the browser through `@derec-alliance/web`, persists to browser storage, polls for messages) plus a thin Rust/Axum backend (actor registry, message relay/mailboxes, hosted helpers, serves front-end defaults). **The backend implements no protocol logic.**
-- What you can test with it: pairing (paste or QR), sharing, verification, recovery, replicas, HTTP and gRPC transports, several vaults per browser.
+- What you can test with it: pairing (paste or QR), sharing, verification, recovery, replicas, HTTP and gRPC transports, several secrets per browser.
 - A `danger` hint with the security warning, kept close to the README wording: no authentication, permissive CORS, listens on all interfaces; anyone who can reach the port can read every actor through `GET /api/v1/actors`, channel shared keys included. Trusted machine or LAN only, never a public network.
 - Version and SDK version, the image name, and a link to the repo and its `CHANGELOG.md`.
 - One cards table, in the style `demos/web-app-demo.md` uses, linking the repo.
@@ -75,12 +75,12 @@ Also make these small edits, and nothing else outside `reference-app/`:
 
 Use `README.md` and `docs/ARCHITECTURE.md`. Cover:
 
-- **Actors and the registry.** The node is one flat registry of actors. Every browser vault registers its own owner actor; a second tab or another machine is just another owner. There is no grouping above the registry.
+- **Actors and the registry.** The node is one flat registry of actors. Every secret set up in a browser registers its own owner actor; a second tab or another machine is just another owner. There is no grouping above the registry.
 - **Provisioned helpers are a shared pool.** They belong to the server, and every owner pairs with the same fixtures. The helper count is a *target*: `POST /api/v1/helpers/ensure` provisions only the shortfall and never removes helpers. Any helper can be paired in replica mode, because replica is a pairing mode, not a kind of actor.
 - **Configuration belongs to the front end.** The `[defaults]` settings are served to the UI as prefilled defaults. The protocol settings an actor actually runs with travel on the provisioning request. The exception is the transport keys, which the backend enforces (see Configuration).
 - **Transport.** Owners poll their mailbox over HTTP (no websockets). The node speaks HTTP and gRPC. Browsers cannot dial gRPC, so `POST /derec/relay` dials on the owner's behalf. The relay is limited to this node, to endpoints its actors advertise, and to hosts in `relay_allowed_hosts`. Helpers advertise `http`, `grpc` or `both`. Messages are capped at 4 MiB. A mailbox holds at most 1000 messages or 16 MiB; past that it refuses new messages (HTTP 503, gRPC `RESOURCE_EXHAUSTED`).
-- **Vaults in the browser.** A vault is one owner identity, and one tab runs every vault it holds. Each vault is held by one tab through a Web Lock. To model a separate device, use a separate browser context (incognito, another profile or another machine).
-- **UI tour.** Briefly cover the four sections: Owner (Channels, Replicas, Secrets, Shares, Recovery), Participants, Settings and Inspect. Mention the in-app Help.
+- **Secrets in the browser.** A secret is one owner identity, and one tab runs every secret it holds. Each secret is held by one tab through a Web Lock. To model a separate device, use a separate browser context (incognito, another profile or another machine).
+- **UI tour.** Briefly cover the four sections: Owner (Channels, Replicas, Items, Shares, Recovery), Participants, Settings and Inspect. Mention the in-app Help.
 - **Debugging.** The Inspect section, the Console panel (exportable as JSON) and `GET /api/v1/debug/{state,events,config}`. The `/api/v1` envelope (`result` / `error.code`) and the `x-request-id` header. `/health` and `/derec/*` stay at the root. Link `openapi.yaml` and `AGENTS.md` on GitHub for the full API.
 - **Plaintext endpoints.** The SDK refuses `http://` and `grpc://` peer endpoints unless you opt in. The app derives the opt-in from its own transport URIs (`withUnsafeConnection` / `with_unsafe_connection`). Link the SDK chapter that documents this, after checking it in lib-derec.
 - **Known gap** (in the library): source succession is not implemented. Evicting or unpairing the group's `ReplicaSource` leaves the group without one.
@@ -97,9 +97,9 @@ Three ways to run it, quickest first:
    ```
    Then open `http://localhost:5000`. On macOS, port 5000 is often taken by AirPlay Receiver. Show how to remap it (`-p 8080:5000` plus `DEREC_PUBLIC_PORT=8080`) using the recipe in `docs/DOCKER.md`.
 2. **From a checkout with `./start.sh`** (Docker, Compose v2.24+, no Node or Rust needed). Include the flags table from README: `--postgres`, `--lan`, `--fresh`, `--port`, `--build`, `--stop`.
-3. **From source**: Rust 1.89+ and Node.js 22+, `cargo run` in `apps/backend`, then `npm install && npm run dev` in `apps/web`, then open `http://localhost:5173/reference-app/`.
+3. **From source**: Rust 1.89+ and Node.js 22+, `cargo run` in `apps/backend`, then `npm install && npm run dev` in `apps/web`, then open `http://localhost:5173/`.
 
-Then a short **first session**: set up a vault (the wizard provisions the helper pool), add a secret, protect it, verify it, recover it. Link each step to the matching protocol chapter. Then **test your own implementation against it**: pair your Owner with one of the app's provisioned helpers, or pair one of the app's owners with your Helper, by exchanging contacts (paste or QR). Take the exact UI labels from Help topics 00, 02 and 03.
+Then a short **first session**: set up a secret (the wizard provisions the helper pool), add an item, protect the secret, verify it, recover it. Link each step to the matching protocol chapter. Then **test your own implementation against it**: pair your Owner with one of the app's provisioned helpers, or pair one of the app's owners with your Helper, by exchanging contacts (paste or QR). Take the exact UI labels from Help topics 00, 02 and 03.
 
 End with **reaching it from a phone**: set `DEREC_BASE_URL=http://<LAN IP>`. Explain why it is required: the value is stamped into every transport URI peers dial, and left at `localhost` pairing seems to work but replies go nowhere. Add the Chrome "Insecure origins treated as secure" flag for the camera, and link `docs/DOCKER.md` recipes.
 
@@ -189,7 +189,7 @@ Explain around it:
 ## Conventions (from the docs repo's CLAUDE.md)
 
 - Every page starts with YAML frontmatter including `icon:`. Suggested icons: `flask` for the section README, `diagram-project` for how it works, `play` for getting started, `sliders` for configuration, `docker` for Docker Compose.
-- Hints: `danger` only for the security warning, `warning` for trade-offs and gotchas (`DEREC_BASE_URL`, public ports, Remove Secret not erasing older versions), `info` for clarifications.
+- Hints: `danger` only for the security warning, `warning` for trade-offs and gotchas (`DEREC_BASE_URL`, public ports, Remove Item not erasing older versions), `info` for clarifications.
 - Every code fence has a language (`bash`, `yaml`, `toml`, `text` for the boot banner).
 - Cross-references inside the docs use relative paths. Links to the app repo use full GitHub URLs on `main`. The release branch is `release/v0.0.8`; if a file is not on `main` yet, report that rather than linking a branch.
 - Tone: terse and precise, no marketing language. Calibrate on `concepts/failure-modes.md`.

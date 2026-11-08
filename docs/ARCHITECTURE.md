@@ -107,7 +107,7 @@ tabs at, and every actor anyone creates is visible to everyone.
 
 An actor has a role:
 
-- **Owner** — registered by a browser vault through `POST /api/v1/owners`. Its
+- **Owner** — registered for each secret set up in a browser, through `POST /api/v1/owners`. Its
   protocol instance lives in the page, with keys the server never sees; the
   server only gives it an address and a mailbox.
 - **Helper** — provisioned on the server through `POST /api/v1/helpers` or
@@ -140,6 +140,10 @@ them; every owner pairs with the same fixtures.
 - A helper can be toggled offline (`POST /api/v1/helpers/{id}/toggle-status`) to
   simulate an unreachable peer: it discards what it receives rather than
   queueing it.
+- A helper can simulate other failures (`PUT /api/v1/helpers/{id}/fault`): lost
+  or corrupted shares, or refusing to store or to verify. The share store
+  applies them through the SDK's store contract, so the library's own answers
+  carry them to the owner.
 
 ### Configuration belongs to the front end
 
@@ -152,32 +156,35 @@ own. The exceptions are the node's own process settings (`[server]`) and its
 transport switches (`grpc_enabled`, `grpc_port`, `grpc_relay_enabled`), which
 the backend enforces.
 
-## The browser: vaults
+## The browser: secrets
 
-A **vault** is one owner identity: an owner actor on the server plus the keys,
-channels, secret bag and shares that the page holds for it. The browser app is
-multi-vault:
+A **secret** is one owner identity: an owner actor on the server plus the keys,
+channels, item bag and shares that the page holds for it. The browser app is
+multi-secret:
 
-- A browser can hold many vaults, and one tab runs every vault it holds at
-  once — a vault that is not on screen keeps polling and answering its
+- A browser can hold many secrets, and one tab runs every secret it holds at
+  once — a secret that is not on screen keeps polling and answering its
   counterparties.
-- **One tab per vault** is enforced with the Web Locks API: an exclusive lock
-  per vault id, released automatically when the tab closes or crashes. Two tabs
-  driving one vault would split its mailbox, so a vault held elsewhere is shown
-  as "open in another tab" with a Claim action rather than started twice.
-- Screens are hash routes (`#/`, `#/new`, `#/new/claim`, `#/vault/{id}`), so
-  the static build needs no server-side rewrite. The URL carries the vault id
-  (the owner actor's UUID), never the protocol `secret_id`.
+- **One tab per secret** is enforced with the Web Locks API: an exclusive lock
+  per local secret id, released automatically when the tab closes or crashes.
+  Two tabs driving one secret would split its mailbox, so a secret held
+  elsewhere is shown as "open in another tab" with a Claim action rather than
+  started twice.
+- Screens are hash routes (`#/`, `#/new`, `#/new/claim`, `#/secret/{id}`), so
+  the static build needs no server-side rewrite; older `#/vault/{id}` links
+  still open. The URL carries the local secret id (the owner actor's UUID),
+  never the protocol `secret_id`.
 
-A vault can also act as a **helper for another vault** — another tab's,
+A secret can also act as a **helper for another secret** — another tab's,
 another browser's or another device's — holding shares in the page (the
 "local" helper mode, as opposed to the backend-hosted one).
 
 ### Browser persistence
 
-The browser persists to **`localStorage`**, not IndexedDB. Each vault's state
-and its SDK stores are namespaced under `derec:vault:{vaultId}:…`, so removing
-one vault erases exactly its keys and "Reset browser data" erases them all.
+The browser persists to **`localStorage`**, not IndexedDB. Each secret's state
+and its SDK stores are namespaced under `derec:secret:{localSecretId}:…` (data
+written by older builds under `derec:vault:…` is migrated at startup), so
+removing one secret erases exactly its keys and "Reset browser data" erases them all.
 Protocol instances are rebuilt from those stores on load.
 
 ## Transport

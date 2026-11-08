@@ -191,6 +191,10 @@ pub struct ContactMessageDto {
     /// SHA-384 commitment over the key material; present only under `HashedKeys`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contact_binding_hash: Option<String>,
+    /// The creator's commitment to its fingerprint nonce (SDK 0.0.10);
+    /// present only under `InlineKeys`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint_commitment: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -263,6 +267,10 @@ impl From<&derec_proto::ContactMessage> for ContactMessageDto {
                 .contact_binding_hash
                 .as_ref()
                 .map(|h| URL_SAFE_NO_PAD.encode(h)),
+            fingerprint_commitment: c
+                .fingerprint_commitment
+                .as_ref()
+                .map(|h| URL_SAFE_NO_PAD.encode(h)),
         }
     }
 }
@@ -277,6 +285,7 @@ impl From<ContactMessageDto> for PeerContact {
             mlkem_encapsulation_key: dto.mlkem_encapsulation_key,
             ecies_public_key: dto.ecies_public_key,
             contact_binding_hash: dto.contact_binding_hash,
+            fingerprint_commitment: dto.fingerprint_commitment,
         }
     }
 }
@@ -360,6 +369,7 @@ mod tests {
             mlkem_encapsulation_key: None,
             ecies_public_key: None,
             contact_binding_hash: None,
+            fingerprint_commitment: None,
         }
     }
 
@@ -424,6 +434,7 @@ mod tests {
             ecies_public_key: None,
             contact_binding_hash: None,
             timestamp: None,
+            fingerprint_commitment: None,
         };
 
         let dto = ContactMessageDto::from(&contact);

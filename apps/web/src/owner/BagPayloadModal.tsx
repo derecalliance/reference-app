@@ -15,11 +15,11 @@ export function BagPayloadModal({
   onClose: () => void
 }) {
   const [activeTab, setActiveTab] = useState<'structured' | 'raw'>('structured')
-  // Hidden until asked for, exactly like the Secrets table: the raw bytes are
+  // Hidden until asked for, exactly like the Items table: the raw bytes are
   // the same values in another encoding, so they follow the same toggle.
   const [revealed, setRevealed] = useState(false)
 
-  const payload = buildSecretContainerPayload(version, { maskSecrets: !revealed })
+  const payload = buildSecretContainerPayload(version, { maskItems: !revealed })
   const jsonString = JSON.stringify(payload, null, 2)
   const jsonBytes = new TextEncoder().encode(jsonString)
   const dump = hexDump(jsonBytes)
@@ -33,7 +33,7 @@ export function BagPayloadModal({
     >
       <div className="modal-header">
         <h2 className="modal-title" id="payload-modal-title">
-          Secret Bag Payload — v{version.version}
+          Item Bag Payload — v{version.version}
         </h2>
         <ModalCloseButton onClose={onClose} />
       </div>
@@ -57,8 +57,8 @@ export function BagPayloadModal({
         <div className="payload-reveal-row">
           <span className="payload-note">
             {revealed
-              ? 'Secret values are shown in clear text.'
-              : 'Secret values are masked, as in the Secrets table — the byte count is of what is shown.'}
+              ? 'Item values are shown in clear text.'
+              : 'Item values are masked, as in the Items table — the byte count is of what is shown.'}
           </span>
           <button
             type="button"

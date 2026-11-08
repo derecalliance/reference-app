@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
-import type { Vault } from '../types'
+import type { Secret } from '../types'
 import { DEFAULT_WEIGHT } from './weights'
 
 /**
@@ -10,14 +10,31 @@ import { DEFAULT_WEIGHT } from './weights'
  * threshold through the roster, but not these preferences.
  */
 
-/** How many committed versions helpers keep, unless the owner picks per publish. */
+/** How many verification copies "keep only the N newest" starts from. */
 export const DEFAULT_RETAINED_VERSIONS = 3
 
-/** Which versions helpers are told to keep (the protocol's `keepList`). */
+/**
+ * How the threshold is set: as a percentage of the subshares the helpers hold
+ * between them, worked out at each publish from who is paired, or as a fixed
+ * number.
+ */
+export type ThresholdMode = 'percent' | 'fixed'
+
+/** A threshold as the owner sets it on the Channels tab. */
+export type ThresholdSetting = { mode: 'percent'; percent: number } | { mode: 'fixed'; value: number }
+
+/** The percentage a new secret's threshold starts at. */
+export const DEFAULT_THRESHOLD_PERCENT = 50
+
+/**
+ * Which earlier version helpers are told to keep (the protocol's
+ * `keepVersion`, SDK 0.0.10): a helper holds at most that one and the version
+ * being shared.
+ */
 export type HelperRetention =
-  /** The N newest committed versions, plus any round still open. */
-  | { mode: 'lastN'; n: number }
-  /** No standing rule: the owner picks the versions at each publish. */
+  /** The newest committed version. */
+  | { mode: 'latestCommitted' }
+  /** The owner picks the version at each publish. */
   | { mode: 'select' }
 
 /** When this device deletes its old verification copies. */
@@ -30,38 +47,94 @@ export type ProofCleanup =
   | { mode: 'auto'; criterion: 'lastN'; n: number }
 
 export interface PublishPolicy {
-  /** The threshold a publish dialog starts from. */
+  /**
+   * Whether the threshold is a percentage (`thresholdPercent`) or a fixed
+   * number (`defaultThreshold`) — see `sharingThreshold`. Absent means fixed:
+   * secrets saved before percentages existed keep the number they had.
+   */
+  thresholdMode?: ThresholdMode
+  /**
+   * The percentage of the helpers' subshares needed to recover, when
+   * `thresholdMode` is `percent`. Kept while the mode is fixed, so switching
+   * back restores it; absent means `DEFAULT_THRESHOLD_PERCENT`.
+   */
+  thresholdPercent?: number
+  /**
+   * The fixed threshold, used when `thresholdMode` is `fixed`; set on the
+   * Channels tab. (Named for when a publish dialog could override it.)
+   */
   defaultThreshold: number
-  /** Each helper's default weight, by channel id; absent is 1. */
+  /**
+   * Each helper's weight for every publish, by channel id, set on the
+   * Channels tab; absent falls back to the weight the library last published.
+   */
   defaultWeights: Record<string, number>
   helperRetention: HelperRetention
   proofCleanup: ProofCleanup
 }
 
-/** The vault's policy, or today's behaviour for a vault saved before it existed. */
-export function resolvePublishPolicy(vault: Pick<Vault, 'publishPolicy' | 'minParticipants'>): PublishPolicy {
-  return (
-    vault.publishPolicy ?? {
-      defaultThreshold: vault.minParticipants,
+/**
+ * The secret's policy, or today's behaviour for a secret saved before it existed.
+ *
+ * A policy saved before SDK 0.0.10 may say "keep the last N versions"
+ * (`{ mode: 'lastN', n }`), which a single `keepVersion` cannot express; it
+ * reads as "keep the newest committed version", the closest rule left.
+ */
+export function resolvePublishPolicy(secret: Pick<Secret, 'publishPolicy' | 'minParticipants'>): PublishPolicy {
+  const policy = secret.publishPolicy
+  if (!policy) {
+    return {
+      defaultThreshold: secret.minParticipants,
       defaultWeights: {},
-      helperRetention: { mode: 'lastN', n: DEFAULT_RETAINED_VERSIONS },
+      helperRetention: { mode: 'latestCommitted' },
       proofCleanup: { mode: 'manual' },
     }
-  )
+  }
+  return policy.helperRetention.mode === 'select'
+    ? policy
+    : { ...policy, helperRetention: { mode: 'latestCommitted' } }
 }
 
 /**
- * The vault's policy once it joins a group whose roster carries `threshold`
+ * The secret's policy once it joins a group whose roster carries `threshold`
  * (a restore or a replica adoption): publish dialogs start from the threshold
- * the library will reuse. `undefined` — keep the vault's own — when the roster
+ * the library will reuse. `undefined` — keep the secret's own — when the roster
  * carries none.
  */
 export function withGroupThreshold(
-  vault: Pick<Vault, 'publishPolicy' | 'minParticipants'>,
+  secret: Pick<Secret, 'publishPolicy' | 'minParticipants'>,
   threshold: number | undefined,
 ): PublishPolicy | undefined {
-  if (threshold === undefined) return vault.publishPolicy
-  return { ...resolvePublishPolicy(vault), defaultThreshold: threshold }
+  if (threshold === undefined) return secret.publishPolicy
+  // The group's number, as it is: a percentage would turn into a different
+  // one as soon as this device's helpers differ from the publisher's.
+  return { ...resolvePublishPolicy(secret), thresholdMode: 'fixed', defaultThreshold: threshold }
+}
+
+/**
+ * The policy a secret set up from scratch starts with: the threshold at
+ * `DEFAULT_THRESHOLD_PERCENT` of the subshares, and `fixedThreshold` (the
+ * node's starting threshold) ready should the owner switch to a fixed number.
+ */
+export function newSecretPublishPolicy(fixedThreshold: number): PublishPolicy {
+  return {
+    thresholdMode: 'percent',
+    thresholdPercent: DEFAULT_THRESHOLD_PERCENT,
+    defaultThreshold: fixedThreshold,
+    defaultWeights: {},
+    helperRetention: { mode: 'latestCommitted' },
+    proofCleanup: { mode: 'manual' },
+  }
+}
+
+/** `policy`'s threshold mode, fixed when it predates the choice. */
+export function thresholdModeOf(policy: PublishPolicy): ThresholdMode {
+  return policy.thresholdMode ?? 'fixed'
+}
+
+/** `policy`'s threshold percentage, whether or not it is in force. */
+export function thresholdPercentOf(policy: PublishPolicy): number {
+  return policy.thresholdPercent ?? DEFAULT_THRESHOLD_PERCENT
 }
 
 /**
@@ -69,8 +142,8 @@ export function withGroupThreshold(
  * weight the library last published for it (`lastPublished`, 1 when unknown).
  *
  * Falling back to the last published weight matters after a restore, a join
- * or on a vault saved before defaults existed: the library holds the roster's
- * weights, the vault has set none, and pre-filling 1 would make the next
+ * or on a secret saved before defaults existed: the library holds the roster's
+ * weights, the secret has set none, and pre-filling 1 would make the next
  * publish reset every helper.
  */
 export function defaultWeightFor(policy: PublishPolicy, channelId: string, lastPublished = DEFAULT_WEIGHT): number {
@@ -80,14 +153,8 @@ export function defaultWeightFor(policy: PublishPolicy, channelId: string, lastP
 /** What is wrong with `policy`, by field; empty when it is valid. */
 export function publishPolicyProblems(
   policy: PublishPolicy,
-): Partial<Record<'defaultThreshold' | 'retentionN' | 'cleanupN', string>> {
-  const problems: Partial<Record<'defaultThreshold' | 'retentionN' | 'cleanupN', string>> = {}
-  if (!Number.isInteger(policy.defaultThreshold) || policy.defaultThreshold < 2) {
-    problems.defaultThreshold = 'Must be a whole number, at least 2 — one helper must never recover alone'
-  }
-  if (policy.helperRetention.mode === 'lastN' && !atLeastOne(policy.helperRetention.n)) {
-    problems.retentionN = 'Keep at least 1 version'
-  }
+): Partial<Record<'cleanupN', string>> {
+  const problems: Partial<Record<'cleanupN', string>> = {}
   if (policy.proofCleanup.mode === 'auto' && policy.proofCleanup.criterion === 'lastN' && !atLeastOne(policy.proofCleanup.n)) {
     problems.cleanupN = 'Keep at least 1 version'
   }

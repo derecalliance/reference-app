@@ -369,8 +369,8 @@ pub async fn share_store_conforms<S: DeRecShareStore>(store: &mut S) {
 /// `remove_versions` drops exactly the named versions of one channel, and is
 /// idempotent.
 ///
-/// A helper applies an owner's `keepList` through this, deleting every version
-/// the list leaves out — so removing too much here loses shares the owner still
+/// A helper applies an owner's `keepVersion` through this, deleting every
+/// version it leaves out — so removing too much here loses shares the owner still
 /// counts on, on other channels or other secrets above all.
 ///
 /// Expects `channel` under `SECRET_A` to hold versions 1, 2, 3 and 9, as

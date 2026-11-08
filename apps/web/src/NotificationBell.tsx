@@ -9,11 +9,11 @@ import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
 import { Badge, Box, Divider, IconButton, ListItemIcon, ListItemText, Menu, MenuItem, Typography } from '@mui/material'
 import { keyframes } from '@mui/material/styles'
 
-import type { VaultNotification } from './types'
-import type { VaultEntry } from './vault/manager'
-import { unreadCount } from './vault/notifications'
+import type { SecretNotification } from './types'
+import type { SecretEntry } from './secret/manager'
+import { unreadCount } from './secret/notifications'
 
-/** How many notifications the dropdown lists; the rest are on each vault's tab. */
+/** How many notifications the dropdown lists; the rest are on each secret's tab. */
 const MENU_SIZE = 8
 
 /** A short swing every few seconds, then still — enough to catch the eye, not to nag. */
@@ -26,25 +26,25 @@ const ring = keyframes`
 `
 
 interface NotificationBellProps {
-  entries: readonly VaultEntry[]
-  /** Open a vault's Notifications tab, marking `notificationId` read when one was picked. */
-  onOpen: (vaultId: string, notificationId: string | null) => void
-  /** The vault on screen, whose tab "View all" opens; `null` hides it. */
-  currentVaultId: string | null
+  entries: readonly SecretEntry[]
+  /** Open a secret's Notifications tab, marking `notificationId` read when one was picked. */
+  onOpen: (localSecretId: string, notificationId: string | null) => void
+  /** The secret on screen, whose tab "View all" opens; `null` hides it. */
+  currentLocalSecretId: string | null
 }
 
 interface BellItem {
-  vaultId: string
-  vaultName: string
-  notification: VaultNotification
+  localSecretId: string
+  secretName: string
+  notification: SecretNotification
 }
 
 /**
- * Every vault's notifications behind one bell. An unread critical one —
+ * Every secret's notifications behind one bell. An unread critical one —
  * a failed verification — turns the badge red and rings the bell until it is
  * read; with reduced motion the badge alone says it.
  */
-export function NotificationBell({ entries, onOpen, currentVaultId }: NotificationBellProps) {
+export function NotificationBell({ entries, onOpen, currentLocalSecretId }: NotificationBellProps) {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null)
 
   const totals = entries.reduce(
@@ -55,7 +55,7 @@ export function NotificationBell({ entries, onOpen, currentVaultId }: Notificati
     { total: 0, critical: 0 },
   )
   const items: BellItem[] = entries
-    .flatMap(e => e.notifications.map(notification => ({ vaultId: e.id, vaultName: e.name, notification })))
+    .flatMap(e => e.notifications.map(notification => ({ localSecretId: e.id, secretName: e.name, notification })))
     .sort((a, b) => b.notification.at - a.notification.at)
     .slice(0, MENU_SIZE)
   const alarming = totals.critical > 0
@@ -64,9 +64,9 @@ export function NotificationBell({ entries, onOpen, currentVaultId }: Notificati
       ? 'Notifications'
       : `Notifications — ${totals.total} unread${alarming ? `, ${totals.critical} critical` : ''}`
 
-  const pick = (vaultId: string, notificationId: string | null) => {
+  const pick = (localSecretId: string, notificationId: string | null) => {
     setAnchor(null)
-    onOpen(vaultId, notificationId)
+    onOpen(localSecretId, notificationId)
   }
 
   return (
@@ -110,10 +110,10 @@ export function NotificationBell({ entries, onOpen, currentVaultId }: Notificati
             <ListItemText primary="No notifications yet" />
           </MenuItem>
         ) : (
-          items.map(({ vaultId, vaultName, notification: n }) => (
+          items.map(({ localSecretId, secretName, notification: n }) => (
             <MenuItem
               key={n.id}
-              onClick={() => pick(vaultId, n.id)}
+              onClick={() => pick(localSecretId, n.id)}
               sx={{ alignItems: 'flex-start', whiteSpace: 'normal', opacity: n.read ? 0.7 : 1 }}
             >
               <ListItemIcon sx={{ mt: 0.25 }}>
@@ -131,7 +131,7 @@ export function NotificationBell({ entries, onOpen, currentVaultId }: Notificati
                 }
                 secondary={
                   <Typography component="span" variant="caption" color="text.secondary">
-                    {vaultName} · {new Date(n.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    {secretName} · {new Date(n.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     {n.read ? '' : ' · unread'}
                   </Typography>
                 }
@@ -139,10 +139,10 @@ export function NotificationBell({ entries, onOpen, currentVaultId }: Notificati
             </MenuItem>
           ))
         )}
-        {currentVaultId && <Divider />}
-        {currentVaultId && (
-          <MenuItem onClick={() => pick(currentVaultId, null)}>
-            <ListItemText primary="View all for this vault" sx={{ textAlign: 'center' }} />
+        {currentLocalSecretId && <Divider />}
+        {currentLocalSecretId && (
+          <MenuItem onClick={() => pick(currentLocalSecretId, null)}>
+            <ListItemText primary="View all for this secret" sx={{ textAlign: 'center' }} />
           </MenuItem>
         )}
       </Menu>

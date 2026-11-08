@@ -70,12 +70,22 @@
   transform: translateX(-50%);
 }
 
+/* Starts at the trigger and opens to the right; the arrow stays on the trigger. */
+.info-tooltip-content--align-start {
+  left: -6px;
+  transform: none;
+}
+
 .info-tooltip-content::after {
   content: '';
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
   border: 5px solid transparent;
+}
+
+.info-tooltip-content--align-start::after {
+  left: 14px;
 }
 
 .info-tooltip-content--top::after {

@@ -22,25 +22,25 @@ import {
 } from '@mui/material'
 
 import { errorText } from './errorText'
-import type { ReplicaConflict, UserSecret } from './types'
+import type { ReplicaConflict, Item } from './types'
 import {
   conflictEntries,
   defaultResolution,
   isIdentical,
-  mergedSecrets,
+  mergedItems,
   type ConflictEntry,
   type EntryResolution,
-} from './vault/replicaConflict'
+} from './secret/replicaConflict'
 
 export interface ReplicaConflictDialogProps {
   open: boolean
   conflict: ReplicaConflict
-  /** This device's copy — the vault's current secrets. */
-  mySecrets: readonly UserSecret[]
+  /** This device's copy — the secret's current items. */
+  myItems: readonly Item[]
   /** The member holding the rival copy, for display. */
   rivalLabel: string
-  /** Publish the chosen secrets as one new version. */
-  onResolve: (secrets: UserSecret[]) => Promise<number | null>
+  /** Publish the chosen items as one new version. */
+  onResolve: (items: Item[]) => Promise<number | null>
   onClose: () => void
 }
 
@@ -50,29 +50,29 @@ type SubmitState =
   | { kind: 'error'; message: string }
 
 /**
- * Merge two copies of a diverged vault and publish the result once — steps 3
+ * Merge two copies of a diverged secret and publish the result once — steps 3
  * and 4 of the library README's procedure for a replica version conflict.
  *
- * Every secret either copy holds is listed and kept by default: dropping is
- * the one choice that loses data, so it is never made for the owner. A secret
+ * Every item either copy holds is listed and kept by default: dropping is
+ * the one choice that loses data, so it is never made for the owner. An item
  * both copies hold with different contents is the one real decision, and it
  * defaults to this device's version.
  */
 export function ReplicaConflictDialog({
   open,
   conflict,
-  mySecrets,
+  myItems,
   rivalLabel,
   onResolve,
   onClose,
 }: ReplicaConflictDialogProps) {
-  const rival = conflict.rivalSecrets
-  const entries = useMemo(() => conflictEntries(mySecrets, rival ?? []), [mySecrets, rival])
+  const rival = conflict.rivalItems
+  const entries = useMemo(() => conflictEntries(myItems, rival ?? []), [myItems, rival])
   const [choices, setChoices] = useState<Record<string, EntryResolution>>({})
   const [showValues, setShowValues] = useState(false)
   const [submit, setSubmit] = useState<SubmitState>({ kind: 'idle' })
 
-  const merged = mergedSecrets(entries, choices)
+  const merged = mergedItems(entries, choices)
   const publishing = submit.kind === 'publishing'
   const choiceOf = (entry: ConflictEntry) => choices[entry.id] ?? defaultResolution(entry)
   const choose = (id: string, choice: EntryResolution) =>
@@ -83,7 +83,7 @@ export function ReplicaConflictDialog({
     try {
       const version = await onResolve(merged)
       if (version === null) {
-        setSubmit({ kind: 'error', message: 'No round was dispatched, so the vault is still diverged.' })
+        setSubmit({ kind: 'error', message: 'No round was dispatched, so the secret is still diverged.' })
         return
       }
       onClose()
@@ -108,13 +108,13 @@ export function ReplicaConflictDialog({
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 1 }}>
           <DialogContentText>
-            Choose what the vault should hold. It is published once, as a new version that replaces
+            Choose what the secret should hold. It is published once, as a new version that replaces
             both copies on every member and helper.
           </DialogContentText>
 
           {rival === null && (
             <Alert severity="warning">
-              {rivalLabel}’s copy has not reached this device yet, so only this device’s secrets are
+              {rivalLabel}’s copy has not reached this device yet, so only this device’s items are
               listed. Close this and use “Get the group’s copy” first — publishing now replaces{' '}
               {rivalLabel}’s copy with this one, and whatever only theirs holds is lost.
             </Alert>
@@ -122,10 +122,10 @@ export function ReplicaConflictDialog({
 
           <FormControlLabel
             control={<Switch checked={showValues} onChange={e => setShowValues(e.target.checked)} />}
-            label="Show secret values"
+            label="Show item values"
           />
 
-          <List dense disablePadding aria-label="Secrets in the two copies">
+          <List dense disablePadding aria-label="Items in the two copies">
             {entries.map(entry => (
               <ListItem key={entry.id} disableGutters divider sx={{ display: 'block' }}>
                 <ConflictEntryRow
@@ -141,7 +141,7 @@ export function ReplicaConflictDialog({
           </List>
 
           <Typography variant="body2" color="text.secondary" role="status">
-            The new version will hold {merged.length} secret{merged.length === 1 ? '' : 's'}.
+            The new version will hold {merged.length} item{merged.length === 1 ? '' : 's'}.
           </Typography>
 
           {submit.kind === 'error' && <Alert severity="error">{submit.message}</Alert>}
@@ -164,9 +164,9 @@ export function ReplicaConflictDialog({
   )
 }
 
-/** A secret's value, or a mask when values are hidden. */
-function valueText(secret: UserSecret, showValues: boolean): string {
-  return showValues ? secret.data : '•'.repeat(Math.min(12, Math.max(4, secret.data.length)))
+/** An item's value, or a mask when values are hidden. */
+function valueText(item: Item, showValues: boolean): string {
+  return showValues ? item.data : '•'.repeat(Math.min(12, Math.max(4, item.data.length)))
 }
 
 function ConflictEntryRow({
@@ -225,8 +225,8 @@ function ConflictEntryRow({
   }
 
   // Every entry holds at least one side — see `conflictEntries`.
-  const secret = entry.mine ?? entry.theirs
-  if (!secret) return null
+  const item = entry.mine ?? entry.theirs
+  if (!item) return null
   const origin = isIdentical(entry)
     ? 'in both copies'
     : entry.mine
@@ -244,7 +244,7 @@ function ConflictEntryRow({
       }
       label={
         <span>
-          <strong>{secret.name}</strong> = {valueText(secret, showValues)}{' '}
+          <strong>{item.name}</strong> = {valueText(item, showValues)}{' '}
           <Typography component="span" variant="caption" color="text.secondary">
             — {origin}
           </Typography>

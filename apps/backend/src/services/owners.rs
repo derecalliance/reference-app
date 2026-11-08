@@ -12,7 +12,8 @@ use uuid::Uuid;
 use super::ports::InboxDirectory;
 use super::ServiceError;
 use crate::models::{
-    Actor, ActorSettings, DisplayName, NodeConfig, RegisterOwner, RenamedOwner, Role, TransportMode,
+    Actor, ActorSettings, DisplayName, NodeConfig, ProtocolSettings, RegisterOwner, RenamedOwner,
+    Role, TransportMode,
 };
 use crate::repositories::actors::ActorRepository;
 
@@ -73,8 +74,8 @@ impl OwnerServiceImpl {
         );
         // A browser-run actor's protocol settings live in the page; these are
         // stored so the row is well-formed and are never read back.
-        let defaults = &self.config.defaults;
-        let settings = ActorSettings::fresh(defaults.protocol_timeout_secs, defaults.unpair_ack);
+        let (timeout_secs, unpair_ack) = ProtocolSettings::default().resolve();
+        let settings = ActorSettings::fresh(timeout_secs, unpair_ack);
         self.actors.register(actor.clone(), settings).await?;
         info!(actor_id = %actor.id, name = %actor.name, "owner registered");
         Ok(actor)

@@ -8,7 +8,7 @@
 //! Owner. All helper-role channels live in that instance: shares are separated
 //! by `channel_id` and each carries its own Owner's `secret_id` on the record.
 //!
-//! Replica mode is the exception. A replica mirrors one named owner's vault and
+//! Replica mode is the exception. A replica mirrors one named owner's secret and
 //! the share store keys on `(secret_id, channel_id, version, replica_id)`, so a
 //! replica needs an instance bound to *that owner's* secret. Hence a map rather
 //! than a single slot.

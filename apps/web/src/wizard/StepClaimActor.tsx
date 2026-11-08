@@ -28,7 +28,7 @@ export interface StepClaimActorProps {
   /** The user has acknowledged `activeElsewhere` and wants to claim anyway. */
   confirmedActive: boolean
   onConfirmActiveChange: (confirmed: boolean) => void
-  /** The threshold the claimed vault will run with, as typed. */
+  /** The threshold the claimed secret will run with, as typed. */
   threshold: string
   /** Why `threshold` is unusable, or `null`. */
   thresholdError: string | null
@@ -148,8 +148,8 @@ export function StepClaimActor({
         className={thresholdError ? 'wizard-field-error' : 'wizard-field-hint'}
       >
         {thresholdError ??
-          'The node does not record the threshold a vault was set up with, so confirm it here. ' +
-            'Prefilled with this node’s default — change it if the original vault used another.'}
+          'The node does not record the threshold a secret was set up with, so confirm it here. ' +
+            'Prefilled with this node’s default — change it if the original secret used another.'}
       </p>
 
       {activeElsewhere && (

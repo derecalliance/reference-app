@@ -6,9 +6,9 @@ import { postTabMessage } from './tabSync'
 
 const BASE_PATH = import.meta.env.BASE_URL.replace(/\/$/, '') // e.g. "/reference-app"
 
-/** What a reset needs from the vault manager. */
+/** What a reset needs from the secret manager. */
 export interface Haltable {
-  /** Stop every vault and resolve once none can write again. */
+  /** Stop every secret and resolve once none can write again. */
   haltAll(): Promise<void>
 }
 
@@ -16,10 +16,10 @@ export interface Haltable {
  * Wipe this browser's DeRec data, in every tab, and start again.
  *
  * Storage is shared by every tab of the origin but each tab runs its own
- * vaults, so wiping it from one tab used to leave the others running on top of
+ * secrets, so wiping it from one tab used to leave the others running on top of
  * nothing — writing keys back into the emptied storage and failing their next
  * command with an error about something else entirely. So the other tabs are
- * told first, and every tab, this one included, stops its vaults and waits for
+ * told first, and every tab, this one included, stops its secrets and waits for
  * their last write before clearing. Each tab clears after its *own* last write,
  * which is what guarantees nothing is left behind, whichever finishes first.
  */

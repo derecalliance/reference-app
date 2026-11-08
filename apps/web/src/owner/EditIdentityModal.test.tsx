@@ -5,7 +5,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { IdentityUpdate } from '../vault/types'
+import type { IdentityUpdate } from '../secret/types'
 import { EditIdentityModal, type EditIdentityInput } from './EditIdentityModal'
 
 let host: HTMLDivElement
@@ -40,7 +40,7 @@ function button(text: string): HTMLButtonElement {
 
 const sent: IdentityUpdate = {
   changed: { name: true, endpoint: false },
-  values: { name: 'Family Vault' },
+  values: { name: 'Family Secret' },
   sentAt: 0,
   channels: {
     '7': { peerName: 'Alex', sentAt: Date.now(), outcome: 'updated', detail: null },
@@ -64,7 +64,7 @@ function render(
   act(() =>
     root.render(
       <EditIdentityModal
-        vaultId="v1"
+        localSecretId="v1"
         currentName="Crypto Seeds"
         currentEndpoint="http://localhost:5000/derec/v1"
         pinned={false}
@@ -85,10 +85,10 @@ describe('EditIdentityModal', () => {
     const onSubmit = vi.fn(async () => sent)
     render(onSubmit, sent)
 
-    setValue('#identity-name', 'Family Vault')
+    setValue('#identity-name', 'Family Secret')
     await act(async () => button('Save and tell peers').click())
 
-    expect(onSubmit).toHaveBeenCalledWith({ name: 'Family Vault', endpoint: null })
+    expect(onSubmit).toHaveBeenCalledWith({ name: 'Family Secret', endpoint: null })
   })
 
   it('pins a typed endpoint once "follow the node" is unticked', async () => {
@@ -120,7 +120,7 @@ describe('EditIdentityModal', () => {
   it('shows how each paired peer answered', async () => {
     render(vi.fn(async () => sent), sent)
 
-    setValue('#identity-name', 'Family Vault')
+    setValue('#identity-name', 'Family Secret')
     await act(async () => button('Save and tell peers').click())
 
     expect(host.textContent).toContain('New name sent to 2 peers: 1 updated · 1 waiting')
@@ -133,7 +133,7 @@ describe('EditIdentityModal', () => {
     const onResend = vi.fn(async () => undelivered)
     render(vi.fn(async () => undelivered), undelivered, { onResend })
 
-    setValue('#identity-name', 'Family Vault')
+    setValue('#identity-name', 'Family Secret')
     await act(async () => button('Save and tell peers').click())
 
     expect(host.textContent).toContain('1 not delivered')
@@ -148,12 +148,12 @@ describe('EditIdentityModal', () => {
 
   it('shows how long each peer has been waited on', async () => {
     render(vi.fn(async () => sent), sent)
-    setValue('#identity-name', 'Family Vault')
+    setValue('#identity-name', 'Family Secret')
     await act(async () => button('Save and tell peers').click())
     expect(host.textContent).toMatch(/Waiting… \d+s of 60s/)
   })
 
-  it('warns, without blocking, about a pinned path that is not this vault’s mailbox', () => {
+  it('warns, without blocking, about a pinned path that is not this secret’s mailbox', () => {
     render(vi.fn())
     act(() => host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click())
     setValue('#identity-endpoint', 'http://localhost:5000/derec/someone-else')
@@ -162,19 +162,19 @@ describe('EditIdentityModal', () => {
     expect(button('Save and tell peers').disabled).toBe(false)
   })
 
-  it('does not claim the node has not listed the vault before the roster loads', () => {
+  it('does not claim the node has not listed the secret before the roster loads', () => {
     render(vi.fn(), null, { nodeAddress: null, rosterLoaded: false })
-    expect(host.textContent).not.toContain('has not listed this vault')
-    expect(host.textContent).toContain('checking where the node lists this vault')
+    expect(host.textContent).not.toContain('has not listed this secret')
+    expect(host.textContent).toContain('checking where the node lists this secret')
   })
 
   it('shows the error and stays editable when the update fails', async () => {
-    render(vi.fn(async () => { throw new Error('Start this vault before changing how peers see it.') }))
+    render(vi.fn(async () => { throw new Error('Start this secret before changing how peers see it.') }))
 
-    setValue('#identity-name', 'Family Vault')
+    setValue('#identity-name', 'Family Secret')
     await act(async () => button('Save and tell peers').click())
 
-    expect(host.textContent).toContain('Start this vault before changing how peers see it.')
+    expect(host.textContent).toContain('Start this secret before changing how peers see it.')
     expect(button('Save and tell peers').disabled).toBe(false)
   })
 })

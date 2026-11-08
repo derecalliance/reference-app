@@ -68,7 +68,7 @@
   opacity: 1;
 }
 
-/* A banner for a vault off screen: the whole message opens that vault. */
+/* A banner for a secret off screen: the whole message opens that secret. */
 .toast-link {
   background: transparent;
   border: none;

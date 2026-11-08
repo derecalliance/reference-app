@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
+import { secretNamespace } from '../secretStorage'
 import { ModalFrame } from '../ModalFrame'
 import { useState } from 'react'
 import { fromBase64Url } from '../derecApi'
@@ -10,13 +11,13 @@ import { EyeIcon, EyeOffIcon } from './icons'
 import { ClickToCopyCode } from './primitives'
 import { JoinGroupModal } from './JoinGroupModal'
 import { joinableMembers } from './replicaJoin'
-import { decodeSecretText } from './recoveredSecret'
+import { decodeItemText } from './recoveredSecret'
 import { findRecoveryFailure } from './recoveryFailures'
 import { isReplicaChannel } from '../ownerPairing'
 import { loadRawShare } from '../stores'
 import type {
   HeldShare,
-  Vault,
+  Secret,
   PairedParticipant,
   RecoveredSecret,
   RecoveredSecretReplica,
@@ -74,25 +75,25 @@ function RecoveryParticipantCard({
 }
 
 function RecoveredSecretCard({
-  secret,
+  recovered,
   onRestoreFromBag,
   onJoinGroup,
   onJoinThrough,
 }: {
-  secret: RecoveredSecret
-  onRestoreFromBag: (secret: RecoveredSecret) => Promise<void>
+  recovered: RecoveredSecret
+  onRestoreFromBag: (recovered: RecoveredSecret) => Promise<void>
   onJoinGroup: () => void
-  onJoinThrough: (secret: RecoveredSecret, member: RecoveredSecretReplica) => Promise<void>
+  onJoinThrough: (recovered: RecoveredSecret, member: RecoveredSecretReplica) => Promise<void>
 }) {
-  const [revealedSecrets, setRevealedSecrets] = useState<Set<string>>(new Set())
+  const [revealedItems, setRevealedItems] = useState<Set<string>>(new Set())
   const [restoring, setRestoring] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [joinOpen, setJoinOpen] = useState(false)
   // Live replicas mean joining is the library's recommendation over restoring.
-  const canJoin = joinableMembers(secret).length > 0
+  const canJoin = joinableMembers(recovered).length > 0
 
   function toggle(id: string) {
-    setRevealedSecrets(prev => {
+    setRevealedItems(prev => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
       else next.add(id)
@@ -105,7 +106,7 @@ function RecoveredSecretCard({
     setConfirmOpen(false)
     setRestoring(true)
     try {
-      await onRestoreFromBag(secret)
+      await onRestoreFromBag(recovered)
     } finally {
       setRestoring(false)
     }
@@ -114,15 +115,15 @@ function RecoveredSecretCard({
   return (
     <div className="detail-card">
       <div className="card-header">
-        <span className="card-title">{secret.label}</span>
-        <span className="version-tag">v{secret.version}</span>
+        <span className="card-title">{recovered.label}</span>
+        <span className="version-tag">v{recovered.version}</span>
         <span className="status-tag paired">Recovered</span>
         <button
           type="button"
           className="primary recovered-restore-btn"
           onClick={() => setConfirmOpen(true)}
           disabled={restoring}
-          title="Restore channels, secret bag and shares from this recovered bag and exit recovery mode."
+          title="Restore channels, item bag and shares from this recovered bag and exit recovery mode."
         >
           {restoring ? 'Restoring…' : 'Recover'}
         </button>
@@ -132,7 +133,7 @@ function RecoveredSecretCard({
             className="secondary"
             onClick={() => setJoinOpen(true)}
             disabled={restoring}
-            title="This vault still lives on other replica devices: join the group as a new replica instead of restoring."
+            title="This secret still lives on other replica devices: join the group as a new replica instead of restoring."
           >
             Join group…
           </button>
@@ -141,13 +142,13 @@ function RecoveredSecretCard({
 
       {joinOpen && (
         <JoinGroupModal
-          secret={secret}
+          recovered={recovered}
           onClose={() => setJoinOpen(false)}
           onJoin={() => {
             setJoinOpen(false)
             onJoinGroup()
           }}
-          onJoinThrough={member => onJoinThrough(secret, member)}
+          onJoinThrough={member => onJoinThrough(recovered, member)}
         />
       )}
 
@@ -171,8 +172,8 @@ function RecoveredSecretCard({
           </div>
           <div className="modal-body">
             <p>
-              This replaces every channel, secret and share this device holds
-              with what <strong>{secret.label}</strong> (v{secret.version})
+              This replaces every channel, item and share this device holds
+              with what <strong>{recovered.label}</strong> (v{recovered.version})
               carries, then leaves recovery mode.
             </p>
             <p>
@@ -207,38 +208,38 @@ function RecoveredSecretCard({
             <dt>Secret ID</dt>
             <dd>
               {/* The row's own label already names it. */}
-              <ClickToCopyCode value={secret.secretId} />
+              <ClickToCopyCode value={recovered.secretId} />
             </dd>
           </div>
         </dl>
 
         <div className="card-sub-section">
           <h4 className="sub-heading">
-            User Secrets ({secret.snapshot.secrets.length})
+            Items ({recovered.snapshot.items.length})
           </h4>
-          {secret.snapshot.secrets.length === 0 ? (
-            <p className="empty-hint">No user secrets in this bag.</p>
+          {recovered.snapshot.items.length === 0 ? (
+            <p className="empty-hint">No items in this bag.</p>
           ) : (
-            <table className="secrets-table">
+            <table className="items-table">
               <thead>
                 <tr>
-                  <th className="secrets-table__th">Name</th>
-                  <th className="secrets-table__th">Value</th>
-                  <th className="secrets-table__th secrets-table__th--action" />
+                  <th className="items-table__th">Name</th>
+                  <th className="items-table__th">Value</th>
+                  <th className="items-table__th items-table__th--action" />
                 </tr>
               </thead>
               <tbody>
-                {secret.snapshot.secrets.map(s => {
-                  const visible = revealedSecrets.has(s.id)
+                {recovered.snapshot.items.map(s => {
+                  const visible = revealedItems.has(s.id)
                   return (
-                    <tr key={s.id} className="secrets-table__row">
-                      <td className="secrets-table__td secrets-table__name">{s.name}</td>
-                      <td className="secrets-table__td secrets-table__value">
+                    <tr key={s.id} className="items-table__row">
+                      <td className="items-table__td items-table__name">{s.name}</td>
+                      <td className="items-table__td items-table__value">
                         {/* Snapshot payloads are stored base64url-encoded so
                             they survive localStorage; decode for display. */}
-                        <code>{visible ? decodeSecretText(s.data) : '••••••••'}</code>
+                        <code>{visible ? decodeItemText(s.data) : '••••••••'}</code>
                       </td>
-                      <td className="secrets-table__td secrets-table__td--action">
+                      <td className="items-table__td items-table__td--action">
                         <button
                           type="button"
                           className="secondary reveal-btn"
@@ -258,13 +259,13 @@ function RecoveredSecretCard({
 
         <div className="card-sub-section">
           <h4 className="sub-heading">
-            Helpers ({secret.snapshot.helpers.length})
+            Helpers ({recovered.snapshot.helpers.length})
           </h4>
-          {secret.snapshot.helpers.length === 0 ? (
+          {recovered.snapshot.helpers.length === 0 ? (
             <p className="empty-hint">No helper records in this bag.</p>
           ) : (
             <ul className="participant-tag-list" role="list">
-              {secret.snapshot.helpers.map(h => {
+              {recovered.snapshot.helpers.map(h => {
                 const displayName = h.communicationInfo?.['name'] || 'Unknown'
                 return (
                   <li key={h.channelId} className="participant-tag">
@@ -286,12 +287,12 @@ type ShareFormat = 'base64' | 'protobuf'
 function ShareDataRow({
   channelId,
   version,
-  vaultId,
+  localSecretId,
   secretId,
 }: {
   channelId: string
   version: number
-  vaultId: string
+  localSecretId: string
   /**
    * This node's own secret id — the partition every share it holds is filed
    * under, including shares belonging to another owner's secret.
@@ -300,7 +301,7 @@ function ShareDataRow({
 }) {
   const [format, setFormat] = useState<ShareFormat>('base64')
 
-  const raw = loadRawShare(`vault:${vaultId}`, secretId, channelId, version)
+  const raw = loadRawShare(secretNamespace(localSecretId), secretId, channelId, version)
   if (!raw) return <span className="share-data-empty">Share data not found in local storage</span>
 
   const display = format === 'base64'
@@ -326,12 +327,12 @@ function ShareDataRow({
 export function HeldSharesList({
   shares,
   participants,
-  vaultId,
+  localSecretId,
   secretId,
 }: {
   shares: HeldShare[]
   participants: PairedParticipant[]
-  vaultId: string
+  localSecretId: string
   secretId: string
 }) {
   if (shares.length === 0) {
@@ -365,7 +366,7 @@ export function HeldSharesList({
               <ShareDataRow
                 channelId={share.channelId}
                 version={share.version}
-                vaultId={vaultId}
+                localSecretId={localSecretId}
                 secretId={secretId}
               />
             </div>
@@ -424,7 +425,7 @@ function aggregateDiscovered(helpers: readonly PairedParticipant[]): AggregatedS
     if (bucket) bucket.versions.push(version)
     else secretMap.set(secretId, { secretId, versions: [version] })
   }
-  for (const secret of secretMap.values()) secret.versions.sort((a, b) => b.version - a.version)
+  for (const available of secretMap.values()) available.versions.sort((a, b) => b.version - a.version)
   return Array.from(secretMap.values()).sort((a, b) => b.versions[0].version - a.versions[0].version)
 }
 
@@ -433,29 +434,29 @@ function aggregateDiscovered(helpers: readonly PairedParticipant[]): AggregatedS
  * its bag was published with, and which versions were committed rather than
  * rolled back. `null` on a fresh device, which knows neither.
  */
-function knownBag(vault: Vault, secretId: string): { threshold: number; committed: Set<number>; oldest: number } | null {
-  const bag = vault.secretBag
+function knownBag(secret: Secret, secretId: string): { threshold: number; committed: Set<number>; oldest: number } | null {
+  const bag = secret.itemBag
   if (!bag || bag.secretId !== secretId) return null
   const committed = committedVersionsOf(bag)
   return { threshold: bag.threshold, committed, oldest: Math.min(...committed) }
 }
 
 export function RecoveryPanel({
-  vault,
+  secret,
   onRequestDiscovery,
   onRecover,
   onRestoreFromBag,
   onJoinGroup,
   onJoinThrough,
 }: {
-  vault: Vault
+  secret: Secret
   onRequestDiscovery: () => Promise<void>
   onRecover: (secretId: string, version: number, label: string, participantChannelIds: bigint[]) => Promise<void>
-  onRestoreFromBag: (secret: RecoveredSecret) => Promise<void>
-  /** Start joining a recovered vault's replica group: pair as its replica destination. */
+  onRestoreFromBag: (recovered: RecoveredSecret) => Promise<void>
+  /** Start joining a recovered secret's replica group: pair as its replica destination. */
   onJoinGroup: () => void
   /** Join through a member this node runs, without copying a contact. */
-  onJoinThrough: (secret: RecoveredSecret, member: RecoveredSecretReplica) => Promise<void>
+  onJoinThrough: (recovered: RecoveredSecret, member: RecoveredSecretReplica) => Promise<void>
 }) {
   const [discovering, setDiscovering] = useState(false)
   const [discoveryError, setDiscoveryError] = useState<string | null>(null)
@@ -466,10 +467,10 @@ export function RecoveryPanel({
   // an owner it already helps — which happens on the helper's side.
   // A replica channel is never a discovery candidate: it holds no VSS share, so
   // it has nothing to answer a discovery — or a share request — with.
-  const recoveryParticipants = vault.participants.filter(
+  const recoveryParticipants = secret.participants.filter(
     h => h.connectionStatus === 'paired' && h.channelId && !isReplicaChannel(h),
   )
-  const recoveredSecrets = vault.recoveredSecrets ?? []
+  const recoveredSecrets = secret.recoveredSecrets ?? []
   const availableSecrets = aggregateDiscovered(recoveryParticipants)
 
   async function handleDiscover() {
@@ -535,11 +536,11 @@ export function RecoveryPanel({
         <div className="recovery-section">
           <h3 className="sub-heading">Available Secrets</h3>
           <div className="card-list">
-            {availableSecrets.map(secret => (
+            {availableSecrets.map(available => (
               <AvailableSecretCard
-                key={secret.secretId}
+                key={available.secretId}
+                available={available}
                 secret={secret}
-                vault={vault}
                 onRecover={onRecover}
               />
             ))}
@@ -555,7 +556,7 @@ export function RecoveryPanel({
             {recoveredSecrets.map(s => (
               <RecoveredSecretCard
                 key={`${s.secretId}-${s.version}`}
-                secret={s}
+                recovered={s}
                 onRestoreFromBag={onRestoreFromBag}
                 onJoinGroup={onJoinGroup}
                 onJoinThrough={onJoinThrough}
@@ -573,22 +574,22 @@ export function RecoveryPanel({
  *
  * Versions this device's own record shows were rolled back are left out —
  * helpers keep the shares of a round that never committed, and offering to
- * recover one invites restoring a bag that was never the vault's.
+ * recover one invites restoring a bag that was never the secret's.
  */
 function AvailableSecretCard({
+  available,
   secret,
-  vault,
   onRecover,
 }: {
-  secret: AggregatedSecret
-  vault: Vault
+  available: AggregatedSecret
+  secret: Secret
   onRecover: (secretId: string, version: number, label: string, participantChannelIds: bigint[]) => Promise<void>
 }) {
-  const known = knownBag(vault, secret.secretId)
+  const known = knownBag(secret, available.secretId)
   const rolledBack = (v: AggregatedVersion) =>
     known !== null && v.version >= known.oldest && !known.committed.has(v.version)
-  const versions = secret.versions.filter(v => !rolledBack(v))
-  const hiddenCount = secret.versions.length - versions.length
+  const versions = available.versions.filter(v => !rolledBack(v))
+  const hiddenCount = available.versions.length - versions.length
   if (versions.length === 0) return null
 
   // The most recent version's description acts as the secret's current
@@ -599,7 +600,7 @@ function AvailableSecretCard({
     <div className="detail-card">
       <div className="card-header">
         <span className="card-title">{cardTitle}</span>
-        <span className="mono-tag">{secret.secretId}</span>
+        <span className="mono-tag">{available.secretId}</span>
         <span className="version-tag">
           {versions.length} version{versions.length !== 1 ? 's' : ''}
         </span>
@@ -608,12 +609,12 @@ function AvailableSecretCard({
         <div className="available-versions-list">
           {versions.map(v => (
             <AvailableVersionRow
-              key={`${secret.secretId}:${v.version}`}
-              secretId={secret.secretId}
+              key={`${available.secretId}:${v.version}`}
+              secretId={available.secretId}
               version={v}
               cardTitle={cardTitle}
               threshold={known?.threshold ?? null}
-              vault={vault}
+              secret={secret}
               onRecover={onRecover}
             />
           ))}
@@ -621,7 +622,7 @@ function AvailableSecretCard({
         {hiddenCount > 0 && (
           <p className="empty-hint">
             {hiddenCount} rolled-back version{hiddenCount !== 1 ? 's' : ''} not shown — helpers
-            still hold shares of {hiddenCount !== 1 ? 'rounds' : 'a round'} this vault never committed,
+            still hold shares of {hiddenCount !== 1 ? 'rounds' : 'a round'} this secret never committed,
             until its next published version tells them to drop {hiddenCount !== 1 ? 'them' : 'it'}.
           </p>
         )}
@@ -635,7 +636,7 @@ function AvailableVersionRow({
   version: v,
   cardTitle,
   threshold,
-  vault,
+  secret,
   onRecover,
 }: {
   secretId: string
@@ -643,23 +644,23 @@ function AvailableVersionRow({
   cardTitle: string
   /** The threshold the bag was published with, when this device knows it. */
   threshold: number | null
-  vault: Vault
+  secret: Secret
   onRecover: (secretId: string, version: number, label: string, participantChannelIds: bigint[]) => Promise<void>
 }) {
   const [requestError, setRequestError] = useState<string | null>(null)
 
-  const alreadyRecovered = (vault.recoveredSecrets ?? []).some(
+  const alreadyRecovered = (secret.recoveredSecrets ?? []).some(
     s => s.secretId === secretId && s.version === v.version,
   )
   const helperCount = v.helperChannelIds.length
-  const recoveryProgress = vault.recoveryProgress
+  const recoveryProgress = secret.recoveryProgress
   const isThisVersionActive =
     recoveryProgress?.secretId === secretId && recoveryProgress?.version === v.version
   const isInProgress = isThisVersionActive && !recoveryProgress?.error
   // Persistent failure (from a prior attempt) survives when the user clicks
   // Recover on a different version; it's cleared only on retry or success of
   // THIS row.
-  const pastFailure = findRecoveryFailure(vault.recoveryFailures, secretId, v.version)
+  const pastFailure = findRecoveryFailure(secret.recoveryFailures, secretId, v.version)
   const versionError =
     requestError ??
     (isThisVersionActive ? (recoveryProgress?.error ?? null) : (pastFailure?.error ?? null))
@@ -707,7 +708,7 @@ function AvailableVersionRow({
         </span>
       )}
       {isThisVersionActive && recoveryProgress && (
-        <RecoveryAnswersWithoutShare progress={recoveryProgress} participants={vault.participants} />
+        <RecoveryAnswersWithoutShare progress={recoveryProgress} participants={secret.participants} />
       )}
       {versionError && (
         <span className="available-version-insufficient" role="alert">

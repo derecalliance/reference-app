@@ -33,7 +33,7 @@ function failureSummary(rows: RoundProgress['rows']): string {
 
 /**
  * The per-participant view of a protect round in flight: who confirmed, who
- * refused, who never answered or could not be reached, and whether enough did. Shared by adding and removing a secret,
+ * refused, who never answered or could not be reached, and whether enough did. Shared by adding and removing an item,
  * which publish a new bag version the same way.
  *
  * "Enough" is counted in subshares, as the library counts it: with weighted
@@ -114,7 +114,7 @@ export function ProtectRoundProgress({ progress, threshold, version, failureHead
           {weighted
             ? `Only ${confirmedWeight} of the required ${threshold} subshares were confirmed (${confirmedCount} helper${confirmedCount === 1 ? '' : 's'}).`
             : `Only ${confirmedCount} of the required ${threshold} helpers confirmed.`}{' '}
-          The secret bag has been rolled back.
+          The item bag has been rolled back.
         </div>
       )}
 
@@ -122,7 +122,7 @@ export function ProtectRoundProgress({ progress, threshold, version, failureHead
         <div className="threshold-warning-banner" role="status">
           New version published, but {failedCount} helper{failedCount > 1 ? 's' : ''} did not
           store it ({failures}).
-          The secrets are recoverable with the {confirmedCount} confirmed helper{confirmedCount > 1 ? 's' : ''}.
+          The items are recoverable with the {confirmedCount} confirmed helper{confirmedCount > 1 ? 's' : ''}.
         </div>
       )}
 

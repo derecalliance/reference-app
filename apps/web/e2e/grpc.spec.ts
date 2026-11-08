@@ -131,7 +131,7 @@ async function pairByName(page: Page, name: string): Promise<Locator> {
 
 /** Verify every paired share and wait for the round to complete. */
 async function verifyShares(page: Page, expected: string): Promise<void> {
-  await openTab(page, 'Secrets')
+  await openTab(page, 'Items')
   await page.getByRole('button', { name: 'Verify Shares' }).click()
   await expect(page.locator('.tab-panel')).toContainText(expected, { timeout: 90_000 })
 }

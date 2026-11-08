@@ -504,6 +504,7 @@ fn contact_message(contact: &PeerContact) -> Result<derec_proto::ContactMessage,
     let mlkem_encapsulation_key = decode(&contact.mlkem_encapsulation_key)?;
     let ecies_public_key = decode(&contact.ecies_public_key)?;
     let contact_binding_hash = decode(&contact.contact_binding_hash)?;
+    let fingerprint_commitment = decode(&contact.fingerprint_commitment)?;
 
     if contact.endpoints.is_empty() {
         return Err(ServiceError::BadRequest(
@@ -520,6 +521,7 @@ fn contact_message(contact: &PeerContact) -> Result<derec_proto::ContactMessage,
         ecies_public_key,
         contact_binding_hash,
         timestamp: None,
+        fingerprint_commitment,
     })
 }
 

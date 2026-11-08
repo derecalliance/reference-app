@@ -50,7 +50,7 @@ export function RemoveVersionModal({ version, onRemove, onClose }: RemoveVersion
       <div className="modal-body">
         <p className="modal-description">
           Remove <strong>v{version.version}</strong> from this device? Its record — the{' '}
-          {version.secrets.length} secret{version.secrets.length === 1 ? '' : 's'} it holds and who
+          {version.items.length} item{version.items.length === 1 ? '' : 's'} it holds and who
           stored it — and this device’s verification copies for it are deleted, so it can no longer
           be viewed or verified here.
         </p>

@@ -72,6 +72,11 @@ export interface ReplicasTabProps {
   /** Replica ids whose removal is in flight. */
   removingReplicaIds: ReadonlySet<string>
   /**
+   * Why nothing that publishes may start, or `null` — Sync now and Remove from
+   * group each publish a new version, so both wait until no round is open.
+   */
+  publishBlockedReason?: string | null
+  /**
    * Suspend or resume message delivery to a row's peer.
    *
    * Only ever called for a row whose peer is a provisioned helper — the row
@@ -97,14 +102,14 @@ export interface ReplicasTabProps {
   /** Evict a member by its replica id. */
   onRemoveMember: (replicaId: string) => void
   /**
-   * The version this vault holds, or `null` before its first protect round —
+   * The version this secret holds, or `null` before its first protect round —
    * what a source row's acknowledgement is compared against to say "behind".
    */
-  vaultVersion: number | null
+  secretVersion: number | null
   /**
-   * The replica id of the source this vault's current version names, if it
+   * The replica id of the source this secret's current version names, if it
    * carries a replica group. A destination row whose peer *is* that source is
-   * one whose vault this device already holds — its offer has been taken.
+   * one whose secret this device already holds — its offer has been taken.
    *
    * Matched by member rather than by channel: the group's channel id is not
    * stable across admissions, while the source's replica id is.
@@ -127,10 +132,11 @@ export function ReplicasTab({
   replicaDiscoveryRunning,
   onRemoveFromGroup,
   removingReplicaIds,
+  publishBlockedReason = null,
   onToggleOffline,
   memberRows,
   onRemoveMember,
-  vaultVersion,
+  secretVersion,
   groupSourceReplicaId,
 }: ReplicasTabProps) {
   /**
@@ -162,6 +168,7 @@ export function ReplicasTab({
       canRemoveFromGroup
       removingFromGroup={removingReplicaIds.has(member.replicaId)}
       onRemoveFromGroup={() => onRemoveMember(member.replicaId)}
+      publishBlockedReason={publishBlockedReason}
       canToggleOffline={false}
       offline={false}
       onToggleOffline={() => {}}
@@ -177,7 +184,7 @@ export function ReplicasTab({
     return (
       <p className="tab-empty-state">
         No replicas yet. A replica is another of your own devices that mirrors this whole
-        vault instead of holding a share of it. Add a hosted one under “Replicas” in the
+        secret instead of holding a share of it. Add a hosted one under “Replicas” in the
         side panel, or pair another browser as a replica with the Pair button above.
       </p>
     )
@@ -226,13 +233,14 @@ export function ReplicasTab({
                   view?.peerReplicaId != null && removingReplicaIds.has(view.peerReplicaId)
                 }
                 onRemoveFromGroup={() => view && onRemoveFromGroup(view)}
+                publishBlockedReason={publishBlockedReason}
                 // Offered only for a peer the `/helpers` endpoints will
                 // accept, which is exactly what a non-null id means.
                 canToggleOffline={view?.helperActorId != null}
                 offline={view?.offline === true}
                 onToggleOffline={() => view && onToggleOffline(view)}
-                vaultVersion={vaultVersion}
-                holdsPeerVault={
+                secretVersion={secretVersion}
+                holdsPeerSecret={
                   view?.direction === 'replica_destination' &&
                   groupSourceReplicaId !== null &&
                   view.peerReplicaId === groupSourceReplicaId

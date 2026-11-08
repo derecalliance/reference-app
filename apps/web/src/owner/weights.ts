@@ -22,11 +22,6 @@ export function participantWeight(participant: Pick<PairedParticipant, 'weight'>
   return weight !== undefined && Number.isInteger(weight) && weight >= DEFAULT_WEIGHT ? weight : DEFAULT_WEIGHT
 }
 
-/** The subshares `participants` hold between them. */
-export function totalWeight(participants: readonly Pick<PairedParticipant, 'weight'>[]): number {
-  return participants.reduce((sum, p) => sum + participantWeight(p), 0)
-}
-
 /** The highest weight a helper may have under `threshold`. */
 export function maxWeight(threshold: number): number {
   return Math.max(DEFAULT_WEIGHT, threshold - 1)

@@ -101,6 +101,17 @@ describe('ParticipantsPane', () => {
     expect(labels).toEqual(['Delete Alex (aaaaaaaa)', 'Delete Alex (bbbbbbbb)'])
   })
 
+  it('holds Delete back for a participant still paired with an owner, saying why', async () => {
+    api.apiGetActors.mockResolvedValue([{ ...helper('aaaaaaaa-1', 'Alex'), channel_id: '7' }, helper('bbbbbbbb-2', 'Bo')])
+    await renderPane()
+
+    const paired = host.querySelector<HTMLButtonElement>('button[aria-label^="Delete Alex"]')!
+    const free = host.querySelector<HTMLButtonElement>('button[aria-label^="Delete Bo"]')!
+    expect(paired.disabled).toBe(true)
+    expect(paired.parentElement?.title).toMatch(/Unpair it from every owner/)
+    expect(free.disabled).toBe(false)
+  })
+
   it('shows the failure a participant simulates, and sets one from its row', async () => {
     api.apiGetActors.mockResolvedValue([{ ...helper('aaaaaaaa-1', 'Alex'), fault: 'lost_shares' }, helper('bbbbbbbb-2', 'Bo')])
     await renderPane()

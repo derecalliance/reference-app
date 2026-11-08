@@ -5,7 +5,7 @@ import { useState } from 'react'
 
 import { publishTargets } from '../ownerPairing'
 import type { PairedParticipant } from '../types'
-import type { PublishChoice, PublishContext } from '../vault/types'
+import type { PublishChoice, PublishContext } from '../secret/types'
 import { initialPublishOptions, toPublishChoice, type PublishOptionsDraft } from './publishOptions'
 
 export interface PublishOptionsState {
@@ -18,9 +18,9 @@ export interface PublishOptionsState {
 }
 
 /**
- * The state behind a publish dialog's `PublishOptionsPanel`: starts from the
- * vault's defaults once, when the dialog opens, and is the owner's to edit
- * from there.
+ * The state behind a publish dialog's `PublishOptionsPanel`: the helpers the
+ * round goes to and the owner's pick of the version helpers keep. The
+ * threshold and weights are the secret's own, read from `context.policy`.
  */
 export function usePublishOptions(
   participants: readonly PairedParticipant[],
@@ -28,11 +28,11 @@ export function usePublishOptions(
   context: PublishContext,
 ): PublishOptionsState {
   const helpers = publishTargets(participants, pendingChannelIds)
-  const [draft, setDraft] = useState(() => initialPublishOptions(helpers, context.policy))
+  const [draft, setDraft] = useState(initialPublishOptions)
   return {
     helpers,
     draft,
     setDraft,
-    choice: toPublishChoice(draft, helpers, context.policy, context.committedVersions),
+    choice: toPublishChoice(draft, helpers, context.policy),
   }
 }

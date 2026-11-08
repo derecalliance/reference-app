@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: DeRec reference app — backend
-  version: "0.0.9"
+  version: "0.0.10"
   description: |
     The backend half of the DeRec reference app: an actor registry, a message
     relay, and a debug surface. It runs as a developer's local container and
@@ -93,6 +93,7 @@ info:
     | `METHOD_NOT_ALLOWED` | 405 | A known route called with a method it does not serve (`Allow` lists the right ones) |
     | `CONFLICT` | 409 | The request conflicts with current state |
     | `NAME_TAKEN` | 409 | Another helper already has that name |
+    | `PARTICIPANT_PAIRED` | 409 | The participant is still paired with an owner, who must unpair it before it can be deleted |
     | `PAYLOAD_TOO_LARGE` | 413 | The body is over the limit (2 MiB; 4 MiB on `POST /derec/{actor_id}` and for a relayed message, the most the gRPC listener accepts; 16 KiB for a browser contact) |
     | `UNSUPPORTED_MEDIA_TYPE` | 415 | A JSON route called without `Content-Type: application/json` |
     | `UNPROCESSABLE_ENTITY` | 422 | Well-formed JSON of the wrong shape: a missing field, a wrong type |
@@ -600,8 +601,9 @@ paths:
         characters, and no other helper may already have it — compared
         trimmed and case-insensitively — or the request is `409` with code
         `NAME_TAKEN`.
-        `protocol_timeout_secs`, when given, must be 1–86400. Asking for a
-        gRPC or `both` helper while `grpc_enabled` is false is `400`.
+        `protocol_timeout_secs`, when given, must be 1–86400; omitted, it is
+        30. `unpair_ack` omitted is `not_required`. Asking for a gRPC or
+        `both` helper while `grpc_enabled` is false is `400`.
       requestBody:
         required: true
         content:
@@ -715,17 +717,22 @@ paths:
         the pool is server-wide, so it is removed for every owner on this node.
 
 
-        An owner already paired with it keeps its channel — the node cannot
-        reach into a browser to remove one — and from then on the participant
-        simply stops answering, exactly like one that has gone offline. The
-        owner clears the row by unpairing. A peer on this same node keeps its
-        own route to the channel.
+        Only a participant paired with no one can be deleted: while it holds a
+        paired channel (helper or replica, an unpair in flight included) the
+        request is refused with `PARTICIPANT_PAIRED`, and each owner must unpair
+        it first. Otherwise those owners would keep a channel nothing answers,
+        which the protocol could no longer tear down.
       parameters:
         - $ref: "#/components/parameters/HelperId"
       responses:
         "204": { description: Deleted }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Still paired with an owner (`PARTICIPANT_PAIRED`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/helpers/{helper_id}/toggle-status:
@@ -1257,6 +1264,7 @@ components:
         - METHOD_NOT_ALLOWED
         - CONFLICT
         - NAME_TAKEN
+        - PARTICIPANT_PAIRED
         - PAYLOAD_TOO_LARGE
         - UNSUPPORTED_MEDIA_TYPE
         - UNPROCESSABLE_ENTITY
@@ -1364,6 +1372,11 @@ components:
         mlkem_encapsulation_key: { type: string }
         ecies_public_key: { type: string }
         contact_binding_hash: { type: string }
+        fingerprint_commitment:
+          type: string
+          description: |
+            The creator's commitment to its fingerprint nonce (SDK 0.0.10),
+            present only on inline-keys contacts.
 
     TransportProtocolDto:
       type: object
@@ -1378,12 +1391,6 @@ components:
         pre_paired_count: { type: integer }
         min_participants: { type: integer }
         recommended_participants: { type: integer }
-        protocol_timeout_secs: { type: integer }
-        authentication_method: { type: string }
-        unpair_ack: { type: string }
-        auto_accept_unpair_requests: { type: boolean }
-        auto_accept_store_share_requests: { type: boolean }
-        auto_accept_verify_share_requests: { type: boolean }
         grpc_enabled: { type: boolean }
         grpc_port: { type: integer }
         grpc_relay_enabled: { type: boolean }
@@ -1400,7 +1407,7 @@ components:
               type: boolean
               description: |
                 True when this node's database is in-memory, so every actor,
-                pairing and vault is lost when the process stops.
+                pairing and secret is lost when the process stops.
 
     StateSnapshot:
       type: object

@@ -100,7 +100,7 @@ Peers post back to the address the node advertises, so it must be one the phone 
 
 Find the address with `ipconfig getifaddr en0` on macOS; Vite also prints it as `Network:`. Left at `localhost`, pairing appears to work and then the peer sends messages to its own loopback.
 
-**The secure-context flag.** Plain `http://` on a LAN address is not a secure context, so the browser withholds the camera (no **Scan QR**), `BarcodeDetector` and Web Locks (one-tab-per-vault becomes best-effort). On Android Chrome:
+**The secure-context flag.** Plain `http://` on a LAN address is not a secure context, so the browser withholds the camera (no **Scan QR**), `BarcodeDetector` and Web Locks (one tab per secret becomes best-effort). On Android Chrome:
 
 1. Open `chrome://flags`.
 2. Find **Insecure origins treated as secure**.
@@ -116,4 +116,4 @@ Two nodes on one host must be told each other's LAN address and their own publis
 ## Starting fresh
 
 1. Erase the node's data: `./start.sh --fresh`, `docker compose -p derec down -v`, or with `cargo run` stop it and delete `apps/backend/derec.db` (and any `derec.db-wal` / `derec.db-shm` beside it).
-2. In **every browser you used**, click **Reset browser data** in the header. Vaults in a browser that still point at actors the node no longer has fail in ways that look like protocol bugs.
+2. In **every browser you used**, click **Reset browser data** in the header. Secrets in a browser that still point at actors the node no longer has fail in ways that look like protocol bugs.

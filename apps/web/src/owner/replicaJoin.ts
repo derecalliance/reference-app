@@ -4,10 +4,10 @@
 import type { RecoveredSecret, RecoveredSecretReplica } from '../types'
 
 /**
- * The members of a recovered vault's replica group this device could join: the
+ * The members of a recovered secret's replica group this device could join: the
  * destinations. The source is the device that published the recovered version
  * — normally the one that was lost, which is why recovery was needed.
  */
-export function joinableMembers(secret: RecoveredSecret): RecoveredSecretReplica[] {
-  return (secret.snapshot.replicas?.members ?? []).filter(m => m.role === 'Destination')
+export function joinableMembers(recovered: RecoveredSecret): RecoveredSecretReplica[] {
+  return (recovered.snapshot.replicas?.members ?? []).filter(m => m.role === 'Destination')
 }

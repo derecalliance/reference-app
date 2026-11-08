@@ -80,7 +80,7 @@ export interface AppShellProps {
  * to be nested, with the participant pool living inside the owner page.
  *
  * Sections are state rather than routes. Only the Owner section's own screens
- * — the vault list, the wizard, one vault — are addressed, by hash routes (see
+ * — the secret list, the wizard, one secret — are addressed, by hash routes (see
  * `routing.ts`), which need no server-side rewrite.
  */
 export function AppShell({ children }: AppShellProps) {
@@ -102,9 +102,9 @@ export function AppShell({ children }: AppShellProps) {
     setDrawerOpen(false)
   }
 
-  // A route to a vault or the wizard is an Owner-section route. Following one —
+  // A route to a secret or the wizard is an Owner-section route. Following one —
   // a banner click, a pasted link — from another section must bring the Owner
-  // section up, or the vault would change with nothing on screen to show it.
+  // section up, or the secret would change with nothing on screen to show it.
   useEffect(() => {
     const onRoute = () => {
       if (parseHash(window.location.hash).kind !== 'list') {

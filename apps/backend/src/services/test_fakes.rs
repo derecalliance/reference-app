@@ -368,6 +368,16 @@ impl ProtocolRecordRepository for FakeProtocolRecords {
             .unwrap_or_default())
     }
 
+    async fn paired_channel_ids(&self, actor_id: &Uuid) -> Result<Vec<u64>> {
+        let mut ids: Vec<u64> = lock(&self.held)
+            .iter()
+            .filter(|(actor, _)| actor == actor_id)
+            .map(|(_, channel_id)| *channel_id)
+            .collect();
+        ids.sort_unstable();
+        Ok(ids)
+    }
+
     async fn shared_key(
         &self,
         actor_id: &Uuid,

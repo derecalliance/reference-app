@@ -17,6 +17,7 @@ import {
   protectSecret,
   recoverOfferedSecret,
   restoreRecoveredBag,
+  setFixedThreshold,
   setOffline,
   setUpOwner,
   tabCount,
@@ -35,18 +36,18 @@ import {
  */
 
 /**
- * Give `helper` default weight `weight` on the Channels list, then apply it
- * with Republish — which pre-fills every helper from its default — and wait
- * for the publish that carries it to settle.
+ * Give `helper` weight `weight` on the Channels tab, then apply it with
+ * Republish — which publishes with the Channels tab's threshold and weights —
+ * and wait for the publish that carries it to settle.
  */
 async function setWeight(page: Page, helper: string, weight: number, expectedTotal: string): Promise<void> {
   await openTab(page, 'Channels')
-  await page.getByLabel(`Default weight for ${helper}`).fill(String(weight))
+  await page.getByLabel(`Weight for ${helper}`).fill(String(weight))
 
-  await openTab(page, 'Secrets')
+  await openTab(page, 'Items')
   await page.getByRole('button', { name: 'Republish…' }).click()
   const dialog = page.locator('.modal-overlay[aria-label="Republish"]')
-  await expect(dialog.getByLabel(helper, { exact: true })).toHaveValue(String(weight))
+  await expect(dialog).toContainText(`${helper} ×${weight}`)
   await expect(dialog).toContainText(expectedTotal)
   await dialog.getByRole('button', { name: 'Republish', exact: true }).click()
   const done = dialog.getByRole('button', { name: 'Done' })
@@ -59,6 +60,7 @@ test('a heavier helper lets fewer helpers meet the threshold, and keeps its weig
   test.setTimeout(300_000)
 
   await setUpOwner(page, { name: 'Alice', participants: 3, prePaired: 0, minParticipants: 3 })
+  await setFixedThreshold(page, 3)
   await pairParticipant(page, { index: 0, mode: 'Inline keys' })
   await pairParticipant(page, { index: 1, mode: 'Inline keys' })
   await pairParticipant(page, { index: 2, mode: 'Inline keys' })
@@ -68,20 +70,20 @@ test('a heavier helper lets fewer helpers meet the threshold, and keeps its weig
   const offline = await participantName(page, 2)
 
   // Weight the first helper 2 — a publish of the current bag.
-  await setWeight(page, heavy, 2, 'Total: 4 subshares across 3 helpers')
+  await setWeight(page, heavy, 2, 'Threshold 3 of 4 subshares across 3 helpers')
 
   const offlineId = await actorIdFor(page, offline)
   await setOffline(page, offlineId, true)
   try {
     // 2 + 1 subshares from the two helpers still answering meet the threshold
-    // of 3, so the version commits; the weight came from the dialog, which
-    // starts from the default set on the Channels list.
-    const before = await tabCount(page, 'Secrets')
+    // of 3, so the version commits; the weight is the one set on the
+    // Channels tab.
+    const before = await tabCount(page, 'Items')
     const summary = await protectAndReadConfirmations(page, 'Recovery code', '123456')
     expect(summary).toContain('2 of 3 confirmed')
     expect(summary).toContain(`${heavy} ×2`)
     expect(summary).not.toContain('rolled back')
-    await expect.poll(() => tabCount(page, 'Secrets'), { timeout: 120_000 }).toBeGreaterThan(before)
+    await expect.poll(() => tabCount(page, 'Items'), { timeout: 120_000 }).toBeGreaterThan(before)
   } finally {
     await setOffline(page, offlineId, false)
   }
@@ -95,13 +97,14 @@ test('a heavier helper lets fewer helpers meet the threshold, and keeps its weig
  * without anyone setting it again. A device that lost it would publish every
  * helper at 1, silently undoing the owner's choice.
  */
-test('a restored vault keeps the weights it was protected with', async ({ page, browser, pageErrors }) => {
+test('a restored secret keeps the weights it was protected with', async ({ page, browser, pageErrors }) => {
   test.setTimeout(480_000)
 
   // Unique: helpers are shared across specs, and the link picker tells this
   // owner's old channel from others' by its peer name.
   const oldDevice = uniqueReplicaName('Alice')
   await setUpOwner(page, { name: oldDevice, participants: 3, prePaired: 0, minParticipants: 3 })
+  await setFixedThreshold(page, 3)
   const helpers: string[] = []
   for (let i = 0; i < 3; i++) helpers.push(await participantName(page, i))
   for (const helper of helpers) {
@@ -109,7 +112,7 @@ test('a restored vault keeps the weights it was protected with', async ({ page, 
   }
   await protectSecret(page, 'Passphrase', 'hunter2')
   const heavy = helpers[0]
-  await setWeight(page, heavy, 2, 'Total: 4 subshares across 3 helpers')
+  await setWeight(page, heavy, 2, 'Threshold 3 of 4 subshares across 3 helpers')
 
   // The old device is lost.
   await page.close()

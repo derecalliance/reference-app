@@ -1,0 +1,455 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
+import { bagVersionOf, updateBagVerified, updateBagVersion } from '../../owner/bag'
+import type { SecretShareRef, UnsettledRound, Item, Secret } from '../../types'
+import { withNotification } from '../notifications'
+import { UNANSWERED_MEMO, commitRoundVersion, settleUnansweredShares } from '../rounds'
+import type { EventHandlers, FoldContext } from './context'
+
+
+/** Share distribution and verification events, from the owner's side. */
+export const sharingHandlers = {
+  ShareStored: (current, event, ctx) => {
+    const channelId = event.channel_id
+    if (!channelId) return current
+    const version = event.version ?? 1
+    // Storing a share is also when the library applies the owner's
+    // `keepVersion`, deleting every other version on this channel but that
+    // one and the new one — through the store, before this event, and with no event of its
+    // own. The held-share list follows the store, or the Shares tab goes on
+    // listing versions this secret no longer holds.
+    const existing = (current.heldShares ?? []).filter(
+      s => s.channelId !== channelId || s.version === version || ctx.isShareHeld(channelId, s.version),
+    )
+    const pruned = existing.length !== (current.heldShares ?? []).length
+    if (existing.some(s => s.channelId === channelId && s.version === version)) {
+      return pruned ? { ...current, heldShares: existing } : current
+    }
+    return {
+      ...current,
+      heldShares: [...existing, { channelId, secretId: '', version, description: '' }],
+    }
+  },
+
+  ShareConfirmed: (current, event, ctx) => {
+    const channelId = event.channel_id
+    if (!channelId) return current
+    const version = event.version ?? 1
+
+    ctx.log({
+      role: 'owner',
+      flow: 'sharing',
+      step: 'ShareConfirmed',
+      description: `Share confirmed by participant on channel ${channelId}`,
+      payload: { channelId, version },
+    })
+
+    if (!ctx.rounds.isAwaitingShare(channelId, version)) return current
+
+    const participant = current.participants.find(h => h.channelId === channelId)
+    if (!participant) return current
+
+    // The staged bag is not committed to the secret until the round completes.
+    ctx.rounds.recordShareConfirmed(version, participant.id, channelId)
+
+    // The weight was stamped when the round went out; the answer keeps it.
+    const sent = participant.secretShares.find(s => s.version === version)
+    const shareRef: SecretShareRef = {
+      version,
+      status: 'confirmed',
+      verified: false,
+      ...(sent?.weight !== undefined ? { weight: sent.weight } : {}),
+    }
+    return commitOnceHelpersAnswered(
+      {
+        ...current,
+        participants: current.participants.map(h =>
+          h.id === participant.id
+            ? { ...h, secretShares: [...h.secretShares.filter(s => s.version !== version), shareRef] }
+            : h,
+        ),
+      },
+      version,
+      ctx,
+    )
+  },
+
+  ShareRejected: (current, event, ctx) => {
+    const channelId = event.channel_id
+    if (!channelId) return current
+    const version = event.version ?? 1
+    const status = event.status ?? 0
+    const memo = event.memo ?? ''
+
+    ctx.log({
+      role: 'owner',
+      flow: 'sharing',
+      step: 'ShareRejected',
+      description: `Share rejected by participant on channel ${channelId} (status=${status}, memo=${memo})`,
+      payload: { channelId, version, status, memo },
+    })
+
+    ctx.rounds.dropShare(channelId, version)
+
+    const participant = current.participants.find(h => h.channelId === channelId)
+    if (!participant) return current
+
+    // Recorded on the staged bag, which is not committed to the secret yet.
+    ctx.rounds.recordShareFailed(version, { id: participant.id, status, memo })
+
+    const sent = participant.secretShares.find(s => s.version === version)
+    const rejectedRef: SecretShareRef = {
+      version,
+      status: 'rejected',
+      verified: false,
+      failure: { status, memo },
+      ...(sent?.weight !== undefined ? { weight: sent.weight } : {}),
+    }
+    return commitOnceHelpersAnswered(
+      {
+        ...current,
+        participants: current.participants.map(h =>
+          h.id === participant.id
+            ? { ...h, secretShares: [...h.secretShares.filter(s => s.version !== version), rejectedRef] }
+            : h,
+        ),
+      },
+      version,
+      ctx,
+    )
+  },
+
+  SharingComplete: (current, event, ctx) => {
+    const version = event.version ?? 1
+    const confirmedCount = event.confirmed_count ?? 0
+    const failedCount = event.failed_count ?? 0
+    const thresholdMet = event.threshold_met ?? false
+
+    ctx.log({
+      role: 'owner',
+      flow: 'sharing',
+      step: 'SharingComplete',
+      description: `Sharing round v${version} complete: ${confirmedCount} confirmed, ${failedCount} failed${thresholdMet ? '' : ' — threshold NOT met'}`,
+      payload: { version, confirmedCount, failedCount, thresholdMet },
+    })
+
+    ctx.notify.outcome(
+      thresholdMet
+        ? `Sharing round v${version} complete`
+        : `Sharing round v${version} did not reach its threshold`,
+    )
+
+    // Consumed only if the staged bag is *this* round's — see `completeRound`.
+    const staged = ctx.rounds.completeRound(version)
+    // The protocol resolved the round — after it left the tracker, so the
+    // watchdog can tell whether another round still needs it.
+    ctx.roundResolved()
+
+    // The round is closed: whoever has not answered never will. Settled as
+    // refused so the progress view resolves — to the rolled-back banner below
+    // threshold, or to "published, but N failed" above it — instead of leaving
+    // those rows spinning.
+    const unanswered = staged
+      ? current.participants.filter(p =>
+          p.secretShares.some(s => s.version === version && s.status === 'pending'),
+        )
+      : []
+    const settled = staged
+      ? { ...current, participants: settleUnansweredShares(current.participants, version) }
+      : current
+
+    const outcome = withRoundOutcome(settled, {
+      version,
+      thresholdMet,
+      confirmedCount,
+      failedCount,
+      items: staged?.bag.currentVersion.items ?? roundItems(current, version),
+    })
+
+    // The share store derives `latestVersion` from the versions it actually
+    // holds, so there is no separate counter to advance or roll back here.
+    if (thresholdMet && staged) {
+      const stagedBag = updateBagVersion(staged.bag, version, v => ({
+        ...v,
+        failedParticipantIds: [
+          ...(v.failedParticipantIds ?? []),
+          ...unanswered
+            .filter(p => !(v.failedParticipantIds ?? []).some(f => f.id === p.id))
+            .map(p => ({ id: p.id, status: 0, memo: UNANSWERED_MEMO })),
+        ],
+      }))
+      return { ...outcome, itemBag: commitRoundVersion(current.itemBag, stagedBag) }
+    }
+    if (staged) return outcome
+
+    // A round this device did not stage, but which the helpers accepted.
+    // Pairing a replica publishes one, and so does the promotion inside
+    // `verifyFingerprint` — neither goes through `protect`, so there is no
+    // staged bag to consume. Ignoring it left the screen showing a version the
+    // helpers had already moved past.
+    //
+    // The items are unchanged — an auto-publish re-shares what is already in
+    // the bag — so the current version is carried forward under the new number,
+    // and only the verification state resets, because those confirmations were
+    // for the bytes of the previous round. It is a fresh publish, so the
+    // library holds tracking shares for it even when the version it re-shares
+    // was restored from recovery.
+    const bag = current.itemBag
+    if (thresholdMet && bag && version > bag.currentVersion.version) {
+      return {
+        ...outcome,
+        itemBag: {
+          ...bag,
+          currentVersion: {
+            ...bag.currentVersion,
+            version,
+            verifiedParticipantIds: [],
+            verifyRejections: undefined,
+            invalidProofParticipantIds: undefined,
+            failedParticipantIds: [],
+            restoredFromRecovery: undefined,
+          },
+          previousVersions: [bag.currentVersion, ...bag.previousVersions],
+        },
+      }
+    }
+
+    return outcome
+  },
+
+  ShareVerified: (current, event, ctx) => {
+    const channelId = event.channel_id
+    if (!channelId) return current
+    const version = event.version ?? 1
+
+    ctx.log({
+      role: 'owner',
+      flow: 'verification',
+      step: 'ShareVerified',
+      description: `Share verified for channel ${channelId}`,
+      payload: { channelId, version },
+    })
+
+    // The challenge is persisted with the secret, so an answer that lands after
+    // a reload is still matched — see `Secret.pendingVerifications`.
+    if (!ctx.rounds.isAwaitingVerification(channelId, version)) return current
+    ctx.rounds.endVerification(channelId)
+
+    const participant = current.participants.find(h => h.channelId === channelId)
+    if (!participant) return current
+
+    const bag = current.itemBag
+    // What the SDK read off its own copy of this helper's share: how many
+    // subshares it holds for *this* version, and the version's threshold —
+    // together they say whether the version is still recoverable.
+    const verified = bag ? updateBagVerified(bag, version, participant.id) : null
+    const itemBag = verified
+      ? updateBagVersion(verified, version, v => ({
+          ...v,
+          verifiedSubshares: { ...v.verifiedSubshares, [participant.id]: event.subshares ?? null },
+          verifiedThreshold: event.threshold ?? v.verifiedThreshold ?? null,
+        }))
+      : null
+
+    announceVerificationIfDone(itemBag, version, ctx)
+
+    return {
+      ...current,
+      participants: current.participants.map(h =>
+        h.id === participant.id
+          ? {
+              ...h,
+              secretShares: h.secretShares.map(s => (s.version === version ? { ...s, verified: true } : s)),
+            }
+          : h,
+      ),
+      itemBag,
+    }
+  },
+
+  // The helper refused the challenge — by hand, or automatically because it
+  // holds no share of this version. Recorded as that helper's answer, so the
+  // verification view resolves its row to "Rejected" instead of waiting for a
+  // proof that is not coming. The challenge is spent: checking the helper
+  // again takes a new round.
+  ShareVerifyRejected: (current, event, ctx) => {
+    const { channel_id: channelId, version, status, memo } = event
+
+    ctx.log({
+      role: 'owner',
+      flow: 'verification',
+      step: 'ShareVerifyRejected',
+      description: `Verification of v${version} refused on channel ${channelId} (status=${status}${memo ? `, memo=${memo}` : ''})`,
+      payload: { channelId, version, status, memo },
+    })
+
+    if (!ctx.rounds.isAwaitingVerification(channelId, version)) return current
+    ctx.rounds.endVerification(channelId)
+
+    const participant = current.participants.find(h => h.channelId === channelId)
+    if (!participant) return current
+
+    const bag = current.itemBag
+    const itemBag = bag
+      ? updateBagVersion(bag, version, v => ({
+          ...v,
+          verifyRejections: [
+            ...(v.verifyRejections ?? []).filter(r => r.id !== participant.id),
+            { id: participant.id, status, memo },
+          ],
+        }))
+      : null
+    announceVerificationIfDone(itemBag, version, ctx)
+    return { ...current, itemBag }
+  },
+
+  // The helper answered, but its proof does not match the share this device
+  // stored. Unlike a refusal this is a sign of a damaged or dishonest helper,
+  // so it is recorded apart and raised as a warning. The challenge is spent:
+  // checking the helper again takes a new round.
+  ShareVerifyInvalid: (current, event, ctx) => {
+    const { channel_id: channelId, version } = event
+
+    ctx.log({
+      role: 'owner',
+      flow: 'verification',
+      step: 'ShareVerifyInvalid',
+      description: `Verification of v${version} failed on channel ${channelId}: the proof does not match the stored share`,
+      payload: { channelId, version },
+    })
+
+    if (!ctx.rounds.isAwaitingVerification(channelId, version)) return current
+    ctx.rounds.endVerification(channelId)
+
+    const participant = current.participants.find(h => h.channelId === channelId)
+    if (!participant) return current
+
+    ctx.notify.error(
+      `${participant.name}'s share of v${version} failed verification`,
+      'Its proof does not match the share this secret sent. The helper may be damaged or dishonest; ' +
+        'consider unpairing it and publishing a new version.',
+      { channelId },
+    )
+
+    const bag = current.itemBag
+    const itemBag = bag
+      ? updateBagVersion(bag, version, v => ({
+          ...v,
+          invalidProofParticipantIds: [
+            ...(v.invalidProofParticipantIds ?? []).filter(id => id !== participant.id),
+            participant.id,
+          ],
+        }))
+      : null
+    announceVerificationIfDone(itemBag, version, ctx)
+    // A dishonest or damaged helper outlives the toast: it stays on the bell.
+    return withNotification(
+      { ...current, itemBag },
+      {
+        severity: 'critical',
+        title: `${participant.name}'s share of v${version} failed verification`,
+        detail: 'Its proof does not match the share this secret sent. Consider unpairing it and publishing a new version.',
+        link: 'secrets',
+      },
+    )
+  },
+} satisfies Partial<EventHandlers>
+
+/**
+ * One banner per verification round, not one per helper: raised when its last
+ * challenge is answered — with a proof, a refusal or an invalid proof — and
+ * naming each.
+ */
+function announceVerificationIfDone(
+  itemBag: Secret['itemBag'],
+  version: number,
+  ctx: FoldContext,
+): void {
+  if (ctx.rounds.isVerifying(version)) return
+  const bagVersion = bagVersionOf(itemBag, version)
+  const verified = bagVersion?.verifiedParticipantIds.length ?? 0
+  const rejected = bagVersion?.verifyRejections?.length ?? 0
+  const invalid = bagVersion?.invalidProofParticipantIds?.length ?? 0
+  ctx.notify.outcome(
+    `Verification of v${version} complete: ${verified} share${verified === 1 ? '' : 's'} verified` +
+      (rejected > 0 ? `, ${rejected} rejected` : '') +
+      (invalid > 0 ? `, ${invalid} with an invalid proof` : ''),
+  )
+}
+
+/**
+ * Commit round `version` as soon as every helper it went to has answered and
+ * enough confirmed, without waiting for `SharingComplete`.
+ *
+ * The library withholds `SharingComplete` until the round's replica leg also
+ * resolves, and one replica whose tab is closed holds it back for up to the
+ * round timeout — a minute in which the bag still read the old version and
+ * Verify Shares stayed disabled for a publish that had, in every way that
+ * matters, already succeeded. Replicas are best-effort and never decide the
+ * outcome, so the helpers' answers are the whole verdict. A round below
+ * threshold is left for the library to close and roll back as before.
+ *
+ * When `SharingComplete` does arrive, the round is no longer staged and the
+ * version is no newer than the bag's, so it commits nothing a second time.
+ */
+function commitOnceHelpersAnswered(current: Secret, version: number, ctx: FoldContext): Secret {
+  if (!ctx.rounds.helpersAnswered(version)) return current
+  const confirmed = ctx.rounds.confirmedCount(version)
+  // Subshares, not helpers, are what the threshold counts — and the round's
+  // own threshold, which a publish may set apart from the secret's default.
+  const threshold = ctx.rounds.roundThreshold(version) ?? current.minParticipants
+  if (ctx.rounds.confirmedWeight(version) < threshold) return current
+
+  const staged = ctx.rounds.completeRound(version)
+  if (!staged) return current
+  ctx.roundResolved()
+  ctx.log({
+    role: 'owner',
+    flow: 'sharing',
+    step: 'sharing_round_helpers_done',
+    description:
+      `Sharing round v${version}: every helper answered and ${confirmed} confirmed — committed now. ` +
+      'Any replica still being mirrored to is best-effort and does not hold the version back.',
+    payload: { version, confirmed, threshold },
+  })
+  return { ...current, itemBag: commitRoundVersion(current.itemBag, staged.bag) }
+}
+
+/**
+ * `current` with the latest round's outcome recorded: a round where every
+ * helper stored its share settles any earlier unsettled one; one where some
+ * did not becomes the unsettled round. An outcome for a round older than the
+ * one on record changes nothing.
+ */
+function withRoundOutcome(
+  current: Secret,
+  round: { version: number; thresholdMet: boolean; confirmedCount: number; failedCount: number; items: Item[] },
+): Secret {
+  const recorded = current.unsettledRound
+  if (recorded && recorded.version > round.version) return current
+  if (round.thresholdMet && round.failedCount === 0) {
+    return recorded ? { ...current, unsettledRound: undefined } : current
+  }
+  const unsettledRound: UnsettledRound = {
+    version: round.version,
+    recoverable: round.thresholdMet,
+    confirmedCount: round.confirmedCount,
+    failedCount: round.failedCount,
+    items: round.items,
+    closedAt: Date.now(),
+  }
+  return { ...current, unsettledRound }
+}
+
+/**
+ * The items a round published, for one this device did not stage (the
+ * library's own publish, or one whose staged bag already committed): the
+ * bag's record of that version, else the current items — an auto-publish
+ * re-shares those.
+ */
+function roundItems(current: Secret, version: number): Item[] {
+  const bag = current.itemBag
+  if (!bag) return []
+  return (bagVersionOf(bag, version) ?? bag.currentVersion).items
+}

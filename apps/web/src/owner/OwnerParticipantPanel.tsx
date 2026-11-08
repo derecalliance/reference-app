@@ -38,6 +38,7 @@ function SidePanelParticipantItem({
   unconfirmed,
   onConfirmFingerprint,
   unpairing,
+  unpairDisabledReason,
   removedFromNode,
   grpcRelayEnabled,
 }: {
@@ -68,7 +69,12 @@ function SidePanelParticipantItem({
   /** An unpair for this row's channel is on the wire, awaiting its answer. */
   unpairing: boolean
   /**
-   * The node no longer has this helper's actor, but this vault still holds a
+   * Why Unpair is held back, or `null`: unpairing a helper publishes a new
+   * version, so it waits until no round is open.
+   */
+  unpairDisabledReason: string | null
+  /**
+   * The node no longer has this helper's actor, but this secret still holds a
    * channel to it. The channel is protocol state and stays listed; everything
    * that drives the actor through the node would fail with "actor not found".
    */
@@ -193,7 +199,7 @@ function SidePanelParticipantItem({
           )}
           {removedFromNode && (
             <p className="side-detail-note">
-              This helper was deleted from the node. The channel is still this vault’s
+              This helper was deleted from the node. The channel is still this secret’s
               protocol state — unpair it to drop it.
             </p>
           )}
@@ -227,7 +233,8 @@ function SidePanelParticipantItem({
                 <button
                   className="pair-action-btn unpair"
                   onClick={() => onTogglePair(participant.id)}
-                  disabled={unpairing}
+                  disabled={unpairing || unpairDisabledReason !== null}
+                  title={unpairing ? undefined : (unpairDisabledReason ?? undefined)}
                   aria-busy={unpairing || undefined}
                 >
                   {unpairing ? 'Unpairing…' : 'Unpair'}
@@ -408,6 +415,7 @@ export function OwnerParticipantPanel({
   unconfirmedChannelIds,
   onConfirmFingerprint,
   unpairingChannelIds,
+  unpairDisabledReason,
   removedFromNodeIds,
   grpcRelayEnabled = true,
 }: {
@@ -444,6 +452,8 @@ export function OwnerParticipantPanel({
   onConfirmFingerprint: (channelId: string) => void
   /** Channels whose unpair is in flight. */
   unpairingChannelIds: ReadonlySet<string>
+  /** Why Unpair is held back on every row, or `null` — see the item's prop. */
+  unpairDisabledReason: string | null
   /**
    * Participant ids the node's roster no longer lists. Their rows stay — a
    * paired channel is protocol state — but are marked, and not counted as on
@@ -493,6 +503,7 @@ export function OwnerParticipantPanel({
                 unconfirmed={!!h.channelId && unconfirmedChannelIds.has(h.channelId)}
                 onConfirmFingerprint={() => h.channelId && onConfirmFingerprint(h.channelId)}
                 unpairing={!!h.channelId && unpairingChannelIds.has(h.channelId)}
+                unpairDisabledReason={unpairDisabledReason}
                 removedFromNode={removedFromNodeIds.has(h.id)}
                 grpcRelayEnabled={grpcRelayEnabled}
               />

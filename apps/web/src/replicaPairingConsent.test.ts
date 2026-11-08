@@ -20,7 +20,7 @@ const grant = () => Promise.resolve(true)
 const refuse = () => Promise.resolve(false)
 
 describe('requiresEraseConsent', () => {
-  it('flags only the role that gives up this device’s vault', () => {
+  it('flags only the role that gives up this device’s secret', () => {
     expect(requiresEraseConsent('replica_destination')).toBe(true)
     expect(requiresEraseConsent('replica_source')).toBe(false)
     expect(requiresEraseConsent('owner')).toBe(false)
@@ -85,7 +85,7 @@ describe('cancelling the warning', () => {
   })
 
   it('erases nothing', async () => {
-    // Stand-ins for the vault the destination role would eventually replace,
+    // Stand-ins for the secret the destination role would eventually replace,
     // including the replica identity that must survive even a real adoption.
     localStorage.setItem('derec:replica-id', 'this-device')
     localStorage.setItem('derec:owner:o1:secret:42:0', 'shared-key')

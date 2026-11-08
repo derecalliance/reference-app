@@ -7,7 +7,7 @@ import { openApp } from './app'
 /**
  * Coming back to the app through the back/forward cache.
  *
- * A page frozen in the cache comes back with every vault released — runtimes
+ * A page frozen in the cache comes back with every secret released — runtimes
  * stopped and locks given up on `pagehide` — so the app reloads on a
  * `pageshow` whose `persisted` is set, and boot takes everything up again.
  *
@@ -15,9 +15,9 @@ import { openApp } from './app'
  * make this a test of an ordinary history navigation. Dropping that one
  * default is what lets a real cache restore happen here.
  *
- * Driven on the setup screen, with no vault running, because that is the page
- * Chrome actually caches. With a vault running it refuses (the navigation
- * entry's `notRestoredReasons` reads only `masked`; the vault holds a Web Lock
+ * Driven on the setup screen, with no secret running, because that is the page
+ * Chrome actually caches. With a secret running it refuses (the navigation
+ * entry's `notRestoredReasons` reads only `masked`; the secret holds a Web Lock
  * and polls its mailbox when the page is hidden), so a back navigation there
  * is an ordinary fresh load, which boot already handles. The listener is the
  * provider's, mounted on every screen, so this is the same code either way.

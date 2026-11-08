@@ -102,36 +102,11 @@ participant_count = 7
 # participant over HTTP. Uncomment the whole table at the end of this file to
 # pin it.
 
-# General protocol timeout, in seconds. The single timeout the app uses: the
-# protocol discards expired messages and stale rounds with it, and the UI uses
-# the same value as its active deadline for pairing waits and auto-rejects.
-# Lower = snappier failures; higher = more tolerant of slow peers.
-protocol_timeout_secs = 300
-
-# How the app decides that two pairing channels belong to the same user. An
-# app-level concern — the DeRec protocol itself is identity-blind.
-#
-#   "user"         the helper links channels manually when accepting a pairing
-#   "application"  reserved for a future identity-driven mode; not yet selectable
-authentication_method = "user"
-
-# Protocol-level acknowledgement policy for the unpair flow.
-#
-#   "required"      the initiator keeps local state until the peer acknowledges
-#                   or the protocol timeout elapses
-#   "not_required"  fire-and-forget: state drops immediately, later replies ignored
-unpair_ack = "required"
-
-# Whether an incoming unpair request is accepted quietly (true) or surfaced as a
-# confirmation dialog the operator must answer (false). UI behaviour only.
-auto_accept_unpair_requests = true
-
-# Whether a vault acting as a helper stores an incoming share (store_share) or
-# answers a verification request (verify_share) without asking (true), or shows
-# a confirmation dialog first (false). UI behaviour only — provisioned helpers
-# on this server always answer on their own.
-auto_accept_store_share_requests = false
-auto_accept_verify_share_requests = false
+# A secret's protocol settings (timeout, unpair acknowledgement, auto-accepting
+# incoming requests, authentication method) are not node settings: each secret
+# holds its own in the app, starting from the app's defaults. The keys an older
+# node read here (protocol_timeout_secs, unpair_ack, ...) are ignored, with a
+# warning at boot.
 
 # ENFORCED BY THE NODE. The gRPC transport listener. Provisioned helpers can
 # advertise a `grpc://` endpoint only while this is running; set false to run

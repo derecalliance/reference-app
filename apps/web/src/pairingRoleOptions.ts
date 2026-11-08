@@ -55,12 +55,12 @@ export const BROWSER_PAIRING_ROLE_OPTIONS: readonly PairingRoleOption[] = [
   {
     role: 'replica_source',
     label: ROLE_LABELS.replica_source,
-    hint: 'You keep your vault and mirror it to the peer. Nothing here changes.',
+    hint: 'You keep your secret and mirror it to the peer. Nothing here changes.',
   },
   {
     role: 'replica_destination',
     label: ROLE_LABELS.replica_destination,
-    hint: 'You receive the peer’s vault. Erases everything this device holds.',
+    hint: 'You receive the peer’s secret. Erases everything this device holds.',
   },
 ]
 
@@ -89,8 +89,8 @@ export function pairingSuccessMessage(role: PairingRole): string {
     case 'helper':
       return 'Pairing completed successfully. The owner can now distribute shares here.'
     case 'replica_source':
-      return 'Pairing completed successfully. Confirm the fingerprint with the peer, then this device can mirror its vault to them.'
+      return 'Pairing completed successfully. Confirm the fingerprint with the peer, then this device can mirror its secret to them.'
     case 'replica_destination':
-      return 'Pairing completed successfully. Nothing has been erased yet — this device is asked to confirm before the peer’s vault replaces it.'
+      return 'Pairing completed successfully. Nothing has been erased yet — this device is asked to confirm before the peer’s secret replaces it.'
   }
 }

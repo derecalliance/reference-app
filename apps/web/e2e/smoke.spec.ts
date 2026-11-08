@@ -26,8 +26,8 @@ test('the setup wizard produces a working owner', async ({ page }) => {
   await expect(page).toHaveTitle('Alice · DeRec')
   await expect(page.getByRole('button', { name: 'Leave' })).toBeVisible()
 
-  await openTab(page, 'Secrets')
-  await expect(page.getByRole('tab', { name: /^Secrets/, selected: true })).toBeVisible()
+  await openTab(page, 'Items')
+  await expect(page.getByRole('tab', { name: /^Items/, selected: true })).toBeVisible()
 })
 
 test('pre-pairing pairs the requested participants', async ({ page }) => {

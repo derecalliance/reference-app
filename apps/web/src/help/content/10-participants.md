@@ -4,7 +4,7 @@ The node's shared pool of provisioned helpers: provisioning it, transport modes,
 
 ## What the pane shows
 
-**Participants** in the left navigation lists every helper the node runs (browser vaults are not listed). It refreshes every 4 seconds and works with no vault at all.
+**Participants** in the left navigation lists every helper the node runs (browser owners are not listed). It refreshes every 4 seconds and works with no secret set up at all.
 
 | Column | Shows |
 | --- | --- |
@@ -23,7 +23,7 @@ The node's shared pool of provisioned helpers: provisioning it, transport modes,
 
 The pool is shared by every owner on the node, so a target never removes anything: asking for fewer than exist leaves the extra helpers alone. Two tabs provisioning at the same moment cannot both fill an empty pool; the node counts and creates under one lock.
 
-New helpers are created with this browser's protocol timeout and unpair acknowledgement policy (see [Settings](11-settings.md)). Setting up a vault never provisions helpers.
+New helpers are created with this browser's protocol timeout and unpair acknowledgement policy (see [Settings](11-settings.md)). Setting up a secret never provisions helpers.
 
 ## Transport modes
 
@@ -56,8 +56,8 @@ The failures go through the SDK's own answers, so they look exactly like a real 
 
 **Delete** asks first, then removes the helper from the node entirely: its actor, stored channels and shares, and registry entry. It cannot be undone, and since the pool is shared it disappears for every owner.
 
-Owners paired with it keep their channel, which now reads *Removed from node*. To clear it, unpair from the owner side; if the unpair cannot be acknowledged, use **Forget this channel…**.
+Only a participant **no owner is paired with** can be deleted. While it holds a paired channel, as a helper or as a replica, **Delete** is disabled and the node refuses the request (`409 PARTICIPANT_PAIRED`): each owner unpairs it first, from their own secret's page. Deleting a paired participant would leave those owners a channel nothing answers, which the protocol could no longer tear down; unpairing runs the protocol's teardown, and the owner's republish to the remaining helpers.
 
 ## Linking channels on a helper
 
-A hosted helper has no screen of its own, so the operator links for it. **Link** on a paired helper's row in a vault's side panel opens **Link on …**, which lists the helper's other channels by peer name. Choosing one declares that both channels belong to the same owner, so the helper can answer that owner's discovery after a recovery. Names are labels, not proof: in a real deployment the helper would authenticate the owner first. See [Recovery and restore](06-recovery-and-restore.md).
+A hosted helper has no screen of its own, so the operator links for it. **Link** on a paired helper's row in a secret's side panel opens **Link on …**, which lists the helper's other channels by peer name. Choosing one declares that both channels belong to the same owner, so the helper can answer that owner's discovery after a recovery. Names are labels, not proof: in a real deployment the helper would authenticate the owner first. See [Recovery and restore](06-recovery-and-restore.md).

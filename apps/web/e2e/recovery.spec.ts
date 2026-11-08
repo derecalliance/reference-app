@@ -92,7 +92,7 @@ test.describe('recovery', () => {
     await expect(dialog).toBeVisible()
     await dialog.getByRole('button', { name: 'Recover from bag' }).click()
 
-    // Back on a working vault: the restored bag is this device's own.
+    // Back on a working secret: the restored bag is this device's own.
     //
     // The tab is re-opened on every poll rather than once up front. `restore`
     // rebuilds this device's state and lands it on a tab of its own choosing,
@@ -102,7 +102,7 @@ test.describe('recovery', () => {
     await expect
       .poll(
         async () => {
-          await openTab(page, 'Secrets')
+          await openTab(page, 'Items')
           return page.locator('.tab-panel').innerText()
         },
         { timeout: 120_000 },
@@ -117,7 +117,7 @@ test.describe('recovery', () => {
     await openTab(page, 'Channels')
     expect(await tabCount(page, 'Channels')).toBe(2)
     await protectSecret(page, 'After restore', 'still-reachable')
-    await openTab(page, 'Secrets')
+    await openTab(page, 'Items')
     await expect(page.locator('.tab-panel')).toContainText('After restore')
     await expect(page.locator('.tab-panel')).toContainText('Passphrase')
     expect(pageErrors).toEqual([])
@@ -144,7 +144,7 @@ test.describe('recovery', () => {
   })
 })
 
-test.describe('restoring a vault that has a replica', () => {
+test.describe('restoring a secret that has a replica', () => {
   /**
    * On a new device: the device-loss path the replica exists for. The old device protected a
    * bag mirrored to a hosted replica; a new one pairs the same helpers, has
@@ -186,7 +186,7 @@ test.describe('restoring a vault that has a replica', () => {
     expect(pageErrors).toEqual([])
   })
 
-  test('the restored vault publishes, and still lists its replica', async ({ page, browser, pageErrors }) => {
+  test('the restored secret publishes, and still lists its replica', async ({ page, browser, pageErrors }) => {
     test.setTimeout(480_000)
 
     // Unique names: helpers are shared by every spec in the run, and the link
@@ -233,7 +233,7 @@ test.describe('restoring a vault that has a replica', () => {
 
       // The publish that used to fail on the invariant.
       await protectSecret(newDevice, 'After restore', 'still-mirrored')
-      await openTab(newDevice, 'Secrets')
+      await openTab(newDevice, 'Items')
       await expect(newDevice.locator('.tab-panel')).toContainText('After restore')
 
       await openTab(newDevice, 'Replicas')
@@ -268,6 +268,24 @@ test.describe('unpairing', () => {
     expect(pageErrors).toEqual([])
   })
 
+  test('unpairing one of three helpers publishes a new version to the other two', async ({ page, pageErrors }) => {
+    await setUpOwner(page, { name: 'Alice', participants: 3, prePaired: 0, minParticipants: 2 })
+    for (const index of [0, 1, 2]) await pairParticipant(page, { index, mode: 'Inline keys' })
+    await protectSecret(page, 'Passphrase', 'hunter2')
+    await openTab(page, 'Items')
+    await expect(page.getByText('2 subshares needed to recover v1')).toBeVisible()
+
+    await unpairParticipant(page, 0)
+
+    // SDK 0.0.10 leaves this publish to the app: the two that remain get v2,
+    // which the removed helper holds no share of.
+    await expect.poll(() => tabCount(page, 'Channels'), { timeout: 90_000 }).toBe(2)
+    await openTab(page, 'Items')
+    await expect(page.getByText('2 subshares needed to recover v2')).toBeVisible({ timeout: 90_000 })
+
+    expect(pageErrors).toEqual([])
+  })
+
   test('the secret survives losing one helper of two', async ({ page }) => {
     await setUpOwner(page, { name: 'Alice', participants: 3, prePaired: 0, minParticipants: 2 })
     await pairParticipant(page, { index: 0, mode: 'Inline keys' })
@@ -279,7 +297,7 @@ test.describe('unpairing', () => {
 
     // Unpairing drops the shares held under that channel, but the owner's own
     // bag is not one of them.
-    await openTab(page, 'Secrets')
+    await openTab(page, 'Items')
     await expect(page.locator('.tab-panel')).toContainText('Passphrase')
   })
 })

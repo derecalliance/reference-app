@@ -5,8 +5,8 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { PairedParticipant, RecoveredSecret, RecoveredSecretReplica, SecretBag, Vault } from '../types'
-import { vault } from '../vault/testVault'
+import type { PairedParticipant, RecoveredSecret, RecoveredSecretReplica, ItemBag, Secret } from '../types'
+import { secret } from '../secret/testSecret'
 import { RecoveryPanel } from './RecoveryPanel'
 
 let host: HTMLDivElement
@@ -33,18 +33,18 @@ function holder(n: number, versions: number[], extra: Partial<PairedParticipant>
     secretShares: [],
     connectionStatus: 'paired',
     discoveryComplete: true,
-    discoveredVersions: versions.map(version => ({ secretId: '42', version, description: 'DeRec Vault' })),
+    discoveredVersions: versions.map(version => ({ secretId: '42', version, description: 'DeRec Secret' })),
     ...extra,
   }
 }
 
-function bag(current: number, previous: number[], threshold: number): SecretBag {
+function bag(current: number, previous: number[], threshold: number): ItemBag {
   const version = (v: number) => ({
     version: v,
     participantIds: [],
     verifiedParticipantIds: [],
     failedParticipantIds: [],
-    secrets: [],
+    items: [],
     rawBytes: '',
     helpers: [],
   })
@@ -52,13 +52,13 @@ function bag(current: number, previous: number[], threshold: number): SecretBag 
 }
 
 function render(
-  record: Vault,
+  record: Secret,
   handlers: { discover?: () => Promise<void>; join?: () => void; joinThrough?: (s: RecoveredSecret, m: RecoveredSecretReplica) => Promise<void> } = {},
 ) {
   act(() =>
     root.render(
       <RecoveryPanel
-        vault={record}
+        secret={record}
         onRequestDiscovery={handlers.discover ?? (async () => {})}
         onRecover={async () => {}}
         onRestoreFromBag={async () => {}}
@@ -79,22 +79,22 @@ function versionRow(version: number): HTMLElement {
 
 describe('RecoveryPanel', () => {
   it('claims no readiness on a device that does not know the threshold', () => {
-    render(vault({ secretBag: null, participants: [holder(1, [3])] }))
+    render(secret({ itemBag: null, participants: [holder(1, [3])] }))
 
     const row = versionRow(3)
     expect(row.textContent).toContain('1 helper holds it')
     expect(row.textContent).not.toContain('Ready')
   })
 
-  it('compares the holders against the threshold this vault published with', () => {
-    render(vault({ secretBag: bag(3, [2], 2), participants: [holder(1, [2, 3]), holder(2, [2])] }))
+  it('compares the holders against the threshold this secret published with', () => {
+    render(secret({ itemBag: bag(3, [2], 2), participants: [holder(1, [2, 3]), holder(2, [2])] }))
 
     expect(versionRow(2).textContent).toContain('Ready')
     expect(versionRow(3).textContent).toContain('Needs 2')
   })
 
-  it('leaves out a version this vault rolled back', () => {
-    render(vault({ secretBag: bag(4, [2], 1), participants: [holder(1, [2, 3, 4])] }))
+  it('leaves out a version this secret rolled back', () => {
+    render(secret({ itemBag: bag(4, [2], 1), participants: [holder(1, [2, 3, 4])] }))
 
     const rows = Array.from(host.querySelectorAll('.available-version-row .version-tag')).map(t => t.textContent)
     expect(rows).toEqual(['v4', 'v2'])
@@ -102,7 +102,7 @@ describe('RecoveryPanel', () => {
   })
 
   it('shows why a discovery could not start instead of leaving it unhandled', async () => {
-    render(vault({ participants: [holder(1, [], { discoveryComplete: false })] }), {
+    render(secret({ participants: [holder(1, [], { discoveryComplete: false })] }), {
       discover: async () => {
         throw new Error('No discovery request was sent: the DeRec server cannot be reached.')
       },
@@ -115,7 +115,7 @@ describe('RecoveryPanel', () => {
   })
 
   it('marks a helper that did not answer instead of leaving it pending', () => {
-    render(vault({ participants: [holder(1, [], { discoveryComplete: false, discoveryError: 'No answer within 30s' })] }))
+    render(secret({ participants: [holder(1, [], { discoveryComplete: false, discoveryError: 'No answer within 30s' })] }))
 
     const tag = host.querySelector('.recovery-helper-row .status-tag')
     expect(tag?.textContent).toBe('No answer')
@@ -128,11 +128,11 @@ describe('restore or join (SDK 0.0.9)', () => {
     return {
       secretId: '77',
       version: 3,
-      label: 'DeRec Vault',
+      label: 'DeRec Secret',
       restored: false,
       snapshot: {
         helpers: [],
-        secrets: [],
+        items: [],
         replicas: members.length
           ? {
               channelId: '5',
@@ -146,9 +146,9 @@ describe('restore or join (SDK 0.0.9)', () => {
 
   const button = (name: string) => Array.from(host.querySelectorAll('button')).find(b => b.textContent?.trim() === name)
 
-  it('offers to join the group when the recovered vault names a live replica', () => {
+  it('offers to join the group when the recovered secret names a live replica', () => {
     const join = vi.fn()
-    render(vault({ recoveredSecrets: [recovered([
+    render(secret({ recoveredSecrets: [recovered([
       { replicaId: '1', role: 'Source', name: 'Old laptop' },
       { replicaId: '2', role: 'Destination', name: 'Phone' },
     ])] }), { join })
@@ -165,7 +165,7 @@ describe('restore or join (SDK 0.0.9)', () => {
     const joinThrough = vi.fn(async () => {
       throw new Error('Phone is not a provisioned helper on this node')
     })
-    render(vault({ recoveredSecrets: [recovered([
+    render(secret({ recoveredSecrets: [recovered([
       { replicaId: '1', role: 'Source', name: 'Old laptop' },
       { replicaId: '2', role: 'Destination', name: 'Phone' },
     ])] }), { joinThrough })
@@ -178,7 +178,7 @@ describe('restore or join (SDK 0.0.9)', () => {
   })
 
   it('keeps Join through usable but ties it to the known SDK limitation (review I5)', () => {
-    render(vault({ recoveredSecrets: [recovered([
+    render(secret({ recoveredSecrets: [recovered([
       { replicaId: '1', role: 'Source', name: 'Old laptop' },
       { replicaId: '2', role: 'Destination', name: 'Phone' },
     ])] }))
@@ -192,7 +192,7 @@ describe('restore or join (SDK 0.0.9)', () => {
   })
 
   it('offers only restore when the group has no other member', () => {
-    render(vault({ recoveredSecrets: [recovered([{ replicaId: '1', role: 'Source', name: 'Old laptop' }])] }))
+    render(secret({ recoveredSecrets: [recovered([{ replicaId: '1', role: 'Source', name: 'Old laptop' }])] }))
 
     expect(button('Join group…')).toBeUndefined()
   })

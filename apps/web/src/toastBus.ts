@@ -13,10 +13,10 @@ import { randomId } from './randomId'
 
 export type ToastLevel = 'error' | 'info'
 
-/** The vault a toast is about, when that vault is not the one on screen. */
+/** The secret a toast is about, when that secret is not the one on screen. */
 export interface ToastOrigin {
-  vaultId: string
-  vaultName: string
+  localSecretId: string
+  secretName: string
 }
 
 export interface Toast {
@@ -24,7 +24,7 @@ export interface Toast {
   level: ToastLevel
   /** Short, user-facing text. Full detail goes to console.error. */
   message: string
-  /** Set for a vault off screen: the toast names it and clicking it opens it. */
+  /** Set for a secret off screen: the toast names it and clicking it opens it. */
   origin?: ToastOrigin
   /** Stays until dismissed rather than fading after a few seconds. */
   sticky?: boolean
@@ -77,7 +77,7 @@ function truncate(s: string, max = 140): string {
  *                 process incoming message").
  * @param err      The caught value (Error, WASM `{code,message}`, string, …).
  * @param context  Extra structured data for the console only.
- * @param origin   The vault it came from, when that vault is off screen.
+ * @param origin   The secret it came from, when that secret is off screen.
  */
 export function reportError(
   summary: string,
@@ -88,7 +88,7 @@ export function reportError(
   const detail = err === undefined ? '' : normalizeError(err)
   console.error(
     `[derec] ${summary}${detail ? ` — ${detail}` : ''}`,
-    { error: err, ...(context ?? {}), ...(origin ? { vaultId: origin.vaultId } : {}) },
+    { error: err, ...(context ?? {}), ...(origin ? { localSecretId: origin.localSecretId } : {}) },
   )
   emit('error', detail ? `${summary}: ${truncate(detail)}` : summary, origin)
 }
@@ -98,7 +98,7 @@ export function reportError(
  * dismissed. The Notifications tab keeps the lasting record.
  */
 export function reportAlert(message: string, origin?: ToastOrigin): void {
-  console.warn(`[derec] ${message}`, origin ? { vaultId: origin.vaultId } : {})
+  console.warn(`[derec] ${message}`, origin ? { localSecretId: origin.localSecretId } : {})
   emit('error', message, origin, true)
 }
 
@@ -111,7 +111,7 @@ export function reportInfo(message: string, origin?: ToastOrigin): void {
 //
 // A condition rather than an event: shown for as long as it holds and cleared
 // when it ends, not on a timer. One per key, so a condition reported by many
-// sources at once — the node down, seen by every vault's poll — is one notice.
+// sources at once — the node down, seen by every secret's poll — is one notice.
 
 export interface Notice {
   key: string

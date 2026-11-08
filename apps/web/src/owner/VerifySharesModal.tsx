@@ -10,7 +10,7 @@ import { ModalCloseButton } from './primitives'
 import type { PairedParticipant } from '../types'
 import { verifyProgress, type VerifyDispatch, type VerifyRowState } from './verification'
 
-export function SecretDataField({
+export function ItemDataField({
   value,
   onChange,
   disabled,
@@ -33,8 +33,8 @@ export function SecretDataField({
         type={visible ? 'text' : 'password'}
         value={value}
         onChange={e => onChange(e.target.value)}
-        placeholder="Enter secret data…"
-        aria-label="Secret data"
+        placeholder="Enter item data…"
+        aria-label="Item data"
         spellCheck={false}
         autoComplete="off"
         disabled={disabled}

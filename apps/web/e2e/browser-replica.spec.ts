@@ -7,7 +7,7 @@ import type { Browser, BrowserContext, Page } from '@playwright/test'
 
 /**
  * Two browsers pairing as a **replica** pair — one device mirroring its whole
- * vault onto another.
+ * secret onto another.
  *
  * `replicas.spec.ts` covers replica mode against a provisioned helper, and
  * `browser-pairing.spec.ts` covers browser-to-browser pairing in the ordinary
@@ -72,7 +72,7 @@ async function pairAsReplica(page: Page, payload: string, role: string): Promise
   await pairModal.locator('label.role-option').filter({ hasText: role }).click()
   await pairModal.getByRole('button', { name: /^Pair as/ }).click()
 
-  // Taking the destination side means agreeing to have this vault replaced,
+  // Taking the destination side means agreeing to have this secret replaced,
   // which is gated behind its own warning.
   const consent = page.getByRole('button', { name: /Continue as destination/i })
   if (await consent.count()) await consent.first().click()
@@ -84,7 +84,7 @@ const CODE = /^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/
  * Say the codes match on `page`, for its pairing with `peerName`.
  *
  * On the destination that is not the whole answer: confirming there is the
- * decision to adopt the source's vault (SDK 0.0.7 installs the source's
+ * decision to adopt the source's secret (SDK 0.0.7 installs the source's
  * publishes as soon as the channel is confirmed), so the dialog asks that
  * first — and nothing is confirmed until it is answered.
  */
@@ -108,8 +108,8 @@ async function openConsole(page: Page): Promise<void> {
   await page.locator('.console-toggle').dispatchEvent('click')
 }
 
-/** The console line the destination writes when it has adopted the source's vault. */
-const ADOPTED = /Adopted mirrored vault v\d+/
+/** The console line the destination writes when it has adopted the source's secret. */
+const ADOPTED = /Adopted mirrored secret v\d+/
 
 for (const initiatorRole of ['Replica source', 'Replica destination'] as const) {
   test(`two browsers pair as replicas — initiator is the ${initiatorRole.toLowerCase()}`, async ({
@@ -207,7 +207,7 @@ test('a mirrored copy pushed before the destination confirms is ignored, then pu
     await destinationDialog.getByRole('button', { name: 'Done' }).click()
 
     await expect(destination.page.getByText(ADOPTED).first()).toBeVisible({ timeout: 60_000 })
-    await expect(destination.page.getByRole('dialog', { name: 'Replace this vault?' })).toHaveCount(0)
+    await expect(destination.page.getByRole('dialog', { name: 'Replace this secret?' })).toHaveCount(0)
   } finally {
     await source.context.close()
     await destination.context.close()
@@ -249,7 +249,7 @@ test('a destination that confirms first shows it is syncing until the copy lands
     await confirmCodes(source.page, 'SyncDestination', false)
 
     await expect(destination.page.getByText(ADOPTED).first()).toBeVisible({ timeout: 60_000 })
-    await expect(destination.page.getByRole('dialog', { name: 'Replace this vault?' })).toHaveCount(0)
+    await expect(destination.page.getByRole('dialog', { name: 'Replace this secret?' })).toHaveCount(0)
     await expect(row).not.toContainText('Syncing…')
   } finally {
     await source.context.close()
@@ -330,7 +330,7 @@ test('a protected version shows the replica group in its payload', async ({ brow
 
     await protectSecret(source.page, 'Passphrase', 'hunter2')
 
-    await openTab(source.page, 'Secrets')
+    await openTab(source.page, 'Items')
     await source.page.getByRole('button', { name: 'View Payload' }).first().click()
     const payload = source.page.locator('.payload-pre')
     await expect(payload).toContainText('"replicas": {')
