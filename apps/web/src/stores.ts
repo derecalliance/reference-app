@@ -1399,7 +1399,11 @@ export function pendingUnpairChannelIds(namespace: string, secretId: string): st
 export function makeTransport(
   sendFn: (uri: string, message: Uint8Array) => Promise<void>,
   relayFn: (uri: string, message: Uint8Array) => Promise<void>,
-  options: { retryDelaysMs?: readonly number[] } = {},
+  options: {
+    retryDelaysMs?: readonly number[]
+    /** Told of every message before it goes out — see `ReplayGuard`. */
+    onSend?: (message: Uint8Array) => void
+  } = {},
 ) {
   const retryDelaysMs = options.retryDelaysMs ?? DEFAULT_SEND_RETRY_DELAYS_MS
 
@@ -1439,6 +1443,9 @@ export function makeTransport(
           `transport: no dialable endpoint among the peer's ${endpoints.length} offer(s)`,
         )
       }
+      // Before the first attempt: a delivery that reports failure may still
+      // have landed, and its copy can come back.
+      options.onSend?.(message)
 
       const failures: string[] = []
       for (const leg of plan) {
@@ -1459,12 +1466,16 @@ export function makeTransport(
 
 // ── Delivery failures, in the node's own words ───────────────────────────────
 //
-// The library reports a failed send as a bare "transport.send promise
-// rejected": the reason this transport threw — the node's "relay delivery
+// The library reports a failed send as a bare "transport send failed: the
+// message reached none of the peer's endpoints" (`transport_send_failed`,
+// SDK 0.0.11; "transport.send promise rejected" before it): the reason this transport threw — the node's "relay delivery
 // failed: …", "gRPC is disabled on this node", an unknown actor — does not
 // survive the trip through WASM. Each failure is kept here, briefly, by the
 // endpoints it was for, so whoever reports the library's error can put the
 // real reason back.
+
+/** The library's failed-send text, current and before SDK 0.0.11. */
+const TRANSPORT_SEND_FAILED = /transport[. ]send/i
 
 /** How long a recorded failure may explain a library error. */
 const DELIVERY_FAILURE_RELEVANCE_MS = 30_000
@@ -1482,7 +1493,7 @@ function recordDeliveryFailure(uris: readonly string[], message: string): void {
  * given, any send — failed moments ago. Anything else is returned unchanged.
  */
 export function explainDeliveryFailure(error: string, uris?: readonly string[]): string {
-  if (!/transport\.send/i.test(error)) return error
+  if (!TRANSPORT_SEND_FAILED.test(error)) return error
   const now = Date.now()
   let latest: { message: string; at: number } | null = null
   for (const [uri, failure] of deliveryFailures) {

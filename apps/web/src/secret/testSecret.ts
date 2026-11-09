@@ -15,6 +15,8 @@ import type { ProtocolInstance } from '../owner/protocol'
 import type { Secret } from '../types'
 import type { SecretRuntime } from './runtime'
 import type { SecretRuntimeDeps } from './types'
+import { ChannelUpdateClock } from './channelUpdates'
+import { ReplayGuard } from './replayGuard'
 
 export function secret(overrides: Partial<Secret> = {}): Secret {
   return {
@@ -70,6 +72,8 @@ export function stubInstance(
     protocol,
     channelStore: {},
     shareStore: {},
+    replayGuard: new ReplayGuard('test', 30),
+    channelUpdates: new ChannelUpdateClock('test', '42'),
   } as unknown as ProtocolInstance)
 }
 

@@ -38,7 +38,7 @@ pub use config::{
     AllowedHost, ConfigOrigin, ConfigSource, DatabaseUrl, Defaults, FrontendConfig, LoadedConfig,
     NodeConfig, RelayAllowlist, ResolvedConfig, ServerSettings, Settings, DEFAULT_DATABASE_URL,
 };
-pub use contact::{ContactOptions, ContactRequest, PeerContact, UnpairedContact};
+pub use contact::{ContactOptions, ContactRequest, ContactTimestamp, PeerContact, UnpairedContact};
 pub use delivery::{DispatchOutcome, LocalAttempt, RelayRefusal, RelayRequest, RelayTarget};
 pub use diagnostics::{ActorSnapshot, GrpcStatus, NodeSnapshot};
 pub use display_name::{DisplayName, NameError, MAX_NAME_CHARS};

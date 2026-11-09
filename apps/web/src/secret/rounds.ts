@@ -179,6 +179,11 @@ export class RoundTracker {
     return this.rounds.size > 0
   }
 
+  /** Whether a recovery request is waiting on the library's decision. */
+  get hasPendingRecovery(): boolean {
+    return this.recovery !== null
+  }
+
   /**
    * Whether round `version` sent a share on `channelId` that is not yet
    * answered. Without a version, whether any open round did.

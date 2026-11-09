@@ -20,26 +20,19 @@ use derec_proto::TransportProtocol;
 use prost::Message as _;
 use uuid::Uuid;
 
+use crate::infrastructure::replay::ReplayGuard;
 use crate::models::{LocalAttempt, SENDER_METADATA};
 use crate::services::delivery::{DialError, LocalDelivery, PeerDialer};
 
-/// How [`CompositeTransport`] reports that the peer advertised nothing it can
-/// dial. The SDK's transport trait returns its own error type and has no
-/// richer variant for this, so it travels as an invariant with this reason —
-/// see [`is_unreachable`].
-pub const NO_DIALABLE_ENDPOINT: &str = "transport: peer advertised no dialable endpoint";
-
-/// How [`CompositeTransport`] reports that every endpoint it tried failed.
-pub const NO_ENDPOINT_ACCEPTED: &str = "transport: no endpoint accepted the message";
-
-/// Whether `e` is one of this node's own transport failures surfacing through
-/// a protocol call: the peer could not be reached.
+/// Whether `e` is a send that reached none of the peer's endpoints: the peer
+/// could not be reached.
+///
+/// [`CompositeTransport`] reports every such failure as the SDK's
+/// [`derec_library::Error::TransportSendFailed`] (SDK 0.0.11), whether the
+/// peer advertised nothing it can dial or every endpoint it tried failed; the
+/// detail is in the transport's log.
 pub fn is_unreachable(e: &derec_library::Error) -> bool {
-    matches!(
-        e,
-        derec_library::Error::Invariant(reason)
-            if *reason == NO_DIALABLE_ENDPOINT || *reason == NO_ENDPOINT_ACCEPTED
-    )
+    matches!(e, derec_library::Error::TransportSendFailed)
 }
 
 // ── HTTP transport ───────────────────────────────────────────────────────────
@@ -197,6 +190,9 @@ pub struct CompositeTransport {
     /// dialled — see [`super::addresses`] for why that matters once an
     /// address it advertised has gone away.
     local: Option<Arc<dyn LocalDelivery>>,
+    /// The actor's log of what it sent, so a copy delivered back to it is
+    /// recognised — see [`ReplayGuard`].
+    sent: Option<Arc<ReplayGuard>>,
 }
 
 impl CompositeTransport {
@@ -205,12 +201,19 @@ impl CompositeTransport {
             http,
             grpc,
             local: None,
+            sent: None,
         }
     }
 
     /// Deliver to endpoints that name this node in-process, without a dial.
     pub fn delivering_locally_on(mut self, local: Arc<dyn LocalDelivery>) -> Self {
         self.local = Some(local);
+        self
+    }
+
+    /// Remember every message before it goes out, in `guard`.
+    pub fn remembering_sends_in(mut self, guard: Arc<ReplayGuard>) -> Self {
+        self.sent = Some(guard);
         self
     }
 
@@ -238,6 +241,11 @@ impl DeRecTransport for CompositeTransport {
         let client = self.http.client();
         let grpc = self.grpc.clone();
         let local = self.local.clone();
+        // Before the first attempt: a delivery that reports failure may still
+        // have landed, and its copy can come back.
+        if let Some(sent) = &self.sent {
+            sent.remember(&message);
+        }
 
         Box::pin(async move {
             if plan.is_empty() {
@@ -245,7 +253,7 @@ impl DeRecTransport for CompositeTransport {
                     offered,
                     "transport: no endpoint on a protocol this node dials"
                 );
-                return Err(derec_library::Error::Invariant(NO_DIALABLE_ENDPOINT));
+                return Err(derec_library::Error::TransportSendFailed);
             }
 
             for (leg, uri) in &plan {
@@ -275,7 +283,7 @@ impl DeRecTransport for CompositeTransport {
             }
 
             tracing::error!(attempted = plan.len(), "transport: every endpoint failed");
-            Err(derec_library::Error::Invariant(NO_ENDPOINT_ACCEPTED))
+            Err(derec_library::Error::TransportSendFailed)
         })
     }
 }
@@ -385,12 +393,7 @@ mod tests {
 
     #[test]
     fn this_nodes_transport_failures_read_as_an_unreachable_peer_and_nothing_else_does() {
-        assert!(is_unreachable(&derec_library::Error::Invariant(
-            NO_DIALABLE_ENDPOINT
-        )));
-        assert!(is_unreachable(&derec_library::Error::Invariant(
-            NO_ENDPOINT_ACCEPTED
-        )));
+        assert!(is_unreachable(&derec_library::Error::TransportSendFailed));
         assert!(!is_unreachable(&derec_library::Error::Invariant(
             "transport: something else"
         )));

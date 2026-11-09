@@ -161,6 +161,7 @@ async fn register_owner(state: &Node, transport_uri: impl Fn(Uuid) -> String) ->
         pool: state.pool.clone(),
         actor_id: id,
         local_delivery: None,
+        replay_guard: Default::default(),
     };
 
     Owner {

@@ -198,18 +198,28 @@ describe('recovery answers without a share', () => {
     })
   })
 
-  it('ends the recovery as insufficient once the last helper asked refuses', () => {
-    const next = foldEvent(recovering({ sharesReceived: 1, refusals: [{ channelId: '1', status: 6, memo: '' }] }), refused('3'), context())
+  it('leaves the decision to the library once the last helper asked refuses', () => {
+    const answered = foldEvent(recovering({ sharesReceived: 1, refusals: [{ channelId: '1', status: 6, memo: '' }] }), refused('3'), context())
+    expect(answered.recoveryProgress?.error).toBeNull()
 
-    expect(next.recoveryProgress?.error).toMatch(/Not enough shares.*2 helpers answered without a usable share/)
+    const next = foldEvent(answered, { type: 'RecoveryIncomplete', version: 3, shares_received: 1 }, context())
+
+    expect(next.recoveryProgress?.error).toMatch(/Not enough shares.*1 share collected, 2 helpers answered without a usable share/)
     expect(next.recoveryFailures).toHaveLength(1)
   })
 
-  it('does not count a refusal from a helper that was not expected to hold the version', () => {
-    const progress = { sharesReceived: 1, totalRequested: 2, requestedChannelIds: ['1', '2'] }
-    const next = foldEvent(recovering(progress), refused('3'), context())
+  it('notes a helper that timed out instead of reporting a dispatch failure', () => {
+    const ctx = context()
+    const next = foldEvent(
+      recovering({ sharesReceived: 2 }),
+      { type: 'RecoverSecretFailed', channel_id: '3', version: 3, error: 'timeout' },
+      ctx,
+    )
 
-    expect(next.recoveryProgress?.error).toBeNull()
+    expect(next.recoveryProgress?.timedOut).toEqual(['3'])
+    expect(ctx.notify.error).not.toHaveBeenCalled()
+    const closed = foldEvent(next, { type: 'RecoveryIncomplete', version: 3, shares_received: 2 }, ctx)
+    expect(closed.recoveryProgress?.error).toMatch(/1 did not answer in time/)
   })
 
   it('warns about a corrupted share by helper and reason, and keeps it for the owner to act on', () => {
@@ -237,23 +247,24 @@ describe('recovery answers without a share', () => {
     })
     const progress = { totalRequested: 2, requestedChannelIds: ['1', '2'] }
     const once = foldEvent(recovering(progress), malformed('1'), ctx)
-    const next = foldEvent(once, malformed('2'), ctx)
+    const twice = foldEvent(once, malformed('2'), ctx)
+    const next = foldEvent(twice, { type: 'RecoveryIncomplete', version: 3, shares_received: 0 }, ctx)
 
     expect(ctx.notify.error).toHaveBeenCalledWith(expect.stringContaining('before an SDK upgrade'), undefined, expect.anything())
     expect(ctx.notify.error).not.toHaveBeenCalledWith(expect.stringContaining('An honest helper never'), undefined, expect.anything())
     expect(next.recoveryProgress?.error).toMatch(/2 helpers answered without a usable share.*protect a new version/)
   })
 
-  it('reports an inconsistent share without touching a recovery that already succeeded', () => {
+  it('reports a forged share without touching a recovery the library already decided', () => {
     const current = secret({ participants: [helper(1)], recoveryProgress: null })
     const next = foldEvent(
       current,
-      { type: 'RecoveryShareCorrupted', channel_id: '1', version: 3, reason: 'Inconsistent' },
+      { type: 'RecoveryShareCorrupted', channel_id: '1', version: 3, reason: 'Forged' },
       context(),
     )
 
     expect(next.recoveryProgress).toBeNull()
-    expect(next.corruptShareReports?.map(r => r.reason)).toEqual(['Inconsistent'])
+    expect(next.corruptShareReports?.map(r => r.reason)).toEqual(['Forged'])
   })
 
   it('does not repeat a report already standing', () => {
@@ -279,5 +290,90 @@ describe('ShareStored, on a helper', () => {
     const next = foldEvent(current, { type: 'ShareStored', channel_id: '7', version: 3 }, ctx)
 
     expect(next.heldShares.map(s => `${s.channelId}:v${s.version}`)).toEqual(['7:v2', '8:v1', '7:v3'])
+  })
+})
+
+describe('a recovery the helpers disagree on (SDK 0.0.11)', () => {
+  type Recovered = Extract<DeRecEvent, { type: 'SecretRecovered' }>['secret']
+  const payload = (value: string) =>
+    ({
+      helpers: [],
+      secrets: [{ id: new Uint8Array([1]), name: 'seed', data: new TextEncoder().encode(value) }],
+    }) as unknown as Recovered
+  const by = (...channels: string[]) => channels.map(channel_id => ({ channel_id }))
+
+  function recovering(): { current: Secret; ctx: FoldContext } {
+    const ctx = context()
+    ctx.rounds.beginRecovery({ secretId: '42', version: 3, label: 'Seeds' })
+    const current = secret({
+      participants: [helper(1), helper(2), helper(3)],
+      recoveryProgress: { secretId: '42', version: 3, sharesReceived: 3, totalRequested: 3, error: null },
+    })
+    return { current, ctx }
+  }
+
+  it('keeps a disputed secret for the owner to judge, naming both sides', () => {
+    const { current, ctx } = recovering()
+    const next = foldEvent(
+      current,
+      { type: 'RecoveryDisputed', version: 3, secret: payload('real'), supported_by: by('1', '2'), disputed_by: by('3') },
+      ctx,
+    )
+
+    expect(next.recoveryProgress).toBeNull()
+    expect(next.recoveredSecrets).toHaveLength(1)
+    expect(next.recoveredSecrets[0]).toMatchObject({
+      secretId: '42',
+      version: 3,
+      dispute: {
+        kind: 'disputed',
+        supportedBy: [{ channelId: '1', name: 'Helper 1' }, { channelId: '2', name: 'Helper 2' }],
+        disputedBy: [{ channelId: '3', name: 'Helper 3' }],
+      },
+    })
+    expect(ctx.notify.error).toHaveBeenCalledWith(expect.stringContaining('Helper 3 hold shares of a different secret'))
+    expect(ctx.notify.outcome).not.toHaveBeenCalled()
+  })
+
+  it('offers every candidate of a conflict, each disputed by the helpers behind the others', () => {
+    const { current, ctx } = recovering()
+    const next = foldEvent(
+      current,
+      {
+        type: 'RecoveryConflict',
+        version: 3,
+        candidates: [
+          { secret: payload('real'), supported_by: by('1', '2') },
+          { secret: payload('forged'), supported_by: by('3') },
+        ],
+        disputed_by: [],
+      },
+      ctx,
+    )
+
+    expect(next.recoveredSecrets.map(r => r.dispute)).toEqual([
+      expect.objectContaining({ kind: 'conflict', candidate: 1, candidates: 2, disputedBy: [{ channelId: '3', name: 'Helper 3' }] }),
+      expect.objectContaining({ kind: 'conflict', candidate: 2, candidates: 2, disputedBy: [
+        { channelId: '1', name: 'Helper 1' },
+        { channelId: '2', name: 'Helper 2' },
+      ] }),
+    ])
+  })
+
+  it('names a helper this device has no row for by what it advertised', () => {
+    const { current, ctx } = recovering()
+    const next = foldEvent(
+      current,
+      {
+        type: 'RecoveryDisputed',
+        version: 3,
+        secret: payload('real'),
+        supported_by: by('1'),
+        disputed_by: [{ channel_id: '99', communication_info: { name: 'Mallory' } }],
+      },
+      ctx,
+    )
+
+    expect(next.recoveredSecrets[0].dispute?.disputedBy).toEqual([{ channelId: '99', name: 'Mallory' }])
   })
 })

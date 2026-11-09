@@ -11,9 +11,13 @@ suffix (`0.0.8-alpha.1`, `-beta.N`, `-rc.N`).
 
 ## [0.0.10] — unreleased
 
-First release. Built against DeRec SDK 0.0.10 (`derec-library` and
-`derec-proto` from crates.io, `@derec-alliance/web` from npm): a single kept
-version, the fingerprint commitment, and a mismatch that revokes the pairing.
+First release. Built against DeRec SDK 0.0.11, a security release, on top
+of 0.0.10's single kept version, fingerprint commitment, and a mismatch that
+revokes the pairing. Until 0.0.11 is published the SDK comes from a local
+lib-derec checkout (path dependencies and a packed `@derec-alliance/web`), so
+the Docker image and `start.sh` cannot build this entry yet; once it is
+published, the dependencies move to crates.io and npm and the version to
+0.0.11.
 
 ### Changed
 
@@ -176,6 +180,21 @@ version, the fingerprint commitment, and a mismatch that revokes the pairing.
   a warning when the version is still recoverable, a danger alert when it
   rolled back. Retry publishes the same items as a new round; Dismiss or
   Discard clears it.
+- **Pairing lifetime (SDK 0.0.11).** A contact can be read, and a pairing
+  request accepted, for 30 minutes after the contact was made — on both the
+  browser and the node's helpers, instead of the SDK's 30-second default. An
+  expired contact says so and asks for a fresh one; the contact a secret
+  publishes for other browsers is renewed every 15 minutes. Contacts carry the
+  time they were made: the QR payload and the API's `ContactMessage` gain
+  `timestamp: { seconds, nanos }`, which the SDK now requires. A contact
+  copied from an older build has none and is refused with a request for a
+  fresh one.
+- **Replayed and reflected messages are dropped (SDK 0.0.11).** The browser
+  and the node's helpers keep the `message_id` of every message they send or
+  accept for the replay window and drop an incoming copy of one; the browser
+  keeps them across reloads, the node in memory. A contact update older than
+  one already applied on the channel is refused. A replica pairing still
+  waiting for its fingerprint no longer stops a secret from publishing.
 - **Fingerprint commitment (SDK 0.0.10).** Contacts carry
   `fingerprint_commitment` (inline-keys contacts) through the JSON payload and
   `ContactMessageDto` in the HTTP API, so pairing works against a 0.0.10 peer;
@@ -183,12 +202,20 @@ version, the fingerprint commitment, and a mismatch that revokes the pairing.
   detects now revokes the pending pairing, and the dialogs say to pair
   again.
 - **Recovery and restore.** Reconstruct a secret from helper shares, and
-  restore this device from a recovered item bag. A helper that holds no share of the
-  requested version is reported as refused and does not hold recovery up; a
-  corrupted share is reported with the helper and reason, with an offer to
-  unpair it; an unreadable (`Malformed`) one also names the innocent cause —
-  a version protected before an SDK upgrade that changed the share format —
-  and advises protecting a new version. Helpers on another node can be linked
+  restore this device from a recovered item bag. The SDK decides a recovery
+  once, after every helper asked has answered or 60 seconds have passed
+  (SDK 0.0.11); a helper that stayed silent is named on the row, and a
+  recovery that rebuilds nothing ends *Incomplete* with what it collected. A
+  helper that holds no share of the requested version is reported as refused
+  and does not hold recovery up; a corrupted share (`Malformed`,
+  `InvalidProof`, `Forged`) is reported with the helper and reason, with an
+  offer to unpair it; an unreadable (`Malformed`) one also names the innocent
+  cause — a version protected before an SDK upgrade that changed the share
+  format — and advises protecting a new version. When the helpers disagree —
+  one secret rebuilt against valid shares of another (*disputed*), or several
+  different secrets rebuilt (*conflict*) — every candidate is shown with the
+  helpers behind it and against it, and nothing is restored until the owner
+  picks one and confirms; no helper is unpaired for it. Helpers on another node can be linked
   for recovery. Restoring a secret that has replicas keeps its group: on the
   device that held it the Replicas tab still lists the replica, and on a new
   device the secret takes over the identity its group knows it by — the

@@ -8,6 +8,8 @@ Pairing is **unidirectional**. One side shares a **contact** (a QR code or its J
 
 The contact mode is fixed when the contact is created, so **whoever creates the contact chooses the mode**.
 
+A contact is good for **30 minutes** (SDK 0.0.11 gives pairing a lifetime; its default of 30 seconds is too short for copying a contact between windows, so this app sets its own). After that, reading it fails with *This contact has expired*, and a pairing request on it is ignored by the side that created it. Share a fresh contact. The contact a secret publishes for other browsers on this node is renewed on its own every 15 minutes.
+
 ## Pairing with a helper on this node
 
 The side panel, **Pair with a participant**, lists the node's provisioned helpers. Expand a row for its actions:

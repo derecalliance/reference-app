@@ -1,6 +1,6 @@
 # Recovery and restore
 
-Getting a secret back on a new device: re-pairing with the old helpers, linking, discovery, recovering a version, refused and corrupted shares, and restoring the secret from the recovered bag.
+Getting a secret back on a new device: re-pairing with the old helpers, linking, discovery, recovering a version, refused and corrupted shares, helpers that disagree, and restoring the secret from the recovered bag.
 
 ## The idea
 
@@ -41,6 +41,8 @@ On the **Recovery** tab, *Recovery-Paired Helpers* lists every paired helper cha
 
 Click **Recover** on a version row. The row shows *Recovering…* and *N shares received…*, then the secret appears under *Recovered Secrets*.
 
+From SDK 0.0.11 the library decides a recovery **once**, after every helper it asked has answered (with a share, a refusal or an unusable share) or after 60 seconds without an answer. It then tries every group of matching shares, so nothing appears before the slowest helper answers or times out. A helper that never answered is listed on the row as not answering in time. The outcome is one of: recovered, **disputed** or **conflict** (see [Helpers that disagree](#helpers-that-disagree)), or **Incomplete**.
+
 Status tags on a version row:
 
 | Tag | Meaning |
@@ -48,17 +50,18 @@ Status tags on a version row:
 | **Ready** | Enough helpers hold it (shown only when this device knows the threshold). |
 | **Needs N** | Fewer helpers hold it than the threshold this device knows. |
 | **Recovering…** | Shares are arriving. |
-| **Incomplete** | The last attempt failed; the reason is shown and **Try Again** is offered. |
+| **Incomplete** | The last attempt failed; the reason (shares collected, helpers without a usable share, helpers that did not answer in time) is shown and **Try Again** is offered. |
 | **Recovered** | Rebuilt; see *Recovered Secrets*. |
+| **Disputed** | Rebuilt, but the helpers disagree about this version; see *Recovered Secrets* before restoring. |
 
 A fresh device does not know the threshold, so it shows only how many helpers hold the version, and **Recover** tells you whether that was enough.
 
 ## Refused and corrupted shares
 
-From SDK 0.0.7 a helper that answers without a usable share no longer blocks the recovery. The other helpers' shares complete it, and the row lists who sent nothing usable:
+A helper that answers without a usable share does not block the recovery. The other helpers' shares complete it, and the row lists who sent nothing usable:
 
 - *Bob refused — it holds no share of vN* (status `UNKNOWN_SHARE_VERSION`), or the helper's own memo.
-- *Bob sent a share that was set aside (Malformed | InvalidProof | Inconsistent)*.
+- *Bob sent a share that was set aside (Malformed | InvalidProof | Forged)*.
 
 A **corrupted** share also raises a standing red warning at the top of the secret's page, *Bob sent a corrupted recovery share*, because an honest helper never sends one: it may be damaged or compromised (for `Malformed`, see the upgrade case below). It offers **Unpair…** (always confirmed) and **Dismiss**.
 
@@ -66,8 +69,18 @@ A **corrupted** share also raises a standing red warning at the top of the secre
 | --- | --- |
 | `Malformed` | The answer held no readable share of this secret and version. Besides a damaged helper, this is what a version protected before an SDK upgrade that changed the share format looks like: its shares still **verify** (verification hashes the bytes the helper holds) but no longer decode. Protect a new version and recover that one. |
 | `InvalidProof` | The share failed its own integrity proof. |
-| `Inconsistent` | The share disagreed with the shares the secret was rebuilt from. |
+| `Forged` | The share belongs to a group that reconstructs to no valid secret, or rebuilds a secret on its own. An honest split produces neither (SDK 0.0.11). |
 
+A share that is valid but merely **disagrees** with the others is not reported as corrupted any more (SDK 0.0.11 removed `Inconsistent`): when a forged group wins, that share is the honest helper's. It is shown as a dispute instead. Warnings saved before the upgrade may still say `Inconsistent`.
+
+## Helpers that disagree
+
+A recovery needs shares from at least two helpers, so one helper can no longer have this device recover a secret it made up. Several colluding helpers still can, so the library never picks a side when the helpers' shares do not agree:
+
+- **Disputed** — one secret was rebuilt, but other helpers hold valid shares of a different one that did not rebuild. The card is tagged **Disputed** and says who stands behind the secret and who disputes it.
+- **Conflict** — two or more different secrets were rebuilt. Each appears as its own card, tagged **Candidate 1 of 2** and so on, naming the helpers behind it and those behind the others.
+
+A critical notification says so as well. Either side may be yours: colluding helpers can forge a complete secret, and the honest ones may be too few to rebuild theirs. Reveal the items on each card and restore only the one you recognise. **Recover from bag** asks again, naming the helpers behind that secret. The helpers behind the other one may be compromised; unpairing them is your call, and the app never does it for you. Restoring one candidate clears the others.
 ## 5. Restore, or join the group
 
 If the recovered secret still lives on a **replica**, the card also offers **Join group…**. While any replica is live, the library recommends joining over restoring: restoring next to a live replica makes this device claim the lost device's place. Neither path brings back verification copies of earlier versions.

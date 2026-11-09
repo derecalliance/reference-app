@@ -19,6 +19,11 @@ describe('replicaMembershipProblem', () => {
     expect(replicaMembershipProblem([member('1001'), member('2002')], '1001')).toBeNull()
   })
 
+  it('lets a device publish while its only replica pairing is unconfirmed (SDK 0.0.11)', () => {
+    // No own row until the fingerprint is confirmed: the peer's placeholder alone is no group.
+    expect(replicaMembershipProblem([{ ...member('2002'), status: 'Pending' }], '1001')).toBeNull()
+  })
+
   it('explains, with the way out, a group that does not list this device', () => {
     const problem = replicaMembershipProblem([member('1001'), member('2002')], '5555')
     expect(problem).toMatch(/does not list this device/)

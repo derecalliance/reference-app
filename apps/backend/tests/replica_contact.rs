@@ -32,6 +32,7 @@ fn config(secret_id: u64, pool: sqlx::AnyPool, actor_id: uuid::Uuid) -> Protocol
         pool,
         actor_id,
         local_delivery: None,
+        replay_guard: Default::default(),
     }
 }
 

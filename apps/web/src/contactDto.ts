@@ -80,6 +80,9 @@ export function contactMessageToDto(c: ContactMessage): ContactMessageDto {
     fingerprint_commitment: c.fingerprint_commitment
       ? toBase64Url(c.fingerprint_commitment)
       : undefined,
+    timestamp: c.timestamp
+      ? { seconds: Number(c.timestamp.seconds), nanos: c.timestamp.nanos }
+      : undefined,
   }
 }
 
@@ -99,6 +102,9 @@ export function dtoToContactMessage(dto: ContactMessageDto): ContactMessage {
       : undefined,
     fingerprint_commitment: dto.fingerprint_commitment
       ? fromBase64Url(dto.fingerprint_commitment)
+      : undefined,
+    timestamp: dto.timestamp
+      ? { seconds: BigInt(dto.timestamp.seconds), nanos: dto.timestamp.nanos }
       : undefined,
   }
 }

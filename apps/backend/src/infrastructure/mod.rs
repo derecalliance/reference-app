@@ -14,6 +14,7 @@ pub mod db;
 pub mod event_log;
 pub mod grpc;
 pub mod recovery;
+pub mod replay;
 pub mod routing;
 pub mod server;
 pub mod state;

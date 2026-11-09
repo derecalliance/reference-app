@@ -48,6 +48,7 @@ fn config(pool: sqlx::AnyPool, actor_id: uuid::Uuid) -> ProtocolConfig {
         pool,
         actor_id,
         local_delivery: None,
+        replay_guard: Default::default(),
     }
 }
 

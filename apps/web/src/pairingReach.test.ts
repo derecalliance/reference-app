@@ -34,6 +34,24 @@ describe('pairingErrorText', () => {
     expect(text).toContain('transport.send promise rejected')
   })
 
+  it('recognises the failed send as SDK 0.0.11 reports it', () => {
+    const message = "transport send failed: the message reached none of the peer's endpoints"
+    expect(pairingErrorText({ message, code: 'transport_send_failed' })).toMatch(/^Could not reach the participant/)
+  })
+
+  it('asks for a fresh contact when the one used has expired', () => {
+    const text = pairingErrorText({ message: 'pairing expired', code: 'pairing_expired' })
+    expect(text).toMatch(/^This contact has expired.*Ask for a fresh contact/)
+  })
+
+  it('asks for a fresh contact when the one used carries no creation time', () => {
+    const text = pairingErrorText({
+      message: 'invalid contact message: contact carries no timestamp',
+      code: 'invalid_contact_message',
+    })
+    expect(text).toMatch(/^This contact carries no creation time.*Ask for a fresh contact/)
+  })
+
   it('passes anything else through', () => {
     expect(pairingErrorText(new Error('role mismatch'))).toBe('role mismatch')
   })

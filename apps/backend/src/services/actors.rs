@@ -512,7 +512,7 @@ fn contact_message(contact: &PeerContact) -> Result<derec_proto::ContactMessage,
         ));
     }
 
-    Ok(derec_proto::ContactMessage {
+    let mut message = derec_proto::ContactMessage {
         channel_id,
         nonce,
         supported_transports: contact.endpoints.clone(),
@@ -522,7 +522,14 @@ fn contact_message(contact: &PeerContact) -> Result<derec_proto::ContactMessage,
         contact_binding_hash,
         timestamp: None,
         fingerprint_commitment,
-    })
+    };
+    // Passed on as given: the SDK judges whether it is present and fresh.
+    if let Some(minted) = contact.timestamp {
+        let timestamp = message.timestamp.insert(Default::default());
+        timestamp.seconds = minted.seconds;
+        timestamp.nanos = minted.nanos;
+    }
+    Ok(message)
 }
 
 #[cfg(test)]

@@ -50,6 +50,12 @@ describe('replicaGroupFromStore', () => {
     expect(group?.members.map(m => m.replicaId)).toEqual(['11'])
   })
 
+  it('leaves out a member whose pairing is not confirmed, as the library does from SDK 0.0.11', () => {
+    const group = replicaGroupFromStore([member(), member({ replicaId: '22', status: 'Pending' })], '11')
+
+    expect(group?.members.map(m => m.replicaId)).toEqual(['11'])
+  })
+
   it('is null with no group', () => {
     expect(replicaGroupFromStore([], '11')).toBeNull()
   })

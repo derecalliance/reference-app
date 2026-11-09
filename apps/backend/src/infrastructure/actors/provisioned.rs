@@ -1445,6 +1445,21 @@ impl ProvisionedActor {
             return Box::pin(actix::fut::ready(()));
         }
 
+        // A copy of a message this actor sent, or already accepted (SDK 0.0.11
+        // leaves recognising one to the application). Processed, a replayed
+        // request would be answered again and a reflected one taken for the
+        // peer's. Checked here, before an instance is borrowed for it, while
+        // the message itself is remembered only once `process` accepts it.
+        if self.config.replay_guard.is_copy(&bytes) {
+            warn!(
+                actor_id = %self.actor_id,
+                channel_id = meta.channel_id,
+                sequence = meta.sequence,
+                "inbound message is a copy of one already sent or accepted; dropping it"
+            );
+            return Box::pin(actix::fut::ready(()));
+        }
+
         let Some(owner) = self.instances.secret_for_channel(meta.channel_id) else {
             error!(
                 actor_id = %self.actor_id,
@@ -1488,10 +1503,14 @@ impl ProvisionedActor {
         let secret_id = owner;
         let rounds = Arc::clone(&self.deps.sharing_rounds);
         let actor_id = self.actor_id;
+        let replay_guard = Arc::clone(&self.config.replay_guard);
 
         Box::pin(
             async move {
                 let result = protocol.process(&bytes).await;
+                if result.is_ok() {
+                    replay_guard.remember(&bytes);
+                }
                 record_round_outcomes(rounds.as_ref(), &actor_id, secret_id, events_of(&result))
                     .await;
                 let channel_ids = held_channels_of(&protocol, secret_id).await;
@@ -1922,6 +1941,9 @@ impl Handler<ReconfigureMsg> for ProvisionedActor {
     fn handle(&mut self, msg: ReconfigureMsg, _ctx: &mut Context<Self>) -> Self::Result {
         self.config.timeout_secs = msg.timeout_secs;
         self.config.unpair_ack = msg.unpair_ack;
+        self.config
+            .replay_guard
+            .set_window(u64::from(msg.timeout_secs));
 
         for secret_id in self.instances.secret_ids() {
             let Some(old) = self.instances.take(secret_id) else {
@@ -2263,6 +2285,7 @@ mod tests {
             pool,
             actor_id: uuid::Uuid::new_v4(),
             local_delivery: None,
+            replay_guard: Default::default(),
         }
     }
 

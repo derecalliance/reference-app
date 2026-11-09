@@ -39,8 +39,8 @@ base64 = "0.22"
 # SDK. Plaintext endpoints are not a compile-time feature — they are
 # `DeRecProtocolBuilder::with_unsafe_connection`, decided per instance at
 # runtime.
-derec-library = { version = "0.0.10", features = ["serde"] }
-derec-proto = "0.0.10"
+derec-library = { path = "../../../lib-derec/library", features = ["serde"] }
+derec-proto = { path = "../../../lib-derec/protobufs" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 rand = "0.8"
 # Operator-supplied defaults for the front end, read from a mounted config file.

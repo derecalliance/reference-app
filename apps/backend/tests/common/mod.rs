@@ -214,6 +214,7 @@ async fn register_owner(state: &Arc<Node>) -> Owner {
         pool: state.pool.clone(),
         actor_id: actor.id,
         local_delivery: None,
+        replay_guard: Default::default(),
     };
 
     Owner {

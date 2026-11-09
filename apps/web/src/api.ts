@@ -153,6 +153,17 @@ export interface ContactMessageDto {
   contact_binding_hash?: string
   /** The creator's commitment to its fingerprint nonce (SDK 0.0.10); inline-keys contacts only. */
   fingerprint_commitment?: string
+  /**
+   * When the contact was minted. From SDK 0.0.11 a contact without one is
+   * refused, and one older than the pairing lifetime has expired.
+   */
+  timestamp?: ContactTimestampDto
+}
+
+/** A protobuf `Timestamp`: Unix seconds, which a JavaScript number holds exactly, and nanoseconds. */
+export interface ContactTimestampDto {
+  seconds: number
+  nanos: number
 }
 
 // ── Server-supplied defaults ─────────────────────────────────────────────────

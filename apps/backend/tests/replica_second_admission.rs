@@ -146,6 +146,7 @@ async fn register_source(state: &Arc<Node>) -> Source {
         pool: state.pool.clone(),
         actor_id: actor.id,
         local_delivery: None,
+        replay_guard: Default::default(),
     };
 
     Source {

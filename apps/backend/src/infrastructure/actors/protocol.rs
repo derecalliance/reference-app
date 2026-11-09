@@ -11,6 +11,8 @@ use derec_library::protocol::types::Timeouts;
 use derec_library::protocol::{AutoAcceptPolicy, DeRecProtocolBuilder, ExpiredChannelCleanup};
 use uuid::Uuid;
 
+use super::PAIRING_LIFETIME_SECS;
+use crate::infrastructure::replay::ReplayGuard;
 use crate::infrastructure::transport::{CompositeTransport, GrpcTransport, HttpTransport};
 use crate::models::{Transport, UnpairAck};
 use crate::repositories::sdk::{
@@ -71,6 +73,10 @@ pub struct ProtocolConfig {
     /// in-process instead of dialled. `None` for an instance built outside a
     /// node, as test fixtures standing in for a browser are.
     pub local_delivery: Option<Arc<dyn LocalDelivery>>,
+    /// The actor's log of messages it sent or accepted, shared by its
+    /// transport and its inbound path, and by every instance it runs — see
+    /// [`ReplayGuard`].
+    pub replay_guard: Arc<ReplayGuard>,
 }
 
 /// The settings half of the builder chain, shared by fresh construction and
@@ -121,6 +127,7 @@ fn configure_builder<Cs, Sh, Se, Us, St, T>(
             // `PENDING_CHANNEL_TTL_SECS` — see that constant for why the
             // default is unusable once fingerprint-gated pairing is in play.
             expired_channels: ExpiredChannelCleanup::Disabled,
+            pairing: Duration::from_secs(PAIRING_LIFETIME_SECS),
             ..Timeouts::default()
         })
         .with_communication_info(config.communication_info.clone())
@@ -168,7 +175,8 @@ fn transport_for(config: &ProtocolConfig) -> CompositeTransport {
         // Stamped with this actor, so when the peer is another actor on
         // this node the shared gRPC ingress can tell the two ends apart.
         GrpcTransport::for_actor(config.actor_id),
-    );
+    )
+    .remembering_sends_in(Arc::clone(&config.replay_guard));
     match &config.local_delivery {
         Some(local) => transport.delivering_locally_on(Arc::clone(local)),
         None => transport,
@@ -253,6 +261,7 @@ mod tests {
             pool,
             actor_id: uuid::Uuid::new_v4(),
             local_delivery: None,
+            replay_guard: Default::default(),
         }
     }
 

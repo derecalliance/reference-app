@@ -5,7 +5,9 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
 
 use crate::handlers::helpers::dtos::HelperFaultDto;
-use crate::models::{Actor, ActorListing, ContactOptions, HelperFault, PeerContact};
+use crate::models::{
+    Actor, ActorListing, ContactOptions, ContactTimestamp, HelperFault, PeerContact,
+};
 
 /// Actor enriched with live pairing state — used in `GET /api/v1/actors`.
 #[derive(Debug, Clone, Serialize)]
@@ -195,6 +197,27 @@ pub struct ContactMessageDto {
     /// present only under `InlineKeys`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fingerprint_commitment: Option<String>,
+    /// When the contact was minted (required by SDK 0.0.11, which refuses a
+    /// contact without one and expires it after the pairing lifetime).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<ContactTimestampDto>,
+}
+
+/// A protobuf `Timestamp`: Unix seconds, which a JavaScript number holds
+/// exactly, and nanoseconds.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ContactTimestampDto {
+    pub seconds: i64,
+    pub nanos: i32,
+}
+
+impl From<ContactTimestampDto> for ContactTimestamp {
+    fn from(dto: ContactTimestampDto) -> Self {
+        Self {
+            seconds: dto.seconds,
+            nanos: dto.nanos,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -271,6 +294,10 @@ impl From<&derec_proto::ContactMessage> for ContactMessageDto {
                 .fingerprint_commitment
                 .as_ref()
                 .map(|h| URL_SAFE_NO_PAD.encode(h)),
+            timestamp: c.timestamp.as_ref().map(|t| ContactTimestampDto {
+                seconds: t.seconds,
+                nanos: t.nanos,
+            }),
         }
     }
 }
@@ -286,6 +313,7 @@ impl From<ContactMessageDto> for PeerContact {
             ecies_public_key: dto.ecies_public_key,
             contact_binding_hash: dto.contact_binding_hash,
             fingerprint_commitment: dto.fingerprint_commitment,
+            timestamp: dto.timestamp.map(Into::into),
         }
     }
 }
@@ -370,6 +398,7 @@ mod tests {
             ecies_public_key: None,
             contact_binding_hash: None,
             fingerprint_commitment: None,
+            timestamp: None,
         }
     }
 
@@ -460,6 +489,29 @@ mod tests {
         assert!(dto.transport_protocol.is_none());
         assert_eq!(dto.endpoints().len(), 1);
         assert_eq!(dto.endpoints()[0].uri, "grpc://a:1");
+    }
+
+    #[test]
+    fn a_contact_keeps_the_time_it_was_minted() {
+        // SDK 0.0.11 refuses a contact without one, so dropping it on the way
+        // through would make every pasted contact unpairable.
+        let json = r#"{
+            "channel_id": "1",
+            "nonce": "7",
+            "supported_transports": [{ "uri": "https://a", "protocol": "https" }],
+            "timestamp": { "seconds": 1700000000, "nanos": 42 }
+        }"#;
+
+        let dto: ContactMessageDto = serde_json::from_str(json).expect("deserializes");
+        let contact = PeerContact::from(dto);
+
+        assert_eq!(
+            contact.timestamp,
+            Some(ContactTimestamp {
+                seconds: 1_700_000_000,
+                nanos: 42
+            })
+        );
     }
 
     #[test]

@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
-import type { DeRecEvent, PendingActionKind } from '@derec-alliance/web'
+import { StatusEnum, type DeRecEvent, type PendingActionKind } from '@derec-alliance/web'
 
 import { classifyInboundPairing } from '../inboundPairing'
 import type { Secret, SecretConfig } from '../types'
+import type { ChannelUpdateClock } from './channelUpdates'
 import type { Attention, StoreShareRequest, SecretLogger, VerifyShareRequest } from './types'
 
 type ActionRequired = Extract<DeRecEvent, { type: 'ActionRequired' }>
@@ -38,6 +39,15 @@ export interface InboundContext {
    * secret id and description the bare fold would not. Reports rather than throws.
    */
   acceptStoreShare(request: StoreShareRequest, current: Secret): Promise<Secret>
+  /** Refuse `action`, answering the peer with `status` and `memo`. Reports rather than throws. */
+  reject(action: Uint8Array, status: StatusEnum, memo: string, context: Record<string, unknown>): Promise<void>
+  /**
+   * When the envelope that carried the request being routed was sent, in Unix
+   * seconds, or `null` when it could not be read.
+   */
+  readonly sentAt: number | null
+  /** The newest contact update accepted on each channel. */
+  readonly channelUpdates: ChannelUpdateClock
 }
 
 type InboundHandler = (
@@ -206,7 +216,30 @@ const INBOUND: Record<PendingActionKind, InboundHandler> = {
   PrePair: acceptAutomatically,
   Discovery: acceptAutomatically,
   GetShare: acceptAutomatically,
-  UpdateChannelInfo: acceptAutomatically,
+
+  // Accepted without asking, unless it is older than an update already
+  // applied on the channel: delivered late, it would move the peer back to
+  // endpoints it has left (SDK 0.0.11 leaves this check to the application).
+  UpdateChannelInfo: async (event, current, ctx) => {
+    const channelId = event.channel_id
+    const sentAt = ctx.sentAt
+    if (sentAt !== null && ctx.channelUpdates.isOlderThanAccepted(channelId, sentAt)) {
+      ctx.log({
+        role: 'owner',
+        flow: 'protocol',
+        step: 'channel_update_superseded',
+        description: `Refused a contact update from "${peerNameOn(current, channelId)}" older than one already applied`,
+        payload: { channelId, sentAt },
+      })
+      await ctx.reject(event.action, StatusEnum.Rejected, 'older than a contact update already applied', {
+        channelId,
+      })
+      return { secret: current, holdBack: false }
+    }
+    const outcome = await acceptAutomatically(event, current, ctx)
+    if (sentAt !== null) ctx.channelUpdates.recordAccepted(channelId, sentAt)
+    return outcome
+  },
 
   // The token of a failed request. It only ever arrives inside
   // `RequestFailed`, which the fold answers with `reject`; `accept` refuses it.

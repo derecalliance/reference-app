@@ -10,6 +10,8 @@ import type { CorruptionReason, CorruptShareReport, PairedParticipant } from '..
 const REASON_TEXT: Record<CorruptionReason, string> = {
   Malformed: 'its answer held no readable share of this secret and version',
   InvalidProof: 'the share failed its own integrity proof',
+  Forged: 'its share belongs to a split no honest sharing produces',
+  // Removed in SDK 0.0.11; kept for reports saved before it.
   Inconsistent: 'the share disagreed with the shares the secret was rebuilt from',
 }
 

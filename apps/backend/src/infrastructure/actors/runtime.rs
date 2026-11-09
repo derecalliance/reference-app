@@ -19,6 +19,7 @@ use super::provisioned::{
     ListChannelsMsg, ListInstanceSecretsMsg, ProvisionedActor, ShutdownMsg, StartFlowMsg, TickMsg,
     VerifyFingerprintMsg,
 };
+use crate::infrastructure::replay::ReplayGuard;
 use crate::infrastructure::transport::is_unreachable;
 use crate::models::{Actor, ActorSettings, ChannelSummary, ContactRequest, UnpairedContact};
 use crate::services::delivery::LocalDelivery;
@@ -118,6 +119,7 @@ impl ActorRuntime {
             pool: self.pool.clone(),
             actor_id,
             local_delivery: Some(Arc::clone(&self.local_delivery)),
+            replay_guard: Arc::new(ReplayGuard::new(u64::from(settings.timeout_secs))),
         };
 
         let protocol = build_protocol(&config).map_err(|e| {
@@ -416,8 +418,7 @@ mod tests {
 
     #[test]
     fn a_transport_failure_is_reported_as_an_unreachable_peer() {
-        let e =
-            derec_library::Error::Invariant(crate::infrastructure::transport::NO_ENDPOINT_ACCEPTED);
+        let e = derec_library::Error::TransportSendFailed;
 
         assert!(matches!(
             classify(ActorError::Protocol(e)),

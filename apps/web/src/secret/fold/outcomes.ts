@@ -25,11 +25,12 @@ type DispatchFailed =
 /** Why the library dropped a message, as the Console panel says it. */
 const IGNORE_REASON_TEXT: Record<IgnoreReason, string> = {
   PendingVerification: "this device has not confirmed the channel's fingerprint yet",
-  Expired: 'older than the protocol timeout',
+  Expired: 'older than the protocol timeout, or a pairing request on a contact past its pairing lifetime',
   // A 0.0.8 peer stamps its replies' envelope and inner message separately,
   // so this is what talking to an SDK older than 0.0.9 looks like.
   TimestampMismatch: "its envelope and inner timestamps differ (a peer on an SDK older than 0.0.9?)",
   StaleResponse: 'it answers a verification challenge a newer one replaced',
+  Superseded: 'it asks to store a version older than the newest one held — a replayed or delayed request',
 }
 
 // `start()` reports a result per target it dispatched to. A `*Started` is real
@@ -42,7 +43,7 @@ function dispatchStarted(current: Secret, _event: EventOf<DispatchStarted>, ctx:
 
 // A `*Failed` names the channel that could not be reached, instead of the flow
 // failing silently.
-function dispatchFailed(current: Secret, event: EventOf<DispatchFailed>, ctx: FoldContext): Secret {
+export function dispatchFailed(current: Secret, event: EventOf<DispatchFailed>, ctx: FoldContext): Secret {
   ctx.log({
     role: 'owner',
     flow: 'protocol',
@@ -93,7 +94,8 @@ export const outcomeHandlers = {
   },
   ProtectSecretFailed: dispatchFailed,
   VerifySharesFailed: dispatchFailed,
-  RecoverSecretFailed: dispatchFailed,
+  // `RecoverSecretFailed` lives with the recovery events: from `tick` it is a
+  // helper that timed out, not a dispatch failure.
   UpdateChannelInfoFailed: (current: Secret, event: EventOf<'UpdateChannelInfoFailed'>, ctx: FoldContext) => {
     ctx.channelInfoOutcome(event.channel_id, 'failed', event.error)
     return dispatchFailed(current, event, ctx)

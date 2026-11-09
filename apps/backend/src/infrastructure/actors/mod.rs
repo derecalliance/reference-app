@@ -28,6 +28,17 @@ pub mod runtime;
 /// see [`super::routing::PIN_TTL`].
 pub const PENDING_CHANNEL_TTL_SECS: u64 = 3600;
 
+/// How long a pairing stays possible (SDK 0.0.11): how old a contact may be
+/// when it is scanned or answered, and how old a pairing request may be when
+/// it is accepted.
+///
+/// The library's default is 30 seconds. These actors mint contacts an
+/// operator carries to another node by hand, and answer requests from pages
+/// whose owner may be reading a fingerprint first, so the front end's half
+/// hour applies here too. It stays well inside [`PENDING_CHANNEL_TTL_SECS`],
+/// as the library requires of a scanner's sweep.
+pub const PAIRING_LIFETIME_SECS: u64 = 1800;
+
 /// The most replica instances one actor may hold, on top of its own.
 ///
 /// Each is created on demand by `POST /api/v1/actors/{id}/contact

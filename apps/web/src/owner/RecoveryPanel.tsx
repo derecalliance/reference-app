@@ -21,6 +21,8 @@ import type {
   PairedParticipant,
   RecoveredSecret,
   RecoveredSecretReplica,
+  RecoveryDispute,
+  RecoveryHelperRef,
   RecoveryProgress,
 } from '../types'
 
@@ -74,6 +76,48 @@ function RecoveryParticipantCard({
   )
 }
 
+/** "Alex", "Alex and Richard", "Alex, Bob and Richard". */
+function namesOf(refs: readonly RecoveryHelperRef[]): string {
+  const names = refs.map(r => r.name)
+  if (names.length <= 1) return names.join('')
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+}
+
+/** The status tag of a recovered secret: plain, disputed, or one candidate of several. */
+function recoveredTag(dispute: RecoveryDispute | undefined): string {
+  if (!dispute) return 'Recovered'
+  return dispute.kind === 'conflict' ? `Candidate ${dispute.candidate} of ${dispute.candidates}` : 'Disputed'
+}
+
+/**
+ * What the helpers disagree about, on a recovered secret the library would
+ * not choose for the owner (SDK 0.0.11). Either side may be the honest one:
+ * colluding helpers can forge a complete secret, and the honest ones may be
+ * too few to rebuild theirs.
+ */
+function DisputeNotice({ dispute }: { dispute: RecoveryDispute }) {
+  return (
+    <div className="card-sub-section" role="alert">
+      <p className="available-version-insufficient">
+        {dispute.kind === 'conflict'
+          ? `The helpers returned ${dispute.candidates} different secrets for this version. This is one of them, `
+          : 'The helpers disagree about this version. This secret '}
+        rebuilt from the shares of <strong>{namesOf(dispute.supportedBy)}</strong>
+        {dispute.disputedBy.length > 0 && (
+          <>
+            ; <strong>{namesOf(dispute.disputedBy)}</strong> hold shares of a different one
+          </>
+        )}
+        .
+      </p>
+      <p className="empty-hint">
+        Check the items below. Recover only if you recognise them: the helpers behind the secret
+        you do not recognise may be compromised, and unpairing them is your call.
+      </p>
+    </div>
+  )
+}
+
 function RecoveredSecretCard({
   recovered,
   onRestoreFromBag,
@@ -117,7 +161,7 @@ function RecoveredSecretCard({
       <div className="card-header">
         <span className="card-title">{recovered.label}</span>
         <span className="version-tag">v{recovered.version}</span>
-        <span className="status-tag paired">Recovered</span>
+        <span className={`status-tag ${recovered.dispute ? 'offline' : 'paired'}`}>{recoveredTag(recovered.dispute)}</span>
         <button
           type="button"
           className="primary recovered-restore-btn"
@@ -171,6 +215,13 @@ function RecoveredSecretCard({
             </h2>
           </div>
           <div className="modal-body">
+            {recovered.dispute && (
+              <p>
+                <strong>The helpers disagree about this version.</strong> Recover from it only if
+                you recognise its items — this is the secret{' '}
+                {namesOf(recovered.dispute.supportedBy)} returned, not necessarily yours.
+              </p>
+            )}
             <p>
               This replaces every channel, item and share this device holds
               with what <strong>{recovered.label}</strong> (v{recovered.version})
@@ -203,6 +254,7 @@ function RecoveredSecretCard({
         </ModalFrame>
       )}
       <div className="card-body">
+        {recovered.dispute && <DisputeNotice dispute={recovered.dispute} />}
         <dl className="field-list">
           <div className="field-row">
             <dt>Secret ID</dt>
@@ -555,7 +607,7 @@ export function RecoveryPanel({
           <div className="card-list">
             {recoveredSecrets.map(s => (
               <RecoveredSecretCard
-                key={`${s.secretId}-${s.version}`}
+                key={`${s.secretId}-${s.version}-${s.dispute?.candidate ?? 0}`}
                 recovered={s}
                 onRestoreFromBag={onRestoreFromBag}
                 onJoinGroup={onJoinGroup}
@@ -649,9 +701,11 @@ function AvailableVersionRow({
 }) {
   const [requestError, setRequestError] = useState<string | null>(null)
 
-  const alreadyRecovered = (secret.recoveredSecrets ?? []).some(
+  const recoveredHere = (secret.recoveredSecrets ?? []).filter(
     s => s.secretId === secretId && s.version === v.version,
   )
+  const alreadyRecovered = recoveredHere.length > 0
+  const disputed = recoveredHere.some(s => s.dispute)
   const helperCount = v.helperChannelIds.length
   const recoveryProgress = secret.recoveryProgress
   const isThisVersionActive =
@@ -680,7 +734,9 @@ function AvailableVersionRow({
   // know it, so it says how many helpers hold the version and lets Recover
   // report whether that was enough.
   const status = alreadyRecovered
-    ? { label: 'Recovered', className: 'paired' }
+    ? disputed
+      ? { label: 'Disputed', className: 'offline' }
+      : { label: 'Recovered', className: 'paired' }
     : isInProgress
       ? { label: 'Recovering…', className: 'available' }
       : versionError

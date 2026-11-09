@@ -16,12 +16,17 @@ import type { StoredReplicaMember } from '../stores'
  * The one way into this state was a restore that kept this device's own id for
  * a group recovered from another device. Restore now takes the identity the
  * group names, so restoring again is the way out.
+ *
+ * A roster of unconfirmed peers only is no group (SDK 0.0.11): this device
+ * writes its own row when it confirms its first replica pairing, so until then
+ * the roster holds the peer's `Pending` placeholder alone, and the library
+ * publishes to helpers as if there were no replicas.
  */
 export function replicaMembershipProblem(
   members: readonly StoredReplicaMember[],
   ownReplicaId: string,
 ): string | null {
-  if (members.length === 0) return null
+  if (members.every(member => member.status === 'Pending')) return null
   if (members.some(member => member.replicaId === ownReplicaId)) return null
   return (
     'Nothing was sent: this secret belongs to a replica group that does not list this device, ' +

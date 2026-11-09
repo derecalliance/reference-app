@@ -38,6 +38,7 @@ First stops for anything not listed: the **Console** (expand it, filter to the s
 | *Pairing request timed out. The peer may not have responded.* | No answer within the protocol timeout. | Check the peer is running (a browser owner's tab must be open) and that its address is reachable. Check `routes` in Inspect: `pinned` means the handshake never finished. |
 | *The peer rejected the pairing request.* | The other side clicked Reject. | Ask them. |
 | *Could not reach the participant (the node's gRPC relay is off, or the node is unreachable). Details: …* | The request never left. | Turn the relay on, or pair with an HTTP participant; check the node is up. |
+| *This contact has expired — it is older than the 30-minute pairing lifetime* | Pairing has a lifetime (SDK 0.0.11), and the contact outlived it. | Ask for a fresh contact (**Share Contact** again) and pair with that. |
 | *This participant is reachable over gRPC only, and the node's gRPC relay is off* | A browser cannot dial gRPC itself. | Enable `grpc_relay_enabled`, or use an HTTP helper. |
 | Channel stuck at *Unconfirmed* | A *No keys* pairing waiting for fingerprints. | **Confirm fingerprint** on both sides. |
 | *Scanning unavailable* | Not a secure context, no `BarcodeDetector`, or no camera; the reason is on hover. | Paste the payload, or see the secure-context flag in [Running the app](14-running-the-app.md). |
@@ -84,6 +85,8 @@ First stops for anything not listed: the **Console** (expand it, filter to the s
 | *Only X of the T helpers needed hold this version.* | Not enough holders. | Pair and link more helpers, or recover another version. |
 | *… refused — it holds no share of vN* | The helper does not hold that version (it may have been dropped by a later `keepVersion`: helpers keep at most one earlier version). | Recover a newer version, or rely on the other helpers. |
 | *… sent a corrupted recovery share (…)* | The helper sent a share that failed its checks. | The recovery continues without it. Consider **Unpair…**. |
+| *Not enough shares to reconstruct the secret (…, N did not answer in time)* | The recovery waited 60 seconds for the helpers that stayed silent, then decided on the shares it had. | Bring those helpers online (a browser helper's tab must be open), then **Try Again**. |
+| *Helpers disagree about vN* / *Helpers returned N different secrets for vN* | Valid shares from different helpers rebuild different secrets, or one secret against shares of another (SDK 0.0.11). Some helpers may be colluding. | Compare the cards on the Recovery tab and restore only the secret you recognise. See [Helpers that disagree](06-recovery-and-restore.md#helpers-that-disagree). |
 
 ## Replicas
 

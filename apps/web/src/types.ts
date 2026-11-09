@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
+import type { CorruptionReason as SdkCorruptionReason } from '@derec-alliance/web'
+
 import type { AuthenticationMethod, UnpairAck } from './config'
 import type { PublishPolicy } from './owner/publishPolicy'
 import type { HelperFault } from './helperFaults'
@@ -359,6 +361,8 @@ export interface RecoveredSecret {
   /** Whether `protocol.restore` has committed this snapshot into canonical
    *  state for its `secret_id`. */
   restored?: boolean
+  /** Set when helpers disagree on this version; restoring then needs the owner's confirmation. */
+  dispute?: RecoveryDispute
 }
 
 /** Tracks live progress of a recovery attempt. */
@@ -380,12 +384,51 @@ export interface RecoveryProgress {
   refusals?: { channelId: string; status: number; memo: string }[]
   /** Helpers whose share was set aside on arrival (`RecoveryShareCorrupted`). */
   corrupted?: { channelId: string; reason: CorruptionReason }[]
-  /** Non-null when recovery failed for a reason other than insufficient shares */
+  /**
+   * Helpers that did not answer within `GET_SHARE_RESPONSE_SECS`, which the
+   * library reports as `RecoverSecretFailed` with error `"timeout"` before it
+   * decides on the shares in hand.
+   */
+  timedOut?: string[]
+  /** Non-null once the recovery ended without a secret: incomplete, or never dispatched. */
   error: string | null
 }
 
-/** Why the library set a helper's recovery share aside — the SDK's `CorruptionReason`. */
-export type CorruptionReason = 'Malformed' | 'InvalidProof' | 'Inconsistent'
+/**
+ * Why the library set a helper's recovery share aside — the SDK's
+ * `CorruptionReason`, plus `Inconsistent`, which SDK 0.0.11 removed: reports
+ * saved before it may still carry it.
+ */
+export type CorruptionReason = SdkCorruptionReason | 'Inconsistent'
+
+/** A helper a disputed recovery names, as the owner should see it. */
+export interface RecoveryHelperRef {
+  channelId: string
+  /** The paired helper's name, else the name it advertised, else its channel. */
+  name: string
+}
+
+/**
+ * Why a recovered secret needs the owner's judgement before it is restored
+ * (SDK 0.0.11). The library never picks a side: fewer than the threshold of
+ * colluding helpers can forge a complete, self-consistent secret.
+ *
+ * - `disputed` (`RecoveryDisputed`): this secret reconstructed, but the
+ *   helpers in `disputedBy` hold valid shares of a different split that did
+ *   not. Either side can be the owner's.
+ * - `conflict` (`RecoveryConflict`): two or more different secrets
+ *   reconstructed for the same version; this is candidate `candidate` of
+ *   `candidates`. `disputedBy` names every helper behind another candidate or
+ *   behind a split that did not reconstruct.
+ */
+export interface RecoveryDispute {
+  kind: 'disputed' | 'conflict'
+  supportedBy: RecoveryHelperRef[]
+  disputedBy: RecoveryHelperRef[]
+  /** 1-based position among the candidates of a `conflict`. */
+  candidate?: number
+  candidates?: number
+}
 
 /**
  * A helper answered a recovery request with a share that cannot be part of the

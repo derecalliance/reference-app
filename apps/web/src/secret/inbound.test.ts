@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { resolveSecretConfig } from '../protocolDefaults'
 import type { SecretConfig } from '../types'
+import { ChannelUpdateClock } from './channelUpdates'
 import { routeActionRequired, type InboundContext } from './inbound'
 import { secret } from './testSecret'
 
@@ -40,6 +41,9 @@ function context(overrides: Partial<InboundContext> = {}): InboundContext {
     config: config(),
     acceptAndFold: vi.fn(async (_action, current) => current),
     acceptStoreShare: vi.fn(async (_request, current) => current),
+    reject: vi.fn(async () => {}),
+    sentAt: null,
+    channelUpdates: new ChannelUpdateClock('test', '42'),
     ...overrides,
   }
 }
@@ -71,6 +75,29 @@ describe('routeActionRequired', () => {
       expect(ctx.raiseAttention).not.toHaveBeenCalled()
     },
   )
+
+  it('refuses a contact update older than one already applied on the channel', async () => {
+    localStorage.clear()
+    const channelUpdates = new ChannelUpdateClock('test', '42')
+    const newer = context({ sentAt: 200, channelUpdates })
+    await routeActionRequired(request('UpdateChannelInfo'), secret(), newer)
+    expect(newer.acceptAndFold).toHaveBeenCalledTimes(1)
+
+    const older = context({ sentAt: 150, channelUpdates })
+    const outcome = await routeActionRequired(request('UpdateChannelInfo'), secret(), older)
+
+    expect(outcome.holdBack).toBe(false)
+    expect(older.acceptAndFold).not.toHaveBeenCalled()
+    expect(older.reject).toHaveBeenCalledWith(expect.any(Uint8Array), 10, expect.stringContaining('older'), { channelId: '9' })
+
+    // A later one on the same channel is still applied, and another channel is unaffected.
+    const later = context({ sentAt: 201, channelUpdates })
+    await routeActionRequired(request('UpdateChannelInfo'), secret(), later)
+    expect(later.acceptAndFold).toHaveBeenCalledTimes(1)
+    const elsewhere = context({ sentAt: 100, channelUpdates })
+    await routeActionRequired(request('UpdateChannelInfo', { channel_id: '10' }), secret(), elsewhere)
+    expect(elsewhere.acceptAndFold).toHaveBeenCalledTimes(1)
+  })
 
   it('accepts a peer unpair outright when configured to', async () => {
     const ctx = context({ config: config({ autoAcceptUnpairRequests: true }) })

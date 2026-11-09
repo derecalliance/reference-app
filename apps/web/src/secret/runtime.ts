@@ -44,6 +44,8 @@ import {
   buildProtocolInstance,
   PENDING_CHANNEL_TTL_SECS,
   PROTECT_ROUND_BACKSTOP_MS,
+  RECOVERY_BACKSTOP_MS,
+  CONTACT_REFRESH_MS,
   TICK_INTERVAL_MS,
   pairingChannelIdFrom,
   protectVersionFrom,
@@ -143,6 +145,7 @@ import { adoptMirroredSecret } from './commands/adoption'
 import type { CommandContext } from './commands/context'
 import { restoreSecret } from './commands/restore'
 import { routeActionRequired, type InboundContext } from './inbound'
+import { sentAtOf } from './replayGuard'
 import { keepVersionFor, retentionPreview } from './keepVersion'
 import { autoVerificationResult, withNotification, withNotificationsRead } from './notifications'
 import { replicaConflictBlockReason } from './replicaConflict'
@@ -268,7 +271,8 @@ export class SecretRuntime {
   /** What event handlers may reach. Built once; every member reads live state. */
   private readonly foldContext: FoldContext
   /** What inbound-request routing may reach. Built once, like `foldContext`. */
-  private readonly inboundContext: InboundContext
+  /** Everything but what each routed message brings: its send time, and its instance's update clock. */
+  private readonly inboundContext: Omit<InboundContext, 'sentAt' | 'channelUpdates'>
   /** What the extracted multi-step commands may reach. Built once, like `foldContext`. */
   private readonly commandContext: CommandContext
   /** A replica destination fetching its source's copy until it lands. */
@@ -372,6 +376,12 @@ export class SecretRuntime {
   private draining = false
   private ticking = false
   /**
+   * When the contact browser peers pair against was last published. The
+   * library refuses a contact older than its pairing lifetime (SDK 0.0.11), so
+   * the tick re-mints it before then — see `CONTACT_REFRESH_MS`.
+   */
+  private contactPublishedAt: number | null = null
+  /**
    * Participants being auto-paired at setup, until all of them have paired.
    * Non-empty keeps the poll at the fast cadence, so the setup gate clears
    * promptly — and, being the engine's, stops doing so when the engine stops
@@ -474,6 +484,7 @@ export class SecretRuntime {
         this.acceptAndFold(action, current, failure, context),
       // The batch that routes here already holds the lock.
       acceptStoreShare: (request, current) => this.acceptStoreShareUnlocked(request, current),
+      reject: (action, status, memo, context) => this.rejectUnlocked(action, status, memo, context),
     }
 
     this.commandContext = {
@@ -589,7 +600,11 @@ export class SecretRuntime {
     // A protect round is the library's to close, and it always does. The
     // watchdog only backstops it, so it must never fire first — firing early
     // reported a round as failed that then committed half a minute later.
-    return this.rounds.hasAnyPendingRound ? Math.max(configured, PROTECT_ROUND_BACKSTOP_MS) : configured
+    if (this.rounds.hasAnyPendingRound) return Math.max(configured, PROTECT_ROUND_BACKSTOP_MS)
+    // Likewise a recovery: the library decides it, at the latest on the tick
+    // after its share-response timeout.
+    if (this.rounds.hasPendingRecovery) return Math.max(configured, RECOVERY_BACKSTOP_MS)
+    return configured
   }
 
   private clearWatchdog(): void {
@@ -1343,8 +1358,9 @@ export class SecretRuntime {
 
     for (let mi = 0; mi < messages.length; mi++) {
       const { bytes } = messages[mi]
-      const protocol = this.protocolInstance?.protocol
-      if (!protocol) {
+      const instance = this.protocolInstance
+      const protocol = instance?.protocol
+      if (!instance || !protocol) {
         // The instance went away under the batch — a claim or restore swapping
         // it. The mailbox is destructive, so the rest is held for the next
         // drain rather than dropped, and the console says so.
@@ -1360,6 +1376,22 @@ export class SecretRuntime {
         return
       }
 
+      // A copy of a message this device sent, or already accepted (SDK 0.0.11
+      // leaves recognising one to the application). Processed, a replayed
+      // request would be answered again and a reflected one taken for the
+      // peer's.
+      const replayGuard = instance.replayGuard
+      if (replayGuard.isCopy(bytes)) {
+        this.deps.log({
+          role: 'owner',
+          flow: 'protocol',
+          step: 'message_copy_dropped',
+          description: 'Dropped an incoming message this device already sent or accepted — a replay or a reflection',
+          payload: { messageBytes: bytes.length },
+        })
+        continue
+      }
+
       let events: DeRecEvent[]
       // A failed message still carries the events `process()` produced before
       // it failed — the timeouts it settled, never reported again — and they
@@ -1368,6 +1400,7 @@ export class SecretRuntime {
       let failure: { error: unknown } | null = null
       try {
         events = Array.from(await protocol.process(bytes))
+        replayGuard.remember(bytes)
       } catch (err) {
         failure = { error: err }
         events = eventsOfFailedProcess(err)
@@ -1388,7 +1421,11 @@ export class SecretRuntime {
 
       for (const event of events) {
         if (event.type === 'ActionRequired' && event.action) {
-          const outcome = await routeActionRequired(event, updated, this.inboundContext)
+          const outcome = await routeActionRequired(event, updated, {
+            ...this.inboundContext,
+            sentAt: sentAtOf(bytes),
+            channelUpdates: instance.channelUpdates,
+          })
           updated = outcome.secret
           if (outcome.holdBack) {
             // The mailbox is destructive: keep what follows so it replays once
@@ -1426,20 +1463,7 @@ export class SecretRuntime {
             this.setBusy(false)
           }
         }
-        if (event.type === 'SecretRecovered' || event.type === 'RecoveryShareError') {
-          this.setBusy(false)
-        }
-        // Every helper asked has answered, and the fold found the shares short:
-        // nothing more is coming, so the flow is over rather than left to the
-        // watchdog.
-        if (
-          (event.type === 'RecoveryShareReceived' ||
-            event.type === 'RecoveryShareRefused' ||
-            event.type === 'RecoveryShareCorrupted') &&
-          updated.recoveryProgress?.error
-        ) {
-          this.setBusy(false)
-        }
+        if (isRecoveryDecision(event)) this.setBusy(false)
 
         // An outgoing unpair either went through or was refused; either way the
         // in-flight marker is no longer accurate.
@@ -1552,6 +1576,22 @@ export class SecretRuntime {
     })
   }
 
+  /** Refuse an action, inside the lock the batch holds. Reports rather than throws. */
+  private async rejectUnlocked(
+    action: Uint8Array,
+    status: StatusEnum,
+    memo: string,
+    context: Record<string, unknown>,
+  ): Promise<void> {
+    const protocol = this.protocolInstance?.protocol
+    if (!protocol) return
+    try {
+      await protocol.reject(action, status, memo)
+    } catch (err) {
+      this.deps.notify.error('Could not refuse a request', err, context)
+    }
+  }
+
   /** Accept an action and fold what it produces. Reports rather than throws. */
   private async acceptAndFold(
     action: Uint8Array,
@@ -1626,6 +1666,8 @@ export class SecretRuntime {
           } catch (err) {
             this.deps.notify.error(`Failed to handle a ${event.type} event from tick`, err)
           }
+          // A recovery whose last helpers timed out is decided here (SDK 0.0.11).
+          if (isRecoveryDecision(event)) this.setBusy(false)
           // An unpair that timed out completes here.
           if ((event.type === 'Unpaired' || event.type === 'UnpairRejected') && event.channel_id) {
             if (event.type === 'Unpaired') this.noteUnpaired(initial, event.channel_id)
@@ -1635,6 +1677,7 @@ export class SecretRuntime {
         if (updated !== initial) this.commit(updated)
       })
       await this.publishAfterUnpair()
+      this.refreshAgingContact()
     } catch (err) {
       this.deps.notify.error('Protocol tick failed', err)
     } finally {
@@ -1658,6 +1701,16 @@ export class SecretRuntime {
     }
   }
 
+  /** Re-mint the published contact before a peer could fetch it past its pairing lifetime. */
+  private refreshAgingContact(): void {
+    const instance = this.protocolInstance
+    if (!instance || this.blockedBy || this.contactPublishedAt === null) return
+    if (Date.now() - this.contactPublishedAt < CONTACT_REFRESH_MS) return
+    // Set first, so a slow publish is not started again on the next tick.
+    this.contactPublishedAt = Date.now()
+    void this.publishContact(instance)
+  }
+
   /** Publish this secret's contact so peers can discover and pair with it. */
   private async publishContact(instance: ProtocolInstance): Promise<void> {
     const localSecretId = this.secret.id
@@ -1670,6 +1723,7 @@ export class SecretRuntime {
       )
       const contactChannelId = contact.channel_id.toString()
       await this.io.postBrowserContact(localSecretId, JSON.stringify(contactMessageToDto(contact)))
+      this.contactPublishedAt = Date.now()
       this.deps.log({
         role: 'owner',
         flow: 'pairing',
@@ -4138,8 +4192,8 @@ export class SecretRuntime {
 
   /**
    * `event` with the transport's own reason put back into its `error`. The
-   * library reports every failed send as a bare "transport.send promise
-   * rejected"; the node's actual answer — gRPC off, relay disabled, unknown
+   * library reports every failed send as a bare "transport send failed"; the
+   * node's actual answer — gRPC off, relay disabled, unknown
    * actor — is what tells the owner what to fix. See `explainDeliveryFailure`.
    */
   private withDeliveryReason(event: DeRecEvent): DeRecEvent {
@@ -4598,4 +4652,17 @@ type InstanceSettings = Pick<SecretConfig, 'protocolTimeoutSecs' | 'unpairAck'>
 
 function instanceSettingsOf(config: SecretConfig): InstanceSettings {
   return { protocolTimeoutSecs: config.protocolTimeoutSecs, unpairAck: config.unpairAck }
+}
+
+/**
+ * The one event that closes a recovery (SDK 0.0.11): the library decides once,
+ * after every helper asked has answered or the share-response timeout passed.
+ */
+function isRecoveryDecision(event: DeRecEvent): boolean {
+  return (
+    event.type === 'SecretRecovered' ||
+    event.type === 'RecoveryDisputed' ||
+    event.type === 'RecoveryConflict' ||
+    event.type === 'RecoveryIncomplete'
+  )
 }

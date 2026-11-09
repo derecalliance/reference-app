@@ -1377,6 +1377,16 @@ components:
           description: |
             The creator's commitment to its fingerprint nonce (SDK 0.0.10),
             present only on inline-keys contacts.
+        timestamp:
+          type: object
+          required: [seconds, nanos]
+          description: |
+            When the contact was minted, as a protobuf `Timestamp`. SDK 0.0.11
+            refuses a contact without one and expires it after the pairing
+            lifetime.
+          properties:
+            seconds: { type: integer, format: int64 }
+            nanos: { type: integer, format: int32 }
 
     TransportProtocolDto:
       type: object

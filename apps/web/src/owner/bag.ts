@@ -56,11 +56,13 @@ export function updateBagVerified(
  * store the library reads.
  *
  * Mirrors the library's own rule (`build_replicas` in `handlers/sharing.rs`):
- * every stored member, this device included, except one that is leaving
- * (`Unpairing`) — its absence is what completes its removal. The group's
- * channel is the one on this device's own row; a member admitted since the
- * last round may still sit on its pairing channel. `null` when there is no
- * group, or no row of our own to name it by.
+ * every confirmed (`Paired`) member, this device included. One that is
+ * leaving (`Unpairing`) is left out — its absence is what completes its
+ * removal — and from SDK 0.0.11 so is one whose pairing is not yet confirmed
+ * (`Pending`), which every recipient would otherwise install as a member. The
+ * group's channel is the one on this device's own row; a member admitted
+ * since the last round may still sit on its pairing channel. `null` when
+ * there is no group, or no row of our own to name it by.
  */
 export function replicaGroupFromStore(
   members: readonly StoredReplicaMember[],
@@ -71,7 +73,7 @@ export function replicaGroupFromStore(
   return {
     channelId,
     members: members
-      .filter(m => m.status !== 'Unpairing')
+      .filter(m => m.status === 'Paired')
       .map(m => ({ replicaId: m.replicaId, role: m.role, name: m.name })),
   }
 }

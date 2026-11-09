@@ -100,3 +100,20 @@ describe('dtoToContactMessage', () => {
     expect(result.supported_transports).toEqual([HTTPS, GRPC])
   })
 })
+
+describe('contact timestamp', () => {
+  it('survives the round trip through the wire form', () => {
+    // SDK 0.0.11 refuses a contact without the time it was minted, so a pasted
+    // or relayed contact that lost it could never be paired against.
+    const minted = contact({ timestamp: { seconds: 1_700_000_000n, nanos: 42 } })
+
+    const wire = contactMessageToDto(minted)
+    expect(wire.timestamp).toEqual({ seconds: 1_700_000_000, nanos: 42 })
+    expect(JSON.parse(JSON.stringify(wire)).timestamp).toEqual({ seconds: 1_700_000_000, nanos: 42 })
+    expect(dtoToContactMessage(wire).timestamp).toEqual({ seconds: 1_700_000_000n, nanos: 42 })
+  })
+
+  it('stays absent when the payload carries none', () => {
+    expect(dtoToContactMessage(dto()).timestamp).toBeUndefined()
+  })
+})

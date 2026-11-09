@@ -634,6 +634,9 @@ describe('transport retries', () => {
     )
     await expect(transport.send([https('https://x.example')], message)).rejects.toThrow()
 
+    // SDK 0.0.11's `transport_send_failed`, and the text before it.
+    const sendFailed = "transport send failed: the message reached none of the peer's endpoints"
+    expect(explainDeliveryFailure(sendFailed, ['https://x.example'])).toMatch(/gRPC is disabled on this node/)
     expect(explainDeliveryFailure('transport.send promise rejected', ['https://x.example'])).toMatch(
       /gRPC is disabled on this node/,
     )

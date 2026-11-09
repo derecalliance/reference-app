@@ -234,7 +234,8 @@ async fn the_sql_share_store_keeps_the_latest_version_it_saw_commit() {
 
 /// `PendingRecovery` records the channel each collected share came from
 /// (SDK 0.0.7), and a row saved before that field existed still loads — as a
-/// recovery with nothing collected, which re-collects its shares.
+/// recovery with nothing collected, which re-collects its shares. The helpers
+/// still to answer and when the requests went out (SDK 0.0.11) round-trip too.
 #[tokio::test]
 async fn a_pending_recovery_keeps_its_share_channels_and_an_older_row_still_loads() {
     on_every_engine(|pool| async move {
@@ -247,6 +248,8 @@ async fn a_pending_recovery_keeps_its_share_channels_and_an_older_row_still_load
                 channel_id: channel,
                 response: derec_proto::GetShareResponseMessage::default(),
             }],
+            pending: std::collections::HashSet::from([ChannelId(conformance::HIGH_ID - 1)]),
+            started_at: 1_700_000_000,
         };
         let key = item.key();
         store.save(conformance::SECRET_A, item).await.expect("save");
@@ -256,11 +259,23 @@ async fn a_pending_recovery_keeps_its_share_channels_and_an_older_row_still_load
             .await
             .expect("readable")
         {
-            Some(StateItem::PendingRecovery { shares, .. }) => assert_eq!(
-                shares.iter().map(|s| s.channel_id).collect::<Vec<_>>(),
-                vec![channel],
-                "the share's channel must round-trip"
-            ),
+            Some(StateItem::PendingRecovery {
+                shares,
+                pending,
+                started_at,
+                ..
+            }) => {
+                assert_eq!(
+                    shares.iter().map(|s| s.channel_id).collect::<Vec<_>>(),
+                    vec![channel],
+                    "the share's channel must round-trip"
+                );
+                assert!(
+                    pending.contains(&ChannelId(conformance::HIGH_ID - 1)),
+                    "the helpers still to answer must round-trip (SDK 0.0.11)"
+                );
+                assert_eq!(started_at, 1_700_000_000);
+            }
             other => panic!("expected a pending recovery, got {other:?}"),
         }
 
@@ -278,6 +293,11 @@ async fn a_pending_recovery_keeps_its_share_channels_and_an_older_row_still_load
             removed.is_some(),
             "the current shape carries share_channels: {json}"
         );
+        // Neither did it carry the 0.0.11 fields.
+        if let Some(fields) = record.as_object_mut() {
+            fields.remove("pending");
+            fields.remove("started_at");
+        }
         sqlx::query("UPDATE state_items SET item = $1 WHERE actor_id = 'actor-a'")
             .bind(record.to_string())
             .execute(&pool)
@@ -290,10 +310,16 @@ async fn a_pending_recovery_keeps_its_share_channels_and_an_older_row_still_load
             .expect("an older row must still load")
         {
             Some(StateItem::PendingRecovery {
-                version, shares, ..
+                version,
+                shares,
+                pending,
+                started_at,
+                ..
             }) => {
                 assert_eq!(version, 3);
                 assert!(shares.is_empty(), "an older row re-collects its shares");
+                assert!(pending.is_empty(), "an older row has no helper pending");
+                assert_eq!(started_at, 0, "so the next tick decides it");
             }
             other => panic!("expected a pending recovery, got {other:?}"),
         }
