@@ -18,7 +18,7 @@ export type ReplicaRemovalRequest =
       channelId: string | null
       name: string
       /**
-       * The member being evicted is the group's source — the device the vault
+       * The member being evicted is the group's source — the device the secret
        * originated on. Evicting it erases the original, and the library then
        * promotes another member (possibly this device) to source.
        */

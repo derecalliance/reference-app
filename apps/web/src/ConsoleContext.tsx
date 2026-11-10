@@ -45,11 +45,11 @@ export interface ConsoleEntry {
   /** Outputs returned by the library function (wire bytes, keys, etc.) */
   response?: unknown
   /**
-   * The vault this entry is about. `server` entries have none: backend events
-   * are node-wide, and forcing a vault onto them would file them under an
+   * The secret this entry is about. `server` entries have none: backend events
+   * are node-wide, and forcing a secret onto them would file them under an
    * arbitrary one.
    */
-  vaultId?: string
+  localSecretId?: string
 }
 
 /** What a caller supplies; the id and time are stamped on. */

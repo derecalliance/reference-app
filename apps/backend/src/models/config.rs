@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use super::{AuthenticationMethod, TransportBreakdown, UnpairAck};
+use super::TransportBreakdown;
 
 /// What this node runs as: the configuration it loaded, plus the address it
 /// advertises to peers.
@@ -248,8 +248,12 @@ impl AllowedHost {
     }
 }
 
-/// Starting values for the front-end setup wizard, plus the three gRPC keys
-/// this process enforces itself.
+/// Starting values for the front-end setup wizard's helper pool, plus the
+/// three gRPC keys this process enforces itself.
+///
+/// No protocol settings: those belong to each secret in the front end, and an
+/// actor provisioned without them gets the fixed defaults in
+/// [`super::ProtocolSettings`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Defaults {
@@ -261,18 +265,6 @@ pub struct Defaults {
     pub min_participants: u8,
     /// Paired participants below which the UI warns.
     pub recommended_participants: u8,
-    /// General protocol timeout, in seconds.
-    pub protocol_timeout_secs: u32,
-    /// How the app decides two pairing channels belong to the same user.
-    pub authentication_method: AuthenticationMethod,
-    /// Protocol-level unpair acknowledgement policy.
-    pub unpair_ack: UnpairAck,
-    /// Whether incoming unpair requests are accepted without a prompt.
-    pub auto_accept_unpair_requests: bool,
-    /// Whether a browser helper stores an incoming share without a prompt.
-    pub auto_accept_store_share_requests: bool,
-    /// Whether a browser helper answers a verification request without a prompt.
-    pub auto_accept_verify_share_requests: bool,
     /// Whether to run the gRPC ingress listener at all. Enforced by the node.
     pub grpc_enabled: bool,
     /// Port for the gRPC listener. Enforced by the node.
@@ -291,12 +283,6 @@ impl Default for Defaults {
             pre_paired_count: 3,
             min_participants: 3,
             recommended_participants: 5,
-            protocol_timeout_secs: 300,
-            authentication_method: AuthenticationMethod::default(),
-            unpair_ack: UnpairAck::default(),
-            auto_accept_unpair_requests: true,
-            auto_accept_store_share_requests: false,
-            auto_accept_verify_share_requests: false,
             grpc_enabled: true,
             grpc_port: 50051,
             helper_transports: TransportBreakdown {
@@ -356,7 +342,7 @@ impl DatabaseUrl {
     /// Both spellings count: the bare `sqlite::memory:` and the `mode=memory`
     /// query parameter a tuned URL may use instead. The boot banner warns about
     /// it and `GET /api/v1/config` reports it, so the front end can say so on
-    /// screen rather than letting a developer discover it by losing a vault.
+    /// screen rather than letting a developer discover it by losing a secret.
     pub fn is_ephemeral(&self) -> bool {
         self.0.contains(":memory:") || self.0.contains("mode=memory")
     }
@@ -424,6 +410,9 @@ pub struct LoadedConfig {
     pub unknown_env: Vec<String>,
     /// Known variables that were set to an empty value and so ignored.
     pub empty_env: Vec<&'static str>,
+    /// Retired `[defaults]` keys the file still sets, as dotted paths. Read
+    /// and ignored, so the node still boots; named in the boot report.
+    pub retired_keys: Vec<&'static str>,
 }
 
 /// Where a value came from. `Env` carries the variable that supplied it.

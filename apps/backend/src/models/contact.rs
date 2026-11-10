@@ -43,6 +43,17 @@ pub struct PeerContact {
     pub mlkem_encapsulation_key: Option<String>,
     pub ecies_public_key: Option<String>,
     pub contact_binding_hash: Option<String>,
+    pub fingerprint_commitment: Option<String>,
+    /// When the peer minted the contact. From SDK 0.0.11 a contact without
+    /// one is refused, and one older than the pairing lifetime has expired.
+    pub timestamp: Option<ContactTimestamp>,
+}
+
+/// A protobuf `Timestamp`: Unix seconds and nanoseconds.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ContactTimestamp {
+    pub seconds: i64,
+    pub nanos: i32,
 }
 
 /// A contact minted and not yet paired against.

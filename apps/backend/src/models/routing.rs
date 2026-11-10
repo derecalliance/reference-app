@@ -90,7 +90,7 @@ pub enum Side {
     /// group. Every pin is one.
     Endpoint,
     /// This actor holds a copy of the source's view of a helper channel, from
-    /// mirroring an owner's vault. The helper on the other end is who a peer
+    /// mirroring an owner's secret. The helper on the other end is who a peer
     /// on this channel addresses.
     Mirror,
 }

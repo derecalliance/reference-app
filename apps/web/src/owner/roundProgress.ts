@@ -3,6 +3,7 @@
 
 import type { PairedParticipant } from '../types'
 import { shareFailureKind, type ShareFailureKind } from './shareFailure'
+import { DEFAULT_WEIGHT } from './weights'
 
 /** Where one participant stands in a protect round. */
 export type ParticipantOutcome = 'waiting' | 'confirmed' | ShareFailureKind
@@ -12,12 +13,16 @@ interface ParticipantProgress {
   id: string
   name: string
   outcome: ParticipantOutcome
+  /** Subshares the round sent this participant. */
+  weight: number
 }
 
 /** Where a protect round stands, as read from the participants' share records. */
 export interface RoundProgress {
   rows: ParticipantProgress[]
   confirmedCount: number
+  /** Subshares the confirmed participants hold — what the threshold counts. */
+  confirmedWeight: number
   /** Participants that will not hold this version: refused, silent, or unreachable. */
   failedCount: number
   /** Every participant has confirmed or failed. */
@@ -41,13 +46,15 @@ export function roundProgress(
     const share = participant?.secretShares.find(s => s.version === version)
     const outcome: ParticipantOutcome =
       share?.status === 'confirmed' ? 'confirmed' : shareFailureKind(share) ?? 'waiting'
-    return { id, name: participant?.name ?? id, outcome }
+    return { id, name: participant?.name ?? id, outcome, weight: share?.weight ?? DEFAULT_WEIGHT }
   })
-  const confirmedCount = rows.filter(r => r.outcome === 'confirmed').length
+  const confirmed = rows.filter(r => r.outcome === 'confirmed')
+  const confirmedCount = confirmed.length
   const waitingCount = rows.filter(r => r.outcome === 'waiting').length
   return {
     rows,
     confirmedCount,
+    confirmedWeight: confirmed.reduce((sum, r) => sum + r.weight, 0),
     failedCount: rows.length - confirmedCount - waitingCount,
     allResolved: waitingCount === 0,
   }

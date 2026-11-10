@@ -5,8 +5,8 @@ import { test, expect } from './fixtures'
 import { newOwnerContext, openApp, openTab, setUpOwner } from './app'
 
 /**
- * Proves the end-to-end harness itself: the backend is up, Vite serves under
- * its `/reference-app/` base, the WASM protocol library loads in a headless
+ * Proves the end-to-end harness itself: the backend is up, Vite serves the app
+ * from its root, the WASM protocol library loads in a headless
  * browser, and a browser context can be taken from a cold start to a working
  * owner. Everything else builds on these.
  */
@@ -26,8 +26,8 @@ test('the setup wizard produces a working owner', async ({ page }) => {
   await expect(page).toHaveTitle('Alice · DeRec')
   await expect(page.getByRole('button', { name: 'Leave' })).toBeVisible()
 
-  await openTab(page, 'Secrets')
-  await expect(page.getByRole('tab', { name: /^Secrets/, selected: true })).toBeVisible()
+  await openTab(page, 'Items')
+  await expect(page.getByRole('tab', { name: /^Items/, selected: true })).toBeVisible()
 })
 
 test('pre-pairing pairs the requested participants', async ({ page }) => {

@@ -8,11 +8,11 @@ import { openApp } from './app'
 /**
  * Two `DeRecProtocol` instances in one page, driven with overlapping calls.
  *
- * `VaultRuntime` serialises calls with a lock *per runtime*, on the reasoning
+ * `SecretRuntime` serialises calls with a lock *per runtime*, on the reasoning
  * that wasm-bindgen's "recursive use of an object" guard is a per-object borrow
  * and two instances are two objects. They do share one WASM linear memory, and
  * the library is not otherwise verified free of module-level state — so this is
- * the check that running several vaults at once needs no global lock.
+ * the check that running several secrets at once needs no global lock.
  *
  * An e2e test because it needs real WASM: a stubbed instance would prove
  * nothing. Built through the app's own `buildProtocolInstance`, over the app's
@@ -50,7 +50,7 @@ test('two protocol instances run overlapping calls without borrow errors', async
         ownTransportUri: `http://localhost:5100/derec/${name}`,
         communicationInfo: { name },
         threshold: 2,
-        keepList: () => null,
+        keepVersion: () => 0,
         timeoutSecs: 300,
         unpairAck: 'not_required',
         replicaId,
@@ -66,7 +66,7 @@ test('two protocol instances run overlapping calls without borrow errors', async
       // Overlap deliberately, and only *across* instances: each round starts a
       // call on `a` and one on `b` before awaiting either, alternating which
       // side mints a contact and which ticks. Never two calls on one instance —
-      // that is what `VaultRuntime`'s own lock prevents, and it hangs rather than
+      // that is what `SecretRuntime`'s own lock prevents, and it hangs rather than
       // throws (observed 2026-09-30), so it would only time this test out.
       // Several rounds, because one overlap can pass by luck.
       for (let round = 0; round < 20; round++) {
@@ -97,7 +97,7 @@ test('two protocol instances run overlapping calls without borrow errors', async
  * Up to SDK 0.0.5 the second call's `&mut self` borrow failed on a microtask
  * and its promise never settled; the app's borrow guard reported it. From 0.0.6
  * every method runs under one lock per instance, so overlapping calls queue.
- * This pins the new behaviour: if it regresses, both the per-vault lock's notes
+ * This pins the new behaviour: if it regresses, both the per-secret lock's notes
  * and the guard become load-bearing again.
  */
 test('overlapping calls on one instance queue rather than hang', async ({ page }) => {
@@ -128,7 +128,7 @@ test('overlapping calls on one instance queue rather than hang', async ({ page }
       ownTransportUri: 'http://localhost:5100/derec/same-instance',
       communicationInfo: { name: 'same-instance' },
       threshold: 2,
-      keepList: () => null,
+      keepVersion: () => 0,
       timeoutSecs: 300,
       unpairAck: 'not_required',
       replicaId: 33n,

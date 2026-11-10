@@ -4,6 +4,8 @@
 import { DeRecProtocol, DeRecProtocolBuilder, type DeRecEvent } from '@derec-alliance/web'
 
 import { relayMessage, sendMessage } from '../derecApi'
+import { ChannelUpdateClock } from '../secret/channelUpdates'
+import { ReplayGuard } from '../secret/replayGuard'
 import {
   makeChannelStore,
   makeSecretStore,
@@ -11,7 +13,7 @@ import {
   makeStateStore,
   makeTransport,
   makeUserSecretStore,
-  type KeepListSource,
+  type KeepVersionSource,
 } from '../stores'
 
 // ── Protocol instance registry ───────────────────────────────────────────────
@@ -53,6 +55,38 @@ export const SHARING_ROUND_SECS = 60
 export const PROTECT_ROUND_BACKSTOP_MS = 2 * SHARING_ROUND_SECS * 1000 + 2 * TICK_INTERVAL_MS
 
 /**
+ * How long a recovery waits on a helper that has not answered its share
+ * request (SDK 0.0.11). The library decides only once every helper asked has
+ * answered or this has passed, reporting each silent one as
+ * `RecoverSecretFailed` with error `"timeout"`. Its default is five minutes;
+ * this app matches the publishing round's budget instead, for the same reason
+ * — a Recovering… row that sits for five minutes on one offline helper looks
+ * hung. It also bounds a replica version check.
+ */
+export const GET_SHARE_RESPONSE_SECS = 60
+
+/**
+ * The recovery watchdog: the library decides on its tick after
+ * `GET_SHARE_RESPONSE_SECS`, so the app only steps in two ticks after that.
+ */
+export const RECOVERY_BACKSTOP_MS = GET_SHARE_RESPONSE_SECS * 1000 + 2 * TICK_INTERVAL_MS
+
+/**
+ * How long a pairing stays possible (SDK 0.0.11): how old a contact may be
+ * when it is scanned or answered, and how old a pairing request may be when it
+ * is accepted. The library's default is 30 seconds, which a person copying a
+ * contact between two browser windows, or confirming an incoming request by
+ * hand, does not make. Half an hour keeps it well inside
+ * `PENDING_CHANNEL_TTL_SECS`, as the library requires of a scanner's sweep.
+ * The contact a secret publishes for browser peers is re-minted before it
+ * gets this old — see `CONTACT_REFRESH_MS`.
+ */
+export const PAIRING_LIFETIME_SECS = 1800
+
+/** How old the published browser contact may get before it is re-minted: half its lifetime. */
+export const CONTACT_REFRESH_MS = (PAIRING_LIFETIME_SECS * 1000) / 2
+
+/**
  * How long a `Pending` channel may wait for out-of-band confirmation.
  *
  * The library's automatic sweep is disabled in favour of this. Its default (5
@@ -66,7 +100,7 @@ export const PENDING_CHANNEL_TTL_SECS = 3600
 /**
  * `StatusEnum.VERSION_CONFLICT` — two members published the same version with
  * different content. The device must not publish again until the owner has
- * merged the two copies; see `Vault.replicaConflict`. An identical copy is
+ * merged the two copies; see `Secret.replicaConflict`. An identical copy is
  * accepted as a re-send — from SDK 0.0.7 even when the held one records no
  * author — so this only ever means a genuine divergence.
  */
@@ -79,6 +113,10 @@ export interface ProtocolInstance {
   protocol: DeRecProtocol
   channelStore: ReturnType<typeof makeChannelStore>
   shareStore: ReturnType<typeof makeShareStore>
+  /** Recognises copies of messages this device sent or already accepted. */
+  replayGuard: ReplayGuard
+  /** The newest contact update accepted on each of this instance's channels. */
+  channelUpdates: ChannelUpdateClock
 }
 
 interface BuildProtocolOptions {
@@ -88,17 +126,16 @@ interface BuildProtocolOptions {
   communicationInfo: Record<string, string>
   threshold: number
   /**
-   * Which versions helpers keep after each round — the owner's `keepList`.
-   * Required, so no instance that can act as an owner is built without a
-   * retention policy: from SDK 0.0.7 an absent list means helpers keep every
-   * version forever. See `vault/keepList.ts`.
+   * Which earlier version helpers keep after each round — the owner's
+   * `keepVersion`. Required, so no instance that can act as an owner is built
+   * without a retention policy. See `secret/keepVersion.ts`.
    */
-  keepList: KeepListSource
+  keepVersion: KeepVersionSource
   timeoutSecs: number
   unpairAck: 'required' | 'not_required'
   replicaId: bigint
   /**
-   * The owner actor this instance acts for — the vault's own id — sent with
+   * The owner actor this instance acts for — the secret's local id — sent with
    * every relayed message so the node can attribute it. Omitted, the relay
    * still works, unattributed.
    */
@@ -108,7 +145,7 @@ interface BuildProtocolOptions {
    * `replyTo = ownTransport`, overriding the channel's stored peer endpoint
    * for that exchange, so answers come back to wherever this instance is now.
    *
-   * On for every vault instance (runtime, restore, adoption). An adopted
+   * On for every secret instance (runtime, restore, adoption). An adopted
    * replica needs it outright — its helpers still have the *source's*
    * endpoint on file — and since SDK 0.0.7 it is also the documented way to
    * announce a new endpoint: `setOwnTransports` first, then a publish whose
@@ -123,7 +160,8 @@ interface BuildProtocolOptions {
 
 export function buildProtocolInstance(opts: BuildProtocolOptions): ProtocolInstance {
   const channelStore = makeChannelStore(opts.namespace)
-  const shareStore = makeShareStore(opts.namespace, { keepList: opts.keepList })
+  const shareStore = makeShareStore(opts.namespace, { keepVersion: opts.keepVersion })
+  const replayGuard = new ReplayGuard(opts.namespace, opts.timeoutSecs)
 
   const builder = new DeRecProtocolBuilder(BigInt(opts.secretId))
     .withChannelStore(channelStore)
@@ -132,7 +170,9 @@ export function buildProtocolInstance(opts: BuildProtocolOptions): ProtocolInsta
     .withUserSecretStore(makeUserSecretStore(opts.namespace))
     .withStateStore(makeStateStore(opts.namespace))
     .withTransport(
-      makeTransport(sendMessage, (uri, message) => relayMessage(uri, message, opts.relayActorId)),
+      makeTransport(sendMessage, (uri, message) => relayMessage(uri, message, opts.relayActorId), {
+        onSend: message => replayGuard.remember(message),
+      }),
     )
     // A list, even though this app serves exactly one endpoint: the singular
     // setter is deprecated, and the whole list is what gets advertised in
@@ -161,6 +201,8 @@ export function buildProtocolInstance(opts: BuildProtocolOptions): ProtocolInsta
       // resolves too.
       inbound_message_secs: opts.timeoutSecs,
       sharing_round_secs: SHARING_ROUND_SECS,
+      get_share_response_secs: GET_SHARE_RESPONSE_SECS,
+      pairing_secs: PAIRING_LIFETIME_SECS,
       // Cleanup is driven from this page's own tick instead — see
       // `PENDING_CHANNEL_TTL_SECS`.
       expired_channels: { enabled: false, timeout_in_secs: PENDING_CHANNEL_TTL_SECS },
@@ -175,6 +217,8 @@ export function buildProtocolInstance(opts: BuildProtocolOptions): ProtocolInsta
     protocol: builder.build(),
     channelStore,
     shareStore,
+    replayGuard,
+    channelUpdates: new ChannelUpdateClock(opts.namespace, opts.secretId),
   }
 }
 
@@ -182,7 +226,7 @@ export function buildProtocolInstance(opts: BuildProtocolOptions): ProtocolInsta
  * The version the library assigned to the round this `start(ProtectSecret)`
  * call just dispatched.
  *
- * Version progression is anchored to the library's own user-secret snapshot,
+ * Version progression is anchored to the library's own snapshot of the items,
  * which also bumps on pair-completion auto-publish — so the app cannot derive
  * it from its own bag history without drifting out of step. Read it back from
  * the dispatch events instead.

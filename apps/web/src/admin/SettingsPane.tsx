@@ -16,7 +16,7 @@ import { apiGetDebugConfig, apiGetServerDefaults, type DebugConfig } from '../ap
 import { errorText } from '../errorText'
 import type { ServerDefaults } from '../config'
 import { NodeConfigSection } from './NodeConfigSection'
-import { ProtocolDefaultsForm } from './ProtocolDefaultsForm'
+import { PoolDefaultsForm } from './PoolDefaultsForm'
 
 /** The node's defaults, as far as this pane knows them. */
 type NodeDefaults =
@@ -30,7 +30,7 @@ type NodeDefaults =
  * **Node configuration** is read-only because it genuinely is — see
  * `NodeConfigSection`.
  *
- * **Protocol defaults** are editable because they are this browser's: they
+ * **Pool defaults** are editable because they are this browser's: they
  * prefill provisioning requests, and the backend holds no policy about them.
  * The form waits for the node's own values before it appears: overrides are
  * stored as the difference from them, so editing against a stand-in would
@@ -87,8 +87,9 @@ export function SettingsPane() {
             Settings
           </Typography>
           <Typography color="text.secondary">
-            What this node is configured with, and the protocol defaults new
-            participants are provisioned with.
+            What this node is configured with, and the helper pool new
+            participants are provisioned from. A secret’s protocol settings
+            are on its own Settings tab.
           </Typography>
         </Box>
 
@@ -97,11 +98,11 @@ export function SettingsPane() {
         <Divider />
 
         {node.status === 'loaded' ? (
-          <ProtocolDefaultsForm server={node.defaults} />
+          <PoolDefaultsForm server={node.defaults} />
         ) : (
           <Box>
             <Typography variant="h6" component="h2" gutterBottom>
-              Protocol defaults
+              Pool defaults
             </Typography>
             {node.status === 'loading' ? (
               <Stack direction="row" spacing={1} alignItems="center">

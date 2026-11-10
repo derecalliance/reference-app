@@ -204,6 +204,14 @@ describe('once this device has confirmed', () => {
     expect(onSyncNow).toHaveBeenCalledTimes(1)
   })
 
+  it('holds "Sync now" and "Remove from group" back while a round is open, saying why', () => {
+    render({ view: confirmed, canRemoveFromGroup: true, publishBlockedReason: 'v4 is still being published.' })
+
+    expect(buttonLabelled(/Sync now/).disabled).toBe(true)
+    expect(buttonLabelled(/Remove from group/).disabled).toBe(true)
+    expect(buttonLabelled(/Remove from group/).title).toBe('v4 is still being published.')
+  })
+
   it('offers no "Sync now" on a destination channel — a round would push the wrong way', () => {
     render({ view: view({ status: 'paired', direction: 'replica_destination' }) })
     expect(text()).not.toMatch(/Sync now/)
@@ -316,17 +324,17 @@ describe('what the row says after the fixes for stale wording', () => {
   it('shows a destination that missed a version as Behind, not current', () => {
     render({
       view: view({ status: 'paired', lastSync: { version: 2, syncedAt: Date.now() } }),
-      vaultVersion: 3,
+      secretVersion: 3,
     })
     expect(text()).toContain('Behind')
     expect(text()).toContain('last mirrored v2')
-    expect(text()).toContain('this vault is at v3')
+    expect(text()).toContain('this secret is at v3')
   })
 
-  it('reads current when the acknowledgement matches the vault version', () => {
+  it('reads current when the acknowledgement matches the secret version', () => {
     render({
       view: view({ status: 'paired', lastSync: { version: 3, syncedAt: Date.now() } }),
-      vaultVersion: 3,
+      secretVersion: 3,
     })
     expect(text()).toContain('Verified')
     expect(text()).toContain('Mirrored v3')
@@ -340,14 +348,14 @@ describe('what the row says after the fixes for stale wording', () => {
     expect(text()).not.toContain('Not confirmed yet')
   })
 
-  it('stops calling an adopted vault an offer', () => {
+  it('stops calling an adopted secret an offer', () => {
     render({
       peerRole: 'replica_source',
       view: view({ status: 'paired', direction: 'replica_destination' }),
-      holdsPeerVault: true,
-      vaultVersion: 4,
+      holdsPeerSecret: true,
+      secretVersion: 4,
     })
-    expect(text()).toContain('This vault is Laptop’s, at v4')
+    expect(text()).toContain('This secret is Laptop’s, at v4')
     expect(text()).not.toContain('is offered')
   })
 })

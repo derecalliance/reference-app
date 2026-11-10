@@ -5,6 +5,19 @@
     <link rel="icon" type="image/avif" href="/favicon.avif" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DeRec Reference App</title>
+    <script>
+      // Pick the colour scheme before the stylesheet paints, so a light page
+      // does not flash dark while the bundle loads. Mirrors src/colorScheme.ts.
+      ;(function () {
+        var stored = null
+        try {
+          stored = localStorage.getItem('derec.theme')
+        } catch (e) {}
+        var light = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
+        document.documentElement.dataset.theme =
+          stored === 'light' || stored === 'dark' ? stored : light ? 'light' : 'dark'
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

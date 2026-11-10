@@ -22,7 +22,7 @@ const LAN_HOST = process.env.LAN_HOST
 
 test.describe('LAN access', () => {
   test.skip(!LAN_HOST, 'set LAN_HOST to this machine’s network address to run')
-  test.use({ baseURL: `http://${LAN_HOST}:5173/reference-app/` })
+  test.use({ baseURL: `http://${LAN_HOST}:5173/` })
 
   test('every backend request goes to the LAN host, not localhost', async ({ page }) => {
     // The assertion that matters, and the one an earlier version of this test

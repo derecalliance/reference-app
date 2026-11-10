@@ -4,8 +4,8 @@
 /**
  * Messages between this app's tabs.
  *
- * Every tab of the origin shares one `localStorage` but runs its own vaults,
- * so a change made in one tab — a vault claimed, released, removed, or the
+ * Every tab of the origin shares one `localStorage` but runs its own secrets,
+ * so a change made in one tab — a secret claimed, released, removed, or the
  * whole browser's data reset — has to be *told* to the others; reading storage
  * again is not enough, because what changed is often a lock or a runtime
  * rather than a stored row.
@@ -16,10 +16,10 @@
  */
 
 export type TabMessage =
-  /** Another tab is wiping this browser's data: stop every vault, now. */
+  /** Another tab is wiping this browser's data: stop every secret, now. */
   | { kind: 'reset-started' }
-  /** A vault was claimed, released, created or removed in another tab. */
-  | { kind: 'vaults-changed' }
+  /** A secret was claimed, released, created or removed in another tab. */
+  | { kind: 'secrets-changed' }
 
 const CHANNEL_NAME = 'derec:tabs'
 /** Outside the `derec:` data prefix, so a reset's own sweep never touches it. */
@@ -37,7 +37,7 @@ function broadcastChannel(): BroadcastChannel | null {
 function isTabMessage(value: unknown): value is TabMessage {
   if (typeof value !== 'object' || value === null) return false
   const kind = (value as { kind?: unknown }).kind
-  return kind === 'reset-started' || kind === 'vaults-changed'
+  return kind === 'reset-started' || kind === 'secrets-changed'
 }
 
 /** Tell every other tab. The sending tab does not hear its own message. */

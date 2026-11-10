@@ -51,8 +51,8 @@ describe('toBytes', () => {
   })
 
   it('throws rather than yielding empty bytes for something unreadable', () => {
-    // Silently returning an empty array would write a blank secret into the
-    // vault as if it were the recovered truth.
+    // Silently returning an empty array would write a blank item into the
+    // secret as if it were the recovered truth.
     expect(() => toBytes(undefined as never)).toThrow(/expected bytes/)
     expect(() => toBytes(42 as never)).toThrow(/expected bytes/)
   })

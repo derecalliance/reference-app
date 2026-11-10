@@ -21,7 +21,7 @@ const TOPICS = [
   ),
   parseTopic(
     './content/03-pairing.md',
-    '# Pairing\n\nHow to pair a vault.\n\n## Contact modes\n\n| Mode | Usable |\n| --- | --- |\n| No keys | after a fingerprint |\n',
+    '# Pairing\n\nHow to pair a secret.\n\n## Contact modes\n\n| Mode | Usable |\n| --- | --- |\n| No keys | after a fingerprint |\n',
   ),
   parseTopic('./content/17-glossary.md', '# Glossary\n\nShort definitions of every term.\n'),
 ]

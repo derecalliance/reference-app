@@ -35,8 +35,8 @@ const BACKEND_PORT = 5100
 const BACKEND_GRPC_PORT = 50151
 const WEB_PORT = 5180
 
-/** Vite serves under `base: '/reference-app/'`, so the app is not at the root. */
-const APP_URL = `http://localhost:${WEB_PORT}/reference-app/`
+/** The dev server serves the app from the root (see `base` in vite.config.ts). */
+const APP_URL = `http://localhost:${WEB_PORT}/`
 
 export default defineConfig({
   testDir: './e2e',

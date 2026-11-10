@@ -197,7 +197,7 @@ test.describe('replica groups', () => {
     pageErrors,
   }) => {
     await setUpOwner(page, { name: 'Alice', participants: 3, prePaired: 0, minParticipants: 2 })
-    // Eviction completes by publishing a roster, so the vault needs a secret to
+    // Eviction completes by publishing a roster, so the secret needs an item to
     // publish — and protecting one needs the configured minimum of helpers.
     await pairParticipant(page, { index: 0, mode: 'Inline keys' })
     await pairParticipant(page, { index: 1, mode: 'Inline keys' })
@@ -224,7 +224,7 @@ test.describe('replica groups', () => {
     await expect(members).toContainText(/Replica destination/i)
 
     // Nothing on the row pretends to a pairing this device does not have: no
-    // fingerprint to compare, no vault to send, and no local record to forget.
+    // fingerprint to compare, no secret to send, and no local record to forget.
     await expect(members.getByRole('button', { name: 'Forget' })).toHaveCount(0)
     await expect(members.getByRole('button', { name: /Sync now/ })).toHaveCount(0)
     await expect(members.getByRole('button', { name: /fingerprint/i })).toHaveCount(0)
@@ -258,7 +258,7 @@ test.describe('replica groups', () => {
     await addAndPairReplica(page, uniqueReplicaName())
 
     // Eviction only completes once a roster that omits the member is
-    // published, so the vault has to hold something to publish.
+    // published, so the secret has to hold something to publish.
     await protectSecret(page, 'Passphrase', 'hunter2')
 
     await openTab(page, 'Replicas')

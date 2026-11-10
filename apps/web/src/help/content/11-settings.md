@@ -1,13 +1,15 @@
 # Settings
 
-What the Settings section shows: the node's own configuration (read-only), and this browser's overrides of the protocol defaults, field by field.
+What the Settings section shows: the node's own configuration (read-only), and this browser's overrides of the node's helper pool defaults, field by field.
+
+These are browser- and node-wide. A secret's protocol settings (timeout, unpair acknowledgement, which incoming requests it answers on its own, authentication method) are not here: each secret holds its own, starting from the app's defaults, on its **Settings** tab. So are its publishing choices; its threshold and helper weights are on its **Channels** tab. See [Protecting secrets](04-protecting-secrets.md#the-settings-tab).
 
 ## Two halves
 
 | Section | Editable | Where it lives |
 | --- | --- | --- |
 | **Node configuration** | No | Resolved by the node at boot from its config file and `DEREC_*` variables. Same data as `GET /api/v1/debug/config`. |
-| **Protocol defaults** | Yes | This browser's `localStorage` (`derec.protocolDefaults`), on top of the node's defaults from `GET /api/v1/config`. |
+| **Pool defaults** | Yes | This browser's `localStorage` (`derec.protocolDefaults`), on top of the node's defaults from `GET /api/v1/config`. |
 
 ## Node configuration
 
@@ -20,7 +22,8 @@ A table per config section, `[server]` and `[defaults]`, with every setting, its
 - **Reset to node** drops every override.
 - Overrides never reach the server as settings. They travel on each provisioning request and prefill the setup wizard.
 - The gRPC switches are facts about the node, not preferences: `grpc_enabled` and `grpc_relay_enabled` always come from the node, whatever was saved.
-- If the node is down when the page loads, the built-in defaults stand in and the app keeps asking for the node's (after 1 s, 2 s, 5 s, 10 s, then every 30 s, and at once when a vault reaches the node again) until it answers once. A vault that was already running then follows the node for its timers and auto-accept settings, but its replay window and unpair acknowledgement are fixed when its protocol starts, so they change only after a reload; the Console names any vault where they differ.
+- If the node is down when the page loads, the built-in defaults stand in and the app keeps asking for the node's (after 1 s, 2 s, 5 s, 10 s, then every 30 s, and at once when a secret reaches the node again) until it answers once. A secret's protocol settings never depend on it.
+- Overrides of protocol settings saved here by an earlier version of the app are no longer read.
 - **Reset browser data** also erases these overrides.
 
 ## Participant pool
@@ -28,28 +31,16 @@ A table per config section, `[server]` and `[defaults]`, with every setting, its
 | Field | Node key | Default | Range | Effect |
 | --- | --- | --- | --- | --- |
 | **Participants** | `participant_count` | 7 | 2 to 255 | Target pool size for **Provision up to N**. |
-| **Minimum** | `min_participants` | 3 | 2 to the pool size | The threshold of vaults set up from now on: shares needed to recover, and paired helpers needed before protecting. Frozen into each vault at setup. |
-| **Recommended** | `recommended_participants` | 5 | Minimum to the pool size | Below this many paired helpers, a vault shows a warning. Advisory. |
+| **Minimum** | `min_participants` | 3 | 2 to the pool size | The fixed threshold that secrets set up from now on start with, used if they switch from a percentage (a new secret starts at 50% of its helpers' subshares) to a fixed number. Each secret then keeps its own threshold, set on its **Channels** tab. |
+| **Recommended** | `recommended_participants` | 5 | Minimum to the pool size | Below this many paired helpers, a secret's page shows a warning. Advisory. |
+| **Pre-paired** | `pre_paired_count` | 3 | 0 to the pool size | The wizard's starting value for *Pre-pair locally*. |
 
 ## Transport mix
 
 Shown only while the node runs gRPC. Three counts, **HTTP only**, **gRPC only** and **Both**, that always add up to the pool size: the field you edit keeps its value and the others shift (a raise takes from the largest, a cut goes to HTTP only). Used by **Provision up to N**. Node keys `helper_transports.http`, `.grpc`, `.both`; default all HTTP.
 
-## Protocol policy
+## No protocol settings
 
-| Field | Node key | Default | Effect |
-| --- | --- | --- | --- |
-| **Unpair acknowledgement** | `unpair_ack` | `required` | `required`: the initiator keeps its state until the peer acknowledges or the timeout passes. `not_required`: state is dropped at once and later replies are ignored. Applies to new helpers and to a vault when its protocol starts. |
-| **Incoming unpair requests** | `auto_accept_unpair_requests` | auto-accept | Or *show a dialog*. Read live by every vault in this browser. |
-| **Incoming share storage requests** | `auto_accept_store_share_requests` | show a dialog | When a vault acts as a helper. Hosted helpers always accept. |
-| **Incoming verification requests** | `auto_accept_verify_share_requests` | show a dialog | When a vault acts as a helper. Hosted helpers always answer. |
-| **Authentication method** | `authentication_method` | `user` | How the app decides two channels belong to the same user. `user`: the helper links channels by hand (*Link to existing*). `application` is reserved and not selectable. |
-
-## Defaults for new owners
-
-| Field | Node key | Default | Range | Effect |
-| --- | --- | --- | --- | --- |
-| **Protocol timeout (s)** | `protocol_timeout_secs` | 300 | 10 to 86400 | The wizard's starting value, and the timeout new helpers are created with. A vault uses it unless its owner changed it at setup; a change applies when the vault's protocol next starts (for example after a reload). |
-| **Pre-paired** | `pre_paired_count` | 3 | 0 to the pool size | The wizard's starting value for *Pre-pair locally*. |
+Neither the node nor this page holds protocol settings. Each secret has its own on its **Settings** tab, starting from the app's defaults (30-second timeout, no unpair acknowledgement, every incoming request accepted automatically). Helpers provisioned from **Participants** get the same timeout and acknowledgement.
 
 Invalid values are flagged on the field and **Save** stays disabled: *Fix the highlighted fields to save.* Only plain digits count as a number (`1e3` and `2.5` are refused).

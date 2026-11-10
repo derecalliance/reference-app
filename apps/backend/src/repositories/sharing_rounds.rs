@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
-//! How each sharing round ended, for the share store's `keep_list`.
+//! How each sharing round ended, for the share store's `keep_version`.
 
 use async_trait::async_trait;
 use uuid::Uuid;
@@ -10,7 +10,7 @@ use super::sdk::id_to_text;
 use super::{begin_write, RepositoryError};
 
 /// The SDK keeps no record of which rounds committed, so the application has
-/// to: [`super::sdk::share::SqlShareStore`]'s `keep_list` answers from these
+/// to: [`super::sdk::share::SqlShareStore`]'s `keep_version` answers from these
 /// rows.
 #[async_trait]
 pub trait SharingRoundRepository: Send + Sync {

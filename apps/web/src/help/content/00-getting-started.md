@@ -6,21 +6,21 @@ If it is not, run `./start.sh` from the repository root and open the address it 
 
 ## 1. Fill the participant pool
 
-Setting up a vault never creates helpers. They belong to the node, so create them first.
+Setting up a secret never creates helpers. They belong to the node, so create them first.
 
 - Open **Participants** in the left navigation and click **Provision up to 7**.
 - You should see seven rows, each with Transport `http` and Status `online`.
 
 Seven is the node's default `participant_count`. More in [Participants](10-participants.md).
 
-## 2. Set up a vault
+## 2. Set up a secret
 
-- Open **Owner** and click **Set up a new vault**.
+- Open **Owner** and click **Set up a new secret**.
 - **Your name**: type a name, for example `Alice`, then **Next →**.
-- **Your settings**: keep the defaults. *Protocol timeout* is 300 seconds and *Pre-pair locally* is 3, which pairs three helpers for you without exchanging QR codes.
-- Click **Set up**. A *Setting up* screen pairs the three helpers, then the vault page opens.
+- **Your settings**: keep the defaults. *Protocol timeout* is 30 seconds and *Pre-pair locally* is 3, which pairs three helpers for you without exchanging QR codes.
+- Click **Set up**. A *Setting up* screen pairs the three helpers, then the secret's page opens.
 
-A yellow banner, *Only 3 of 5 recommended participants paired*, is expected. Every field is described in [Setting up a vault](02-setting-up-a-vault.md).
+A yellow banner, *Only 3 of 5 recommended participants paired*, is expected. Every field is described in [Setting up a secret](02-setting-up-a-secret.md).
 
 ## 3. Look at the Channels tab
 
@@ -30,17 +30,17 @@ A yellow banner, *Only 3 of 5 recommended participants paired*, is expected. Eve
 
 Contact modes, QR codes and pairing between two browsers are covered in [Pairing](03-pairing.md).
 
-## 4. Add a first secret
+## 4. Add a first item
 
-- Click **Add Secret** in the vault header, enter a name and some data, then click **Add Secret**.
+- Click **Add Item** in the secret's header, enter a name and some data, then click **Add Item**.
 - The progress dialog lists every helper. Each goes from *Waiting…* to *Confirmed*. When all have answered, the button reads **Done**.
-- The **Secrets** tab now shows the bag with a version tag such as `v1` and the threshold.
+- The **Items** tab now shows the bag with a version tag such as `v1` and the threshold.
 
 What a round is, and what happens when helpers do not answer: [Protecting secrets](04-protecting-secrets.md).
 
 ## 5. Verify the shares
 
-- In **Secrets**, click **Verify Shares**.
+- In **Items**, click **Verify Shares**.
 - Each row should turn *Verified*, and the card should read *5/5 verified*.
 
 See [Verification](05-verification.md).
@@ -49,18 +49,18 @@ See [Verification](05-verification.md).
 
 Use an incognito window or a second browser profile at the same address. It has its own storage, so it behaves like another device.
 
-- Set up a vault there, with **Pre-pair locally** set to `0`.
+- Set up a secret there, with **Pre-pair locally** set to `0`.
 - In the side panel, **Pair** with three or more of the helpers that hold Alice's shares (the names on Alice's Channels tab).
 - For each one, expand its row, click **Link** and pick the channel whose peer is Alice. This tells the helper the new channel belongs to an owner it already helps.
 - Open **Recovery**, click **Discover All**, then **Recover** on the newest version under *Available Secrets*.
 - Under *Recovered Secrets*, reveal the value to check it, click **Recover** and confirm with **Recover from bag**.
 
-The new vault now holds the secret and the helper channels. Details in [Recovery and restore](06-recovery-and-restore.md).
+The new secret now holds Alice's items and the helper channels. Details in [Recovery and restore](06-recovery-and-restore.md).
 
 ## 7. Where to go next
 
-- Mirror the vault to a second device: [Replicas](07-replicas.md).
-- Run several vaults in one browser: [Multiple vaults and tabs](08-multiple-vaults-and-tabs.md).
+- Mirror the secret to a second device: [Replicas](07-replicas.md).
+- Run several secrets in one browser: [Multiple secrets and tabs](08-multiple-secrets-and-tabs.md).
 - Use a phone on your network: [Running the app](14-running-the-app.md).
 - Change a node setting: [Node configuration](15-node-configuration.md) and [Settings](11-settings.md).
 - Watch the protocol traffic: [Inspect and Console](12-inspect-and-console.md).

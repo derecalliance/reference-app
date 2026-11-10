@@ -10,14 +10,17 @@ import {
   forgetHelperChannel,
   hasStorageHeadroom,
   listHelperChannels,
+  listOwnerProofVersions,
   listReplicaMembers,
   makeChannelStore,
   makeSecretStore,
   makeShareStore,
   makeStateStore,
+  makeUserSecretStore,
   makeTransport,
   openSharingRoundVersions,
   readHelperChannelInfo,
+  storedHelperWeights,
 } from './stores'
 
 const NS = 'test-ns'
@@ -631,6 +634,9 @@ describe('transport retries', () => {
     )
     await expect(transport.send([https('https://x.example')], message)).rejects.toThrow()
 
+    // SDK 0.0.11's `transport_send_failed`, and the text before it.
+    const sendFailed = "transport send failed: the message reached none of the peer's endpoints"
+    expect(explainDeliveryFailure(sendFailed, ['https://x.example'])).toMatch(/gRPC is disabled on this node/)
     expect(explainDeliveryFailure('transport.send promise rejected', ['https://x.example'])).toMatch(
       /gRPC is disabled on this node/,
     )
@@ -660,8 +666,9 @@ describe('transport retries', () => {
 describe('helper channel housekeeping', () => {
   beforeEach(() => localStorage.clear())
 
-  function seed(channelId: string, status: string, peerRole = 'Helper') {
-    const record = `{"Helper":{"channel_id":${channelId},"transports":[],"peer_role":"${peerRole}","status":"${status}","created_at":1700000000}}`
+  function seed(channelId: string, status: string, peerRole = 'Helper', weight?: number) {
+    const weightField = weight === undefined ? '' : `,"weight":${weight}`
+    const record = `{"Helper":{"channel_id":${channelId},"transports":[],"peer_role":"${peerRole}","status":"${status}","created_at":1700000000${weightField}}}`
     localStorage.setItem(
       `derec:${NS}:${SECRET}:channel:helper:${channelId}`,
       btoa(record).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
@@ -675,9 +682,46 @@ describe('helper channel housekeeping', () => {
     seed('7', 'Pending', 'Owner')
 
     expect(listHelperChannels(NS, SECRET)).toEqual([
-      { channelId: '18446744073709551615', status: 'Paired', peerRole: 'Helper', createdAtSecs: 1700000000 },
-      { channelId: '7', status: 'Pending', peerRole: 'Owner', createdAtSecs: 1700000000 },
+      { channelId: '18446744073709551615', status: 'Paired', peerRole: 'Helper', createdAtSecs: 1700000000, weight: 1 },
+      { channelId: '7', status: 'Pending', peerRole: 'Owner', createdAtSecs: 1700000000, weight: 1 },
     ])
+  })
+
+  it('reads a helper weight as the library does: absent or 0 is 1', () => {
+    seed('1', 'Paired', 'Helper', 3)
+    seed('2', 'Paired', 'Helper', 0)
+    seed('3', 'Paired', 'Helper')
+
+    expect(listHelperChannels(NS, SECRET).map(c => c.weight)).toEqual([3, 1, 1])
+  })
+
+  it('keeps stored weights only for paired helpers this secret is protected with', () => {
+    seed('1', 'Paired', 'Helper', 2)
+    seed('2', 'Pending', 'Helper', 2)
+    seed('3', 'Paired', 'Owner', 2)
+
+    expect(storedHelperWeights(NS, SECRET)).toEqual(new Map([['1', 2]]))
+  })
+
+  it('lists the verification copies per version, on this owner\'s helper channels only', async () => {
+    seed('7', 'Paired')
+    seed('8', 'Paired')
+    seed('9', 'Paired', 'Owner')
+    const shares = makeShareStore(NS)
+    for (const channel of ['7', '8']) {
+      await shares.save(SECRET, channel, { secretId: SECRET, version: 1, bytes: new Uint8Array(30) })
+      await shares.save(SECRET, channel, { secretId: SECRET, version: 2, bytes: new Uint8Array(30) })
+    }
+    // A share this secret's actor holds *for* another owner: never a candidate.
+    await shares.save(SECRET, '9', { secretId: '77', version: 1, bytes: new Uint8Array(30) })
+
+    const usage = listOwnerProofVersions(NS, SECRET)
+
+    expect(usage.map(u => [u.version, u.copies])).toEqual([
+      [2, 2],
+      [1, 2],
+    ])
+    expect(usage[0].bytes).toBeGreaterThanOrEqual(60)
   })
 
   it('forgets one channel and everything filed under it, and nothing else', async () => {
@@ -696,6 +740,56 @@ describe('helper channel housekeeping', () => {
     expect(await shares.load(SECRET, '7', [])).toEqual([])
     expect(await shares.load(SECRET, '8', [])).toHaveLength(1)
     expect(await makeChannelStore(NS).linkedChannels(SECRET, '8')).toEqual(['8'])
+  })
+})
+
+describe('share and user-secret stores keep what the SDK records (SDK 0.0.9)', () => {
+  afterEach(() => localStorage.clear())
+
+  it('round-trips a share\'s subshare count and threshold', async () => {
+    const shares = makeShareStore(NS)
+    await shares.save(SECRET, '7', { secretId: SECRET, version: 3, bytes: new Uint8Array([1]), subshares: 2, threshold: 3 })
+
+    const [loaded] = await shares.load(SECRET, '7', [3])
+
+    expect(loaded.subshares).toBe(2)
+    expect(loaded.threshold).toBe(3)
+  })
+
+  it('reads a share stored without them as having none, never 0', async () => {
+    const shares = makeShareStore(NS)
+    await shares.save(SECRET, '7', { secretId: SECRET, version: 1, bytes: new Uint8Array([1]) })
+
+    const [loaded] = await shares.load(SECRET, '7', [1])
+
+    expect(loaded.subshares).toBeUndefined()
+    expect(loaded.threshold).toBeUndefined()
+  })
+
+  it('forgets the counts with the share', async () => {
+    const shares = makeShareStore(NS)
+    await shares.save(SECRET, '7', { secretId: SECRET, version: 1, bytes: new Uint8Array([1]), subshares: 2, threshold: 3 })
+    await shares.removeVersions(SECRET, '7', [1])
+    await shares.save(SECRET, '7', { secretId: SECRET, version: 1, bytes: new Uint8Array([1]) })
+
+    const [loaded] = await shares.load(SECRET, '7', [1])
+
+    expect(loaded.subshares).toBeUndefined()
+  })
+
+  it('round-trips the snapshot\'s author and threshold', async () => {
+    const secrets = makeUserSecretStore(NS)
+    await secrets.saveLatest(SECRET, {
+      version: 4,
+      secrets: [],
+      author_replica_id: '18446744073709551615',
+      threshold: 3,
+    })
+
+    const loaded = await secrets.loadLatest(SECRET)
+
+    expect(loaded?.author_replica_id).toBe('18446744073709551615')
+    expect(loaded?.threshold).toBe(3)
   })
 })
 
@@ -756,12 +850,13 @@ describe('share store: retention (SDK 0.0.7)', () => {
     expect(await shares.load('43', '7', [])).toHaveLength(1)
   })
 
-  it('answers keepList from the injected policy, and with no list when there is none', async () => {
-    const policy = vi.fn(() => [3, 2])
-    expect(await makeShareStore(NS, { keepList: policy }).keepList(SECRET, 4)).toEqual([3, 2])
+  it('answers keepVersion from the injected policy, and with the version just below when there is none', async () => {
+    const policy = vi.fn(() => 2)
+    expect(await makeShareStore(NS, { keepVersion: policy }).keepVersion(SECRET, 4)).toBe(2)
     expect(policy).toHaveBeenCalledWith(SECRET, 4)
 
-    expect(await makeShareStore(NS).keepList(SECRET, 4)).toBeNull()
+    expect(await makeShareStore(NS).keepVersion(SECRET, 4)).toBe(3)
+    expect(await makeShareStore(NS).keepVersion(SECRET, 1)).toBe(0)
   })
 })
 

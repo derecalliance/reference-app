@@ -42,6 +42,8 @@ pub enum ErrorCode {
     FingerprintMismatch,
     /// `409`: another helper already holds that display name.
     NameTaken,
+    /// `409`: the participant is still paired; its owners must unpair first.
+    ParticipantPaired,
     /// `503`: the relay is switched off on this node; retrying will not help.
     RelayDisabled,
     /// `503`: the recipient's mailbox is full until it polls.
@@ -56,7 +58,7 @@ impl ErrorCode {
             Self::Forbidden => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
-            Self::Conflict | Self::NameTaken => StatusCode::CONFLICT,
+            Self::Conflict | Self::NameTaken | Self::ParticipantPaired => StatusCode::CONFLICT,
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             Self::UnprocessableEntity => StatusCode::UNPROCESSABLE_ENTITY,
@@ -118,6 +120,7 @@ impl From<ServiceError> for ApiError {
             ServiceError::RelayDisabled(_) => ErrorCode::RelayDisabled,
             ServiceError::MailboxFull(_) => ErrorCode::MailboxFull,
             ServiceError::NameTaken(_) => ErrorCode::NameTaken,
+            ServiceError::ParticipantPaired(_) => ErrorCode::ParticipantPaired,
         };
         Self::new(code, error.to_string())
     }
@@ -218,6 +221,11 @@ mod tests {
                 ServiceError::NameTaken("k".to_owned()),
                 StatusCode::CONFLICT,
                 "NAME_TAKEN",
+            ),
+            (
+                ServiceError::ParticipantPaired("l".to_owned()),
+                StatusCode::CONFLICT,
+                "PARTICIPANT_PAIRED",
             ),
         ];
 

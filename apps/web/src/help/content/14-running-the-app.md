@@ -80,14 +80,14 @@ docker run -d --name derec -p 5000:5000 -p 50051:50051 \
 
 ## From source
 
-Needs Rust 1.89+ and Node.js 22+, and two terminals:
+Needs Rust 1.95+ and Node.js 22+, and two terminals:
 
 ```
 cd apps/backend && cargo run          # backend on http://localhost:5000, state in apps/backend/derec.db
 cd apps/web && npm install && npm run dev
 ```
 
-Open `http://localhost:5173/reference-app/`. The front end finds the backend on port 5000 of whatever host served the page; set `VITE_API_URL` only to point it elsewhere. Under `cargo run` the backend serves no UI (`static_dir` is empty), so it does not shadow the dev server.
+Open `http://localhost:5173/`. The front end finds the backend on port 5000 of whatever host served the page; set `VITE_API_URL` only to point it elsewhere. Under `cargo run` the backend serves no UI (`static_dir` is empty), so it does not shadow the dev server.
 
 The end-to-end suite (`npm run test:e2e`) starts its own backend on 5100 (gRPC 50151, in-memory database) and Vite on 5180, so it never touches a running session.
 
@@ -96,18 +96,18 @@ The end-to-end suite (`npm run test:e2e`) starts its own backend on 5100 (gRPC 5
 Peers post back to the address the node advertises, so it must be one the phone can reach.
 
 - **Docker**: `./start.sh --lan`, then open the *LAN* address it prints (for example `http://192.168.0.28:5000`) on the phone.
-- **From source**: start the backend with `DEREC_BASE_URL=http://192.168.0.28 cargo run` and the front end with `npm run dev:lan`, then open `http://192.168.0.28:5173/reference-app/`.
+- **From source**: start the backend with `DEREC_BASE_URL=http://192.168.0.28 cargo run` and the front end with `npm run dev:lan`, then open `http://192.168.0.28:5173/`.
 
 Find the address with `ipconfig getifaddr en0` on macOS; Vite also prints it as `Network:`. Left at `localhost`, pairing appears to work and then the peer sends messages to its own loopback.
 
-**The secure-context flag.** Plain `http://` on a LAN address is not a secure context, so the browser withholds the camera (no **Scan QR**), `BarcodeDetector` and Web Locks (one-tab-per-vault becomes best-effort). On Android Chrome:
+**The secure-context flag.** Plain `http://` on a LAN address is not a secure context, so the browser withholds the camera (no **Scan QR**), `BarcodeDetector` and Web Locks (one tab per secret becomes best-effort). On Android Chrome:
 
 1. Open `chrome://flags`.
 2. Find **Insecure origins treated as secure**.
 3. Add the exact origin the phone opens, for example `http://192.168.0.28:5000` or `http://192.168.0.28:5173`, and set it to **Enabled**.
 4. Relaunch Chrome.
 
-Alternatives: Android over USB with `adb reverse tcp:5173 tcp:5173 && adb reverse tcp:5000 tcp:5000`, then open `http://localhost:5173/reference-app/` (localhost is a secure context); or real https, which iOS would need and which the backend must serve too.
+Alternatives: Android over USB with `adb reverse tcp:5173 tcp:5173 && adb reverse tcp:5000 tcp:5000`, then open `http://localhost:5173/` (localhost is a secure context); or real https, which iOS would need and which the backend must serve too.
 
 ## Two nodes
 
@@ -116,4 +116,4 @@ Two nodes on one host must be told each other's LAN address and their own publis
 ## Starting fresh
 
 1. Erase the node's data: `./start.sh --fresh`, `docker compose -p derec down -v`, or with `cargo run` stop it and delete `apps/backend/derec.db` (and any `derec.db-wal` / `derec.db-shm` beside it).
-2. In **every browser you used**, click **Reset browser data** in the header. Vaults in a browser that still point at actors the node no longer has fail in ways that look like protocol bugs.
+2. In **every browser you used**, click **Reset browser data** in the header. Secrets in a browser that still point at actors the node no longer has fail in ways that look like protocol bugs.

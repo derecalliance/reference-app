@@ -23,6 +23,7 @@ use super::{MAX_REPLICA_INSTANCES, PENDING_CHANNEL_TTL_SECS};
 use crate::infrastructure::routing::ChannelRouter;
 use crate::models::{ChannelSummary, EnvelopeMeta, Role, Side, UnpairAck};
 use crate::repositories::helper_channels::HelperChannelIndex;
+use crate::repositories::seen_messages::SeenMessageRepository;
 use crate::repositories::sharing_rounds::SharingRoundRepository;
 
 /// How often each actor advances its own time-driven state.
@@ -199,17 +200,17 @@ fn events_of(result: &Result<Vec<DeRecEvent>, ProcessError>) -> &[DeRecEvent] {
 }
 
 /// Persist how every sharing round in `events` ended, for
-/// [`DeRecShareStore::keep_list`](derec_library::protocol::DeRecShareStore::keep_list)
+/// [`DeRecShareStore::keep_version`](derec_library::protocol::DeRecShareStore::keep_version)
 /// to answer from.
 ///
 /// Called inside the async half of a handler, before the instance is put back:
-/// the next round this instance starts asks `keep_list` first, and recording
+/// the next round this instance starts asks `keep_version` first, and recording
 /// the outcome before anything else can borrow the instance is what guarantees
 /// that round sees it. `handle_events` runs too late for that guarantee.
 ///
 /// A failed write is logged and otherwise ignored. It costs nothing unsafe: a
-/// version with no recorded outcome makes `keep_list` answer `None`, and
-/// helpers keep every version.
+/// version with no recorded outcome may be the latest committed one, so
+/// `keep_version` keeps it, as it would a committed round.
 async fn record_round_outcomes(
     rounds: &dyn SharingRoundRepository,
     actor_id: &Uuid,
@@ -233,7 +234,7 @@ async fn record_round_outcomes(
                 secret_id = secret_id,
                 version = version,
                 error = %e,
-                "could not record a sharing round's outcome; helpers will keep every version"
+                "could not record a sharing round's outcome; helpers will keep it as if committed"
             );
         }
     }
@@ -249,8 +250,11 @@ pub struct ActorDependencies {
     pub channel_router: Arc<ChannelRouter>,
     /// The roster's index of the channels each helper holds.
     pub helper_channels: Arc<dyn HelperChannelIndex>,
-    /// How each sharing round ended, for the share store's `keep_list`.
+    /// How each sharing round ended, for the share store's `keep_version`.
     pub sharing_rounds: Arc<dyn SharingRoundRepository>,
+    /// The envelopes each actor sent or accepted, kept across restarts — see
+    /// [`ReplayGuard`](crate::infrastructure::replay::ReplayGuard).
+    pub seen_messages: Arc<dyn SeenMessageRepository>,
 }
 
 /// A backend-managed protocol participant.
@@ -259,7 +263,7 @@ pub struct ActorDependencies {
 /// secret it protects as Owner. Helper-role channels for this actor's own
 /// secret all live in the own instance: shares are separated by `channel_id`
 /// and each carries its own Owner's `secret_id` on the record. Replica mode is
-/// the exception — a replica mirrors one named owner's vault, and the share
+/// the exception — a replica mirrors one named owner's secret, and the share
 /// store keys on `(secret_id, channel_id, version, replica_id)`, so mirroring
 /// several owners takes one instance per owner. `instances` below holds
 /// exactly that: the own instance plus any replica instances added on demand
@@ -586,7 +590,7 @@ impl ProvisionedActor {
                 }
 
                 // Owner-side outcomes. A provisioned actor rarely runs a round
-                // of its own, but an instance holding a vault — a replica
+                // of its own, but an instance holding a secret — a replica
                 // destination that adopted one — publishes to its helpers on
                 // pairing and confirmation, so these can reach it. The outcome
                 // itself is already recorded by `record_round_outcomes`.
@@ -667,6 +671,100 @@ impl ProvisionedActor {
                         from_replica_id = from_replica_id,
                         version = version,
                         "replica version conflict: another member published a different copy"
+                    );
+                }
+
+                // A request on an authenticated channel that failed. The library
+                // reports it here instead of failing `process`, and — since these
+                // actors run with `auto_respond_on_failure` — has already
+                // answered the peer whenever a reply target existed, so the log
+                // is all that is left. `message` is local detail; `status` is
+                // what the peer was (or would have been) sent.
+                DeRecEvent::RequestFailed {
+                    channel_id,
+                    action_kind,
+                    responded,
+                    status,
+                    memo,
+                    error_code,
+                    message,
+                    ..
+                } => {
+                    warn!(
+                        actor_id = %self.actor_id,
+                        channel_id = channel_id.0,
+                        action = ?action_kind,
+                        responded = responded,
+                        status = status,
+                        memo = %memo,
+                        error_code = %error_code,
+                        message = %message,
+                        "inbound request failed"
+                    );
+                }
+                // Refusals the library itself made and answered — the peer has
+                // been sent the same status and memo.
+                DeRecEvent::ShareRefused {
+                    channel_id,
+                    version,
+                    status,
+                    memo,
+                } => {
+                    warn!(
+                        actor_id = %self.actor_id,
+                        channel_id = channel_id.0,
+                        version = version,
+                        status = status,
+                        memo = %memo,
+                        "refused an inbound share"
+                    );
+                }
+                DeRecEvent::ReplicaSecretRefused {
+                    channel_id,
+                    from_replica_id,
+                    version,
+                    status,
+                    memo,
+                    ..
+                } => {
+                    warn!(
+                        actor_id = %self.actor_id,
+                        channel_id = channel_id.0,
+                        from_replica_id = from_replica_id,
+                        version = version,
+                        status = status,
+                        memo = %memo,
+                        "refused a replica copy of the secret"
+                    );
+                }
+                DeRecEvent::PairingRefused {
+                    channel_id,
+                    status,
+                    error_code,
+                    message,
+                    ..
+                } => {
+                    warn!(
+                        actor_id = %self.actor_id,
+                        channel_id = channel_id.0,
+                        status = status,
+                        error_code = %error_code,
+                        message = %message,
+                        "refused a pairing request"
+                    );
+                }
+                // The peer could not process something this actor sent.
+                DeRecEvent::ErrorResponseReceived {
+                    channel_id,
+                    status,
+                    memo,
+                } => {
+                    warn!(
+                        actor_id = %self.actor_id,
+                        channel_id = channel_id.0,
+                        status = status,
+                        memo = %memo,
+                        "peer answered with an error response"
                     );
                 }
 
@@ -1146,8 +1244,8 @@ async fn auto_confirm_fingerprint(
     };
 
     match protocol.verify_fingerprint(channel_id.into(), &local).await {
-        Ok(true) => AutoConfirmOutcome::Confirmed,
-        Ok(false) => AutoConfirmOutcome::Rejected,
+        Ok(()) => AutoConfirmOutcome::Confirmed,
+        Err(derec_library::Error::FingerprintMismatch { .. }) => AutoConfirmOutcome::Rejected,
         Err(e) => AutoConfirmOutcome::Failed(e),
     }
 }
@@ -1208,7 +1306,7 @@ pub struct PendingChannelIdsMsg;
 
 /// Ensure this actor holds an instance bound to `owner_secret_id`.
 ///
-/// A replica mirrors one named owner's vault, and the share store keys on
+/// A replica mirrors one named owner's secret, and the share store keys on
 /// `(secret_id, channel_id, version, replica_id)` — an instance under a
 /// different secret would miss every lookup. Replica-mode pairing therefore
 /// needs an instance bound to that owner's secret, which this creates on demand.
@@ -1351,6 +1449,21 @@ impl ProvisionedActor {
             return Box::pin(actix::fut::ready(()));
         }
 
+        // A copy of a message this actor sent, or already accepted (SDK 0.0.11
+        // leaves recognising one to the application). Processed, a replayed
+        // request would be answered again and a reflected one taken for the
+        // peer's. Checked here, before an instance is borrowed for it, while
+        // the message itself is remembered only once `process` accepts it.
+        if self.config.replay_guard.is_copy(&bytes) {
+            warn!(
+                actor_id = %self.actor_id,
+                channel_id = meta.channel_id,
+                sequence = meta.sequence,
+                "inbound message is a copy of one already sent or accepted; dropping it"
+            );
+            return Box::pin(actix::fut::ready(()));
+        }
+
         let Some(owner) = self.instances.secret_for_channel(meta.channel_id) else {
             error!(
                 actor_id = %self.actor_id,
@@ -1394,10 +1507,14 @@ impl ProvisionedActor {
         let secret_id = owner;
         let rounds = Arc::clone(&self.deps.sharing_rounds);
         let actor_id = self.actor_id;
+        let replay_guard = Arc::clone(&self.config.replay_guard);
 
         Box::pin(
             async move {
                 let result = protocol.process(&bytes).await;
+                if result.is_ok() {
+                    replay_guard.remember(&bytes);
+                }
                 record_round_outcomes(rounds.as_ref(), &actor_id, secret_id, events_of(&result))
                     .await;
                 let channel_ids = held_channels_of(&protocol, secret_id).await;
@@ -1684,10 +1801,16 @@ impl Handler<VerifyFingerprintMsg> for ProvisionedActor {
 
         Box::pin(
             async move {
-                let result = protocol
+                // From SDK 0.0.10 a mismatch is an error — and it has already
+                // revoked the `Pending` pairing — rather than `Ok(false)`.
+                let result = match protocol
                     .verify_fingerprint(channel_id.into(), &fingerprint)
                     .await
-                    .map_err(ActorError::from);
+                {
+                    Ok(()) => Ok(true),
+                    Err(derec_library::Error::FingerprintMismatch { .. }) => Ok(false),
+                    Err(e) => Err(ActorError::from(e)),
+                };
                 (protocol, result)
             }
             .into_actor(self)
@@ -1822,6 +1945,9 @@ impl Handler<ReconfigureMsg> for ProvisionedActor {
     fn handle(&mut self, msg: ReconfigureMsg, _ctx: &mut Context<Self>) -> Self::Result {
         self.config.timeout_secs = msg.timeout_secs;
         self.config.unpair_ack = msg.unpair_ack;
+        self.config
+            .replay_guard
+            .set_window(u64::from(msg.timeout_secs));
 
         for secret_id in self.instances.secret_ids() {
             let Some(old) = self.instances.take(secret_id) else {
@@ -2163,6 +2289,7 @@ mod tests {
             pool,
             actor_id: uuid::Uuid::new_v4(),
             local_delivery: None,
+            replay_guard: Default::default(),
         }
     }
 
@@ -2182,7 +2309,8 @@ mod tests {
     /// A failing `process()` still carries the rounds its timeout sweep
     /// settled (SDK 0.0.7), and those are the only report of them there will
     /// be. If the inbound path dropped them with the error, the round's outcome
-    /// would never be recorded and the next `keep_list` could not list it.
+    /// would never be recorded, and the next `keep_version` would keep a
+    /// round that fell short as if it might have committed.
     #[actix_rt::test]
     async fn a_failed_process_still_records_the_rounds_it_settled() {
         let config = config(pool().await);
@@ -2191,7 +2319,7 @@ mod tests {
             version: 1,
             confirmed_count: 2,
             failed_count: 0,
-            threshold_met: true,
+            threshold_met: false,
         };
         let result: Result<Vec<DeRecEvent>, ProcessError> = Err(ProcessError {
             channel_id: Some(ChannelId(CHANNEL_ID)),
@@ -2211,11 +2339,11 @@ mod tests {
         assert_eq!(
             protocol
                 .share_store
-                .keep_list(SECRET_ID, 2)
+                .keep_version(SECRET_ID, 2)
                 .await
                 .expect("readable"),
-            Some(vec![1]),
-            "the committed round settled by the failing call must be kept"
+            0,
+            "the round that fell short, settled by the failing call, must not be kept"
         );
     }
 }

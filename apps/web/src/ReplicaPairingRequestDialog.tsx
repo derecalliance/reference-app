@@ -26,7 +26,7 @@ import type { ReplicaPairingRole } from './pairingRoles'
  * participant pairing and offers "Link to existing". Both are wrong here: a
  * replica channel mirrors the whole secret rather than holding a share, and it
  * cannot be linked into another channel's group. Worse, the destination side of
- * a replica pairing is agreeing to have its own vault replaced, and the generic
+ * a replica pairing is agreeing to have its own secret replaced, and the generic
  * modal never said so — the consent for that erase existed only on the
  * initiator's side (`ReplicaPairingWarningDialog`). This is its counterpart for
  * the responder.
@@ -35,8 +35,8 @@ import type { ReplicaPairingRole } from './pairingRoles'
  * accepted; accepting goes through the same `protocol.accept` path a
  * participant pairing takes. The decision to adopt is taken later, in the
  * fingerprint dialog, before this device confirms — confirming is what lets
- * the library install the source's vault (SDK 0.0.7) — and the wipe follows
- * when the vault arrives.
+ * the library install the source's secret (SDK 0.0.7) — and the wipe follows
+ * when the secret arrives.
  *
  * Reject is the default action: it takes focus, carries the filled styling, and
  * is what Escape and a backdrop click resolve to. Rejecting destroys nothing.
@@ -68,8 +68,8 @@ export function ReplicaPairingRequestDialog({
   onReject,
 }: ReplicaPairingRequestDialogProps) {
   // The same predicate that gates the initiator-side warning, so the two sides
-  // cannot disagree about which role loses its vault.
-  const losesOwnVault = requiresEraseConsent(localRole)
+  // cannot disagree about which role loses its secret.
+  const losesOwnSecret = requiresEraseConsent(localRole)
 
   return (
     <AppMuiTheme>
@@ -88,21 +88,21 @@ export function ReplicaPairingRequestDialog({
 
         <DialogContent>
           <Stack spacing={2.5} sx={{ pt: 1 }}>
-            {losesOwnVault && (
+            {losesOwnSecret && (
               // Severity carries an icon and a worded title, so the warning does
               // not depend on colour alone.
               <Alert severity="warning">
-                <AlertTitle>Accepting replaces this device’s vault</AlertTitle>
+                <AlertTitle>Accepting replaces this device’s secret</AlertTitle>
                 As the replica destination, this device keeps nothing of its own. Every
-                secret, helper channel and share stored here is deleted and replaced with{' '}
-                {peerName}’s vault. It cannot be undone from this app.
+                item, helper channel and share stored here is deleted and replaced with{' '}
+                {peerName}’s secret. It cannot be undone from this app.
               </Alert>
             )}
 
             <DialogContentText id="replica-pair-request-summary">
               <strong>{peerName}</strong> wants to pair with this device as a{' '}
               <strong>replica</strong>, not as a participant. A replica is not a helper: it
-              mirrors the <strong>whole secret</strong> — the entire vault, in the clear to
+              mirrors the <strong>whole secret</strong> — every item in it, in the clear to
               its holder — rather than holding one share of it.
             </DialogContentText>
 
@@ -123,8 +123,8 @@ export function ReplicaPairingRequestDialog({
             </Stack>
 
             <Typography variant="body2" color="text.secondary">
-              {losesOwnVault
-                ? 'Nothing is erased by accepting. The channel is established first; then, when you confirm the fingerprint, you are asked once more whether to adopt the vault. Confirming is that decision — the vault is installed here as soon as it arrives — and declining leaves this vault as it is.'
+              {losesOwnSecret
+                ? 'Nothing is erased by accepting. The channel is established first; then, when you confirm the fingerprint, you are asked once more whether to adopt the secret. Confirming is that decision — the secret is installed here as soon as it arrives — and declining leaves this secret as it is.'
                 : 'Accepting only establishes the channel. Both sides confirm the fingerprint before this device mirrors anything to the peer.'}
             </Typography>
           </Stack>
@@ -138,10 +138,10 @@ export function ReplicaPairingRequestDialog({
           </Button>
           <Button
             variant="outlined"
-            color={losesOwnVault ? 'error' : 'primary'}
+            color={losesOwnSecret ? 'error' : 'primary'}
             onClick={onAccept}
           >
-            {losesOwnVault ? 'Accept and become the replica' : 'Accept'}
+            {losesOwnSecret ? 'Accept and become the replica' : 'Accept'}
           </Button>
         </DialogActions>
       </Dialog>

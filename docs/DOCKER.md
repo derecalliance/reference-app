@@ -30,7 +30,7 @@ transports over HTTP and gRPC. It is built for `linux/amd64` and
 docker run -d --name derec \
   -p 5000:5000 -p 50051:50051 \
   -v derec-data:/var/lib/derec \
-  ghcr.io/derecalliance/reference-app:0.0.8-alpha.1
+  ghcr.io/derecalliance/reference-app:0.0.11
 ```
 
 Open <http://localhost:5000>. The UI and the API share that origin; there is no
@@ -43,15 +43,15 @@ and tell the node about it (see [Ports](#ports)):
 docker run -d --name derec \
   -p 8080:5000 -p 50051:50051 -e DEREC_PUBLIC_PORT=8080 \
   -v derec-data:/var/lib/derec \
-  ghcr.io/derecalliance/reference-app:0.0.8-alpha.1
+  ghcr.io/derecalliance/reference-app:0.0.11
 ```
 
 ## Tags and versions
 
 | Tag | Meaning |
 | --- | --- |
-| `0.0.8` | A release. Never changes once published. |
-| `0.0.8-alpha.1`, `-beta.N`, `-rc.N` | A pre-release of that version. Never changes once published. |
+| `0.0.9` | A release. Never changes once published. |
+| `0.0.9-alpha.1`, `-beta.N`, `-rc.N` | A pre-release of that version. Never changes once published. |
 | `latest` | The newest release. Pre-releases never move it. |
 
 The version is the version of the DeRec SDK the image is built against
@@ -68,7 +68,7 @@ Every image carries standard OCI labels (`org.opencontainers.image.version`,
 attestation and an SBOM:
 
 ```
-docker buildx imagetools inspect ghcr.io/derecalliance/reference-app:0.0.8-alpha.1
+docker buildx imagetools inspect ghcr.io/derecalliance/reference-app:0.0.11
 ```
 
 ## Ports
@@ -118,7 +118,7 @@ PostgreSQL. `/var/lib/derec` is a declared volume.
   `DEREC_DATA_DIR` to that directory.
 - **Starting fresh** means erasing the volume *and* clicking **Reset browser
   data** in every browser that used the node. A browser that still holds
-  vaults for actors the node no longer has fails in ways that look like
+  secrets for actors the node no longer has fails in ways that look like
   protocol bugs.
 
 ## Configuration
@@ -208,24 +208,25 @@ How the node runs. Applied directly.
 #### UI defaults: `[defaults]`
 
 Starting values for the setup wizard and the Settings section, served to the
-browser from `GET /api/v1/config`. Users can change them in the app; a vault
+browser from `GET /api/v1/config`. Users can change them in the app; a secret
 runs with what its browser sends when it sets up helpers.
 
 | Variable | TOML key | Default | Description |
 | --- | --- | --- | --- |
-| `DEREC_PARTICIPANT_COUNT` | `defaults.participant_count` | `7` | Helpers to set up for a new vault. At least 1, at most 255. |
+| `DEREC_PARTICIPANT_COUNT` | `defaults.participant_count` | `7` | Helpers to set up for a new secret. At least 1, at most 255. |
 | `DEREC_PRE_PAIRED_COUNT` | `defaults.pre_paired_count` | `3`, or the count if lower | Helpers paired automatically, skipping the QR exchange. A testing shortcut. At most the count. |
 | `DEREC_MIN_PARTICIPANTS` | `defaults.min_participants` | `3`, or the count if lower | Paired helpers required before a secret can be protected. At least 1, at most the count. |
 | `DEREC_RECOMMENDED_PARTICIPANTS` | `defaults.recommended_participants` | `5`, kept between the minimum and the count | Paired helpers below which the UI warns. |
 | `DEREC_HELPER_TRANSPORTS_HTTP` | `defaults.helper_transports.http` | the count | Helpers that advertise HTTP only. |
 | `DEREC_HELPER_TRANSPORTS_GRPC` | `defaults.helper_transports.grpc` | `0` | Helpers that advertise gRPC only. Needs gRPC enabled. |
 | `DEREC_HELPER_TRANSPORTS_BOTH` | `defaults.helper_transports.both` | `0` | Helpers that advertise both. Needs gRPC enabled. |
-| `DEREC_PROTOCOL_TIMEOUT_SECS` | `defaults.protocol_timeout_secs` | `300` | The protocol timeout, in seconds: how long messages and rounds stay valid, and how long the UI waits on pairing. Greater than 0. |
-| `DEREC_AUTHENTICATION_METHOD` | `defaults.authentication_method` | `user` | How channels are recognised as the same user: `user` (the helper links them when accepting a pairing). `application` is reserved and not yet selectable. |
-| `DEREC_UNPAIR_ACK` | `defaults.unpair_ack` | `required` | `required`: unpairing waits for the peer's acknowledgement or the timeout. `not_required`: state is dropped at once. |
-| `DEREC_AUTO_ACCEPT_UNPAIR_REQUESTS` | `defaults.auto_accept_unpair_requests` | `true` | Accept an incoming unpair request without asking. |
-| `DEREC_AUTO_ACCEPT_STORE_SHARE_REQUESTS` | `defaults.auto_accept_store_share_requests` | `false` | A vault acting as a helper stores incoming shares without asking. |
-| `DEREC_AUTO_ACCEPT_VERIFY_SHARE_REQUESTS` | `defaults.auto_accept_verify_share_requests` | `false` | A vault acting as a helper answers verification requests without asking. |
+
+A secret's protocol settings (timeout, unpair acknowledgement, auto-accepting
+incoming requests, authentication method) are not node settings: each secret
+sets its own in the app, starting from the app's defaults. The variables and
+keys older images read for them (`DEREC_PROTOCOL_TIMEOUT_SECS`,
+`DEREC_UNPAIR_ACK`, `DEREC_AUTO_ACCEPT_*`, `DEREC_AUTHENTICATION_METHOD`) are
+ignored, with a warning at boot.
 
 Leave the four derived values (`pre_paired_count`, `min_participants`,
 `recommended_participants` and the `helper_transports` breakdown) unset unless
@@ -305,7 +306,7 @@ services:
     restart: unless-stopped
 
   node:
-    image: ghcr.io/derecalliance/reference-app:0.0.8-alpha.1
+    image: ghcr.io/derecalliance/reference-app:0.0.11
     env_file:
       - path: .env
         required: false
@@ -353,7 +354,7 @@ not node settings.
 docker run -d --name derec -p 5000:5000 -p 50051:50051 \
   -v derec-data:/var/lib/derec \
   -e DEREC_BASE_URL=http://192.168.0.28 \
-  ghcr.io/derecalliance/reference-app:0.0.8-alpha.1
+  ghcr.io/derecalliance/reference-app:0.0.11
 ```
 
 Find the address with `ipconfig getifaddr en0` (macOS) or `hostname -I`
@@ -374,7 +375,7 @@ list B in A's `DEREC_RELAY_ALLOWED_HOSTS` (`192.168.0.30:50051`).
 Everything is gone when the container stops. The node warns about this at
 boot.
 
-**A smaller default vault.** `-e DEREC_PARTICIPANT_COUNT=3`. The other counts
+**Fewer helpers per new secret.** `-e DEREC_PARTICIPANT_COUNT=3`. The other counts
 follow unless you pinned them.
 
 ## Operating the container

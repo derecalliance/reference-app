@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   acceptFingerprintMatch,
   type AdoptableInstance,
-  adoptedVaultState,
+  adoptedSecretState,
   adoptionSourceLabel,
   adoptReplicaSecret,
   type AutomaticReplicaSyncOutcome,
@@ -292,14 +292,14 @@ describe('formatFingerprint', () => {
 })
 
 describe('mirrored payload shape (spec risk R1)', () => {
-  it('keeps the mirrored secret identical to what recovery produces', () => {
+  it('keeps the mirrored secret passable to restore, field for field', () => {
     // The real assertion is the type of `REPLICA_PAYLOAD_MIRRORS_RECOVERY`,
-    // which only inhabits `true` when `ReplicaSecretReceived['secret']` and
-    // `SecretRecovered['secret']` are exactly the same type. If a WASM rebuild
-    // ever diverges them, its declared type becomes `false` and `typecheck`
-    // fails at the declaration. This asserts the value so the guard is also
-    // reachable from the suite rather than being dead-looking code.
-    expect(REPLICA_PAYLOAD_MIRRORS_RECOVERY).toBe(true)
+    // which only inhabits `[true, true, true, true]` while a mirrored secret is
+    // assignable to `SecretRecovered['secret']` and has the same fields at every
+    // level. If a WASM rebuild ever diverges them, an element's type becomes
+    // `false` and `typecheck` fails at the declaration. This asserts the value
+    // so the guard is also reachable from the suite rather than dead-looking.
+    expect(REPLICA_PAYLOAD_MIRRORS_RECOVERY).toEqual([true, true, true, true])
   })
 })
 
@@ -336,7 +336,7 @@ describe('mergeReplicaSecretReceipt', () => {
       fromReplicaId: 'a1',
       secretId: '42',
       version,
-      secret: { helpers: [], secrets: [] },
+      payload: { helpers: [], secrets: [] },
       shares: [],
       ...overrides,
     }
@@ -380,7 +380,7 @@ describe('adoptionSourceLabel', () => {
       fromReplicaId: 'ff01',
       secretId,
       version: 1,
-      secret: { helpers: [], secrets: [] },
+      payload: { helpers: [], secrets: [] },
       shares: [],
     }
   }
@@ -553,7 +553,7 @@ describe('adoptReplicaSecret', () => {
     ownTransportUri: 'https://example.test/mailbox',
     communicationInfo: { name: 'This device' },
     threshold: 2,
-    keepList: () => null,
+    keepVersion: () => 0,
     timeoutSecs: 300,
     unpairAck: 'required',
   }
@@ -564,7 +564,7 @@ describe('adoptReplicaSecret', () => {
     // The *source's* secret id — deliberately not this device's own.
     secretId: '42',
     version: 7,
-    secret: { helpers: [], secrets: [] },
+    payload: { helpers: [], secrets: [] },
     shares: [],
   }
 
@@ -612,11 +612,11 @@ describe('adoptReplicaSecret', () => {
 
     const instance: AdoptableInstance = {
       protocol: {
-        restore: (secret, version) => {
+        restore: (payload, version) => {
           state.calls.push('restore')
           state.wipedBeforeRestore = state.wiped.length > 0
           state.restoreCalls.push({ secretId: state.buildParams.at(-1)?.secretId ?? '', version })
-          state.restoredSecrets.push(secret)
+          state.restoredSecrets.push(payload)
           return restoreOutcome()
         },
       },
@@ -659,12 +659,12 @@ describe('adoptReplicaSecret', () => {
   it('rejects an unreadable payload without touching the device', async () => {
     // The failure that motivated this: a payload whose `data` arrived as a
     // plain array blew up inside `restore` — *after* the wipe — so a copy this
-    // device could never have adopted still cost it its vault. Validation now
+    // device could never have adopted still cost it its secret. Validation now
     // runs first, and nothing is destroyed.
     const h = harness(async () => [])
     const unreadable: PendingReplicaAdoption = {
       ...adoption,
-      secret: {
+      payload: {
         helpers: [],
         secrets: [{ id: new Uint8Array([1]), name: 'Passphrase', data: undefined as never }],
       },
@@ -678,11 +678,11 @@ describe('adoptReplicaSecret', () => {
     expect(h.wiped).toEqual([])
   })
 
-  it('says the vault is intact when it refused before the wipe', async () => {
+  it('says the secret is intact when it refused before the wipe', async () => {
     const h = harness(async () => [])
     const unreadable: PendingReplicaAdoption = {
       ...adoption,
-      secret: {
+      payload: {
         helpers: [],
         secrets: [{ id: new Uint8Array([1]), name: 'Passphrase', data: undefined as never }],
       },
@@ -696,7 +696,7 @@ describe('adoptReplicaSecret', () => {
     }
     expect(error).toBeInstanceOf(ReplicaAdoptionError)
 
-    // The standing message tells the user their vault was erased. Saying that
+    // The standing message tells the user their secret was erased. Saying that
     // when it was not would send someone inspecting a device that is fine.
     expect(error?.failure.text).toContain('intact')
     expect(error?.failure.wipeDidNotTake).toBe(false)
@@ -706,7 +706,7 @@ describe('adoptReplicaSecret', () => {
     const h = harness(async () => [])
     const plainArrays: PendingReplicaAdoption = {
       ...adoption,
-      secret: {
+      payload: {
         helpers: [],
         secrets: [{ id: [1, 2] as never, name: 'Passphrase', data: [104, 105] as never }],
       },
@@ -863,7 +863,7 @@ describe('adoptReplicaSecret', () => {
   })
 })
 
-describe('adoptedVaultState', () => {
+describe('adoptedSecretState', () => {
   const bytes = (text: string): Uint8Array => new TextEncoder().encode(text)
   const helperUri = 'https://example.test/helper-1'
 
@@ -872,7 +872,7 @@ describe('adoptedVaultState', () => {
     fromReplicaId: 'ff01',
     secretId: '42',
     version: 7,
-    secret: {
+    payload: {
       helpers: [
         {
           channel_id: '901',
@@ -900,8 +900,8 @@ describe('adoptedVaultState', () => {
   /** The same snapshot, plus the replica group the destination belongs to. */
   const withGroup: PendingReplicaAdoption = {
     ...adoption,
-    secret: {
-      ...adoption.secret,
+    payload: {
+      ...adoption.payload,
       replicas: {
         channel_id: '950',
         shared_key: bytes('group-key'),
@@ -927,7 +927,7 @@ describe('adoptedVaultState', () => {
     // Adoption wipes this device's replica bookkeeping before restoring, so the
     // snapshot is the only place the group survives. Without projecting it the
     // destination showed `Replicas 0` while the source showed the pairing live.
-    const { participants } = adoptedVaultState(withGroup, actors, 2)
+    const { participants } = adoptedSecretState(withGroup, actors, 2)
 
     const replicas = participants.filter(p => p.peerRole === 'replica_source')
     expect(replicas).toHaveLength(1)
@@ -937,24 +937,37 @@ describe('adoptedVaultState', () => {
   })
 
   it('does not count the replica group as a share holder', () => {
-    // A replica mirrors a vault; it holds no share. Counting it would put a
+    // A replica mirrors a secret; it holds no share. Counting it would put a
     // peer into the bag version that no verification round can ever answer for.
-    const { participants, secretBag } = adoptedVaultState(withGroup, actors, 2)
+    const { participants, itemBag } = adoptedSecretState(withGroup, actors, 2)
 
     const replica = participants.find(p => p.peerRole === 'replica_source')
-    expect(secretBag.currentVersion.participantIds).not.toContain(replica?.id)
-    expect(secretBag.currentVersion.helpers.map(h => h.channelId)).not.toContain('950')
+    expect(itemBag.currentVersion.participantIds).not.toContain(replica?.id)
+    expect(itemBag.currentVersion.helpers.map(h => h.channelId)).not.toContain('950')
     expect(replica?.secretShares).toEqual([])
   })
 
+  it('keeps the group\'s threshold and each helper\'s weight (review I3)', () => {
+    const weighted: PendingReplicaAdoption = {
+      ...adoption,
+      payload: { ...adoption.payload, threshold: 3, helpers: [{ ...adoption.payload.helpers[0], weight: 2 }] },
+    }
+
+    const { participants, itemBag } = adoptedSecretState(weighted, actors, 2)
+
+    expect(itemBag.threshold).toBe(3)
+    expect(itemBag.currentVersion.threshold).toBe(3)
+    expect(participants.find(p => p.channelId === '901')?.weight).toBe(2)
+  })
+
   it('leaves the roster unchanged when the snapshot carries no group', () => {
-    const { participants } = adoptedVaultState(adoption, actors, 2)
+    const { participants } = adoptedSecretState(adoption, actors, 2)
 
     expect(participants.filter(p => p.peerRole === 'replica_source')).toHaveLength(0)
   })
 
   it('re-identifies an adopted helper against the roster by transport uri', () => {
-    const { participants } = adoptedVaultState(adoption, actors, 2)
+    const { participants } = adoptedSecretState(adoption, actors, 2)
 
     // Snapshot records carry only what travelled on the wire; without this the
     // row would be an anonymous placeholder backend polling can never match.
@@ -967,7 +980,7 @@ describe('adoptedVaultState', () => {
   })
 
   it('falls back to the snapshot identity for a helper the roster does not know', () => {
-    const { participants } = adoptedVaultState(adoption, [], 2)
+    const { participants } = adoptedSecretState(adoption, [], 2)
 
     expect(participants[0].id).toBe('peer-901')
     expect(participants[0].name).toBe('Snapshot name')
@@ -984,7 +997,7 @@ describe('adoptedVaultState', () => {
       },
     ]
 
-    expect(adoptedVaultState(adoption, elsewhere, 2).participants[0].id).toBe('peer-901')
+    expect(adoptedSecretState(adoption, elsewhere, 2).participants[0].id).toBe('peer-901')
   })
 
   it('tells apart helpers that share one gRPC endpoint, never giving two rows one actor', () => {
@@ -1007,10 +1020,10 @@ describe('adoptedVaultState', () => {
     })
     const twoGrpc: PendingReplicaAdoption = {
       ...adoption,
-      secret: { ...adoption.secret, helpers: [grpcHelper('901', 'Alex'), grpcHelper('902', 'Richard')] },
+      payload: { ...adoption.payload, helpers: [grpcHelper('901', 'Alex'), grpcHelper('902', 'Richard')] },
     }
 
-    const { participants } = adoptedVaultState(
+    const { participants } = adoptedSecretState(
       twoGrpc,
       [grpcActor('alex-actor', 'Alex'), grpcActor('richard-actor', 'Richard')],
       2,
@@ -1020,30 +1033,30 @@ describe('adoptedVaultState', () => {
   })
 
   it('keys the adopted bag on the source’s secret id at the offered version', () => {
-    const { secretBag } = adoptedVaultState(adoption, actors, 2)
+    const { itemBag } = adoptedSecretState(adoption, actors, 2)
 
-    expect(secretBag.secretId).toBe('42')
-    expect(secretBag.currentVersion.version).toBe(7)
-    expect(secretBag.previousVersions).toEqual([])
-    expect(secretBag.threshold).toBe(2)
+    expect(itemBag.secretId).toBe('42')
+    expect(itemBag.currentVersion.version).toBe(7)
+    expect(itemBag.previousVersions).toEqual([])
+    expect(itemBag.threshold).toBe(2)
   })
 
-  it('decodes the adopted secrets to text', () => {
-    const { secretBag } = adoptedVaultState(adoption, actors, 2)
+  it('decodes the adopted items to text', () => {
+    const { itemBag } = adoptedSecretState(adoption, actors, 2)
 
-    expect(secretBag.currentVersion.secrets).toEqual([
+    expect(itemBag.currentVersion.items).toEqual([
       { id: expect.any(String), name: 'Passphrase', data: 'hunter2' },
     ])
   })
 
   it('records each adopted helper as holding the adopted version', () => {
-    const { participants, secretBag } = adoptedVaultState(adoption, actors, 2)
+    const { participants, itemBag } = adoptedSecretState(adoption, actors, 2)
 
     expect(participants[0].secretShares).toEqual([
       { version: 7, status: 'confirmed', verified: false },
     ])
-    expect(secretBag.currentVersion.participantIds).toEqual(['helper-actor-1'])
-    expect(secretBag.currentVersion.helpers).toEqual([
+    expect(itemBag.currentVersion.participantIds).toEqual(['helper-actor-1'])
+    expect(itemBag.currentVersion.helpers).toEqual([
       { id: 'helper-actor-1', name: 'Richard', channelId: '901' },
     ])
   })
@@ -1107,8 +1120,8 @@ describe('replicaSyncTargets', () => {
     // The mirror is unidirectional. On a `replica_destination` row the peer is
     // the source — the library's `peer_role` is `ReplicaSource`, which
     // `ProtectSecret` does not select — so a round dispatched from here would
-    // push *this* device's vault at a peer that never asked for it, moments
-    // before adoption erases the vault it just re-split.
+    // push *this* device's secret at a peer that never asked for it, moments
+    // before adoption erases the secret it just re-split.
     expect(replicaSyncTargets([view({ direction: 'replica_destination' })])).toEqual([])
   })
 
@@ -1140,7 +1153,7 @@ describe('replicaViews', () => {
   //
   // A replica is a pairing *mode*, so nothing on the roster marks one: a helper
   // paired in replica mode is an ordinary `helper` there, and another browser
-  // device mirroring this vault is an ordinary `owner`. Every row therefore
+  // device mirroring this secret is an ordinary `owner`. Every row therefore
   // comes from the channel record this device wrote when the handshake
   // completed. The roster is consulted only to enrich a row that already exists.
 
@@ -1482,7 +1495,7 @@ describe('recordReplicaChannel', () => {
   })
 
   it('is dropped by the adoption wipe, like the rest of the bookkeeping', () => {
-    // Adoption replaces the vault and the library drops every channel with it;
+    // Adoption replaces the secret and the library drops every channel with it;
     // a surviving record would keep rendering a row for a channel that is gone.
     recordReplicaChannel('chan-e', { channelId: '900', role: 'replica_destination' })
 
@@ -1665,7 +1678,7 @@ describe('replicasAwaitingFirstSync', () => {
   it('never lists a destination that is only pending confirmation', () => {
     // The gate that matters: `ProtectSecret` selects `Paired` channels only, so
     // an implementation that fired on "has a channel" would ship the mirrored
-    // vault at a device whose fingerprint nobody has checked.
+    // secret at a device whose fingerprint nobody has checked.
     expect(replicasAwaitingFirstSync([replicaView({ status: 'pending' })])).toEqual([])
   })
 
@@ -1683,7 +1696,7 @@ describe('replicasAwaitingFirstSync', () => {
     // The automatic path runs on *both* devices: the destination confirms the
     // fingerprint too, and its own row reaches `paired` the same way. Without
     // the direction gate that confirmation dispatches a `ProtectSecret` round
-    // here — bumping this device's vault version and re-splitting its shares to
+    // here — bumping this device's secret version and re-splitting its shares to
     // its own helpers seconds before adoption erases all of it.
     expect(
       replicasAwaitingFirstSync([replicaView({ direction: 'replica_destination' })]),
@@ -2019,7 +2032,7 @@ describe('createReplicaFirstSyncTrigger', () => {
       expect(recorder.marked).toEqual([])
     })
 
-    it('reports an empty vault rather than claiming a copy was sent', async () => {
+    it('reports a secret with no items rather than claiming a copy was sent', async () => {
       const { trigger } = harness({ result: 'nothing-to-mirror' })
 
       await expect(trigger.syncNow()).resolves.toEqual({ kind: 'nothing-to-mirror' })
@@ -2126,7 +2139,7 @@ describe('canRequestReplicaSync', () => {
 
   it('does not offer it on a destination row', () => {
     // The mirror runs the other way here. A round dispatched from a destination
-    // row would push *this* device's vault at a peer that never asked for it.
+    // row would push *this* device's secret at a peer that never asked for it.
     expect(canRequestReplicaSync(replicaView({ direction: 'replica_destination' }))).toBe(false)
   })
 

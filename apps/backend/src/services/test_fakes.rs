@@ -14,13 +14,14 @@ use derec_library::types::ChannelId;
 use uuid::Uuid;
 
 use crate::models::{
-    Actor, ActorSettings, ChannelSummary, ContactRequest, Event, EventSnapshot, InboxKind,
-    Listener, NewEvent, OwnTarget, PlannedRegistration, Role, Route, Side, Tier, Transport,
-    UnpairAck, UnpairedContact,
+    Actor, ActorSettings, ChannelSummary, ContactRequest, Event, EventSnapshot, HelperFault,
+    InboxKind, Listener, NewEvent, OwnTarget, PlannedRegistration, Role, Route, Side, Tier,
+    Transport, UnpairAck, UnpairedContact,
 };
 use crate::repositories::actors::{ActorRepository, RegistrationPlan};
 use crate::repositories::browser_contacts::BrowserContactRepository;
 use crate::repositories::disabled_helpers::DisabledHelperRepository;
+use crate::repositories::helper_faults::HelperFaultRepository;
 use crate::repositories::mailboxes::MailboxRepository;
 use crate::repositories::participant_data::ParticipantDataRepository;
 use crate::repositories::protocol_records::ProtocolRecordRepository;
@@ -181,6 +182,37 @@ impl DisabledHelperRepository for FakeDisabledHelpers {
 }
 
 #[derive(Default)]
+pub struct FakeHelperFaults {
+    faults: Mutex<HashMap<Uuid, HelperFault>>,
+}
+
+impl FakeHelperFaults {
+    pub fn fault_now(&self, actor_id: &Uuid) -> HelperFault {
+        lock(&self.faults)
+            .get(actor_id)
+            .copied()
+            .unwrap_or_default()
+    }
+}
+
+#[async_trait]
+impl HelperFaultRepository for FakeHelperFaults {
+    async fn fault(&self, actor_id: &Uuid) -> Result<HelperFault> {
+        Ok(self.fault_now(actor_id))
+    }
+
+    async fn set_fault(&self, actor_id: &Uuid, fault: HelperFault) -> Result<()> {
+        let mut faults = lock(&self.faults);
+        if fault == HelperFault::None {
+            faults.remove(actor_id);
+        } else {
+            faults.insert(*actor_id, fault);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Default)]
 pub struct FakeBrowserContacts {
     contacts: Mutex<HashMap<Uuid, String>>,
 }
@@ -292,6 +324,7 @@ pub fn helper_record(channel_id: u64, status: ChannelStatus, created_at: u64) ->
         peer_role: derec_proto::SenderKind::Owner,
         status,
         created_at,
+        weight: 1,
     }
 }
 
@@ -333,6 +366,16 @@ impl ProtocolRecordRepository for FakeProtocolRecords {
             .get(actor_id)
             .cloned()
             .unwrap_or_default())
+    }
+
+    async fn paired_channel_ids(&self, actor_id: &Uuid) -> Result<Vec<u64>> {
+        let mut ids: Vec<u64> = lock(&self.held)
+            .iter()
+            .filter(|(actor, _)| actor == actor_id)
+            .map(|(_, channel_id)| *channel_id)
+            .collect();
+        ids.sort_unstable();
+        Ok(ids)
     }
 
     async fn shared_key(

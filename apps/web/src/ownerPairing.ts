@@ -2,7 +2,7 @@
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
 import { SenderKind, type DeRecEvent } from '@derec-alliance/web'
-import type { ChannelRole, Vault, PairedParticipant } from './types'
+import type { ChannelRole, Secret, PairedParticipant } from './types'
 import type { ConsoleEntry } from './ConsoleContext'
 import { apiGetActors } from './api'
 import {
@@ -168,9 +168,9 @@ export type PairingCompletedEvent = Extract<DeRecEvent, { type: 'PairingComplete
 export interface PairingCompletedDeps {
   log: (entry: Omit<ConsoleEntry, 'id' | 'timestamp'>) => void
   /** Latest committed owner state, read when the async identity lookup lands. */
-  getVault: () => Vault
+  getSecret: () => Secret
   /** Commit owner state produced after this fold has already returned. */
-  commit: (next: Vault) => void
+  commit: (next: Secret) => void
   /**
    * A replica handshake just completed on `channelId`.
    *
@@ -182,7 +182,7 @@ export interface PairingCompletedDeps {
   onReplicaChannelEstablished?: (channelId: string) => void
   /**
    * What the library's channel record says the peer advertised. Read for a
-   * peer this vault had no roster identity for — the side that *accepted* a
+   * peer this secret had no roster identity for — the side that *accepted* a
    * pairing request learns the peer's endpoints only from the handshake, and
    * without this the row carried an empty URI until an identity update arrived.
    */
@@ -197,11 +197,11 @@ export interface PairingCompletedDeps {
  * here and does nothing else with the event.
  */
 export function applyPairingCompleted(
-  current: Vault,
+  current: Secret,
   event: PairingCompletedEvent,
   deps: PairingCompletedDeps,
-): Vault {
-  const { log, getVault, commit, onReplicaChannelEstablished, readChannelInfo } = deps
+): Secret {
+  const { log, getSecret, commit, onReplicaChannelEstablished, readChannelInfo } = deps
 
   // The handshake atomically rotates to a long-term channel id at
   // completion. `pairing_channel_id` is the transient id that travelled on
@@ -227,7 +227,7 @@ export function applyPairingCompleted(
     payload: { channelId, pairingChannelId, actorId },
   })
 
-  let updated: Vault = {
+  let updated: Secret = {
     ...current,
     pendingPairings: pending
       ? current.pendingPairings.filter(p => p !== pending)
@@ -388,7 +388,7 @@ export function applyPairingCompleted(
     // unknown. When it was already identified by a prior pairing, the
     // name/transport are carried over above.
     if (!actorId) {
-      const vaultId = current.id
+      const localSecretId = current.id
       // Only endpoints the peer itself is known to use: the contact we paired
       // against (initiator), and what the handshake advertised. Never this
       // node's roster alone — a peer on another node is not on it, and an
@@ -400,9 +400,9 @@ export function applyPairingCompleted(
       const sentName = event.peer_communication_info?.name?.trim()
       if (peerTransportUris.length > 0) {
         apiGetActors().then(actors => {
-          const peerActor = resolvePeerActor(actors, { selfActorId: vaultId, peerTransportUris })
+          const peerActor = resolvePeerActor(actors, { selfActorId: localSecretId, peerTransportUris })
           if (!peerActor) return
-          const snapshot = getVault()
+          const snapshot = getSecret()
           commit({
             ...snapshot,
             participants: snapshot.participants.map(h =>
@@ -440,16 +440,16 @@ export function applyPairingCompleted(
 /**
  * The channel's shared key as the library's secret store holds it, or `null`.
  *
- * The store partitions by secret id — `derec:vault:<id>:<secret id>:secret:
- * <channel>:0` — and the partition is not always this vault's own secret: on a
- * channel where this vault is the *helper*, it is the owner's. This used to
+ * The store partitions by secret id — `derec:secret:<local id>:<secret id>:secret:
+ * <channel>:0` — and the partition is not always this secret's own: on a
+ * channel where this side is the *helper*, it is the owner's. This used to
  * read the key without any partition, which matched nothing, so a channel the
  * roster poll does not cover (a helper paired from a pasted contact, a browser
  * peer) never showed its key. Scanning for the channel across partitions finds
  * it wherever it is.
  */
-export function readLocalSharedKey(vaultId: string, channelId: string): string | null {
-  const prefix = `derec:vault:${vaultId}:`
+export function readLocalSharedKey(localSecretId: string, channelId: string): string | null {
+  const prefix = `derec:secret:${localSecretId}:`
   const suffix = `:secret:${channelId}:0`
   try {
     for (let i = 0; i < localStorage.length; i++) {

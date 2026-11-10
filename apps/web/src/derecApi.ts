@@ -89,7 +89,7 @@ export function sendMessage(uri: string, message: Uint8Array): Promise<void> {
  * Ask the backend to deliver a message to an endpoint this browser cannot
  * dial. A browser has no HTTP/2 trailer access and so cannot speak gRPC.
  *
- * `actorId` is the owner actor the relay acts for — the vault's own id — and
+ * `actorId` is the owner actor the relay acts for — the local secret id — and
  * attributes the request in the node's debug events. The node's refusal is
  * passed on in its own words: 403 a target outside the allowed hosts, 409 gRPC
  * off, 400 a malformed target, 413 too large, 502 the delivery itself failed,
@@ -113,8 +113,8 @@ export function relayMessage(uri: string, message: Uint8Array, actorId?: string)
  * of the node answered for it because the node did not.
  *
  * Distinct from the node answering "no" (an unknown actor, say), which is about
- * one vault. This is about every vault at once — they all poll the same node —
- * so the manager reports it once for the node rather than once per vault.
+ * one secret. This is about every secret at once — they all poll the same node —
+ * so the manager reports it once for the node rather than once per secret.
  */
 export class NodeUnreachableError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {

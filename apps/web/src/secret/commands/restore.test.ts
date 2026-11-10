@@ -1,0 +1,299 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import type { ProtocolInstance } from '../../owner/protocol'
+import { loadReplicaState, recordReplicaChannel, replicaChannelRowId } from '../../replicaFlows'
+import { readReplicaId } from '../../replicaIdentity'
+import type { RecoveredSecret, Secret } from '../../types'
+import { secret } from '../testSecret'
+import type { CommandContext } from './context'
+import { restoreSecret } from './restore'
+
+const { buildProtocolInstance, apiGetActors } = vi.hoisted(() => ({
+  buildProtocolInstance: vi.fn(),
+  apiGetActors: vi.fn(),
+}))
+
+vi.mock('../../owner/protocol', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../owner/protocol')>()),
+  buildProtocolInstance,
+}))
+
+vi.mock('../../api', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../api')>()),
+  apiGetActors,
+}))
+
+const GRPC = 'grpc://localhost:50051'
+
+/** A bag recovered from two gRPC-only helpers that share the node's one gRPC endpoint. */
+const recovered: RecoveredSecret = {
+  secretId: '77',
+  version: 6,
+  label: 'Crypto Seeds',
+  snapshot: {
+    helpers: [
+      { channelId: '11', transports: [{ uri: GRPC, protocol: 'grpc' }], communicationInfo: { name: 'Alex' }, sharedKey: '' },
+      { channelId: '22', transports: [{ uri: GRPC, protocol: 'grpc' }], communicationInfo: { name: 'Richard' }, sharedKey: '' },
+    ],
+    items: [{ id: 'AQID', name: 'Seed', data: 'b25lIHR3bw' }],
+  },
+}
+
+function grpcHelper(id: string, name: string) {
+  return {
+    id,
+    role: 'helper' as const,
+    name,
+    transport: { protocol: 'grpc' as const, uri: GRPC },
+    transports: [{ protocol: 'grpc' as const, uri: GRPC }],
+    secret_id: '1',
+  }
+}
+
+function fakeInstance(): ProtocolInstance {
+  return {
+    secretId: '77',
+    protocol: {
+      restore: vi.fn(async () => []),
+      setOwnTransports: vi.fn(async () => {}),
+      setCommunicationInfo: vi.fn(async () => {}),
+      start: vi.fn(async () => []),
+    },
+    channelStore: {},
+    shareStore: {},
+  } as unknown as ProtocolInstance
+}
+
+function context(current: Secret) {
+  let record = current
+  const ctx: CommandContext = {
+    log: vi.fn(),
+    notify: { error: vi.fn(), info: vi.fn(), outcome: vi.fn() },
+    getSecret: () => record,
+    commit: vi.fn((next: Secret) => {
+      record = next
+    }),
+    instance: () => null,
+    keepVersion: () => 0,
+    withLock: fn => fn(),
+    fold: c => c,
+    adoptInstance: vi.fn(),
+  }
+  return { ctx, committed: () => record }
+}
+
+beforeEach(() => {
+  buildProtocolInstance.mockReset()
+  apiGetActors.mockReset()
+})
+
+describe('restoreSecret', () => {
+  it('installs the instance it restored into, so protect and verify work without a reload', async () => {
+    const instance = fakeInstance()
+    buildProtocolInstance.mockReturnValue(instance)
+    apiGetActors.mockResolvedValue([])
+    const { ctx, committed } = context(secret())
+
+    await expect(restoreSecret(recovered, ctx)).resolves.toBe(true)
+
+    expect(ctx.adoptInstance).toHaveBeenCalledWith(instance)
+    expect(committed().secretId).toBe('77')
+    // The library writes no tracking shares on restore: the version says so.
+    expect(committed().itemBag?.currentVersion.restoredFromRecovery).toBe(true)
+  })
+
+  it('takes the threshold the recovered roster was split with as this secret\'s default (SDK 0.0.9)', async () => {
+    buildProtocolInstance.mockReturnValue(fakeInstance())
+    apiGetActors.mockResolvedValue([])
+    const { ctx, committed } = context(secret({ minParticipants: 2 }))
+
+    await restoreSecret({ ...recovered, snapshot: { ...recovered.snapshot, threshold: 3 } }, ctx)
+
+    // The library writes the roster's threshold as the next publish's; the
+    // app's default follows it, so the dialog pre-fills what the library uses.
+    expect(committed().publishPolicy?.defaultThreshold).toBe(3)
+    expect(committed().itemBag?.currentVersion.threshold).toBe(3)
+  })
+
+  it('keeps this secret\'s default when the roster predates the recorded threshold', async () => {
+    buildProtocolInstance.mockReturnValue(fakeInstance())
+    apiGetActors.mockResolvedValue([])
+    const { ctx, committed } = context(secret({ minParticipants: 2 }))
+
+    await restoreSecret(recovered, ctx)
+
+    expect(committed().publishPolicy?.defaultThreshold ?? committed().minParticipants).toBe(2)
+  })
+
+  it('re-identifies gRPC helpers sharing one endpoint as distinct actors', async () => {
+    buildProtocolInstance.mockReturnValue(fakeInstance())
+    apiGetActors.mockResolvedValue([grpcHelper('a1', 'Alex'), grpcHelper('r1', 'Richard')])
+    const { ctx, committed } = context(secret())
+
+    await restoreSecret(recovered, ctx)
+
+    expect(committed().participants.map(p => p.id)).toEqual(['a1', 'r1'])
+    expect(committed().participants.map(p => p.transport)).toEqual([
+      { protocol: 'grpc', uri: GRPC },
+      { protocol: 'grpc', uri: GRPC },
+    ])
+  })
+
+  it('keeps the channels the snapshot restores, retiring only the ones paired to recover', async () => {
+    const instance = fakeInstance()
+    buildProtocolInstance.mockReturnValue(instance)
+    apiGetActors.mockResolvedValue([])
+    // Restoring on the device that protected the bag: channels 11 and 22 are
+    // the very ones the snapshot names. 33 was paired only to recover.
+    const running = fakeInstance()
+    const paired = (channelId: string) => ({
+      id: `h${channelId}`,
+      name: `Helper ${channelId}`,
+      channelId,
+      transport: { protocol: 'https' as const, uri: `http://localhost:5000/derec/h${channelId}` },
+      secretShares: [],
+      connectionStatus: 'paired' as const,
+    })
+    const { ctx } = context(secret({ participants: [paired('11'), paired('22'), paired('33')] }))
+    ctx.instance = () => running
+
+    await expect(restoreSecret(recovered, ctx)).resolves.toBe(true)
+
+    const unpaired = vi
+      .mocked(running.protocol.start)
+      .mock.calls.map(call => (call as unknown[])[1] as { channel_id: string })
+      .map(params => params.channel_id)
+    expect(unpaired).toEqual(['33'])
+  })
+
+  it('does not install anything when the restore itself fails', async () => {
+    const instance = fakeInstance()
+    vi.mocked(instance.protocol.restore).mockRejectedValue(new Error('ALREADY_RESTORED'))
+    buildProtocolInstance.mockReturnValue(instance)
+    const { ctx } = context(secret())
+
+    await expect(restoreSecret(recovered, ctx)).resolves.toBe(false)
+
+    expect(ctx.adoptInstance).not.toHaveBeenCalled()
+    expect(ctx.commit).not.toHaveBeenCalled()
+  })
+})
+
+describe('restoreSecret with a replica group', () => {
+  const HTTP = (name: string) => `http://localhost:5000/derec/${name}`
+
+  /** The same bag, protected from a device (1001) mirrored to a hosted replica (2002). */
+  const withGroup: RecoveredSecret = {
+    ...recovered,
+    snapshot: {
+      ...recovered.snapshot,
+      replicas: {
+        channelId: '700',
+        sharedKey: '',
+        members: [
+          { replicaId: '1001', role: 'Source', transports: [{ uri: HTTP('lost'), protocol: 'https' }], communicationInfo: { name: 'Lost laptop' } },
+          { replicaId: '2002', role: 'Destination', transports: [{ uri: HTTP('r1'), protocol: 'https' }], communicationInfo: { name: 'Hosted replica' } },
+        ],
+      },
+    },
+  }
+
+  const replicaHelper = {
+    id: 'r1',
+    role: 'helper' as const,
+    name: 'Hosted replica',
+    transport: { protocol: 'https' as const, uri: HTTP('r1') },
+    transports: [{ protocol: 'https' as const, uri: HTTP('r1') }],
+    secret_id: '1',
+  }
+
+  afterEach(() => localStorage.clear())
+
+  function builtReplicaId(): bigint {
+    return (buildProtocolInstance.mock.calls[0][0] as { replicaId: bigint }).replicaId
+  }
+
+  it('on a new device, runs and persists as the group’s source, so the next publish has a row of its own', async () => {
+    buildProtocolInstance.mockReturnValue(fakeInstance())
+    apiGetActors.mockResolvedValue([replicaHelper])
+    // This device's own id, minted when the secret started — not in the group.
+    localStorage.setItem('derec:replica-id:v1', '5555')
+    const { ctx } = context(secret())
+
+    await expect(restoreSecret(withGroup, ctx)).resolves.toBe(true)
+
+    expect(builtReplicaId()).toBe(1001n)
+    // Every later instance of the secret is built with the same id.
+    expect(readReplicaId('v1')).toBe(1001n)
+  })
+
+  it('on the device that holds the group, keeps its own id', async () => {
+    buildProtocolInstance.mockReturnValue(fakeInstance())
+    apiGetActors.mockResolvedValue([])
+    localStorage.setItem('derec:replica-id:v1', '1001')
+    const { ctx } = context(secret())
+
+    await restoreSecret(withGroup, ctx)
+
+    expect(builtReplicaId()).toBe(1001n)
+    expect(readReplicaId('v1')).toBe(1001n)
+  })
+
+  it('lists the restored replica, confirmed, without counting it as a helper', async () => {
+    buildProtocolInstance.mockReturnValue(fakeInstance())
+    apiGetActors.mockResolvedValue([replicaHelper])
+    const { ctx, committed } = context(secret())
+
+    await restoreSecret(withGroup, ctx)
+
+    const replica = committed().participants.find(p => p.channelId === '700')
+    expect(replica).toMatchObject({ id: 'r1', name: 'Hosted replica', peerRole: 'replica_destination', connectionStatus: 'paired' })
+    expect(committed().itemBag?.currentVersion.participantIds).not.toContain('r1')
+
+    // The Replicas tab and the mirroring status read the channel record.
+    const state = loadReplicaState('v1')
+    expect(state.channels['700']).toMatchObject({ role: 'replica_source', peerReplicaId: '2002' })
+    expect(state.replicas[replicaChannelRowId('700')]).toMatchObject({ local: true, firstSyncStarted: true })
+  })
+
+  it('keeps the replica row it already had on the same device, and drops channels the restore wiped', async () => {
+    buildProtocolInstance.mockReturnValue(fakeInstance())
+    apiGetActors.mockResolvedValue([])
+    localStorage.setItem('derec:replica-id:v1', '1001')
+    recordReplicaChannel('v1', { channelId: '700', role: 'replica_source', peerReplicaId: '2002' })
+    recordReplicaChannel('v1', { channelId: '800', role: 'replica_source', peerReplicaId: '3003' })
+    const existing = {
+      id: 'replica-actor',
+      name: 'My hosted replica',
+      channelId: '700',
+      transport: { protocol: 'https' as const, uri: HTTP('r1') },
+      secretShares: [],
+      connectionStatus: 'paired' as const,
+      peerRole: 'replica_destination' as const,
+    }
+    const { ctx, committed } = context(secret({ participants: [existing] }))
+
+    await restoreSecret(withGroup, ctx)
+
+    expect(committed().participants.find(p => p.channelId === '700')).toEqual(existing)
+    expect(Object.keys(loadReplicaState('v1').channels)).toEqual(['700'])
+  })
+
+  it('lists no replica the restore wrote no channel for', async () => {
+    const instance = fakeInstance()
+    vi.mocked(instance.protocol.restore).mockResolvedValue([
+      { type: 'PeerNotRestored', channel_id: '700', replica_id: '2002', reason: 'NoTransports' },
+    ] as never)
+    buildProtocolInstance.mockReturnValue(instance)
+    apiGetActors.mockResolvedValue([])
+    const { ctx, committed } = context(secret())
+
+    await restoreSecret(withGroup, ctx)
+
+    expect(committed().participants.some(p => p.channelId === '700')).toBe(false)
+    expect(loadReplicaState('v1').channels).toEqual({})
+  })
+})

@@ -11,19 +11,19 @@ import ConsolePanel from './ConsolePanel'
 import { ConsoleProvider } from './ConsoleContext'
 import { ToastProvider } from './Toast'
 import { ModalFrame } from './ModalFrame'
-import type { Vault } from './types'
-import type { VaultRunState } from './vault/manager'
+import type { Secret } from './types'
+import type { SecretRunState } from './secret/manager'
 import { Alert, Button, Stack } from '@mui/material'
-import { VaultManagerProvider, useVaultEntries, useVaultManager } from './vault/managerContext'
-import { VaultList } from './VaultList'
+import { SecretManagerProvider, useSecretEntries, useSecretManager } from './secret/managerContext'
+import { SecretList } from './SecretList'
 import { AppHeader } from './AppHeader'
 import { navigate } from './routing'
 import { useHashRoute } from './useHashRoute'
-import { vaultScreen } from './vaultScreen'
+import { secretScreen } from './secretScreen'
 import { reportError, reportInfo } from './toastBus'
 import { countLocalDataEntries } from './localData'
 import { resetBrowserData } from './browserReset'
-import { vaultLockMode } from './vaultLock'
+import { secretLockMode } from './secretLock'
 import GitHubIcon from '@mui/icons-material/GitHub';
 import LinkedInIcon from '@mui/icons-material/LinkedIn';
 import XIcon from '@mui/icons-material/X';
@@ -87,52 +87,52 @@ function AppDialog({ title, body, onCancel, children }: AppDialogProps) {
 const APP_TITLE = 'DeRec Reference App'
 
 /**
- * Said on the vault list wherever Web Locks is missing — see `vaultLockMode`.
+ * Said on the secret list wherever Web Locks is missing — see `secretLockMode`.
  * Read once: whether the page is a secure context cannot change while it runs.
  */
 const LOCK_WARNING =
-  vaultLockMode() === 'web-locks'
+  secretLockMode() === 'web-locks'
     ? null
     : 'This page is not a secure context (plain HTTP on a network address), so the browser’s ' +
-      'Web Locks are unavailable and one-tab-per-vault is only enforced on a best-effort basis. ' +
-      'Keep each vault open in a single tab — two tabs running one vault split its messages. ' +
+      'Web Locks are unavailable and one-tab-per-secret is only enforced on a best-effort basis. ' +
+      'Keep each secret open in a single tab — two tabs running one secret split its messages. ' +
       'Serve the app over https, or open it at localhost, for full protection.'
 
 /**
  * States the switcher opens straight away, as the list's Open does. The rest go
- * to the vault's own screen, which says what is wrong and offers Retry or Claim.
+ * to the secret's own screen, which says what is wrong and offers Retry or Claim.
  */
-const OPEN_ON_SWITCH: ReadonlySet<VaultRunState> = new Set(['running', 'stopped', 'blocked'])
+const OPEN_ON_SWITCH: ReadonlySet<SecretRunState> = new Set(['running', 'stopped', 'blocked'])
 
 function AppContent() {
-  const manager = useVaultManager()
-  // Subscribed so the page re-renders as vaults start, stop and rename.
-  const entries = useVaultEntries()
+  const manager = useSecretManager()
+  // Subscribed so the page re-renders as secrets start, stop and rename.
+  const entries = useSecretEntries()
   const route = useHashRoute()
 
-  // Every vault this tab holds runs regardless; the route only picks which one
+  // Every secret this tab holds runs regardless; the route only picks which one
   // is on screen.
-  const vaultId = route.kind === 'vault' ? route.id : null
-  const entry = vaultId ? entries.find(e => e.id === vaultId) ?? null : null
-  const runtime = vaultId ? manager.runtime(vaultId) : null
-  const screen = vaultId ? vaultScreen(entry, runtime !== null, manager.isBooted()) : null
+  const localSecretId = route.kind === 'secret' ? route.id : null
+  const entry = localSecretId ? entries.find(e => e.id === localSecretId) ?? null : null
+  const runtime = localSecretId ? manager.runtime(localSecretId) : null
+  const screen = localSecretId ? secretScreen(entry, runtime !== null, manager.isBooted()) : null
 
   /**
-   * Take on a vault the wizard just set up, then show it.
+   * Take on a secret the wizard just set up, then show it.
    *
    * `false` when another tab already holds it — the wizard says so. The
-   * manager's lock is the single point where the one-tab-per-vault rule is
+   * manager's lock is the single point where the one-tab-per-secret rule is
    * decided, so every way in is covered by it.
    */
-  async function createVault(next: Vault): Promise<boolean> {
+  async function createSecret(next: Secret): Promise<boolean> {
     if (!manager.runtime(next.id) && !(await manager.create(next))) return false
-    navigate({ kind: 'vault', id: next.id })
+    navigate({ kind: 'secret', id: next.id })
     return true
   }
 
-  /** The name to report a vault's failure under. */
+  /** The name to report a secret's failure under. */
   function nameOf(id: string): string {
-    return entries.find(e => e.id === id)?.name ?? 'the vault'
+    return entries.find(e => e.id === id)?.name ?? 'the secret'
   }
 
   /**
@@ -143,44 +143,54 @@ function AppContent() {
     action.catch(err => reportError(failure, err))
   }
 
-  /** Start a stopped vault, or claim one another tab let go, then show it. */
-  async function openVault(id: string): Promise<void> {
+  /** Start a stopped secret, or claim one another tab let go, then show it. */
+  async function openSecret(id: string): Promise<void> {
     if (await manager.open(id)) {
-      navigate({ kind: 'vault', id })
+      navigate({ kind: 'secret', id })
     } else {
-      reportInfo('That vault is still open in another tab — close it there first, then claim it.')
+      reportInfo('That secret is still open in another tab — close it there first, then claim it.')
     }
   }
 
   function handleOpen(id: string): void {
-    runAction(openVault(id), `Could not open “${nameOf(id)}”`)
+    runAction(openSecret(id), `Could not open “${nameOf(id)}”`)
   }
 
   function handleRetry(id: string): void {
     runAction(manager.retry(id), `Could not start “${nameOf(id)}”`)
   }
 
-  /** Go straight to a vault picked in the header. */
-  function switchToVault(id: string): void {
+  /** Go straight to a secret picked in the header. */
+  /**
+   * The bell: open the secret's Notifications tab and mark the picked one read.
+   * A secret another tab runs cannot be marked from here; its tab still opens
+   * once this tab takes it over.
+   */
+  function openNotifications(id: string, notificationId: string | null): void {
+    if (notificationId) manager.runtime(id)?.markNotificationsRead([notificationId])
+    navigate({ kind: 'secret', id, tab: 'notifications' })
+  }
+
+  function switchToSecret(id: string): void {
     const target = entries.find(e => e.id === id)
     if (target && OPEN_ON_SWITCH.has(target.state)) {
       handleOpen(id)
     } else {
-      navigate({ kind: 'vault', id })
+      navigate({ kind: 'secret', id })
     }
   }
 
-  // Everything the other vaults say arrives as a banner naming them; the one on
+  // Everything the other secrets say arrives as a banner naming them; the one on
   // screen speaks through its own page.
-  const onScreenId = screen?.kind === 'page' ? vaultId : null
+  const onScreenId = screen?.kind === 'page' ? localSecretId : null
   useEffect(() => {
     manager.setOnScreen(onScreenId)
   }, [manager, onScreenId])
 
-  // Decisions only badge in the list, so while a vault is on screen the header
-  // says how many *other* vaults are waiting on the owner.
+  // Decisions only badge in the list, so while a secret is on screen the header
+  // says how many *other* secrets are waiting on the owner.
   const othersWaiting =
-    screen?.kind === 'page' ? entries.filter(e => e.id !== vaultId && e.attention > 0).length : 0
+    screen?.kind === 'page' ? entries.filter(e => e.id !== localSecretId && e.attention > 0).length : 0
 
   // Name the tab, so two tabs are tellable apart in the tab bar.
   const shownName = screen?.kind === 'page' ? entry?.name ?? null : null
@@ -189,7 +199,7 @@ function AppContent() {
   }, [shownName])
 
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false)
-  // A vault with no page to leave from — failed or stopped — awaiting confirmation.
+  // A secret with no page to leave from — failed or stopped — awaiting confirmation.
   const [removeTargetId, setRemoveTargetId] = useState<string | null>(null)
   const removeTarget = removeTargetId ? entries.find(e => e.id === removeTargetId) ?? null : null
   // Entry count is snapshotted when the dialog opens so the confirmation text
@@ -201,35 +211,35 @@ function AppContent() {
     void resetBrowserData(manager)
   }
 
-  /** Stop running the on-screen vault here and free it for another tab. */
+  /** Stop running the on-screen secret here and free it for another tab. */
   function handleLeaveOnly() {
     setLeaveDialogOpen(false)
-    if (vaultId) runAction(manager.release(vaultId), `Could not stop “${nameOf(vaultId)}” cleanly`)
+    if (localSecretId) runAction(manager.release(localSecretId), `Could not stop “${nameOf(localSecretId)}” cleanly`)
     navigate({ kind: 'list' })
   }
 
   /** Stop it, erase its stores and forget it. */
   function handleRemoveFromBrowser() {
     setLeaveDialogOpen(false)
-    if (vaultId) removeVault(vaultId)
+    if (localSecretId) removeSecret(localSecretId)
     navigate({ kind: 'list' })
   }
 
-  /** Remove a vault that is not running here, once confirmed. */
+  /** Remove a secret that is not running here, once confirmed. */
   function handleConfirmRemove() {
     const id = removeTargetId
     setRemoveTargetId(null)
     if (!id) return
-    removeVault(id)
-    if (vaultId === id) navigate({ kind: 'list' })
+    removeSecret(id)
+    if (localSecretId === id) navigate({ kind: 'list' })
   }
 
-  function removeVault(id: string): void {
+  function removeSecret(id: string): void {
     runAction(manager.remove(id), `Could not remove “${nameOf(id)}” from this browser`)
   }
 
   const list = (notice: string | null) => (
-    <VaultList
+    <SecretList
       entries={entries}
       notice={notice}
       warning={LOCK_WARNING}
@@ -251,33 +261,35 @@ function AppContent() {
           <SetupWizard
             key={route.flow}
             initialFlow={route.flow}
-            onReady={createVault}
+            onReady={createSecret}
             onCancel={() => navigate({ kind: 'list' })}
-            existingVaultNames={entries.map(e => e.name)}
+            existingSecretNames={entries.map(e => e.name)}
           />
         </div>
       )
     }
     switch (screen?.kind) {
       case 'page':
-        return runtime && vaultId ? <OwnerPage key={vaultId} runtime={runtime} /> : null
+        return runtime && localSecretId ? (
+          <OwnerPage key={localSecretId} runtime={runtime} requestedTab={route.kind === 'secret' ? route.tab : undefined} />
+        ) : null
       case 'missing':
         return (
           <div className="shell-centered">
-            {list('That vault is not saved in this browser — it may have been removed.')}
+            {list('That secret is not saved in this browser — it may have been removed.')}
           </div>
         )
       case 'elsewhere':
         return (
-          <VaultUnavailable
-            message={`“${entry?.name}” is open in another tab. Two tabs cannot run one vault — they would split its mailbox. Close it there, then claim it here.`}
+          <SecretUnavailable
+            message={`“${entry?.name}” is open in another tab. Two tabs cannot run one secret — they would split its mailbox. Close it there, then claim it here.`}
             action="Claim"
             onAction={() => handleOpen(route.id)}
           />
         )
       case 'failed':
         return (
-          <VaultUnavailable
+          <SecretUnavailable
             message={`“${entry?.name}” failed to start${screen.failure ? `: ${screen.failure}` : '.'}`}
             action="Retry"
             onAction={() => handleRetry(route.id)}
@@ -286,7 +298,7 @@ function AppContent() {
         )
       case 'stopped':
         return (
-          <VaultUnavailable
+          <SecretUnavailable
             message={`“${entry?.name}” is not running in this tab.`}
             action="Open"
             onAction={() => handleOpen(route.id)}
@@ -294,7 +306,7 @@ function AppContent() {
           />
         )
       default:
-        // Loading: the vault is being read or started.
+        // Loading: the secret is being read or started.
         return null
     }
   }
@@ -303,11 +315,12 @@ function AppContent() {
     <>
       <AppHeader
         entries={entries}
-        vaultId={vaultId}
-        vaultPageShown={screen?.kind === 'page'}
+        localSecretId={localSecretId}
+        secretPageShown={screen?.kind === 'page'}
         othersWaiting={othersWaiting}
         onShowAll={() => navigate({ kind: 'list' })}
-        onSwitch={switchToVault}
+        onSwitch={switchToSecret}
+        onOpenNotifications={openNotifications}
         onLeave={() => setLeaveDialogOpen(true)}
         onReset={() => setResetEntryCount(countLocalDataEntries())}
       />
@@ -372,13 +385,13 @@ function AppContent() {
           body={
             <>
               <p>
-                This erases every DeRec vault, pairing, protocol key and saved Settings
+                This erases every DeRec secret, pairing, protocol key and saved Settings
                 default in this browser ({resetEntryCount}{' '}
                 {resetEntryCount === 1 ? 'entry' : 'entries'}), then reloads the app so you
                 start from scratch.
               </p>
               <p className="app-dialog-note">
-                Other tabs of this app stop their vaults and reload too — this
+                Other tabs of this app stop their secrets and reload too — this
                 clears storage the whole browser shares. Actors on the server are
                 not affected. This cannot be undone.
               </p>
@@ -394,7 +407,7 @@ function AppContent() {
         </AppDialog>
       )}
 
-      <ConsolePanel vaults={entries} />
+      <ConsolePanel secrets={entries} />
 
       <footer>
         {socialLinks.map(({ label, href, icon: Icon }) => (
@@ -413,16 +426,16 @@ function AppContent() {
   )
 }
 
-interface VaultUnavailableProps {
+interface SecretUnavailableProps {
   message: string
   action: string
   onAction: () => void
-  /** Offered where nothing else can remove the vault: failed or stopped. */
+  /** Offered where nothing else can remove the secret: failed or stopped. */
   onRemove?: () => void
 }
 
-/** A vault route this tab cannot show yet: why, and the one thing to do about it. */
-function VaultUnavailable({ message, action, onAction, onRemove }: VaultUnavailableProps) {
+/** A secret route this tab cannot show yet: why, and the one thing to do about it. */
+function SecretUnavailable({ message, action, onAction, onRemove }: SecretUnavailableProps) {
   return (
     <div className="shell-centered">
       <Stack spacing={2} sx={{ maxWidth: 560 }}>
@@ -431,7 +444,7 @@ function VaultUnavailable({ message, action, onAction, onRemove }: VaultUnavaila
           <Button variant="contained" onClick={onAction}>
             {action}
           </Button>
-          <Button onClick={() => navigate({ kind: 'list' })}>All vaults</Button>
+          <Button onClick={() => navigate({ kind: 'list' })}>All secrets</Button>
           {onRemove && (
             <Button color="error" onClick={onRemove}>
               Remove
@@ -452,9 +465,9 @@ export default function App() {
     <AppMuiTheme>
       <ToastProvider>
         <ConsoleProvider>
-          <VaultManagerProvider>
+          <SecretManagerProvider>
             <AppContent />
-          </VaultManagerProvider>
+          </SecretManagerProvider>
         </ConsoleProvider>
       </ToastProvider>
     </AppMuiTheme>

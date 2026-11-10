@@ -26,9 +26,9 @@ import {
  * The confirmation gate in front of a wipe-and-adopt.
  *
  * Adoption is the one destructive action in the replica flows: it erases
- * everything this device holds and installs another device's vault in its
+ * everything this device holds and installs another device's secret in its
  * place. The dialog therefore says so in those words, names the owner whose
- * vault replaces it, and makes **cancel** the default action — it takes focus,
+ * secret replaces it, and makes **cancel** the default action — it takes focus,
  * carries the filled styling, and is what Escape and a backdrop click resolve
  * to. Confirming takes a deliberate click on a red, outlined button.
  *
@@ -38,16 +38,16 @@ import {
  * Raised only for a device that confirmed its replica channel before the app
  * asked about adoption up front. From SDK 0.0.7 confirming the fingerprint is
  * itself the decision to adopt, so the fingerprint dialog asks it first and an
- * agreed offer is adopted without coming here (`VaultRuntime.offerReplicaAdoption`).
+ * agreed offer is adopted without coming here (`SecretRuntime.offerReplicaAdoption`).
  * For an older confirmation this is still the only question asked — but the
  * library has already installed the group's copy by then, so rejecting keeps
- * this vault on screen without taking the device out of the group.
+ * this secret on screen without taking the device out of the group.
  */
 
 export interface ReplicaAdoptionDialogProps {
   open: boolean
   adoption: PendingReplicaAdoption
-  /** The owner whose vault this device would take on. */
+  /** The owner whose secret this device would take on. */
   sourceLabel: string
   /**
    * Run the wipe-and-adopt. Rejects with a `ReplicaAdoptionError` when
@@ -143,30 +143,30 @@ export function ReplicaAdoptionDialog({
       // Escape and a backdrop click resolve to Reject, exactly as the button
       // does — the safe answer, and the one the README documents. Rejecting
       // erases nothing and the source re-offers on its next sync, so an
-      // accidental dismissal costs one more prompt, never the vault.
+      // accidental dismissal costs one more prompt, never the secret.
       // `handleCancel` itself refuses while an adoption is in flight.
       onClose={() => handleCancel()}
       fullWidth
       maxWidth="sm"
       aria-labelledby="replica-adopt-title"
     >
-      <DialogTitle id="replica-adopt-title">Replace this vault?</DialogTitle>
+      <DialogTitle id="replica-adopt-title">Replace this secret?</DialogTitle>
 
       <DialogContent>
         <Stack spacing={2.5} sx={{ pt: 1 }}>
           <Alert severity="warning">
-            {/* Scoped to this vault: adoption clears only this vault's own
-                namespace (`vault:<id>`), so other vaults saved in this browser
+            {/* Scoped to this secret: adoption clears only this secret's own
+                namespace (`secret:<id>`), so other secrets saved in this browser
                 are untouched — saying "everything" would overstate it. */}
-            <AlertTitle>This erases everything this vault holds</AlertTitle>
-            Every secret, helper channel and share this vault stores on this device is
-            deleted and replaced with {sourceLabel}’s vault. Other vaults in this browser
+            <AlertTitle>This erases everything this secret holds</AlertTitle>
+            Every item, helper channel and share this secret stores on this device is
+            deleted and replaced with {sourceLabel}’s secret. Other secrets in this browser
             are not affected. It cannot be undone from this app.
           </Alert>
 
           <DialogContentText>
-            {sourceLabel} sent this device a mirrored copy of their vault. Adopting it
-            makes this vault a replica of theirs: it takes on {sourceLabel}’s secrets and
+            {sourceLabel} sent this device a mirrored copy of their secret. Adopting it
+            makes this secret a replica of theirs: it takes on {sourceLabel}’s items and
             helper roster, and stops holding anything of its own.
           </DialogContentText>
 
@@ -182,13 +182,13 @@ export function ReplicaAdoptionDialog({
               channel {adoption.channelId}
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              This device keeps its own identity — only the vault changes.
+              This device keeps its own identity — only the secret changes.
             </Typography>
           </Stack>
 
           {state.kind === 'failed' && (
             <Alert severity="error">
-              <AlertTitle>The vault was erased and the restore did not complete</AlertTitle>
+              <AlertTitle>The secret was erased and the restore did not complete</AlertTitle>
               <Typography
                 variant="body2"
                 component="p"

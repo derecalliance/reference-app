@@ -11,6 +11,8 @@ use derec_library::protocol::types::Timeouts;
 use derec_library::protocol::{AutoAcceptPolicy, DeRecProtocolBuilder, ExpiredChannelCleanup};
 use uuid::Uuid;
 
+use super::PAIRING_LIFETIME_SECS;
+use crate::infrastructure::replay::ReplayGuard;
 use crate::infrastructure::transport::{CompositeTransport, GrpcTransport, HttpTransport};
 use crate::models::{Transport, UnpairAck};
 use crate::repositories::sdk::{
@@ -38,7 +40,7 @@ pub struct ProtocolConfig {
     /// the same instance and carry their own Owner's id on each share record.
     /// On a config clone that builds or rebuilds a *replica* instance this is
     /// instead the mirrored owner's secret, because a replica instance is bound
-    /// to the vault it mirrors rather than to this actor's own.
+    /// to the secret it mirrors rather than to this actor's own.
     pub secret_id: u64,
     /// Every endpoint this actor advertises, in preference order.
     pub own_transports: Vec<Transport>,
@@ -71,22 +73,35 @@ pub struct ProtocolConfig {
     /// in-process instead of dialled. `None` for an instance built outside a
     /// node, as test fixtures standing in for a browser are.
     pub local_delivery: Option<Arc<dyn LocalDelivery>>,
+    /// The actor's log of messages it sent or accepted, shared by its
+    /// transport and its inbound path, and by every instance it runs — see
+    /// [`ReplayGuard`].
+    pub replay_guard: Arc<ReplayGuard>,
 }
 
 /// The settings half of the builder chain, shared by fresh construction and
 /// in-place rebuild.
 ///
-/// Stores are *not* set here, and neither is the own-transport URI: those
-/// setters are the ones that move the builder's typestate, so a helper generic
-/// over the slots cannot call them. A fresh instance gets empty stores, a
-/// rebuild moves the live ones across — everything else is identical, and
-/// keeping it in one place is what stops a settings change from being applied
-/// to one path and forgotten in the other.
-fn configure_builder<Cs, Sh, Se, Us, St, T, O>(
-    builder: DeRecProtocolBuilder<Cs, Sh, Se, Us, St, T, O>,
+/// Stores and the transport are *not* set here: those setters are the ones
+/// that move the builder's typestate, so a helper generic over the slots
+/// cannot call them. A fresh instance gets empty stores, a rebuild moves the
+/// live ones across — everything else is identical, and keeping it in one
+/// place is what stops a settings change from being applied to one path and
+/// forgotten in the other.
+fn configure_builder<Cs, Sh, Se, Us, St, T>(
+    builder: DeRecProtocolBuilder<Cs, Sh, Se, Us, St, T>,
     config: &ProtocolConfig,
-) -> DeRecProtocolBuilder<Cs, Sh, Se, Us, St, T, O> {
+) -> DeRecProtocolBuilder<Cs, Sh, Se, Us, St, T> {
     let builder = builder
+        // The singular setter is deprecated; the whole list is what gets
+        // advertised in `supportedTransports` at pairing.
+        .with_own_transports(
+            config
+                .own_transports
+                .iter()
+                .map(|t| t.uri.as_str())
+                .collect::<Vec<_>>(),
+        )
         // Derived, not hardcoded: serving every advertised endpoint over a
         // secure scheme turns the guardrail back on by itself.
         //
@@ -112,6 +127,7 @@ fn configure_builder<Cs, Sh, Se, Us, St, T, O>(
             // `PENDING_CHANNEL_TTL_SECS` — see that constant for why the
             // default is unusable once fingerprint-gated pairing is in play.
             expired_channels: ExpiredChannelCleanup::Disabled,
+            pairing: Duration::from_secs(PAIRING_LIFETIME_SECS),
             ..Timeouts::default()
         })
         .with_communication_info(config.communication_info.clone())
@@ -147,16 +163,7 @@ pub fn build_protocol(config: &ProtocolConfig) -> Result<ActorProtocol, derec_li
         .with_secret_store(SqlSecretStore::new(config.pool.clone(), actor))
         .with_user_secret_store(SqlUserSecretStore::new(config.pool.clone(), actor))
         .with_state_store(SqlStateStore::new(config.pool.clone(), actor))
-        .with_transport(transport_for(config))
-        // The singular setter is deprecated; the whole list is what gets
-        // advertised in `supportedTransports` at pairing.
-        .with_own_transports(
-            config
-                .own_transports
-                .iter()
-                .map(|t| t.uri.as_str())
-                .collect::<Vec<_>>(),
-        );
+        .with_transport(transport_for(config));
 
     configure_builder(builder, config).build()
 }
@@ -168,7 +175,8 @@ fn transport_for(config: &ProtocolConfig) -> CompositeTransport {
         // Stamped with this actor, so when the peer is another actor on
         // this node the shared gRPC ingress can tell the two ends apart.
         GrpcTransport::for_actor(config.actor_id),
-    );
+    )
+    .remembering_sends_in(Arc::clone(&config.replay_guard));
     match &config.local_delivery {
         Some(local) => transport.delivering_locally_on(Arc::clone(local)),
         None => transport,
@@ -253,6 +261,7 @@ mod tests {
             pool,
             actor_id: uuid::Uuid::new_v4(),
             local_delivery: None,
+            replay_guard: Default::default(),
         }
     }
 

@@ -7,7 +7,7 @@ import { complementRole, senderKindFor, type PairingRole } from './pairingRoles'
 /**
  * The consent gate in front of a `replica_destination` pairing.
  *
- * Choosing `replica_destination` is a commitment: the peer's vault will replace
+ * Choosing `replica_destination` is a commitment: the peer's secret will replace
  * this device's. The user is told that here, before anything is dispatched, so
  * the commitment is never made by accident.
  *
@@ -15,14 +15,14 @@ import { complementRole, senderKindFor, type PairingRole } from './pairingRoles'
  * decides whether a pairing may start and resolves the role to what goes on the
  * wire. The decision to adopt is asked again in the fingerprint dialog, before
  * this device confirms the channel — confirming is that decision (SDK 0.0.7) —
- * and the erase follows when the source's vault arrives.
+ * and the erase follows when the source's secret arrives.
  */
 
 /**
- * Whether choosing `role` commits this device's vault to being erased, and so
+ * Whether choosing `role` commits this device's secret to being erased, and so
  * needs explicit consent before the pairing starts.
  *
- * Only the destination side loses anything: a `replica_source` keeps its vault
+ * Only the destination side loses anything: a `replica_source` keeps its secret
  * and mirrors it outward.
  */
 export function requiresEraseConsent(role: PairingRole): boolean {

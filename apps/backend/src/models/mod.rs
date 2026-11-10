@@ -38,16 +38,19 @@ pub use config::{
     AllowedHost, ConfigOrigin, ConfigSource, DatabaseUrl, Defaults, FrontendConfig, LoadedConfig,
     NodeConfig, RelayAllowlist, ResolvedConfig, ServerSettings, Settings, DEFAULT_DATABASE_URL,
 };
-pub use contact::{ContactOptions, ContactRequest, PeerContact, UnpairedContact};
+pub use contact::{ContactOptions, ContactRequest, ContactTimestamp, PeerContact, UnpairedContact};
 pub use delivery::{DispatchOutcome, LocalAttempt, RelayRefusal, RelayRequest, RelayTarget};
 pub use diagnostics::{ActorSnapshot, GrpcStatus, NodeSnapshot};
 pub use display_name::{DisplayName, NameError, MAX_NAME_CHARS};
-pub use envelope::{EnvelopeError, EnvelopeMeta};
+pub use envelope::{EnvelopeError, EnvelopeMeta, SeenEnvelope};
 pub use event::{Carrier, Direction, Event, EventSnapshot, NewEvent, Outcome, EVENT_LOG_CAPACITY};
-pub use helper::{AddHelper, EnsurePool, EnsuredPool, MAX_POOL_SIZE};
+pub use helper::{
+    AddHelper, EnsurePool, EnsuredPool, HelperFault, UnknownHelperFault, MAX_POOL_SIZE,
+};
 pub use owner::{RegisterOwner, RenamedOwner};
 pub use protocol_settings::{
-    AuthenticationMethod, ProtocolSettings, SettingsError, UnpairAck, MAX_PROTOCOL_TIMEOUT_SECS,
+    ProtocolSettings, SettingsError, UnpairAck, DEFAULT_PROTOCOL_TIMEOUT_SECS,
+    MAX_PROTOCOL_TIMEOUT_SECS,
 };
 pub use routing::{Resolution, Route, Side, Tier, SENDER_METADATA};
 pub use transport::{Transport, TransportBreakdown, TransportMode, TransportProtocol};

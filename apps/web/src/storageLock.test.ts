@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { STALE_MS, acquireStorageLock, heldStorageLocks } from './storageLock'
 
-const KEY = 'derec-lock:vault-a'
+const KEY = 'derec-lock:secret-a'
 
 beforeEach(() => {
   localStorage.clear()
@@ -18,15 +18,15 @@ describe('acquireStorageLock', () => {
   it('refuses a lock another tab refreshed recently', async () => {
     localStorage.setItem(KEY, JSON.stringify({ tab: 'other-tab', at: Date.now() }))
 
-    expect(await acquireStorageLock('vault-a')).toBeNull()
-    expect(heldStorageLocks()).toEqual(new Set(['vault-a']))
+    expect(await acquireStorageLock('secret-a')).toBeNull()
+    expect(heldStorageLocks()).toEqual(new Set(['secret-a']))
   })
 
   it('takes over a lock whose holder stopped refreshing it', async () => {
     // A crashed tab cannot release; its record only stops being fresh.
     localStorage.setItem(KEY, JSON.stringify({ tab: 'crashed', at: Date.now() - STALE_MS - 1 }))
 
-    const lock = await acquireStorageLock('vault-a')
+    const lock = await acquireStorageLock('secret-a')
 
     expect(lock).not.toBeNull()
     await lock?.release()
@@ -40,11 +40,11 @@ describe('acquireStorageLock', () => {
       if (key === KEY) setItem.call(this, KEY, JSON.stringify({ tab: 'faster', at: Date.now() }))
     })
 
-    expect(await acquireStorageLock('vault-a')).toBeNull()
+    expect(await acquireStorageLock('secret-a')).toBeNull()
   })
 
   it('removes its record on release and ignores a second release', async () => {
-    const lock = await acquireStorageLock('vault-a')
+    const lock = await acquireStorageLock('secret-a')
     await lock?.release()
     await lock?.release()
 

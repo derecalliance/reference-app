@@ -7,22 +7,22 @@ import { Alert, AlertTitle, Button, Stack } from '@mui/material'
 import { AppMuiTheme } from './AppMuiTheme'
 import { errorText } from './errorText'
 import { ReplicaConflictDialog } from './ReplicaConflictDialog'
-import type { ReplicaConflict, UserSecret } from './types'
+import type { ReplicaConflict, Item } from './types'
 
 export interface ReplicaConflictPanelProps {
   conflict: ReplicaConflict
-  mySecrets: readonly UserSecret[]
+  myItems: readonly Item[]
   /** The member holding the rival copy, for display. */
   rivalLabel: string
   /** Ask the group for its copy — a replica discovery. */
   onFetchRival: () => Promise<void>
-  onResolve: (secrets: UserSecret[]) => Promise<number | null>
+  onResolve: (items: Item[]) => Promise<number | null>
 }
 
 type FetchState = { kind: 'idle' } | { kind: 'fetching' } | { kind: 'asked' } | { kind: 'error'; message: string }
 
 /**
- * The standing notice on a vault whose copy has diverged from its replica
+ * The standing notice on a secret whose copy has diverged from its replica
  * group's, and the way out of it.
  *
  * Publishing is paused while it shows — every control that would publish says
@@ -32,14 +32,14 @@ type FetchState = { kind: 'idle' } | { kind: 'fetching' } | { kind: 'asked' } | 
  */
 export function ReplicaConflictPanel({
   conflict,
-  mySecrets,
+  myItems,
   rivalLabel,
   onFetchRival,
   onResolve,
 }: ReplicaConflictPanelProps) {
   const [resolving, setResolving] = useState(false)
   const [fetchState, setFetchState] = useState<FetchState>({ kind: 'idle' })
-  const haveRival = conflict.rivalSecrets !== null
+  const haveRival = conflict.rivalItems !== null
 
   async function handleFetch() {
     setFetchState({ kind: 'fetching' })
@@ -74,7 +74,7 @@ export function ReplicaConflictPanel({
           </Stack>
         }
       >
-        <AlertTitle>This vault has diverged from its replica group</AlertTitle>
+        <AlertTitle>This secret has diverged from its replica group</AlertTitle>
         {rivalLabel} holds a different copy of v{conflict.version}. Publishing from this device is
         paused: a new version from here would replace {rivalLabel}’s copy and lose its change.{' '}
         {haveRival
@@ -90,7 +90,7 @@ export function ReplicaConflictPanel({
         <ReplicaConflictDialog
           open
           conflict={conflict}
-          mySecrets={mySecrets}
+          myItems={myItems}
           rivalLabel={rivalLabel}
           onResolve={onResolve}
           onClose={() => setResolving(false)}

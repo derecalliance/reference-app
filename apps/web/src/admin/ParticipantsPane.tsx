@@ -13,6 +13,7 @@ import {
   DialogContent,
   DialogContentText,
   DialogTitle,
+  MenuItem,
   Stack,
   Table,
   TableBody,
@@ -30,17 +31,27 @@ import {
   apiEnsureHelpers,
   apiGetActors,
   apiGetServerDefaults,
+  apiSetParticipantFault,
   apiToggleParticipantStatus,
   type BEActorWithStatus,
 } from '../api'
+import { HELPER_FAULTS, helperFaultOption, type HelperFault } from '../helperFaults'
 import { errorText } from '../errorText'
 import { FALLBACK_SERVER_DEFAULTS, type ServerDefaults } from '../config'
-import { effectiveDefaults } from '../protocolDefaults'
+import { effectiveDefaults, SECRET_CONFIG_DEFAULTS } from '../protocolDefaults'
 import { randomParticipantName } from '../participantNames'
 import { participantLabel } from './participantLabel'
 
 /** How often the pool is refreshed while this pane is open. */
 const POLL_MS = 4000
+
+/**
+ * Why a paired participant cannot be deleted. Deleting it would leave each
+ * owner a channel nothing answers, which the protocol could no longer tear
+ * down; unpairing runs the protocol's teardown, and the owner's republish.
+ */
+const PAIRED_DELETE_REASON =
+  'Still paired with an owner. Unpair it from every owner’s secret first — the node refuses to delete a paired participant.'
 
 /** Every helper this node runs, newest last, in registration order. */
 function helpersOf(actors: BEActorWithStatus[]): BEActorWithStatus[] {
@@ -113,13 +124,14 @@ export function ParticipantsPane() {
   }, [refresh])
 
   useEffect(() => {
-    // Provisioning needs the node's protocol defaults. Unreachable is not worth
+    // Provisioning needs the node's pool defaults. Unreachable is not worth
     // blocking on — the built-in fallbacks are the same values the server
     // ships — but the answer is waited for: provisioning from the fallback a
     // moment before `/config` lands would size the pool from numbers the node
     // does not use.
     // Merged with any Settings overrides: provisioning from here must use the
-    // same values the wizard would.
+    // same values the wizard would. A helper's protocol settings are the app's
+    // defaults, as a new secret's are.
     let cancelled = false
     void apiGetServerDefaults().then(result => {
       if (cancelled) return
@@ -139,8 +151,8 @@ export function ParticipantsPane() {
     setActionError(null)
     try {
       await apiAddHelper(trimmed, {
-        protocolTimeoutSecs: defaults.protocolTimeoutSecs,
-        unpairAck: defaults.unpairAck,
+        protocolTimeoutSecs: SECRET_CONFIG_DEFAULTS.protocolTimeoutSecs,
+        unpairAck: SECRET_CONFIG_DEFAULTS.unpairAck,
       })
       setName('')
       await refresh()
@@ -148,6 +160,19 @@ export function ParticipantsPane() {
       setActionError(errorText(err))
     } finally {
       setAdding(false)
+    }
+  }
+
+  async function handleFault(actor: BEActorWithStatus, fault: HelperFault) {
+    setBusyId(actor.id)
+    setActionError(null)
+    try {
+      await apiSetParticipantFault(actor.id, fault)
+      await refresh()
+    } catch (err) {
+      setActionError(errorText(err))
+    } finally {
+      setBusyId(null)
     }
   }
 
@@ -181,8 +206,8 @@ export function ParticipantsPane() {
     try {
       const names = Array.from({ length: defaults.participantCount }, randomParticipantName)
       await apiEnsureHelpers(defaults.participantCount, names, defaults.helperTransports, {
-        protocolTimeoutSecs: defaults.protocolTimeoutSecs,
-        unpairAck: defaults.unpairAck,
+        protocolTimeoutSecs: SECRET_CONFIG_DEFAULTS.protocolTimeoutSecs,
+        unpairAck: SECRET_CONFIG_DEFAULTS.unpairAck,
       })
       await refresh()
     } catch (err) {
@@ -293,6 +318,7 @@ export function ParticipantsPane() {
                     <TableCell>Name</TableCell>
                     <TableCell>Transport</TableCell>
                     <TableCell>Status</TableCell>
+                    <TableCell>Failure mode</TableCell>
                     <TableCell align="right">Actions</TableCell>
                   </TableRow>
                 </TableHead>
@@ -306,13 +332,37 @@ export function ParticipantsPane() {
                           <Chip size="small" label={transportLabel(actor)} />
                         </TableCell>
                         <TableCell>
-                          {actor.disabled ? (
-                            <Chip size="small" color="warning" label="offline" />
-                          ) : (
-                            <Typography variant="body2" color="text.secondary">
-                              online
-                            </Typography>
-                          )}
+                          <Stack direction="row" spacing={0.5} alignItems="center">
+                            {actor.disabled ? (
+                              <Chip size="small" color="warning" label="offline" />
+                            ) : (
+                              <Typography variant="body2" color="text.secondary">
+                                online
+                              </Typography>
+                            )}
+                            {actor.fault && actor.fault !== 'none' && (
+                              <Chip size="small" color="error" variant="outlined" label={helperFaultOption(actor.fault).label} />
+                            )}
+                          </Stack>
+                        </TableCell>
+                        <TableCell>
+                          <TextField
+                            select
+                            size="small"
+                            value={actor.fault ?? 'none'}
+                            // The options are exactly HELPER_FAULTS' ids.
+                            onChange={e => void handleFault(actor, e.target.value as HelperFault)}
+                            disabled={busyId === actor.id}
+                            title={helperFaultOption(actor.fault ?? 'none').description}
+                            slotProps={{ htmlInput: { 'aria-label': `Failure mode of ${label}` } }}
+                            sx={{ minWidth: 190 }}
+                          >
+                            {HELPER_FAULTS.map(f => (
+                              <MenuItem key={f.id} value={f.id} title={f.description}>
+                                {f.label}
+                              </MenuItem>
+                            ))}
+                          </TextField>
                         </TableCell>
                         <TableCell align="right">
                           <Stack direction="row" spacing={1} justifyContent="flex-end">
@@ -327,15 +377,19 @@ export function ParticipantsPane() {
                             >
                               {actor.disabled ? 'Bring online' : 'Take offline'}
                             </Button>
-                            <Button
-                              size="small"
-                              color="error"
-                              onClick={() => setPendingDelete(actor)}
-                              disabled={busyId === actor.id}
-                              aria-label={`Delete ${label}`}
-                            >
-                              Delete
-                            </Button>
+                            {/* A span, so the reason still shows on hover
+                                while the button is disabled. */}
+                            <span title={actor.channel_id ? PAIRED_DELETE_REASON : undefined}>
+                              <Button
+                                size="small"
+                                color="error"
+                                onClick={() => setPendingDelete(actor)}
+                                disabled={busyId === actor.id || !!actor.channel_id}
+                                aria-label={`Delete ${label}`}
+                              >
+                                Delete
+                              </Button>
+                            </span>
                           </Stack>
                         </TableCell>
                       </TableRow>
@@ -351,7 +405,21 @@ export function ParticipantsPane() {
           Taking a participant offline simulates an unreachable peer: the node
           accepts messages for it and drops them, which is how a helper going
           away is tested without stopping anything. Deleting one removes it from
-          the node entirely.
+          the node entirely, and is possible only once no owner is paired with
+          it: each owner unpairs it first.
+        </Typography>
+        <Typography variant="caption" color="text.secondary" component="div">
+          A failure mode makes a participant misbehave in other ways, for every
+          owner it holds shares for. Stored shares are never changed, so
+          setting it back to Healthy restores it exactly; it is independent of
+          offline.
+          <Box component="ul" sx={{ m: 0, pl: 2.5 }}>
+            {HELPER_FAULTS.filter(f => f.id !== 'none').map(f => (
+              <li key={f.id}>
+                <strong>{f.label}</strong>: {f.description}
+              </li>
+            ))}
+          </Box>
         </Typography>
       </Stack>
 
@@ -370,13 +438,9 @@ export function ParticipantsPane() {
             undone, and the pool is shared, so it disappears for every owner on
             this node.
           </DialogContentText>
-          {pendingDelete?.channel_id && (
-            <Alert severity="warning" sx={{ mt: 2 }}>
-              This participant holds at least one channel — possibly with an
-              owner in another browser, since the pool is shared. Each of them
-              keeps its channel and will see this participant stop responding,
-              exactly as if it had gone offline; clearing the row means
-              unpairing from that owner’s side.
+          {actionError && (
+            <Alert severity="error" sx={{ mt: 2 }}>
+              {actionError}
             </Alert>
           )}
         </DialogContent>

@@ -388,7 +388,7 @@ impl DeRecShareStore for InMemoryShareStore {
     }
 
     /// Drop the listed versions under `(secret_id, channel_id)`. Idempotent;
-    /// called by the helper side when a `keepList` excludes them.
+    /// called by the helper side for every version a `keepVersion` leaves out.
     fn remove_versions(
         &mut self,
         secret_id: u64,
@@ -401,14 +401,13 @@ impl DeRecShareStore for InMemoryShareStore {
         Box::pin(std::future::ready(Ok(())))
     }
 
-    /// Always `None`: helpers keep every version.
+    /// Always the version just below: the newest that may have committed.
     ///
-    /// Choosing a list takes knowing which rounds committed, and this store
-    /// sees no `SharingComplete`. A guess would be worse than nothing, since
-    /// helpers delete every version a list leaves out. The SQL store, which
-    /// provisioned actors run on, records round outcomes and answers properly.
-    fn keep_list(&self, _secret_id: u64, _version: u32) -> ShareStoreFuture<'_, Option<Vec<u32>>> {
-        Box::pin(std::future::ready(Ok(None)))
+    /// Knowing which rounds committed takes seeing `SharingComplete`, and this
+    /// store sees none. The SQL store, which provisioned actors run on, records
+    /// round outcomes and answers properly.
+    fn keep_version(&self, _secret_id: u64, version: u32) -> ShareStoreFuture<'_, u32> {
+        Box::pin(std::future::ready(Ok(version.saturating_sub(1))))
     }
 }
 
@@ -511,6 +510,7 @@ mod tests {
             peer_role,
             status,
             created_at: 0,
+            weight: 1,
         }
     }
 

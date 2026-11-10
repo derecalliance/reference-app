@@ -53,8 +53,11 @@ async function newDevice(
   return { context, page }
 }
 
-/** Mint a contact in `mode` and return its payload, as the QR encodes it. */
-async function contactPayload(page: Page, mode: string): Promise<string> {
+/**
+ * Mint a contact in `mode` and copy it out: the QR payload (JSON) by default,
+ * or the contact's raw protobuf bytes as hex.
+ */
+async function contactPayload(page: Page, mode: string, copy: 'QR Payload' | 'Raw Bytes (hex)' = 'QR Payload'): Promise<string> {
   await page.getByRole('button', { name: 'Share Contact' }).first().click()
 
   const modal = page.locator('.modal-overlay .modal')
@@ -63,7 +66,7 @@ async function contactPayload(page: Page, mode: string): Promise<string> {
   // The QR returns only once the new contact has been minted in the new mode.
   await modal.locator('.qr-wrapper svg').waitFor({ timeout: 60_000 })
 
-  await modal.getByRole('button', { name: /Copy QR Payload/ }).click()
+  await modal.getByRole('button', { name: `Copy ${copy}` }).click()
   const payload = await page.evaluate(() => navigator.clipboard.readText())
   await modal.getByRole('button', { name: 'Close' }).click()
   return payload
@@ -116,6 +119,31 @@ test('two browsers pair with NoKeys and confirm on both sides', async ({ browser
       await dialog.getByRole('button', { name: 'Codes match' }).click()
       await expect(dialog).toContainText('Confirmed on this device', { timeout: 60_000 })
     }
+  } finally {
+    await alice.context.close()
+    await bob.context.close()
+  }
+})
+
+test('a contact pasted as raw protobuf hex pairs like the JSON payload', async ({ browser }) => {
+  const alice = await newDevice(browser, 'Alice')
+  const bob = await newDevice(browser, 'Bob')
+
+  try {
+    // The form another implementation hands over: the `ContactMessage` wire
+    // bytes. "Raw Bytes (hex)" used to copy the channel id instead.
+    const hex = await contactPayload(alice.page, 'Inline keys', 'Raw Bytes (hex)')
+    expect(hex).toMatch(/^[0-9a-f]+$/)
+    expect(hex.length).toBeGreaterThan(2_000)
+
+    await bob.page.getByRole('button', { name: 'Pair', exact: true }).first().click()
+    const pairModal = bob.page.locator('.modal-overlay').last()
+    await pairModal.locator('#qr-payload').fill(hex)
+    await pairModal.getByRole('button', { name: /^Pair as/ }).click()
+    await expect(pairModal.locator('.field-error')).toHaveCount(0)
+
+    await alice.page.getByRole('button', { name: 'Accept', exact: true }).click({ timeout: 60_000 })
+    await expect(pairModal).toContainText('Pairing Complete', { timeout: 90_000 })
   } finally {
     await alice.context.close()
     await bob.context.close()

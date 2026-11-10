@@ -24,6 +24,8 @@ const ACTOR_SCOPED_TABLES: &[&str] = &[
     "state_items",
     "actor_channels",
     "disabled_helpers",
+    "helper_faults",
+    "seen_messages",
     "participant_contacts",
     "mailbox",
 ];

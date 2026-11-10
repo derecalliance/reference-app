@@ -9,7 +9,7 @@ import { errorText } from './errorText'
  * The "add a replica" affordance, in the owner page's side panel.
  *
  * Sits directly below the provisioned helpers because that is where a user
- * looks for "another thing that holds my vault", and it is deliberately built
+ * looks for "another thing that holds my secret", and it is deliberately built
  * from the same classes so the two read as one panel.
  *
  * **There is no list here, and that is the point.** A replica is a pairing
@@ -21,7 +21,7 @@ import { errorText } from './errorText'
  */
 
 export interface OwnerReplicaSectionProps {
-  /** Provision a helper under this name and pair it as a replica of this vault. */
+  /** Provision a helper under this name and pair it as a replica of this secret. */
   onAdd: (name: string) => Promise<void>
 }
 
@@ -33,19 +33,19 @@ export function OwnerReplicaSection({ onAdd }: OwnerReplicaSectionProps) {
       <div className="panel-header-row">
         <div>
           <h3 className="panel-heading">Replicas</h3>
-          <p className="panel-subtitle">Mirror this vault onto another device</p>
+          <p className="panel-subtitle">Mirror this secret onto another device</p>
         </div>
         <button
           className="secondary small"
           onClick={() => setAddOpen(true)}
-          title="Pair a helper as a replica of this vault"
+          title="Pair a helper as a replica of this secret"
         >
           + Add
         </button>
       </div>
 
       <p className="panel-subtitle">
-        “+ Add” pairs a helper as a replica of this vault. It appears on the Replicas
+        “+ Add” pairs a helper as a replica of this secret. It appears on the Replicas
         tab, with every other replica channel.
       </p>
 
@@ -100,7 +100,7 @@ function AddReplicaModal({
       <form onSubmit={handleSubmit}>
         <div className="modal-body">
           <p className="modal-description">
-            A replica is another of your own devices. It mirrors this vault once both
+            A replica is another of your own devices. It mirrors this secret once both
             devices confirm a shared code.
           </p>
           <div className="form-field">

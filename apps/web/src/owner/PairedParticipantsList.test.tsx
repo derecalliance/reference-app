@@ -3,7 +3,7 @@
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { PairedParticipant } from '../types'
 import type { LinkGroup } from './linkGroups'
@@ -37,13 +37,14 @@ function row(overrides: Partial<PairedParticipant>): PairedParticipant {
   }
 }
 
-function render(h: PairedParticipant, committedVersions?: ReadonlySet<number>) {
+function render(h: PairedParticipant, committedVersions?: ReadonlySet<number>, unpairDisabledReason: string | null = null) {
   const group: LinkGroup = { key: h.channelId, name: h.name, mainChannelId: h.channelId, channels: [h] }
   act(() =>
     root.render(
       <PairedParticipantsList
         groups={[group]}
         unpairingChannelIds={new Set()}
+        unpairDisabledReason={unpairDisabledReason}
         onTogglePair={() => {}}
         onLink={() => {}}
         committedVersions={committedVersions}
@@ -57,9 +58,16 @@ function hasButton(name: string): boolean {
 }
 
 describe('PairedParticipantsList', () => {
-  it('offers Unpair on a channel where this vault is the owner', () => {
+  it('offers Unpair on a channel where this secret is the owner', () => {
     render(row({ peerRole: 'helper' }))
     expect(hasButton('Unpair')).toBe(true)
+  })
+
+  it('holds Unpair back while a round is open — unpairing publishes a new version', () => {
+    render(row({ peerRole: 'helper' }), undefined, 'v4 is still being published.')
+    const unpair = Array.from(host.querySelectorAll('button')).find(b => b.textContent?.trim() === 'Unpair')
+    expect(unpair?.disabled).toBe(true)
+    expect(unpair?.title).toBe('v4 is still being published.')
   })
 
   it('does not offer Unpair where the peer is the owner — only it can unpair', () => {
@@ -95,5 +103,74 @@ describe('PairedParticipantsList', () => {
     )
     expect(host.querySelector('.participant-dot')?.className).toContain('available')
     expect(host.textContent).toContain('Last share: No answer')
+  })
+})
+
+describe('default weight per helper (SDK 0.0.9 weighted helpers)', () => {
+  function renderWeights(h: PairedParticipant, defaultWeight: number, onSet = vi.fn<(c: string, w: number) => void>()) {
+    const group: LinkGroup = { key: h.channelId, name: h.name, mainChannelId: h.channelId, channels: [h] }
+    act(() =>
+      root.render(
+        <PairedParticipantsList
+          groups={[group]}
+          unpairingChannelIds={new Set()}
+          onTogglePair={() => {}}
+          onLink={() => {}}
+          defaultWeights={{ weightFor: () => defaultWeight, maxFor: () => 3, onSet, problemFor: () => null }}
+        />,
+      ),
+    )
+    return onSet
+  }
+
+  function weightField(): HTMLInputElement {
+    const el = host.querySelector<HTMLInputElement>('input[aria-label="Weight for Bob"]')
+    if (!el) throw new Error('no weight field')
+    return el
+  }
+
+  it('lets the owner set a helper\'s default weight', () => {
+    const onSet = renderWeights(row({}), 1)
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+
+    act(() => {
+      setter?.call(weightField(), '2')
+      weightField().dispatchEvent(new Event('input', { bubbles: true }))
+    })
+
+    expect(onSet).toHaveBeenCalledWith('42', 2)
+  })
+
+  it('can be cleared and retyped, and falls back to the default if left invalid (review M3)', () => {
+    const onSet = renderWeights(row({}), 1)
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    const type = (value: string) =>
+      act(() => {
+        setter?.call(weightField(), value)
+        weightField().dispatchEvent(new Event('input', { bubbles: true }))
+      })
+
+    type('')
+    expect(weightField().value).toBe('')
+    expect(onSet).not.toHaveBeenCalled()
+
+    act(() => weightField().dispatchEvent(new FocusEvent('focusout', { bubbles: true })))
+    expect(weightField().value).toBe('1')
+
+    type('')
+    type('3')
+    expect(onSet).toHaveBeenCalledWith('42', 3)
+  })
+
+  it('shows the weight last published when it differs from the default', () => {
+    renderWeights(row({ weight: 3 }), 2)
+
+    expect(host.textContent).toContain('last published 3')
+  })
+
+  it('offers no default weight on a channel where this secret is the helper', () => {
+    renderWeights(row({ peerRole: 'owner' }), 1)
+
+    expect(host.querySelector('input[aria-label="Weight for Bob"]')).toBeNull()
   })
 })

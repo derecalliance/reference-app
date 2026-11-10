@@ -45,6 +45,14 @@ A `204` has no body. The transport keeps its own shapes: `POST /derec/{id}` and
 `POST /derec/relay` answer an empty `202`, `GET /derec/{id}/mailbox` answers
 `{"messages": [{"data": "<base64url>"}]}`, and `/health` an empty `200`.
 
+One `/api/v1` route negotiates its body: `POST /api/v1/actors/{id}/contact`
+with `Accept: application/octet-stream` answers the encoded protobuf
+`ContactMessage` — no envelope, `Content-Type: application/octet-stream`, the
+request id only in `x-request-id` — so a backend can hand the bytes straight to
+its SDK. Without that header (or with `*/*` or `application/json`) it is the
+JSON envelope as usual. Its errors are the JSON envelope either way, so check
+the status before decoding.
+
 **Every error, everywhere, has one shape** — the transport, unknown paths (404)
 and wrong methods (405) included:
 
@@ -190,6 +198,20 @@ Messages to it are discarded, not queued. In the event log this shows as
 `outcome: "dropped"` — distinct from `refused`, which means there was nowhere
 to put it.
 
+### "Simulate a misbehaving helper"
+
+```
+PUT /api/v1/helpers/{id}/fault   { "fault": "corrupted_shares" }
+```
+
+`lost_shares`, `corrupted_shares`, `refuses_new_shares`,
+`refuses_verification`, or `none` to restore it. Applied in `SqlShareStore`
+through the SDK's own store contract (a share not found, read back altered,
+or `ShareStoreError::Refused`), so the library answers owners as a real
+helper in that state would — no protocol logic in the backend. A property of
+the helper, seen by every owner it serves; stored rows are never changed, and
+it is independent of `toggle-status`.
+
 ### "Poll for new activity"
 
 `/api/v1/debug/events` returns `latest_seq`. Pass it back as `after` to get only what
@@ -218,10 +240,11 @@ reference for how the screens fit together. `apps/web/e2e/app.ts` holds the
 helpers. Prefer the HTTP surface above unless you specifically need to exercise
 the browser-side SDK.
 
-The browser is multi-vault: each vault is one owner actor (`role: owner` in
-`/api/v1/debug/state`), a tab runs every vault its browser holds, and a Web Lock keeps
-any one vault to a single tab. Screens are hash routes — `#/` (vault list),
-`#/new`, `#/new/claim`, `#/vault/{owner actor id}`.
+The browser is multi-secret: each secret is one owner actor (`role: owner` in
+`/api/v1/debug/state`), a tab runs every secret its browser holds, and a Web Lock keeps
+any one secret to a single tab. Screens are hash routes — `#/` (secret list),
+`#/new`, `#/new/claim`, `#/secret/{owner actor id}` (older `#/vault/…` links
+still open).
 
 ## Changing this repository
 

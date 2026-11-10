@@ -12,18 +12,18 @@ import {
   type ReplicaChannel,
 } from './ownerPairing'
 import type { ReplicaView } from './replicaFlows'
-import type { Vault } from './types'
+import type { Secret } from './types'
 // Read as text, not imported as modules: these assertions are about *where* a
 // dialog is mounted, which is a fact about the source and not about any value
 // the module exports. `OwnerPage` also cannot be imported into a test —
 // it pulls in WASM.
 import replicasTabSource from './ReplicasTab.tsx?raw'
 import ownerPageSource from './OwnerPage.tsx?raw'
-import pairingFoldSource from './vault/fold/pairing.ts?raw'
+import pairingFoldSource from './secret/fold/pairing.ts?raw'
 
 /** Every engine module's source, specs and fixtures excluded. */
 const engineSource = Object.values(
-  import.meta.glob<string>(['./vault/**/*.ts', '!./vault/**/*.test.ts', '!./vault/testVault.ts'], {
+  import.meta.glob<string>(['./secret/**/*.ts', '!./secret/**/*.test.ts', '!./secret/testSecret.ts'], {
     query: '?raw',
     import: 'default',
     eager: true,
@@ -109,7 +109,7 @@ const BASE: ReplicasTabProps = {
   onForget: () => {},
   onReplicaDiscovery: () => {},
   replicaDiscoveryRunning: false,
-  vaultVersion: null,
+  secretVersion: null,
   groupSourceReplicaId: null,
   onRemoveFromGroup: () => {},
   removingReplicaIds: new Set<string>(),
@@ -275,21 +275,21 @@ describe('the replica modals are mounted by the page, not the tab', () => {
     // reaches the engine, a fold could start gating protocol-driven state on
     // what the user happens to be looking at.
     // A glob that matched nothing would pass the check below vacuously.
-    expect(engineSource).toContain('class VaultRuntime')
+    expect(engineSource).toContain('class SecretRuntime')
     expect(engineSource).not.toContain('activeTab')
   })
 })
 
 // ── …and they raise with a different tab open ────────────────────────────────
 
-function replicaOwner(): Vault {
+function replicaOwner(): Secret {
   return {
     id: 'owner-1',
     name: 'Alice',
     secretId: '42',
     transport: { protocol: 'https', uri: 'https://example.test/owner-1' },
     participants: [],
-    secretBag: null,
+    itemBag: null,
     // Carries `participantId`, which keeps the fold off the backend lookup.
     pendingPairings: [{ channelId: 7n, participantId: 'device-2' }],
     minParticipants: 2,
@@ -317,9 +317,9 @@ const REPLICA_COMPLETION = {
  * rather than a child of it. `applyPairingCompleted` is the real fold, and
  * `onReplicaChannelEstablished` is wired to it exactly as the page wires it.
  *
- * What this proves is the placement: with `secrets` selected — the Replicas tab
- * never mounted — a completed replica handshake still puts the comparison on
- * screen. Nested inside the switch it could not, which is what the mutation
+ * What this proves is the placement: with the Items tab (`secrets`) selected
+ * — the Replicas tab never mounted — a completed replica handshake still puts
+ * the comparison on screen. Nested inside the switch it could not, which is what the mutation
  * below demonstrates.
  */
 function PageShaped() {
@@ -330,14 +330,14 @@ function PageShaped() {
     <div>
       <button onClick={() => setActiveTab('replicas')}>Replicas</button>
       <div className="tab-panel">
-        {activeTab === 'secrets' && <p>Secrets list</p>}
+        {activeTab === 'secrets' && <p>Items list</p>}
         {activeTab === 'replicas' && <p>Replica channels</p>}
       </div>
       <button
         onClick={() =>
           applyPairingCompleted(replicaOwner(), REPLICA_COMPLETION, {
             log: () => {},
-            getVault: replicaOwner,
+            getSecret: replicaOwner,
             commit: () => {},
             onReplicaChannelEstablished: channelId => setFingerprintChannelId(channelId),
           })
@@ -352,11 +352,11 @@ function PageShaped() {
 }
 
 describe('the fingerprint comparison with a different tab open', () => {
-  it('raises on pairing completion while the Secrets tab is selected', () => {
+  it('raises on pairing completion while the Items tab is selected', () => {
     act(() => root.render(<PageShaped />))
 
     // The Replicas tab has never been opened.
-    expect(text()).toContain('Secrets list')
+    expect(text()).toContain('Items list')
     expect(text()).not.toContain('Replica channels')
     expect(text()).not.toContain('Fingerprint comparison')
 
@@ -368,7 +368,7 @@ describe('the fingerprint comparison with a different tab open', () => {
 
     expect(text()).toContain('Fingerprint comparison for 1234')
     // Still on the other tab: the modal came to the user, not the other way round.
-    expect(text()).toContain('Secrets list')
+    expect(text()).toContain('Items list')
     expect(text()).not.toContain('Replica channels')
   })
 })
@@ -446,8 +446,8 @@ describe('group members the app cannot account for', () => {
   })
 })
 
-describe('a destination row whose vault this device already holds', () => {
-  it('stops calling it an offer once the vault names that peer as its source', () => {
+describe('a destination row whose secret this device already holds', () => {
+  it('stops calling it an offer once the secret names that peer as its source', () => {
     render({
       channels: [{ ...HELPER_REPLICA }],
       viewByChannelId: new Map([
@@ -456,7 +456,7 @@ describe('a destination row whose vault this device already holds', () => {
           view({ channelId: '5678', status: 'paired', direction: 'replica_destination', peerReplicaId: '9' }),
         ],
       ]),
-      vaultVersion: 3,
+      secretVersion: 3,
       groupSourceReplicaId: '9',
     })
     expect(host.textContent).toContain('at v3')

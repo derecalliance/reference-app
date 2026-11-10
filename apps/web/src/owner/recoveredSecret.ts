@@ -19,31 +19,33 @@ import type { RecoveredSecretSnapshot } from '../types'
 /** The `secret` payload of a SecretRecovered event. */
 export type RecoveredSecretPayload = Extract<DeRecEvent, { type: 'SecretRecovered' }>['secret']
 
-export function snapshotFromEvent(secret: RecoveredSecretPayload): RecoveredSecretSnapshot {
+export function snapshotFromEvent(payload: RecoveredSecretPayload): RecoveredSecretSnapshot {
   return {
-    helpers: secret.helpers.map(h => ({
+    helpers: payload.helpers.map(h => ({
       channelId: h.channel_id,
       transports: (h.transports ?? []).map(t => ({ uri: t.uri, protocol: protocolName(t.protocol) })),
-      communicationInfo: h.communication_info,
+      communicationInfo: h.communication_info ?? undefined,
       sharedKey: toBase64Url(toBytes(h.shared_key)),
+      ...(h.weight !== undefined ? { weight: h.weight } : {}),
     })),
-    secrets: secret.secrets.map(s => ({
+    items: payload.secrets.map(s => ({
       id: toBase64Url(toBytes(s.id)),
       name: s.name,
       data: toBase64Url(toBytes(s.data)),
     })),
-    replicas: secret.replicas
+    replicas: payload.replicas
       ? {
-          channelId: secret.replicas.channel_id,
-          members: secret.replicas.members.map(m => ({
+          channelId: payload.replicas.channel_id,
+          members: payload.replicas.members.map(m => ({
             transports: (m.transports ?? []).map(t => ({ uri: t.uri, protocol: protocolName(t.protocol) })),
-            communicationInfo: m.communication_info,
+            communicationInfo: m.communication_info ?? undefined,
             replicaId: m.replica_id,
             role: m.role,
           })),
-          sharedKey: toBase64Url(toBytes(secret.replicas.shared_key)),
+          sharedKey: toBase64Url(toBytes(payload.replicas.shared_key)),
         }
       : undefined,
+    ...(payload.threshold !== undefined ? { threshold: payload.threshold } : {}),
   }
 }
 
@@ -53,10 +55,13 @@ export function snapshotToPayload(snapshot: RecoveredSecretSnapshot): RecoveredS
     helpers: snapshot.helpers.map(h => ({
       channel_id: h.channelId,
       transports: (h.transports ?? []).map(t => ({ uri: t.uri, protocol: protocolName(t.protocol) })),
-      communication_info: h.communicationInfo,
+      ...communicationInfoField(h.communicationInfo),
       shared_key: fromBase64Url(h.sharedKey),
+      // Dropping it would make `restore` record every helper at weight 1, and
+      // the next publish would quietly reset the weights the owner chose.
+      ...(h.weight !== undefined ? { weight: h.weight } : {}),
     })),
-    secrets: snapshot.secrets.map(s => ({
+    secrets: snapshot.items.map(s => ({
       id: fromBase64Url(s.id),
       name: s.name,
       data: fromBase64Url(s.data),
@@ -68,16 +73,31 @@ export function snapshotToPayload(snapshot: RecoveredSecretSnapshot): RecoveredS
             replica_id: m.replicaId,
             transports: (m.transports ?? []).map(t => ({ uri: t.uri, protocol: protocolName(t.protocol) })),
             role: m.role,
-            communication_info: m.communicationInfo,
+            ...communicationInfoField(m.communicationInfo),
           })),
           shared_key: fromBase64Url(snapshot.replicas.sharedKey),
         }
       : undefined,
+    // `restore` writes it as the next publish's threshold; dropped, a restored
+    // secret would split at whatever its own builder setting says.
+    ...(snapshot.threshold !== undefined ? { threshold: snapshot.threshold } : {}),
   }
 }
 
-/** Secret payloads are text in this app; decode lossily for display so a
+/**
+ * `communication_info` for a `restore` payload entry: present only when there
+ * is one. Since SDK 0.0.9 an absent or `null` value reads as an empty map;
+ * earlier builds refused an explicit `undefined`/`null`, so the key is still
+ * left out rather than sent empty.
+ */
+function communicationInfoField(
+  info: Record<string, string> | null | undefined,
+): { communication_info?: Record<string, string> } {
+  return info ? { communication_info: info } : {}
+}
+
+/** Item payloads are text in this app; decode lossily for display so a
  *  binary surprise renders as replacement chars instead of throwing. */
-export function decodeSecretText(base64: string): string {
+export function decodeItemText(base64: string): string {
   return new TextDecoder('utf-8', { fatal: false }).decode(fromBase64Url(base64))
 }

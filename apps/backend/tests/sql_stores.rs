@@ -20,8 +20,15 @@ use derec_backend::repositories::sdk::{
 use derec_backend::repositories::sharing_rounds::{
     SharingRoundRepository, SqlSharingRoundRepository,
 };
-use derec_library::protocol::{CollectedShare, DeRecShareStore, DeRecStateStore, StateItem};
+use derec_backend::models::HelperFault;
+use derec_backend::repositories::helper_faults::{HelperFaultRepository, SqlHelperFaultRepository};
+use derec_backend::repositories::seen_messages::{SeenMessageRepository, SqlSeenMessageRepository};
+use derec_backend::models::SeenEnvelope;
+use derec_library::protocol::{
+    CollectedShare, DeRecShareStore, DeRecStateStore, Share, ShareStoreError, StateItem,
+};
 use derec_library::types::ChannelId;
+use prost::Message;
 
 /// A distinct `PendingVerification` item per `n` — the same factory
 /// `tests/store_conformance.rs` uses against the in-memory stores, so both
@@ -95,6 +102,8 @@ async fn reset(pool: &sqlx::AnyPool) {
         "shares",
         "sharing_rounds",
         "state_items",
+        "helper_faults",
+        "seen_messages",
     ] {
         sqlx::query(&format!("DELETE FROM {table}"))
             .execute(pool)
@@ -162,14 +171,14 @@ async fn two_instances_over_one_database_do_not_see_each_other() {
     .await;
 }
 
-/// `keep_list` answers from the round outcomes the actor recorded, and from
+/// `keep_version` answers from the round outcomes the actor recorded, and from
 /// nothing else.
 ///
-/// The decision rule itself is unit-tested beside `keep_list_from_rounds`; this
-/// covers the part only an engine can get wrong — ids above `i64::MAX`, the
-/// upsert, the `version <` bound and the per-actor partition.
+/// The decision rule itself is unit-tested beside `keep_version_from_rounds`;
+/// this covers the part only an engine can get wrong — ids above `i64::MAX`,
+/// the upsert, the `version <` bound and the per-actor partition.
 #[tokio::test]
-async fn the_sql_share_store_keeps_the_versions_it_saw_commit() {
+async fn the_sql_share_store_keeps_the_latest_version_it_saw_commit() {
     on_every_engine(|pool| async move {
         let secret = conformance::HIGH_ID;
         // Outcomes are the app's record, written by the actor through the
@@ -180,41 +189,47 @@ async fn the_sql_share_store_keeps_the_versions_it_saw_commit() {
         let rounds = SqlSharingRoundRepository::new(pool);
 
         assert_eq!(
-            store.keep_list(secret, 1).await.expect("readable"),
-            None,
-            "with no recorded round, helpers keep everything"
+            store.keep_version(secret, 1).await.expect("readable"),
+            0,
+            "the first version has nothing older to keep"
         );
 
-        for (version, committed) in [(1, true), (2, false), (3, true)] {
+        for (version, committed) in [(1, true), (2, true), (3, false)] {
             rounds
                 .record(&actor_a, secret, version, committed)
                 .await
                 .expect("record");
         }
         assert_eq!(
-            store.keep_list(secret, 4).await.expect("readable"),
-            Some(vec![1, 3]),
-            "every committed version is kept, the abandoned one is not"
+            store.keep_version(secret, 4).await.expect("readable"),
+            2,
+            "the latest committed version is kept, the abandoned one is not"
         );
 
         // A second outcome for a version replaces the first.
         rounds
-            .record(&actor_a, secret, 3, false)
+            .record(&actor_a, secret, 2, false)
+            .await
+            .expect("record");
+        assert_eq!(store.keep_version(secret, 4).await.expect("readable"), 1);
+
+        // Version 4 was never distributed here — another member's, say — so
+        // it may be the latest committed version.
+        assert_eq!(store.keep_version(secret, 5).await.expect("readable"), 4);
+
+        rounds
+            .record(&actor_a, secret, 1, false)
             .await
             .expect("record");
         assert_eq!(
-            store.keep_list(secret, 4).await.expect("readable"),
-            Some(vec![1])
+            store.keep_version(secret, 4).await.expect("readable"),
+            0,
+            "no round that may have committed leaves nothing to keep"
         );
-
-        // Version 4 was never distributed here — another member's, say — so
-        // whether it committed is unknown.
-        assert_eq!(store.keep_list(secret, 5).await.expect("readable"), None);
-
         assert_eq!(
-            other_actor.keep_list(secret, 4).await.expect("readable"),
-            None,
-            "one actor's rounds must not decide another's keep list"
+            other_actor.keep_version(secret, 4).await.expect("readable"),
+            3,
+            "one actor's rounds must not decide another's answer"
         );
     })
     .await;
@@ -222,7 +237,8 @@ async fn the_sql_share_store_keeps_the_versions_it_saw_commit() {
 
 /// `PendingRecovery` records the channel each collected share came from
 /// (SDK 0.0.7), and a row saved before that field existed still loads — as a
-/// recovery with nothing collected, which re-collects its shares.
+/// recovery with nothing collected, which re-collects its shares. The helpers
+/// still to answer and when the requests went out (SDK 0.0.11) round-trip too.
 #[tokio::test]
 async fn a_pending_recovery_keeps_its_share_channels_and_an_older_row_still_loads() {
     on_every_engine(|pool| async move {
@@ -235,6 +251,8 @@ async fn a_pending_recovery_keeps_its_share_channels_and_an_older_row_still_load
                 channel_id: channel,
                 response: derec_proto::GetShareResponseMessage::default(),
             }],
+            pending: std::collections::HashSet::from([ChannelId(conformance::HIGH_ID - 1)]),
+            started_at: 1_700_000_000,
         };
         let key = item.key();
         store.save(conformance::SECRET_A, item).await.expect("save");
@@ -244,11 +262,23 @@ async fn a_pending_recovery_keeps_its_share_channels_and_an_older_row_still_load
             .await
             .expect("readable")
         {
-            Some(StateItem::PendingRecovery { shares, .. }) => assert_eq!(
-                shares.iter().map(|s| s.channel_id).collect::<Vec<_>>(),
-                vec![channel],
-                "the share's channel must round-trip"
-            ),
+            Some(StateItem::PendingRecovery {
+                shares,
+                pending,
+                started_at,
+                ..
+            }) => {
+                assert_eq!(
+                    shares.iter().map(|s| s.channel_id).collect::<Vec<_>>(),
+                    vec![channel],
+                    "the share's channel must round-trip"
+                );
+                assert!(
+                    pending.contains(&ChannelId(conformance::HIGH_ID - 1)),
+                    "the helpers still to answer must round-trip (SDK 0.0.11)"
+                );
+                assert_eq!(started_at, 1_700_000_000);
+            }
             other => panic!("expected a pending recovery, got {other:?}"),
         }
 
@@ -266,6 +296,11 @@ async fn a_pending_recovery_keeps_its_share_channels_and_an_older_row_still_load
             removed.is_some(),
             "the current shape carries share_channels: {json}"
         );
+        // Neither did it carry the 0.0.11 fields.
+        if let Some(fields) = record.as_object_mut() {
+            fields.remove("pending");
+            fields.remove("started_at");
+        }
         sqlx::query("UPDATE state_items SET item = $1 WHERE actor_id = 'actor-a'")
             .bind(record.to_string())
             .execute(&pool)
@@ -278,13 +313,162 @@ async fn a_pending_recovery_keeps_its_share_channels_and_an_older_row_still_load
             .expect("an older row must still load")
         {
             Some(StateItem::PendingRecovery {
-                version, shares, ..
+                version,
+                shares,
+                pending,
+                started_at,
+                ..
             }) => {
                 assert_eq!(version, 3);
                 assert!(shares.is_empty(), "an older row re-collects its shares");
+                assert!(pending.is_empty(), "an older row has no helper pending");
+                assert_eq!(started_at, 0, "so the next tick decides it");
             }
             other => panic!("expected a pending recovery, got {other:?}"),
         }
     })
     .await;
 }
+
+/// A helper-side share as the SDK stores it: a `StoreShareRequestMessage`
+/// wrapping a `CommittedDeRecShare` wrapping the `DeRecShare`.
+fn stored_share_bytes() -> Vec<u8> {
+    let inner = derec_proto::DeRecShare {
+        encrypted_secret: vec![1, 2, 3],
+        subshares: vec![derec_proto::de_rec_share::Subshare { x: vec![1], y: vec![9, 9, 9] }],
+        secret_id: 20,
+        version: 1,
+    };
+    let committed = derec_proto::CommittedDeRecShare {
+        de_rec_share: inner.encode_to_vec(),
+        commitment: vec![7; 32],
+        ..Default::default()
+    };
+    derec_proto::StoreShareRequestMessage {
+        share: committed.encode_to_vec(),
+        version: 1,
+        ..Default::default()
+    }
+    .encode_to_vec()
+}
+
+/// A simulated helper fault touches only the shares held for other owners —
+/// never the store's own owner-side rows — and only what is read or accepted:
+/// clearing it gives back exactly what was stored.
+#[tokio::test]
+async fn a_simulated_helper_fault_applies_to_shares_held_for_others_only() {
+    on_every_engine(|pool| async move {
+        const PARTITION: u64 = 10;
+        let (held, own) = (ChannelId(7), ChannelId(8));
+        let actor = uuid::Uuid::new_v4();
+        let mut store = SqlShareStore::new(pool.clone(), actor.to_string());
+        let faults = SqlHelperFaultRepository::new(pool);
+        let original = stored_share_bytes();
+
+        let share = |secret_id, bytes: Vec<u8>| Share { secret_id, version: 1, bytes, subshares: None, threshold: None };
+        store.save(PARTITION, held, share(20, original.clone())).await.expect("save held");
+        store.save(PARTITION, own, share(PARTITION, vec![42])).await.expect("save own");
+        let secrets_of = |shares: Vec<Share>| shares.into_iter().map(|s| s.secret_id).collect::<Vec<_>>();
+
+        faults.set_fault(&actor, HelperFault::LostShares).await.expect("set");
+        assert!(store.load(PARTITION, held, &[1]).await.expect("load").is_empty(), "a lost share is not found");
+        assert_eq!(secrets_of(store.load_all(PARTITION, &[held, own]).await.expect("load")), vec![PARTITION]);
+        assert_eq!(secrets_of(store.load_many(PARTITION, &[held, own], &[1]).await.expect("load")), vec![PARTITION]);
+
+        faults.set_fault(&actor, HelperFault::CorruptedShares).await.expect("set");
+        let corrupted = store.load(PARTITION, held, &[1]).await.expect("load").remove(0).bytes;
+        assert_ne!(corrupted, original, "a corrupted share is read back altered");
+        let request = derec_proto::StoreShareRequestMessage::decode(corrupted.as_slice()).expect("still decodes");
+        let committed = derec_proto::CommittedDeRecShare::decode(request.share.as_slice()).expect("still decodes");
+        let inner = derec_proto::DeRecShare::decode(committed.de_rec_share.as_slice()).expect("still decodes");
+        assert_eq!(inner.subshares[0].y, vec![9, 9, 0x09 ^ 0xFF], "one subshare byte is flipped");
+        assert_eq!(store.load(PARTITION, own, &[1]).await.expect("load")[0].bytes, vec![42], "own rows are untouched");
+
+        faults.set_fault(&actor, HelperFault::RefusesNewShares).await.expect("set");
+        let refused = store.save(PARTITION, held, share(20, original.clone())).await;
+        assert!(matches!(refused, Err(ShareStoreError::Refused(_))), "a share for another owner is refused");
+        store.save(PARTITION, own, share(PARTITION, vec![43])).await.expect("an own row is still written");
+
+        faults.set_fault(&actor, HelperFault::RefusesVerification).await.expect("set");
+        let refused = store.record_verification(PARTITION, held, 1).await;
+        assert!(matches!(refused, Err(ShareStoreError::Refused(_))), "the challenge is refused");
+
+        faults.set_fault(&actor, HelperFault::None).await.expect("set");
+        assert_eq!(store.load(PARTITION, held, &[1]).await.expect("load")[0].bytes, original, "cleared, the stored share is back");
+        store.record_verification(PARTITION, held, 1).await.expect("accepted again");
+    })
+    .await;
+}
+
+/// What `DELETE /helpers/{id}` checks: the channels an actor is still paired
+/// over, `Pending` ones left out, read straight from its channel rows.
+#[tokio::test]
+async fn paired_channel_ids_counts_only_completed_pairings_of_that_actor() {
+    use derec_backend::repositories::protocol_records::{
+        ProtocolRecordRepository, SqlProtocolRecordRepository,
+    };
+    use derec_library::protocol::{ChannelRecord, ChannelStatus, DeRecChannelStore, HelperChannel};
+    use std::collections::HashMap;
+
+    fn helper(channel: u64, status: ChannelStatus) -> ChannelRecord {
+        ChannelRecord::Helper(HelperChannel {
+            channel_id: ChannelId(channel),
+            transports: vec![derec_proto::TransportProtocol {
+                uri: "http://localhost:5000/derec/owner".to_owned(),
+                ..Default::default()
+            }],
+            communication_info: HashMap::new(),
+            status,
+            created_at: 0,
+            peer_role: derec_proto::SenderKind::Owner,
+            weight: 1,
+        })
+    }
+
+    on_every_engine(|pool| async move {
+        let alex = uuid::Uuid::new_v4();
+        let other = uuid::Uuid::new_v4();
+        let mut store = SqlChannelStore::new(pool.clone(), alex.to_string());
+        store.save(1, helper(7, ChannelStatus::Paired)).await.expect("save");
+        store.save(2, helper(9, ChannelStatus::Unpairing)).await.expect("save");
+        store.save(3, helper(8, ChannelStatus::Pending)).await.expect("save");
+        let mut theirs = SqlChannelStore::new(pool.clone(), other.to_string());
+        theirs.save(1, helper(5, ChannelStatus::Paired)).await.expect("save");
+
+        let records = SqlProtocolRecordRepository::new(pool);
+        assert_eq!(records.paired_channel_ids(&alex).await.expect("reads"), vec![7, 9]);
+    })
+    .await;
+}
+
+/// The replay log survives a restart (SDK 0.0.11 asks for it): what an actor
+/// remembered is read back while it is live, an expired id is pruned by the
+/// next write, and one actor's ids are not another's.
+#[tokio::test]
+async fn the_seen_message_log_keeps_live_ids_per_actor() {
+    on_every_engine(|pool| async move {
+        let log = SqlSeenMessageRepository::new(pool);
+        let (alice, bob) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let old = SeenEnvelope { id: [1; 32], expires_at: 100 };
+        let fresh = SeenEnvelope { id: [2; 32], expires_at: 200 };
+        let renewed = SeenEnvelope { expires_at: 250, ..fresh };
+
+        log.remember(&alice, old, 50).await.expect("remember");
+        log.remember(&alice, fresh, 50).await.expect("remember");
+        // Remembered again, an id keeps the later expiry.
+        log.remember(&alice, renewed, 50).await.expect("remember");
+
+        let mut live = log.live(&alice, 90).await.expect("live");
+        live.sort_by_key(|s| s.expires_at);
+        assert_eq!(live, vec![old, renewed]);
+        assert_eq!(log.live(&alice, 150).await.expect("live"), vec![renewed]);
+        assert!(log.live(&bob, 0).await.expect("live").is_empty());
+
+        // A write after the old id expired removes its row.
+        let later = SeenEnvelope { id: [3; 32], expires_at: 300 };
+        log.remember(&alice, later, 150).await.expect("remember");
+        assert_eq!(log.live(&alice, 0).await.expect("live").len(), 2);
+    })
+    .await;
+}
+

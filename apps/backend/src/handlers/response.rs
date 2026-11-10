@@ -15,16 +15,19 @@
 //!
 //! The DeRec transport (`/derec/*`) and `/health` keep their own success
 //! bodies, which other implementations read; their errors use
-//! [`ErrorEnvelope`] like everything else.
+//! [`ErrorEnvelope`] like everything else. A route that negotiates a protobuf
+//! body answers a caller who asked for one with a bare [`ProtobufResponse`];
+//! its errors are still the envelope.
 
 use axum::{
-    http::StatusCode,
+    http::{header, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
 use serde::Serialize;
 
 use super::errors::ErrorCode;
+use super::extractors::ResponseFormat;
 use crate::middlewares::request_id::RequestId;
 use crate::utils::time::{now_unix_ms, rfc3339_from_unix_ms};
 
@@ -70,6 +73,28 @@ impl<T: Serialize> ApiResponse<T> {
 impl<T: Serialize> IntoResponse for ApiResponse<T> {
     fn into_response(self) -> Response {
         (self.status, Json(self.body)).into_response()
+    }
+}
+
+/// A successful answer as a bare protobuf message: `200 OK`, the encoded bytes
+/// as `application/octet-stream`, and no envelope.
+///
+/// For routes that negotiate [`ResponseFormat`] — a backend consumer asking
+/// for the wire bytes it will hand straight to an SDK. The request id still
+/// travels in the `x-request-id` header.
+///
+/// [`ResponseFormat`]: super::extractors::ResponseFormat
+#[derive(Debug)]
+pub struct ProtobufResponse<M>(pub M);
+
+impl<M: prost::Message> IntoResponse for ProtobufResponse<M> {
+    fn into_response(self) -> Response {
+        (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, ResponseFormat::PROTOBUF_MEDIA_TYPE)],
+            self.0.encode_to_vec(),
+        )
+            .into_response()
     }
 }
 

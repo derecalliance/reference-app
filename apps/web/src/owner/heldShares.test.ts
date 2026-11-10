@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import type { BagVersion, SecretBag, SecretShareRef } from '../types'
+import type { BagVersion, ItemBag, SecretShareRef } from '../types'
 import { committedVersionsOf, heldShareCount } from './heldShares'
 
 function version(n: number): BagVersion {
@@ -12,7 +12,7 @@ function version(n: number): BagVersion {
     participantIds: [],
     verifiedParticipantIds: [],
     failedParticipantIds: [],
-    secrets: [],
+    items: [],
     rawBytes: '',
     helpers: [],
   }
@@ -43,7 +43,7 @@ describe('committedVersionsOf', () => {
       currentVersion: version(3),
       previousVersions: [version(2), version(1)],
       threshold: 2,
-    } as SecretBag
+    } as ItemBag
     expect([...committedVersionsOf(bag)].sort()).toEqual([1, 2, 3])
     expect(committedVersionsOf(null).size).toBe(0)
   })

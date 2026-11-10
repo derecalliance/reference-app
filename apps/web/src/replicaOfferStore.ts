@@ -5,7 +5,7 @@ import { fromBase64Url, toBase64Url } from './derecApi'
 import type { PendingReplicaAdoption } from './replicaFlows'
 
 /**
- * The adoption offer a vault has in front of its owner, kept across reloads.
+ * The adoption offer a secret has in front of its owner, kept across reloads.
  *
  * The offer used to live in memory only, on the theory that losing it was the
  * safe direction because the source re-offers on its next sync. In practice
@@ -18,15 +18,15 @@ import type { PendingReplicaAdoption } from './replicaFlows'
  * channel stays in memory: nothing proves where it came from yet, and the
  * destination's own catch-up re-requests it once the channel is confirmed.
  *
- * Stored beside the vault record, in the same browser storage, so it holds
- * nothing the vault record (which carries its own secrets) does not already
- * expose. Erased with the vault — see `eraseVaultLocalData`.
+ * Stored beside the secret record, in the same browser storage, so it holds
+ * nothing the secret record (which carries its own items) does not already
+ * expose. Erased with the secret — see `eraseSecretLocalData`.
  */
 
 const KEY_PREFIX = 'derec:replica-offer:'
 
-function storageKey(vaultId: string): string {
-  return `${KEY_PREFIX}${vaultId}`
+function storageKey(localSecretId: string): string {
+  return `${KEY_PREFIX}${localSecretId}`
 }
 
 /** Tag for a `Uint8Array` in the JSON form — the payload carries keys and shares as bytes. */
@@ -59,37 +59,49 @@ function isOffer(value: unknown): value is PendingReplicaAdoption {
     typeof offer['fromReplicaId'] === 'string' &&
     typeof offer['secretId'] === 'string' &&
     typeof offer['version'] === 'number' &&
-    typeof offer['secret'] === 'object' &&
-    offer['secret'] !== null &&
+    typeof offer['payload'] === 'object' &&
+    offer['payload'] !== null &&
     Array.isArray(offer['shares'])
   )
 }
 
-/** Keep `offer` as this vault's pending one. Storage failures are tolerated. */
-export function savePendingReplicaOffer(vaultId: string, offer: PendingReplicaAdoption): void {
+/**
+ * An offer saved before the rename that made "secret" mean what was called a
+ * vault: its replica payload sat under `secret`, now `payload`.
+ */
+function withLegacyPayloadKey(value: unknown): unknown {
+  if (typeof value !== 'object' || value === null) return value
+  const offer = value as Record<string, unknown>
+  if (!('secret' in offer) || 'payload' in offer) return value
+  const { secret, ...rest } = offer
+  return { ...rest, payload: secret }
+}
+
+/** Keep `offer` as this secret's pending one. Storage failures are tolerated. */
+export function savePendingReplicaOffer(localSecretId: string, offer: PendingReplicaAdoption): void {
   try {
-    localStorage.setItem(storageKey(vaultId), JSON.stringify(offer, replacer))
+    localStorage.setItem(storageKey(localSecretId), JSON.stringify(offer, replacer))
   } catch {
     // Quota or private mode: the offer still stands for this page's life.
   }
 }
 
-/** This vault's pending offer, or `null` when there is none or it does not parse. */
-export function loadPendingReplicaOffer(vaultId: string): PendingReplicaAdoption | null {
+/** This secret's pending offer, or `null` when there is none or it does not parse. */
+export function loadPendingReplicaOffer(localSecretId: string): PendingReplicaAdoption | null {
   try {
-    const raw = localStorage.getItem(storageKey(vaultId))
+    const raw = localStorage.getItem(storageKey(localSecretId))
     if (!raw) return null
-    const parsed: unknown = JSON.parse(raw, reviver)
+    const parsed = withLegacyPayloadKey(JSON.parse(raw, reviver))
     return isOffer(parsed) ? parsed : null
   } catch {
     return null
   }
 }
 
-/** Drop this vault's pending offer — it was adopted, rejected, or the vault is gone. */
-export function clearPendingReplicaOffer(vaultId: string): void {
+/** Drop this secret's pending offer — it was adopted, rejected, or the secret is gone. */
+export function clearPendingReplicaOffer(localSecretId: string): void {
   try {
-    localStorage.removeItem(storageKey(vaultId))
+    localStorage.removeItem(storageKey(localSecretId))
   } catch {
     // Storage unavailable — nothing to clear.
   }

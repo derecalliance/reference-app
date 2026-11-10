@@ -123,6 +123,7 @@ message PrePairRequestMessage {
 //  ```
 //
 //  and verify it matches the original `ContactMessage.contactBindingHash`.
+//  Keys whose sizes are not the fixed ones count as a mismatch.
 // - Only on a match, proceed to construct and send a normal
 //  `PairRequestMessage`.
 //
@@ -136,7 +137,7 @@ message PrePairResponseMessage {
   // MUST be absent.
   DeRecResult result = 1;
 
-  // Serialized ML-KEM-768 encapsulation key. Present only when
+  // Serialized ML-KEM-1024 encapsulation key. Present only when
   // `result.status == OK`.
   optional bytes mlkemEncapsulationKey = 2;
 
@@ -149,4 +150,15 @@ message PrePairResponseMessage {
 
   // Timestamp indicating when this message was created.
   google.protobuf.Timestamp timestamp = 5;
+
+  // The creator's commitment to the fingerprint nonce it reveals in
+  // `PairResponseMessage.fingerprintNonce`, computed over the two keys
+  // above exactly as `ContactMessage.fingerprintCommitment` defines.
+  // Present, exactly 32 bytes, only when `result.status == OK`.
+  //
+  // The receiver MUST refuse a response without one, and MUST later refuse
+  // a `PairResponseMessage` whose nonce does not open it. Because the
+  // commitment covers the keys, one made for another creator's keys cannot
+  // be replayed here.
+  optional bytes fingerprintCommitment = 6;
 }

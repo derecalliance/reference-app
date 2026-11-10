@@ -146,6 +146,7 @@ async fn register_source(state: &Arc<Node>) -> Source {
         pool: state.pool.clone(),
         actor_id: actor.id,
         local_delivery: None,
+        replay_guard: Default::default(),
     };
 
     Source {
@@ -307,14 +308,11 @@ async fn admit(state: &Node, source: &mut Source, helper: &Addr<ProvisionedActor
         .get_fingerprint(channel)
         .await
         .expect("a completed pairing has a fingerprint");
-    assert!(
-        source
-            .protocol
-            .verify_fingerprint(channel, &fingerprint)
-            .await
-            .expect("the source confirms its side"),
-        "the source's own code matches"
-    );
+    source
+        .protocol
+        .verify_fingerprint(channel, &fingerprint)
+        .await
+        .expect("the source's own code matches");
 
     Member {
         replica_id,
@@ -364,6 +362,8 @@ async fn protect(source: &mut Source) -> u32 {
                 data: b"hunter2".to_vec(),
             }],
             description: None,
+            weights: Default::default(),
+            threshold: None,
         })
         .await
         .expect("the source publishes");

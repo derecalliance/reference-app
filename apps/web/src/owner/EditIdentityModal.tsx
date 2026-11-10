@@ -8,12 +8,12 @@ import { errorText } from '../errorText'
 import {
   endpointProblem,
   identityUpdateCounts,
-  MAX_VAULT_NAME_LENGTH,
+  MAX_SECRET_NAME_LENGTH,
   pinnedEndpointWarnings,
   undeliveredChannelIds,
-  vaultNameProblem,
-} from '../vault/identity'
-import type { ChannelInfoOutcome, IdentityUpdate } from '../vault/types'
+  secretNameProblem,
+} from '../secret/identity'
+import type { ChannelInfoOutcome, IdentityUpdate } from '../secret/types'
 import { ModalCloseButton } from './primitives'
 
 export interface EditIdentityInput {
@@ -23,13 +23,13 @@ export interface EditIdentityInput {
 }
 
 interface EditIdentityModalProps {
-  /** This vault's id — its mailbox path is `/derec/<id>`. */
-  vaultId: string
+  /** This secret's local id — its mailbox path is `/derec/<id>`. */
+  localSecretId: string
   currentName: string
   currentEndpoint: string
   /** Whether the endpoint was set by hand rather than following the node. */
   pinned: boolean
-  /** Where the node says this vault lives, when it has said. */
+  /** Where the node says this secret lives, when it has said. */
   nodeAddress: string | null
   /**
    * The node's roster has been read at least once. Until then a missing
@@ -61,15 +61,15 @@ const OUTCOME_LABEL: Record<ChannelInfoOutcome, string> = {
 }
 
 /**
- * Change how this vault presents itself to peers — its name and its endpoint —
+ * Change how this secret presents itself to peers — its name and its endpoint —
  * and follow each paired peer's answer.
  *
- * The endpoint either follows the address the node advertises for this vault
+ * The endpoint either follows the address the node advertises for this secret
  * (the default; it moves when the node is republished on another port or
  * address) or is pinned to one typed here.
  */
 export function EditIdentityModal({
-  vaultId,
+  localSecretId,
   currentName,
   currentEndpoint,
   pinned,
@@ -86,13 +86,13 @@ export function EditIdentityModal({
   const [endpoint, setEndpoint] = useState(currentEndpoint)
   const [step, setStep] = useState<Step>({ kind: 'editing', error: null })
 
-  const nameError = vaultNameProblem(name)
+  const nameError = secretNameProblem(name)
   const endpointError = followNode ? null : endpointProblem(endpoint)
   const sending = step.kind === 'sending'
   // Only for a well-formed pinned address: the error above already covers a
   // malformed one, and following the node cannot pin anything wrong.
   const endpointWarnings =
-    followNode || endpointError ? [] : pinnedEndpointWarnings(endpoint, vaultId, nodeAddress)
+    followNode || endpointError ? [] : pinnedEndpointWarnings(endpoint, localSecretId, nodeAddress)
   const undelivered = undeliveredChannelIds(update).length
 
   async function handleSubmit(e: React.FormEvent) {
@@ -136,7 +136,7 @@ export function EditIdentityModal({
       ) : (
         <form className="modal-body" onSubmit={e => void handleSubmit(e)} noValidate>
           <p className="modal-description">
-            How peers see this vault. A change is sent to every paired peer, and
+            How peers see this secret. A change is sent to every paired peer, and
             new contacts carry it.
           </p>
 
@@ -147,7 +147,7 @@ export function EditIdentityModal({
               className="full-input"
               type="text"
               value={name}
-              maxLength={MAX_VAULT_NAME_LENGTH + 16}
+              maxLength={MAX_SECRET_NAME_LENGTH + 16}
               onChange={e => setName(e.target.value)}
               disabled={sending}
               aria-invalid={nameError !== null}
@@ -175,8 +175,8 @@ export function EditIdentityModal({
                 <code>{nodeAddress ?? currentEndpoint}</code>
                 {nodeAddress === null &&
                   (rosterLoaded
-                    ? ' — the node has not listed this vault yet.'
-                    : ' — checking where the node lists this vault…')}
+                    ? ' — the node has not listed this secret yet.'
+                    : ' — checking where the node lists this secret…')}
               </p>
             ) : (
               <>
@@ -196,7 +196,7 @@ export function EditIdentityModal({
                 ) : (
                   <p className="empty-hint" id="identity-endpoint-hint">
                     Pinned: the node’s address changes will no longer move it. Peers
-                    reply here, so it must reach this vault’s mailbox.
+                    reply here, so it must reach this secret’s mailbox.
                   </p>
                 )}
                 {/* Non-blocking, but not quiet: an address peers cannot answer

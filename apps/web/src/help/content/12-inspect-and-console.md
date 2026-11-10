@@ -21,11 +21,11 @@ The two places that show what is happening: the Inspect section (the node's own 
 
 | Column | Shows |
 | --- | --- |
-| **Name** | With a *browser* flag for vaults and an *offline* flag for helpers taken offline. |
+| **Name** | With a *browser* flag for browser owners and an *offline* flag for helpers taken offline. |
 | **Role** | `owner` or `helper`. |
 | **Transport** | `http`, `grpc` or `both`, derived from the endpoints it advertises. |
 | **Endpoints** | Every URI it advertises. |
-| **Instances** | Protocol instances it runs. More than one means it mirrors another owner's vault as a replica. |
+| **Instances** | Protocol instances it runs. More than one means it mirrors another owner's secret as a replica. |
 
 **Channel routes**: how an inbound gRPC message finds its actor. gRPC carries no actor id in its URI, so the channel id on the envelope is the key.
 
@@ -38,7 +38,7 @@ A channel in neither tier cannot be routed over gRPC; its messages are refused. 
 
 The **Console** bar at the bottom of every page expands into a log, newest first. It holds two kinds of entry:
 
-- this page's own protocol steps, from every vault it runs;
+- this page's own protocol steps, from every secret it runs;
 - the node's message deliveries from `GET /api/v1/debug/events`, polled every 2 seconds, with role *Server* and flow *Transport*.
 
 Each row shows a role badge (*Owner*, *Participant*, *Server*), a flow badge (*Setup*, *Pairing*, *Unpairing*, *Sharing*, *Verification*, *Discovery*, *Recovery*, *Protocol*, *Transport*), the step (for example `start_pairing`, `ShareRejected`, `→ HTTP`, `← GRPC`), a description and the time.
@@ -47,7 +47,7 @@ Each row shows a role badge (*Owner*, *Participant*, *Server*), a flow badge (*S
 | --- | --- |
 | **⎘** on a row | Copy that entry as JSON. |
 | **↗** on a row | Open its payload and response. |
-| **Show entries for** | *All vaults*, one vault, or *Node only* (the server's entries). Shown once a vault has logged. |
+| **Show entries for** | *All secrets*, one secret, or *Node only* (the server's entries). Shown once a secret has logged. |
 | **Copy all** / **Copy shown (N)** | Copy the entries the filter shows as JSON, oldest first. |
 | **Download** / **Download shown (N)** | The same, as a `derec-console-<timestamp>.json` file. |
 | **Clear** | Empty the log in this page. |

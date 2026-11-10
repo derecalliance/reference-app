@@ -85,6 +85,7 @@ dependencies = [
  "cipher",
  "cpubits",
  "cpufeatures 0.3.1",
+ "zeroize",
 ]
 
 [[package]]
@@ -99,6 +100,7 @@ dependencies = [
  "ctr",
  "ctutils",
  "ghash",
+ "zeroize",
 ]
 
 [[package]]
@@ -820,7 +822,7 @@ dependencies = [
 
 [[package]]
 name = "derec-backend"
-version = "0.0.8-alpha.1"
+version = "0.0.11"
 dependencies = [
  "actix",
  "actix-rt",
@@ -853,9 +855,9 @@ dependencies = [
 
 [[package]]
 name = "derec-cryptography"
-version = "0.0.8"
+version = "0.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3aa805563a5f5e6871346e2e19b5203fe024db74673f3e923f28d5ae505fc3c2"
+checksum = "fa7e68d8f61e6596380f38c61824dc4696f0b35a2a4afc227397d027c1125c7f"
 dependencies = [
  "aead",
  "aes",
@@ -869,15 +871,16 @@ dependencies = [
  "ml-kem",
  "rand 0.10.3",
  "sha2 0.11.0",
+ "subtle",
  "thiserror",
  "zeroize",
 ]
 
 [[package]]
 name = "derec-library"
-version = "0.0.8"
+version = "0.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db18c889032abc07054eab4a3d3e11b6484cb5071a196a4bcee68ff5f098159c"
+checksum = "92ca0bc3ff47888f0a9069282ee5f33a63562ea5ac3ab1ed8434e469d262747b"
 dependencies = [
  "ark-serialize",
  "base64 0.22.1",
@@ -905,9 +908,9 @@ dependencies = [
 
 [[package]]
 name = "derec-proto"
-version = "0.0.8"
+version = "0.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79fcea006cb9c4560b2fd3f63828e19b4a6c391d5c3545333d28c15f735df7ce"
+checksum = "3870999d41105b5206a38c0ca9c36ece1d216b5399c5b5511f2049ef4d303b9a"
 dependencies = [
  "prost",
  "prost-build",
@@ -1228,6 +1231,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2eecf2d5dc9b66b732b97707a0210906b1d30523eb773193ab777c0c84b3e8d5"
 dependencies = [
  "polyval",
+ "zeroize",
 ]
 
 [[package]]
@@ -1388,6 +1392,7 @@ checksum = "27f864f10dfb56725ce5ce5472bc52252c8f93a4ab86327122cebf62c5f59a17"
 dependencies = [
  "ctutils",
  "typenum",
+ "zeroize",
 ]
 
 [[package]]
@@ -1888,6 +1893,7 @@ dependencies = [
  "pkcs8 0.11.0",
  "rand_core 0.10.1",
  "sha3",
+ "zeroize",
 ]
 
 [[package]]
@@ -1899,6 +1905,7 @@ dependencies = [
  "ctutils",
  "hybrid-array",
  "num-traits",
+ "zeroize",
 ]
 
 [[package]]
@@ -2116,6 +2123,7 @@ dependencies = [
  "cpubits",
  "cpufeatures 0.3.1",
  "universal-hash",
+ "zeroize",
 ]
 
 [[package]]

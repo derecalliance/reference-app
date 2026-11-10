@@ -24,6 +24,7 @@ use crate::repositories::disabled_helpers::{
     DisabledHelperRepository, SqlDisabledHelperRepository,
 };
 use crate::repositories::helper_channels::{HelperChannelIndex, InMemoryHelperChannelIndex};
+use crate::repositories::helper_faults::{HelperFaultRepository, SqlHelperFaultRepository};
 use crate::repositories::mailbox_polls::{InMemoryMailboxPolls, MailboxPollRepository};
 use crate::repositories::mailboxes::{MailboxRepository, SqlMailboxRepository};
 use crate::repositories::participant_data::{
@@ -32,6 +33,7 @@ use crate::repositories::participant_data::{
 use crate::repositories::protocol_records::{
     ProtocolRecordRepository, SqlProtocolRecordRepository,
 };
+use crate::repositories::seen_messages::{SeenMessageRepository, SqlSeenMessageRepository};
 use crate::repositories::sharing_rounds::{SharingRoundRepository, SqlSharingRoundRepository};
 use crate::services::actors::ActorServiceImpl;
 use crate::services::configuration::ConfigurationServiceImpl;
@@ -97,6 +99,8 @@ impl Node {
             Arc::new(SqlMailboxRepository::new(pool.clone()));
         let disabled_helpers: Arc<dyn DisabledHelperRepository> =
             Arc::new(SqlDisabledHelperRepository::new(pool.clone()));
+        let helper_faults: Arc<dyn HelperFaultRepository> =
+            Arc::new(SqlHelperFaultRepository::new(pool.clone()));
         let browser_contacts: Arc<dyn BrowserContactRepository> =
             Arc::new(SqlBrowserContactRepository::new(pool.clone()));
         let participant_data: Arc<dyn ParticipantDataRepository> =
@@ -105,6 +109,8 @@ impl Node {
             Arc::new(SqlProtocolRecordRepository::new(pool.clone()));
         let sharing_rounds: Arc<dyn SharingRoundRepository> =
             Arc::new(SqlSharingRoundRepository::new(pool.clone()));
+        let seen_messages: Arc<dyn SeenMessageRepository> =
+            Arc::new(SqlSeenMessageRepository::new(pool.clone()));
         let helper_channels: Arc<dyn HelperChannelIndex> =
             Arc::new(InMemoryHelperChannelIndex::new());
         let mailbox_polls: Arc<dyn MailboxPollRepository> = Arc::new(InMemoryMailboxPolls::new());
@@ -140,6 +146,7 @@ impl Node {
                 channel_router: Arc::clone(&channel_router),
                 helper_channels: Arc::clone(&helper_channels),
                 sharing_rounds: Arc::clone(&sharing_rounds),
+                seen_messages,
             },
             pool.clone(),
             http_client.clone(),
@@ -169,6 +176,7 @@ impl Node {
                 Arc::clone(&actors),
                 Arc::clone(&protocol_records),
                 Arc::clone(&disabled_helpers),
+                Arc::clone(&helper_faults),
                 Arc::clone(&helper_channels),
                 Arc::clone(&mailbox_polls),
                 inboxes.clone(),
@@ -179,6 +187,7 @@ impl Node {
                 Arc::clone(&config),
                 Arc::clone(&actors),
                 Arc::clone(&disabled_helpers),
+                helper_faults,
                 Arc::clone(&browser_contacts),
                 participant_data,
                 Arc::clone(&protocol_records),

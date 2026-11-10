@@ -77,6 +77,12 @@ export function contactMessageToDto(c: ContactMessage): ContactMessageDto {
     contact_binding_hash: c.contact_binding_hash
       ? toBase64Url(c.contact_binding_hash)
       : undefined,
+    fingerprint_commitment: c.fingerprint_commitment
+      ? toBase64Url(c.fingerprint_commitment)
+      : undefined,
+    timestamp: c.timestamp
+      ? { seconds: Number(c.timestamp.seconds), nanos: c.timestamp.nanos }
+      : undefined,
   }
 }
 
@@ -93,6 +99,12 @@ export function dtoToContactMessage(dto: ContactMessageDto): ContactMessage {
     ecies_public_key: dto.ecies_public_key ? fromBase64Url(dto.ecies_public_key) : undefined,
     contact_binding_hash: dto.contact_binding_hash
       ? fromBase64Url(dto.contact_binding_hash)
+      : undefined,
+    fingerprint_commitment: dto.fingerprint_commitment
+      ? fromBase64Url(dto.fingerprint_commitment)
+      : undefined,
+    timestamp: dto.timestamp
+      ? { seconds: BigInt(dto.timestamp.seconds), nanos: dto.timestamp.nanos }
       : undefined,
   }
 }

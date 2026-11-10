@@ -11,8 +11,8 @@ import type { Page } from '@playwright/test'
  * does to another that shares its storage.
  */
 
-/** A row of the vault list, found by the vault's name. */
-function vaultRow(page: Page, name: string) {
+/** A row of the secret list, found by the secret's name. */
+function secretRow(page: Page, name: string) {
   return page.getByRole('row').filter({ has: page.getByText(name, { exact: true }) })
 }
 
@@ -41,15 +41,15 @@ test('nothing runs off the side of the page at phone width', async ({ page }) =>
   await page.setViewportSize({ width: 400, height: 800 })
   await setUpOwner(page, { name: 'Alice', participants: 3, prePaired: 0, minParticipants: 2 })
 
-  // The vault page: header, tab bar and console header all at once.
+  // The secret page: header, tab bar and console header all at once.
   expect(await horizontalOverflow(page)).toBeLessThanOrEqual(0)
 
   // The header's actions are still reachable, from its menu.
   await page.getByRole('button', { name: /^More actions/ }).click()
   await expect(page.getByRole('menuitem', { name: 'Reset browser data' })).toBeVisible()
-  await page.getByRole('menuitem', { name: 'All vaults' }).click()
+  await page.getByRole('menuitem', { name: 'All secrets' }).click()
 
-  await expect(page.getByRole('heading', { name: 'Your vaults' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Your secrets' })).toBeVisible()
   expect(await horizontalOverflow(page)).toBeLessThanOrEqual(0)
 })
 
@@ -104,19 +104,19 @@ test('Help sits at the bottom of the rail on a wide screen', async ({ page }) =>
   await expect(page.getByRole('navigation', { name: 'Help topics' })).toBeVisible()
 })
 
-test('a vault claimed in another tab is shown as open there', async ({ page }) => {
+test('a secret claimed in another tab is shown as open there', async ({ page }) => {
   await setUpOwner(page, { name: 'Alice', participants: 3, prePaired: 0, minParticipants: 2 })
   await page.getByRole('button', { name: 'Leave' }).click()
   await page.getByRole('dialog').getByRole('button', { name: 'Stop running here' }).click()
-  await expect(vaultRow(page, 'Alice')).toContainText('Stopped')
+  await expect(secretRow(page, 'Alice')).toContainText('Stopped')
 
   const other = await page.context().newPage()
   await other.goto('./')
   await other.getByRole('button', { name: 'Open Alice', exact: true }).click()
-  await expect(other.getByRole('tab', { name: /^Secrets/ })).toBeVisible({ timeout: 60_000 })
+  await expect(other.getByRole('tab', { name: /^Items/ })).toBeVisible({ timeout: 60_000 })
 
   // No reload here: the first tab follows on its own.
-  await expect(vaultRow(page, 'Alice')).toContainText('Open in another tab', { timeout: 10_000 })
+  await expect(secretRow(page, 'Alice')).toContainText('Open in another tab', { timeout: 10_000 })
   await other.close()
 })
 
@@ -125,7 +125,7 @@ test('resetting browser data stops and reloads every tab', async ({ page }) => {
 
   const other = await page.context().newPage()
   await other.goto('./')
-  await expect(vaultRow(other, 'Alice')).toBeVisible()
+  await expect(secretRow(other, 'Alice')).toBeVisible()
 
   await other.getByRole('button', { name: 'Reset browser data' }).click()
   await other.getByRole('button', { name: 'Erase and reload' }).click()

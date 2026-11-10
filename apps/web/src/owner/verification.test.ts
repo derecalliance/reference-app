@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import type { BagVersion, PendingProtectRound, SecretBag } from '../types'
+import type { BagVersion, PendingProtectRound, ItemBag } from '../types'
 import { describeVerifyFailure, verifyBlockedReason, verifyProgress } from './verification'
 
 const participants = ['1', '2', '3', '4'].map(n => ({ id: `h${n}`, name: `Helper ${n}`, channelId: `90${n}` }))
@@ -14,7 +14,7 @@ function version(overrides: Partial<BagVersion> = {}): BagVersion {
     participantIds: [],
     verifiedParticipantIds: [],
     failedParticipantIds: [],
-    secrets: [],
+    items: [],
     rawBytes: '',
     helpers: [],
     ...overrides,
@@ -82,8 +82,28 @@ describe('verifyProgress with refusals (SDK 0.0.7 ShareVerifyRejected)', () => {
   })
 })
 
+describe('verifyProgress with invalid proofs (SDK 0.0.9 ShareVerifyInvalid)', () => {
+  it('resolves a helper whose proof does not match to its own state, counted as answered', () => {
+    const progress = verifyProgress({
+      participants,
+      verifiedParticipantIds: ['h1', 'h2'],
+      rejections: [{ id: 'h3', status: 10, memo: '' }],
+      invalidProofParticipantIds: ['h4'],
+      failedChannelIds: new Set(),
+      deadlinePassed: true,
+    })
+
+    expect(progress.rows.map(r => r.state)).toEqual(['verified', 'verified', 'rejected', 'invalid'])
+    expect(progress.invalidCount).toBe(1)
+    expect(progress.rejectedCount).toBe(1)
+    expect(progress.failedCount).toBe(0)
+    expect(progress.allDone).toBe(true)
+    expect(progress.percent).toBe(100)
+  })
+})
+
 describe('verifyBlockedReason', () => {
-  const round = { version: 5, protocolSecretId: '42', bag: {} as SecretBag, channelIds: [] } satisfies PendingProtectRound
+  const round = { version: 5, protocolSecretId: '42', bag: {} as ItemBag, channelIds: [] } satisfies PendingProtectRound
 
   it('is available with no round open', () => {
     expect(verifyBlockedReason(version(), [])).toBeNull()
@@ -99,13 +119,21 @@ describe('verifyBlockedReason', () => {
 })
 
 describe('describeVerifyFailure', () => {
-  it('explains the library’s missing-tracking-share refusal', () => {
+  it('explains NoProof on a restored version as the restore (SDK 0.0.9)', () => {
     expect(
-      describeVerifyFailure('invalid input: no committed share stored for this channel/version — cannot verify proof', 3),
-    ).toContain('v3 was restored from a recovered bag')
+      describeVerifyFailure({ reason: 'NoProof', error: 'no proof held for this channel at v3' }, version({ restoredFromRecovery: true })),
+    ).toContain('was restored from a recovered bag')
   })
 
-  it('passes any other error through', () => {
-    expect(describeVerifyFailure('boom', 3)).toBe('boom')
+  it('explains NoProof on any other version as deleted copies, not a restore', () => {
+    const text = describeVerifyFailure({ reason: 'NoProof', error: 'no proof' }, version({}))
+
+    expect(text).not.toContain('restored')
+    expect(text).toContain('no verification copies')
+  })
+
+  it('passes any other failure through in the library’s words', () => {
+    expect(describeVerifyFailure({ reason: 'NoSharedKey', error: 'boom' }, version({}))).toBe('boom')
+    expect(describeVerifyFailure({ reason: 'DispatchFailed', error: 'down' }, version({}))).toBe('down')
   })
 })

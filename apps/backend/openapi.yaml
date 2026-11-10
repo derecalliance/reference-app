@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: DeRec reference app — backend
-  version: "0.0.8-alpha.1"
+  version: "0.0.11"
   description: |
     The backend half of the DeRec reference app: an actor registry, a message
     relay, and a debug surface. It runs as a developer's local container and
@@ -58,6 +58,11 @@ info:
     `202`, `GET /derec/{actor_id}/mailbox` answers `{"messages": […]}`, and
     `GET /health` an empty `200`.
 
+    One `/api/v1` route also speaks protobuf: `POST
+    /api/v1/actors/{actor_id}/contact` answers the encoded `ContactMessage`
+    as `application/octet-stream`, with no envelope, to a caller whose
+    `Accept` asks for it. JSON stays the default, and its errors stay JSON.
+
     ## Request id
 
     Every response carries an `x-request-id` header. Send your own (1–128
@@ -88,6 +93,7 @@ info:
     | `METHOD_NOT_ALLOWED` | 405 | A known route called with a method it does not serve (`Allow` lists the right ones) |
     | `CONFLICT` | 409 | The request conflicts with current state |
     | `NAME_TAKEN` | 409 | Another helper already has that name |
+    | `PARTICIPANT_PAIRED` | 409 | The participant is still paired with an owner, who must unpair it before it can be deleted |
     | `PAYLOAD_TOO_LARGE` | 413 | The body is over the limit (2 MiB; 4 MiB on `POST /derec/{actor_id}` and for a relayed message, the most the gRPC listener accepts; 16 KiB for a browser contact) |
     | `UNSUPPORTED_MEDIA_TYPE` | 415 | A JSON route called without `Content-Type: application/json` |
     | `UNPROCESSABLE_ENTITY` | 422 | Well-formed JSON of the wrong shape: a missing field, a wrong type |
@@ -385,6 +391,25 @@ paths:
         owner's secret, creating it on first use. It must be a non-zero
         decimal `u64` other than the actor's own secret, and one actor mirrors
         at most 16 owners — a 17th is `409`.
+
+        ## Response format
+
+        The success body is negotiated from the request's `Accept` header
+        (OpenAPI expresses this through the two media types under `200`
+        rather than as a parameter):
+
+        | `Accept` | `200` body | `Content-Type` |
+        | --- | --- | --- |
+        | absent, `*/*`, `application/json`, or anything else | the `ContactMessage` JSON as `result`, in the envelope | `application/json` |
+        | `application/octet-stream` (ranked above `application/json`) | the protobuf `derec.ContactMessage`, encoded, with no envelope | `application/octet-stream` |
+
+        The protobuf form is for backend consumers: the bytes are exactly what
+        the DeRec SDK takes as a contact, so no JSON-to-protobuf conversion is
+        needed. Its `request_id` is in the `x-request-id` header only. Quality
+        values are honoured (`application/octet-stream, application/json;q=0.5`
+        selects protobuf); a tie goes to JSON. **Errors are always the JSON
+        `Error` envelope**, whatever was asked for — check the status before
+        decoding. Both forms answer `Vary: Accept`.
       parameters:
         - $ref: "#/components/parameters/ActorId"
         - name: contact_mode
@@ -400,7 +425,14 @@ paths:
           schema: { type: string, pattern: "^[0-9]+$" }
       responses:
         "200":
-          description: The contact
+          description: |
+            The contact — the JSON envelope by default, or the encoded protobuf
+            `ContactMessage` when `Accept` asks for `application/octet-stream`.
+          headers:
+            x-request-id: { $ref: "#/components/headers/RequestId" }
+            Vary:
+              description: Always `Accept`; the body depends on it.
+              schema: { type: string, example: accept }
           content:
             application/json:
               schema:
@@ -410,6 +442,13 @@ paths:
                     required: [result]
                     properties:
                       result: { $ref: "#/components/schemas/ContactMessage" }
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+                description: |
+                  An encoded `ContactMessage` protobuf, as defined in
+                  lib-derec's protobufs. No envelope.
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
@@ -562,8 +601,9 @@ paths:
         characters, and no other helper may already have it — compared
         trimmed and case-insensitively — or the request is `409` with code
         `NAME_TAKEN`.
-        `protocol_timeout_secs`, when given, must be 1–86400. Asking for a
-        gRPC or `both` helper while `grpc_enabled` is false is `400`.
+        `protocol_timeout_secs`, when given, must be 1–86400; omitted, it is
+        30. `unpair_ack` omitted is `not_required`. Asking for a gRPC or
+        `both` helper while `grpc_enabled` is false is `400`.
       requestBody:
         required: true
         content:
@@ -677,17 +717,22 @@ paths:
         the pool is server-wide, so it is removed for every owner on this node.
 
 
-        An owner already paired with it keeps its channel — the node cannot
-        reach into a browser to remove one — and from then on the participant
-        simply stops answering, exactly like one that has gone offline. The
-        owner clears the row by unpairing. A peer on this same node keeps its
-        own route to the channel.
+        Only a participant paired with no one can be deleted: while it holds a
+        paired channel (helper or replica, an unpair in flight included) the
+        request is refused with `PARTICIPANT_PAIRED`, and each owner must unpair
+        it first. Otherwise those owners would keep a channel nothing answers,
+        which the protocol could no longer tear down.
       parameters:
         - $ref: "#/components/parameters/HelperId"
       responses:
         "204": { description: Deleted }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Still paired with an owner (`PARTICIPANT_PAIRED`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/helpers/{helper_id}/toggle-status:
@@ -729,6 +774,59 @@ paths:
                         required: [disabled]
                         properties:
                           disabled: { type: boolean }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+  /api/v1/helpers/{helper_id}/fault:
+    put:
+      tags: [helpers]
+      summary: Make a provisioned helper simulate a failure
+      description: |
+        Failure modes other than going offline, applied through the SDK's own
+        share-store contract, so the library answers owners exactly as a real
+        helper in that state would:
+
+        - `lost_shares`: verification and recovery get `UNKNOWN_SHARE_VERSION`,
+          discovery lists nothing.
+        - `corrupted_shares`: shares are read back with a subshare byte
+          flipped, so verification reports an invalid proof and recovery sets
+          the share aside as corrupted.
+        - `refuses_new_shares`: every share it is asked to store is refused.
+        - `refuses_verification`: every verification challenge is refused.
+
+        `none` restores it. A property of the helper, seen by every owner it
+        holds shares for, and applied only to shares held for others. Stored
+        rows are never altered. Independent of `toggle-status`. An owner is
+        `400`; a browser-run participant, which has no store on this node,
+        `404`.
+      parameters:
+        - $ref: "#/components/parameters/HelperId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fault]
+              properties:
+                fault: { $ref: "#/components/schemas/HelperFault" }
+      responses:
+        "200":
+          description: The fault now in force
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    required: [result]
+                    properties:
+                      result:
+                        type: object
+                        required: [fault]
+                        properties:
+                          fault: { $ref: "#/components/schemas/HelperFault" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
@@ -953,7 +1051,9 @@ paths:
       summary: Deliver a protocol message to an actor (HTTP transport)
       description: |
         The endpoint peers post to. The body is raw protobuf wire bytes, not
-        JSON. A suspended actor answers `202` and discards the message, so a
+        JSON. Send it as `Content-Type: application/octet-stream`, as this
+        node does when it delivers; the header is optional, and a body without
+        one is read as `application/octet-stream`. A suspended actor answers `202` and discards the message, so a
         peer sees the same thing it would from a healthy one.
 
         A body may be at most 4 MiB — the most the gRPC listener accepts, so a
@@ -1111,6 +1211,10 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
 
   schemas:
+    HelperFault:
+      type: string
+      enum: [none, lost_shares, corrupted_shares, refuses_new_shares, refuses_verification]
+      description: A failure a provisioned helper simulates — see `PUT /api/v1/helpers/{helper_id}/fault`.
     SuccessEnvelope:
       type: object
       description: |
@@ -1160,6 +1264,7 @@ components:
         - METHOD_NOT_ALLOWED
         - CONFLICT
         - NAME_TAKEN
+        - PARTICIPANT_PAIRED
         - PAYLOAD_TOO_LARGE
         - UNSUPPORTED_MEDIA_TYPE
         - UNPROCESSABLE_ENTITY
@@ -1223,6 +1328,10 @@ components:
             channel_id: { type: string }
             shared_key: { type: string, description: base64url }
             disabled: { type: boolean }
+            fault:
+              allOf:
+                - $ref: "#/components/schemas/HelperFault"
+              description: The failure a provisioned helper simulates; absent while it behaves normally.
             browser_managed: { type: boolean }
             last_polled_at:
               type: [string, "null"]
@@ -1263,6 +1372,21 @@ components:
         mlkem_encapsulation_key: { type: string }
         ecies_public_key: { type: string }
         contact_binding_hash: { type: string }
+        fingerprint_commitment:
+          type: string
+          description: |
+            The creator's commitment to its fingerprint nonce (SDK 0.0.10),
+            present only on inline-keys contacts.
+        timestamp:
+          type: object
+          required: [seconds, nanos]
+          description: |
+            When the contact was minted, as a protobuf `Timestamp`. SDK 0.0.11
+            refuses a contact without one and expires it after the pairing
+            lifetime.
+          properties:
+            seconds: { type: integer, format: int64 }
+            nanos: { type: integer, format: int32 }
 
     TransportProtocolDto:
       type: object
@@ -1277,12 +1401,6 @@ components:
         pre_paired_count: { type: integer }
         min_participants: { type: integer }
         recommended_participants: { type: integer }
-        protocol_timeout_secs: { type: integer }
-        authentication_method: { type: string }
-        unpair_ack: { type: string }
-        auto_accept_unpair_requests: { type: boolean }
-        auto_accept_store_share_requests: { type: boolean }
-        auto_accept_verify_share_requests: { type: boolean }
         grpc_enabled: { type: boolean }
         grpc_port: { type: integer }
         grpc_relay_enabled: { type: boolean }
@@ -1299,7 +1417,7 @@ components:
               type: boolean
               description: |
                 True when this node's database is in-memory, so every actor,
-                pairing and vault is lost when the process stops.
+                pairing and secret is lost when the process stops.
 
     StateSnapshot:
       type: object

@@ -9,6 +9,9 @@
 //!
 //! Message *type* is inside the encrypted payload and is deliberately not
 //! available here.
+//!
+//! [`SeenEnvelope`] is an envelope an actor sent or accepted, remembered so a
+//! copy of it can be recognised.
 
 use prost::Message as _;
 
@@ -23,6 +26,16 @@ pub struct EnvelopeMeta {
     /// Length of the encrypted payload, for observability. The payload itself
     /// is never retained.
     pub payload_len: usize,
+}
+
+/// An envelope an actor sent or accepted, kept until `expires_at` so that a
+/// copy delivered again, or back to the actor, is recognised and dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SeenEnvelope {
+    /// The SDK's `message_id`: a SHA-256 of the encrypted message.
+    pub id: [u8; 32],
+    /// Unix seconds after which a copy can no longer be processed anyway.
+    pub expires_at: u64,
 }
 
 #[derive(Debug, thiserror::Error)]

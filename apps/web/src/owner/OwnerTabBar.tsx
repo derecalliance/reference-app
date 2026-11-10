@@ -2,13 +2,21 @@
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
 /** The owner page's tabs, in the order they are shown. */
-export type ActiveTab = 'participants' | 'replicas' | 'secrets' | 'shares' | 'recovery'
+export type ActiveTab =
+  | 'participants'
+  | 'replicas'
+  | 'secrets'
+  | 'copies'
+  | 'shares'
+  | 'recovery'
+  | 'notifications'
+  | 'settings'
 
 export interface OwnerTab {
   id: ActiveTab
   label: string
-  /** Shown beside the label; every tab in this app counts something. */
-  count: number
+  /** Shown beside the label, for a tab that lists something; Settings counts nothing. */
+  count?: number
 }
 
 export interface OwnerTabBarProps {
@@ -36,7 +44,7 @@ export function OwnerTabBar({ tabs, active, onSelect }: OwnerTabBarProps) {
           aria-selected={active === tab.id}
         >
           {tab.label}
-          <span className="tab-count">{tab.count}</span>
+          {tab.count !== undefined && <span className="tab-count">{tab.count}</span>}
         </button>
       ))}
     </div>

@@ -4,13 +4,14 @@ The node's shared pool of provisioned helpers: provisioning it, transport modes,
 
 ## What the pane shows
 
-**Participants** in the left navigation lists every helper the node runs (browser vaults are not listed). It refreshes every 4 seconds and works with no vault at all.
+**Participants** in the left navigation lists every helper the node runs (browser owners are not listed). It refreshes every 4 seconds and works with no secret set up at all.
 
 | Column | Shows |
 | --- | --- |
 | **Name** | Unique on the node, 1 to 64 characters. |
 | **Transport** | `http`, `grpc` or `both`: the endpoints the helper advertises. |
-| **Status** | *online*, or an *offline* chip. |
+| **Status** | *online*, or an *offline* chip, plus a chip naming the failure it simulates, if any. |
+| **Failure mode** | *Healthy*, or the failure it simulates (below). |
 | **Actions** | **Take offline** / **Bring online**, **Delete**. |
 
 ## Provisioning
@@ -22,7 +23,7 @@ The node's shared pool of provisioned helpers: provisioning it, transport modes,
 
 The pool is shared by every owner on the node, so a target never removes anything: asking for fewer than exist leaves the extra helpers alone. Two tabs provisioning at the same moment cannot both fill an empty pool; the node counts and creates under one lock.
 
-New helpers are created with this browser's protocol timeout and unpair acknowledgement policy (see [Settings](11-settings.md)). Setting up a vault never provisions helpers.
+New helpers are created with this browser's protocol timeout and unpair acknowledgement policy (see [Settings](11-settings.md)). Setting up a secret never provisions helpers.
 
 ## Transport modes
 
@@ -38,12 +39,25 @@ The mode is what a helper **advertises**, not what it can dial: every hosted hel
 
 **Take offline** simulates an unreachable peer without stopping anything. The node keeps accepting messages for it and discards them (outcome `dropped` in `/api/v1/debug/events`). Owners see its rounds end in *No answer*, and its rows tagged *Offline*. **Bring online** resumes delivery; nothing discarded meanwhile comes back.
 
+## Simulating a failure
+
+**Failure mode** makes a participant misbehave in ways other than going offline, to test how owners cope. It is a property of the participant, so every owner it holds shares for sees it, and owners' rows show a dashed *Simulated: …* tag.
+
+| Mode | The participant | Owners see |
+| --- | --- | --- |
+| **Lost shares** | answers as though its storage were wiped | Verify: *Rejected* (unknown share version). Recovery: refused. Discovery: nothing listed. |
+| **Corrupted shares** | hands out its shares with one byte flipped | Verify: *Proof invalid*, a critical notification. Recovery: its share is set aside as corrupted, and the secret still comes back from the others. |
+| **Refuses new shares** | refuses every share it is asked to store | Publish: *Rejected* for it; the round commits if the others meet the threshold. |
+| **Refuses verification** | rejects every challenge, still holding its shares | Verify: *Rejected*. Recovery still works. |
+
+The failures go through the SDK's own answers, so they look exactly like a real participant in that state. Only shares held for owners are affected (a participant acting as a replica keeps its own copies), and stored shares are never changed: **Healthy** restores it exactly. It is independent of **Take offline**.
+
 ## Deleting a participant
 
 **Delete** asks first, then removes the helper from the node entirely: its actor, stored channels and shares, and registry entry. It cannot be undone, and since the pool is shared it disappears for every owner.
 
-Owners paired with it keep their channel, which now reads *Removed from node*. To clear it, unpair from the owner side; if the unpair cannot be acknowledged, use **Forget this channel…**.
+Only a participant **no owner is paired with** can be deleted. While it holds a paired channel, as a helper or as a replica, **Delete** is disabled and the node refuses the request (`409 PARTICIPANT_PAIRED`): each owner unpairs it first, from their own secret's page. Deleting a paired participant would leave those owners a channel nothing answers, which the protocol could no longer tear down; unpairing runs the protocol's teardown, and the owner's republish to the remaining helpers.
 
 ## Linking channels on a helper
 
-A hosted helper has no screen of its own, so the operator links for it. **Link** on a paired helper's row in a vault's side panel opens **Link on …**, which lists the helper's other channels by peer name. Choosing one declares that both channels belong to the same owner, so the helper can answer that owner's discovery after a recovery. Names are labels, not proof: in a real deployment the helper would authenticate the owner first. See [Recovery and restore](06-recovery-and-restore.md).
+A hosted helper has no screen of its own, so the operator links for it. **Link** on a paired helper's row in a secret's side panel opens **Link on …**, which lists the helper's other channels by peer name. Choosing one declares that both channels belong to the same owner, so the helper can answer that owner's discovery after a recovery. Names are labels, not proof: in a real deployment the helper would authenticate the owner first. See [Recovery and restore](06-recovery-and-restore.md).

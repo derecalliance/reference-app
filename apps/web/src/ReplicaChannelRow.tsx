@@ -82,6 +82,11 @@ export interface ReplicaChannelRowProps {
   removingFromGroup: boolean
   onRemoveFromGroup: () => void
   /**
+   * Why Sync now and Remove from group are held back, or `null`: both publish
+   * a new version, so they wait until no round is open.
+   */
+  publishBlockedReason?: string | null
+  /**
    * Whether this row can simulate its peer going offline.
    *
    * `false` unless the peer is a provisioned helper: a browser peer has no
@@ -105,18 +110,18 @@ export interface ReplicaChannelRowProps {
    */
   viaGroupOnly?: boolean
   /**
-   * The version this vault currently holds, or `null` before its first protect
+   * The version this secret currently holds, or `null` before its first protect
    * round. What a source row's last acknowledgement is measured against: a
    * destination that missed a round while offline acked an older version, and
    * without the comparison its row read as current.
    */
-  vaultVersion?: number | null
+  secretVersion?: number | null
   /**
    * This device, as the destination on this row, already holds the peer's
-   * vault — it adopted it, or has since been receiving its updates. Once that
+   * secret — it adopted it, or has since been receiving its updates. Once that
    * is true the "offered" wording describes a decision already made.
    */
-  holdsPeerVault?: boolean
+  holdsPeerSecret?: boolean
 }
 
 /** The status word for a replica channel, with expiry outranking everything. */
@@ -171,27 +176,27 @@ function mirrorSummary(
   view: ReplicaView | null,
   name: string,
   catchingUp: boolean,
-  vaultVersion: number | null,
-  holdsPeerVault: boolean,
+  secretVersion: number | null,
+  holdsPeerSecret: boolean,
 ): string {
   if (!view) return 'Waiting for this device to project the channel.'
   if (view.direction === 'replica_destination') {
     if (catchingUp) {
-      return `Getting ${name}’s copy of the vault — this device keeps asking until ${name} answers, which can take until they confirm the code on their screen. Nothing is erased until you accept it.`
+      return `Getting ${name}’s copy of the secret — this device keeps asking until ${name} answers, which can take until they confirm the code on their screen. Nothing is erased until you accept it.`
     }
-    // After adoption the offer is history: this vault *is* the peer's now,
+    // After adoption the offer is history: this secret *is* the peer's now,
     // and further versions apply without a prompt.
-    if (holdsPeerVault) {
-      return `This vault is ${name}’s${vaultVersion === null ? '' : `, at v${vaultVersion}`}. Versions ${name} publishes are applied here automatically.`
+    if (holdsPeerSecret) {
+      return `This secret is ${name}’s${secretVersion === null ? '' : `, at v${secretVersion}`}. Versions ${name} publishes are applied here automatically.`
     }
-    return 'This device is offered the peer’s vault. Nothing is erased until you accept an offer.'
+    return 'This device is offered the peer’s secret. Nothing is erased until you accept an offer.'
   }
   if (!view.lastSync) {
-    return 'Nothing acknowledged yet — the vault goes out on the next protect round.'
+    return 'Nothing acknowledged yet — the secret goes out on the next protect round.'
   }
   const acked = `acknowledged ${new Date(view.lastSync.syncedAt).toLocaleString()}`
-  if (isReplicaBehind(view, vaultVersion)) {
-    return `Behind: last mirrored v${view.lastSync.version} (${acked}), but this vault is at v${vaultVersion}. Use “Sync now” to send the current version.`
+  if (isReplicaBehind(view, secretVersion)) {
+    return `Behind: last mirrored v${view.lastSync.version} (${acked}), but this secret is at v${secretVersion}. Use “Sync now” to send the current version.`
   }
   return `Mirrored v${view.lastSync.version}, ${acked}.`
 }
@@ -213,12 +218,13 @@ export function ReplicaChannelRow({
   canRemoveFromGroup,
   removingFromGroup,
   onRemoveFromGroup,
+  publishBlockedReason = null,
   canToggleOffline,
   offline,
   onToggleOffline,
   viaGroupOnly = false,
-  vaultVersion = null,
-  holdsPeerVault = false,
+  secretVersion: secretVersion = null,
+  holdsPeerSecret: holdsPeerSecret = false,
 }: ReplicaChannelRowProps) {
   // The countdown ticks in this row and nothing above it, and a row with
   // nothing pending never arms a timer at all.
@@ -228,7 +234,7 @@ export function ReplicaChannelRow({
   )
   const status = viaGroupOnly
     ? { text: 'Group member', className: 'available' }
-    : statusLabel(view, expiry, catchingUp, isReplicaBehind(view, vaultVersion))
+    : statusLabel(view, expiry, catchingUp, isReplicaBehind(view, secretVersion))
   // A member with no channel is waiting for nothing: there is no comparison to
   // make and no deadline to miss, so neither the prompt nor the confirmed line
   // applies to it.
@@ -259,8 +265,9 @@ export function ReplicaChannelRow({
           <button
             className="channel-link-btn"
             onClick={onSyncNow}
-            disabled={syncBlocked}
-            aria-label={`Send this vault to ${name} now`}
+            disabled={syncBlocked || publishBlockedReason !== null}
+            title={publishBlockedReason ?? undefined}
+            aria-label={`Send this secret to ${name} now`}
           >
             {syncing ? 'Syncing…' : 'Sync now'}
           </button>
@@ -272,9 +279,13 @@ export function ReplicaChannelRow({
           <button
             className="channel-unpair-btn"
             onClick={onRemoveFromGroup}
-            disabled={removingFromGroup}
+            disabled={removingFromGroup || publishBlockedReason !== null}
             aria-busy={removingFromGroup || undefined}
-            title="Evict this device from the replica group"
+            title={
+              removingFromGroup
+                ? undefined
+                : (publishBlockedReason ?? 'Evict this device from the replica group')
+            }
           >
             {removingFromGroup ? 'Removing…' : 'Remove from group'}
           </button>
@@ -321,7 +332,7 @@ export function ReplicaChannelRow({
         <div className="replica-row-notice replica-row-notice--error" role="status">
           <span className="replica-row-prompt__text">
             You reported that the codes did not match, so this device has not confirmed the
-            channel and no vault moves across it. {name} is not told — the protocol has no
+            channel and no secret moves across it. {name} is not told — the protocol has no
             message for a refusal — and may keep waiting. Remove the row and pair again; if
             you misread the codes, compare them again.
           </span>
@@ -334,9 +345,9 @@ export function ReplicaChannelRow({
       {awaitingConfirmation && !view?.refused && view?.adoptionDeclined && (
         <div className="replica-row-notice replica-row-notice--error" role="status">
           <span className="replica-row-prompt__text">
-            You declined to adopt {name}’s vault, so this device has not confirmed the channel and
-            this vault is unchanged. {name} is not told. Remove the row, or confirm after all to
-            adopt their vault.
+            You declined to adopt {name}’s secret, so this device has not confirmed the channel and
+            this secret is unchanged. {name} is not told. Remove the row, or confirm after all to
+            adopt their secret.
           </span>
           <button className="channel-link-btn" onClick={onOpenFingerprint}>
             Reconsider
@@ -348,7 +359,7 @@ export function ReplicaChannelRow({
         <div className="replica-row-prompt" role="status">
           <span className="replica-row-prompt__text">
             Not confirmed yet. Compare the code on both devices — until this device confirms,
-            the channel stays pending and no vault moves across it.
+            the channel stays pending and no secret moves across it.
             {expiry && ` ${expiryText(expiry)}`}
           </span>
           <button
@@ -402,7 +413,7 @@ export function ReplicaChannelRow({
       )}
 
       {/* No mirror line for a member with no channel: the summary would say the
-          vault "goes out on the next protect round", which contradicts the line
+          secret "goes out on the next protect round", which contradicts the line
           above it — nothing is ever sent to a peer this device has no channel
           to. */}
       {!viaGroupOnly && (
@@ -410,7 +421,7 @@ export function ReplicaChannelRow({
           <div className="channel-prop">
             <span className="channel-prop-label">Mirror</span>
             <span className="channel-prop-value">
-              {mirrorSummary(view, name, catchingUp, vaultVersion, holdsPeerVault)}
+              {mirrorSummary(view, name, catchingUp, secretVersion, holdsPeerSecret)}
             </span>
           </div>
         </div>

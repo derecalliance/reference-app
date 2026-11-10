@@ -103,7 +103,7 @@ test('setting up an owner does not provision participants', async ({ page }) => 
   await openApp(page)
   const before = await poolSize(page)
 
-  await page.getByRole('button', { name: 'Set up a new vault' }).click()
+  await page.getByRole('button', { name: 'Set up a new secret' }).click()
   await page.getByPlaceholder('e.g. Alice').fill('Alice')
   await page.getByRole('button', { name: /^Next/ }).click()
   await expect(page.getByRole('heading', { name: 'Your settings' })).toBeVisible()
@@ -118,7 +118,7 @@ test('pre-pairing cannot exceed the participants that are online', async ({ page
   const online = await poolSize(page)
 
   await page.getByRole('button', { name: 'Owner' }).click()
-  await page.getByRole('button', { name: 'Set up a new vault' }).click()
+  await page.getByRole('button', { name: 'Set up a new secret' }).click()
   await page.getByPlaceholder('e.g. Alice').fill('Alice')
   await page.getByRole('button', { name: /^Next/ }).click()
   // Inert until the node has answered; the ceiling is unknown before then.

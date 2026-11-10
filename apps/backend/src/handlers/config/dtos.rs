@@ -16,7 +16,7 @@ pub struct ConfigResponse {
     pub defaults: Defaults,
     /// True when this node's database is in-memory, so everything is lost when
     /// the process stops. The front end surfaces it so a developer learns this
-    /// before losing a vault to it rather than afterwards.
+    /// before losing a secret to it rather than afterwards.
     pub database_ephemeral: bool,
 }
 

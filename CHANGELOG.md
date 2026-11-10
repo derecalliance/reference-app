@@ -9,66 +9,239 @@ the SDK is compiled into both halves, so a different SDK means a different
 release rather than a different setting. Pre-releases of a version carry a
 suffix (`0.0.8-alpha.1`, `-beta.N`, `-rc.N`).
 
-## [0.0.8-alpha.1] — unreleased
+## [0.0.11] — unreleased
 
-First release. Built against DeRec SDK 0.0.8.
+First release. Built against DeRec SDK 0.0.11, a security release, on top
+of 0.0.10's single kept version, fingerprint commitment, and a mismatch that
+revokes the pairing.
+
+Building from source needs Rust 1.95 or newer (the Docker image builds on
+`rust:1.95-bookworm`): SDK 0.0.11 uses `if let` match guards, although its
+crates still declare 1.88.
+
+### Changed
+
+- **DeRec's own terms.** What earlier builds called a **vault** is now a
+  **secret** — DeRec's Secret, with its `secret_id` — and what they called a
+  **secret** is now an **item** — DeRec's `UserSecret` — held in the secret's
+  item bag. Browser data those builds saved under `derec:vault:` is moved to
+  `derec:secret:` on startup and records in the old shape are read as before;
+  `#/vault/<id>` links still open the secret (now at `#/secret/<id>`).
 
 ### Added
 
 - **Owner and Helper reference implementation.** A React + Vite front end that
   executes the protocol client-side through the `@derec-alliance/web` WASM SDK,
   and a thin Rust + Axum backend that holds no protocol logic.
-- **Multi-vault browser app.** A browser holds any number of vaults and one tab
-  runs all of them at once; one tab per vault is enforced with Web Locks. Vault
-  list, a header vault switcher, setting up a new vault or claiming an existing
-  owner actor, Leave (stop running here, or remove from this browser) and
-  Reset browser data. State persists in `localStorage`.
+- **Multi-secret browser app.** A browser holds any number of secrets and one
+  tab runs all of them at once; one tab per secret is enforced with Web Locks.
+  Secret list, a header secret switcher, setting up a new secret or claiming an
+  existing owner actor, Leave (stop running here, or remove from this browser)
+  and Reset browser data. State persists in `localStorage`.
+- **Dark and light themes** with a toggle in the header. The app follows the
+  system's colour scheme until a theme is picked; the pick is remembered per
+  browser (`derec.theme`), applies to every open tab, and is set before the
+  first paint so a light page does not flash dark. The protocol console and
+  its log detail follow the theme too.
 - **Pairing** in all three contact modes — inline keys, hashed keys and no keys
   with fingerprint confirmation (including the refusal path) — by copy/paste or
   by scanning a QR code with the camera where the browser supports
-  `BarcodeDetector`. Browser-to-browser pairing, so a vault can be a helper for
-  another vault.
+  `BarcodeDetector`. The Pair dialog takes the JSON payload or the contact's
+  raw protobuf `ContactMessage` bytes as hex or base64, which is how a contact
+  from another implementation arrives; Share Contact copies either form.
+  Browser-to-browser pairing, so one secret's owner can be a helper for
+  another secret.
 - **Provisioned helper pool.** Backend-hosted helpers shared by every owner;
   the requested count is a target for the pool, not an order to create.
   Helpers can be provisioned, deleted and toggled offline from the
-  Participants section or over HTTP.
-- **Secret lifecycle.** Add a secret, protect it across paired helpers, verify
-  shares, discover the versions helpers hold, and remove a secret (which
-  publishes a new version without it). View Payload shows a version's secret
-  bag, including its replica group. Round progress tells apart a helper that
-  refused (Rejected), one that never answered (No answer) and one that could
-  not be reached (Not reachable); a helper that refuses a verification shows as
-  Rejected. A round counts only the helpers it was actually sent to: one whose
-  fingerprint was refused is sent nothing, so it is neither waited on nor
-  reported as having failed to store the version, and the Add Secret form does
-  not list it among the participants. A secret bag is capped at 32 KB, which is what browser storage can
-  hold across every kept version.
-- **Share retention.** Each round tells helpers which versions to keep
-  (`keepList`): the three newest committed versions plus any round still open,
-  including the rounds the library publishes on its own when a helper pairs or
-  a replica's fingerprint is confirmed, so a version that commits after a newer
-  round started is not dropped and still shows in discovery. Helpers drop the
-  rest, so a rolled-back round never lingers on them or in discovery.
+  Participants section or over HTTP. Only a participant paired with no owner
+  can be deleted: while it holds a paired channel (helper or replica) Delete
+  is disabled and `DELETE /api/v1/helpers/{id}` answers `409
+  PARTICIPANT_PAIRED`, so each owner unpairs it first and the protocol's own
+  teardown, with its republish, runs.
+- **Simulated helper failures.** A provisioned participant can be set to
+  lose or corrupt the shares it holds, or to refuse to store or to verify
+  them (`PUT /api/v1/helpers/{id}/fault`, and a Failure mode select under
+  Participants). Applied through the SDK's share-store contract, so owners
+  get the library's real answers: rejected or invalid verifications, refused
+  shares, corrupted recovery shares set aside. Reversible and independent of
+  Take offline; owners' rows show what is simulated.
+- **Secret lifecycle.** Add items to a secret, protect it across paired
+  helpers, verify shares, discover the versions helpers hold, and remove an
+  item (which publishes a new version without it). View Payload shows a
+  version's item bag, including its replica group. Round progress tells apart
+  a helper that refused (Rejected), one that never answered (No answer) and
+  one that could not be reached (Not reachable); a helper that refuses a
+  verification shows as Rejected, and one whose proof does not match the
+  share it was sent shows as Proof invalid, with a warning that it may be
+  damaged or dishonest. A round counts only the helpers it was actually sent
+  to: one whose fingerprint was refused is sent nothing, so it is neither
+  waited on nor reported as having failed to store the version, and the Add
+  Item form does not list it among the participants. An item bag is capped at
+  32 KB, which is what browser storage can hold across every kept version.
+- **Previous versions as a table.** On the Items tab, the current version
+  keeps its full card; earlier versions are one row each (version, item
+  names, threshold, helpers verified and failed, recoverable, and Payload /
+  Verify / Remove actions), with the per-helper detail and subshare counts in
+  tooltips. Remove deletes a version from this device — its record and its
+  verification copies — and sends nothing, so helpers that keep it can still
+  recover it.
+- **Threshold and weights on the Channels tab; publish choices.** The
+  threshold every publish uses and each paired helper's weight (how many
+  subshares it holds — the threshold counts subshares, so fewer, more trusted
+  helpers can meet it) are set on the Channels tab, which also shows the
+  weight and threshold the SDK last published with. The threshold is either
+  at least a percentage of the subshares the paired helpers hold (rounded up,
+  at least 2, raised above the heaviest helper so none recovers alone — a
+  tooltip says when — and worked out at every publish; new secrets start at
+  50%) or a fixed number (secrets set up before, and secrets restored or
+  joined from a group, which take the group's number). Each mode keeps its
+  value when switching, and a **?** beside the setting explains the chosen
+  one. Setting them sends nothing until the next publish;
+  while a weight reaches the threshold or the helpers cannot reach it, every
+  publish is disabled and says what to fix.
+  The publish dialogs (Add Item, Remove Item, Republish) show the
+  threshold and weights read-only and let the owner pick which earlier
+  version helpers keep. Each version records its own threshold. Round
+  progress, the publish gates and the rollback decision count subshares
+  against the round's own threshold, and a weighted helper shows as ×N.
+  Republish publishes the current items again with the current threshold
+  and weights. A version that commits while a dialog is open is the one kept
+  unless another was picked. Weights and the threshold survive restore,
+  joining a replica group and mirrored updates.
+- **A Settings tab per secret.** Everything a secret runs and publishes
+  with, saved together. Its protocol settings — timeout, unpair
+  acknowledgement, whether incoming unpair, share storage and verification
+  requests are answered on their own or asked about, and the authentication
+  method — belong to that secret and start from defaults the app defines (each
+  marked in its list, with a way back to them), not from the node or the
+  browser: a 30-second timeout, no unpair acknowledgement, and every incoming
+  request accepted automatically. The timeout and unpair acknowledgement apply when the secret next
+  starts, and the tab says when one is waiting for that. Its publishing
+  choices: the earlier version helpers keep (the newest committed one, or one
+  chosen at each publish, or none — a publish the SDK starts on its own keeps
+  the newest committed; a secret saved with "keep the last N" reads as the
+  default); automatic or manual cleanup of old verification copies; and
+  periodic verification.
+- **Verification Copies tab.** Lists the copies this device keeps per
+  version, latest first: how many helpers' copies, their size, whether the
+  version is still in this device's history, whether helpers still keep it
+  and how many of its helpers verified. Delete one version from its row, or
+  check several and delete them together; Select by rule checks what the
+  secret's rule would delete. Automatic mode does the same after each new
+  version lands, including on a replica, where the SDK never deletes them. The
+  latest version and open rounds are always kept; shares held for others are
+  never listed.
+- **Recoverability and periodic verification.** Verifying a version shows
+  whether its verified helpers hold its threshold of subshares (recoverable,
+  not recoverable from verified helpers alone, or unknown for versions
+  published before the counts were recorded). Shares can be verified
+  automatically every N minutes, hours or days while the secret is open.
+- **Notifications.** A bell in the header counts unread notifications across
+  secrets, and rings with a red badge while one is critical. Each secret has a
+  Notifications tab (filter, mark read, link to the tab concerned). Automatic
+  verification announces every run: started and passed as toasts, and a failed
+  run (a helper rejected, sent an invalid proof, was unreachable or silent past
+  the run's report window, or the run could not start) as an alert that stays
+  until dismissed, plus a critical notification that stays until read. The
+  Items card shows the last automatic check. An invalid proof in any
+  verification is recorded as critical too. A run is reported at its report
+  window (the protocol timeout, capped at the schedule interval) although its
+  challenges stay open for late answers, and the next run is no longer held
+  back by them.
+- **Restore or join.** A recovered secret that still lives on a replica offers
+  Join group next to Restore: join through a member this node runs, or pair
+  as replica destination with any member. Joining is blocked by a known SDK
+  0.0.9 limitation when the member confirms first (see the help page).
+- **Stores keep the SDK's per-version data.** The browser and backend share
+  stores keep each share's subshare count and threshold, and the user-secret
+  stores its threshold and author (the browser store had dropped the author
+  since SDK 0.0.6); backend migration `0005` adds the two share columns.
+- **Failed and refused requests.** A request a peer sends that fails on this
+  device is reported and answered rather than left to time out on the peer
+  (the browser answers the SDK's `RequestFailed` token with the status and
+  memo the SDK chose); a share or replica copy the SDK refuses,
+  a pairing it refuses, and an error response from a peer each show in the
+  Console and as a notification. Provisioned helpers log the same events.
+- **Share retention.** Each round tells helpers the one earlier version to
+  keep (`keepVersion`, SDK 0.0.10, which replaced `keepList`): the newest
+  committed version, or the owner's pick. Helpers hold at most that one and
+  the version sent, and drop the rest, so a rolled-back round never lingers
+  on them or in discovery. Provisioned helpers keep the newest version that
+  may have committed. When nothing on record vouches for a version, the one just below
+  the version sent is kept.
+- **One round at a time.** Nothing that publishes starts while a round is
+  open, the library's own included: Add Item, Remove, Republish, Retry,
+  Pair, Share Contact, Unpair, and a replica's Sync now and Remove from group
+  are disabled with the version still being published, and confirming a
+  fingerprint that would publish is refused. An unpair still waiting for the
+  helper's answer holds them back too, since it publishes when it completes. A
+  round that closes without every helper storing its share raises a banner:
+  a warning when the version is still recoverable, a danger alert when it
+  rolled back. Retry publishes the same items as a new round; Dismiss or
+  Discard clears it.
+- **Pairing lifetime (SDK 0.0.11).** A contact can be read, and a pairing
+  request accepted, for 30 minutes after the contact was made — on both the
+  browser and the node's helpers, instead of the SDK's 30-second default. An
+  expired contact says so and asks for a fresh one; the contact a secret
+  publishes for other browsers is renewed every 15 minutes. Contacts carry the
+  time they were made: the QR payload and the API's `ContactMessage` gain
+  `timestamp: { seconds, nanos }`, which the SDK now requires. A contact
+  copied from an older build has none and is refused with a request for a
+  fresh one.
+- **Replayed and reflected messages are dropped (SDK 0.0.11).** The browser
+  and the node's helpers keep the `message_id` of every message they send or
+  accept for the replay window and drop an incoming copy of one, and keep
+  them across restarts — the browser in local storage, the node in a new
+  `seen_messages` table (migration `0007`). A contact update older than
+  one already applied on the channel is refused. A replica pairing still
+  waiting for its fingerprint no longer stops a secret from publishing.
+- **Fingerprint commitment (SDK 0.0.10).** Contacts carry
+  `fingerprint_commitment` (inline-keys contacts) through the JSON payload and
+  `ContactMessageDto` in the HTTP API, so pairing works against a 0.0.10 peer;
+  an older peer cannot pair with this build. A fingerprint mismatch the SDK
+  detects now revokes the pending pairing, and the dialogs say to pair
+  again.
 - **Recovery and restore.** Reconstruct a secret from helper shares, and
-  restore this device from a recovered bag. A helper that holds no share of the
-  requested version is reported as refused and does not hold recovery up; a
-  corrupted share is reported with the helper and reason, with an offer to
-  unpair it. Helpers on another node can be linked for recovery. Restoring a
-  vault that has replicas keeps its group: on the device that held it the
-  Replicas tab still lists the replica, and on a new device the vault takes
-  over the identity its group knows it by — the source's — so it can publish
-  and keeps mirroring. A vault restored without that identity is told why it
-  cannot publish and how to fix it, instead of failing on an internal error.
-- **Unpairing**, with configurable acknowledgement policy.
+  restore this device from a recovered item bag. The SDK decides a recovery
+  once, after every helper asked has answered or 60 seconds have passed
+  (SDK 0.0.11); a helper that stayed silent is named on the row, and a
+  recovery that rebuilds nothing ends *Incomplete* with what it collected. A
+  helper that holds no share of the requested version is reported as refused
+  and does not hold recovery up; a corrupted share (`Malformed`,
+  `InvalidProof`, `Forged`) is reported with the helper and reason, with an
+  offer to unpair it; an unreadable (`Malformed`) one also names the innocent
+  cause — a version protected before an SDK upgrade that changed the share
+  format — and advises protecting a new version. When the helpers disagree —
+  one secret rebuilt against valid shares of another (*disputed*), or several
+  different secrets rebuilt (*conflict*) — every candidate is shown with the
+  helpers behind it and against it, and nothing is restored until the owner
+  picks one and confirms; no helper is unpaired for it. Helpers on another node can be linked
+  for recovery. Restoring a secret that has replicas keeps its group: on the
+  device that held it the Replicas tab still lists the replica, and on a new
+  device the secret takes over the identity its group knows it by — the
+  source's — so it can publish and keeps mirroring. A secret restored without
+  that identity is told why it cannot publish and how to fix it, instead of
+  failing on an internal error.
+- **Unpairing**, with configurable acknowledgement policy. Unpairing a helper
+  that holds a share publishes the current items as a new version to the
+  helpers that remain, once the unpair completes — at once without
+  acknowledgement, otherwise on the helper's answer or the timeout — unless
+  the secret holds no items or the remaining helpers fall below the
+  threshold, which the app reports. Removing a replica from its group
+  publishes the roster without it at once; a secret with no items yet only
+  announces the removal, which completes with the first publish. SDK 0.0.10
+  leaves both publishes to the application. An unpair without
+  acknowledgement clears its row at once.
 - **Replica groups.** Pair another device — or a provisioned helper in replica
   mode — as a replica behind a fingerprint gate; mirroring with per-member
   acknowledgement, sync check and member removal (with the source's successor
   rule stated before confirming). On a destination the adoption question is
   asked before the fingerprint is confirmed, because confirming is what adopts
-  the group's vault. A version conflict blocks publishing until it is resolved:
+  the group's secret. A version conflict blocks publishing until it is resolved:
   get the group's copy, merge, publish once.
-- **Edit Identity.** Rename a vault or move its endpoint (follow the node, or
-  pin one); paired helpers are told with `UpdateChannelInfo`, and a vault in a
+- **Edit Identity.** Rename a secret or move its endpoint (follow the node, or
+  pin one); paired helpers are told with `UpdateChannelInfo`, and a secret in a
   replica group publishes a new version so its members get the new values.
 - **HTTP and gRPC transports.** A gRPC listener alongside HTTP; helpers that
   advertise `http`, `grpc` or `both`; and a relay through which a browser owner
@@ -116,6 +289,10 @@ First release. Built against DeRec SDK 0.0.8.
   `RELAY_DISABLED` — and echoes an `x-request-id` header. The DeRec transport
   (`/derec/*`) and `/health` stay unprefixed, and `/derec/*` success bodies are
   the plain protocol shapes. Described in `apps/backend/openapi.yaml`.
+  `POST /api/v1/actors/{id}/contact` negotiates its body from `Accept`:
+  `application/octet-stream` answers the encoded protobuf `ContactMessage`
+  (no envelope) for backend consumers to hand straight to their SDK; JSON
+  stays the default, and errors are JSON either way.
 - **Layered backend.** One file per endpoint under `handlers/`, each calling
   exactly one service; services and repositories behind traits with typed
   errors and injected dependencies; business models in `models/`, one file per
@@ -125,8 +302,15 @@ First release. Built against DeRec SDK 0.0.8.
   prints every resolved setting and its source at boot, and serves the same
   from `GET /api/v1/debug/config`.
 - **Settings section.** The node's resolved configuration, plus per-browser
-  overrides of the protocol defaults, including auto-accept for incoming unpair,
-  share storage and verification requests.
+  overrides of its helper pool defaults (pool size, minimum, recommended,
+  pre-paired, transport mix). Protocol settings are per secret, on its
+  Settings tab; protocol overrides an earlier build saved here are ignored.
+- **No protocol settings in the node's configuration.** `protocol_timeout_secs`,
+  `unpair_ack`, `authentication_method` and the three `auto_accept_*` keys (and
+  their `DEREC_*` variables) are gone from `[defaults]` and from
+  `GET /api/v1/config`. A file that still sets them boots and the boot report
+  names each as ignored. A helper provisioned without settings gets a
+  30-second timeout and `not_required`.
   A tab opened while the node is down retries fetching the node's defaults
   (bounded backoff, at most one request every 30 s) until it answers once,
   instead of keeping the built-in fallback until a reload.
@@ -142,4 +326,4 @@ First release. Built against DeRec SDK 0.0.8.
   whole, the console sticks to the bottom edge, and no screen runs off the
   side.
 - **End-to-end suite** under Playwright in Google Chrome, covering setup,
-  vaults, pairing, sharing, recovery, replicas, transports and settings.
+  secrets, pairing, sharing, recovery, replicas, transports and settings.

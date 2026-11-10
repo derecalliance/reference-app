@@ -20,6 +20,7 @@ use crate::models::{
 use crate::repositories::actors::ActorRepository;
 use crate::repositories::disabled_helpers::DisabledHelperRepository;
 use crate::repositories::helper_channels::HelperChannelIndex;
+use crate::repositories::helper_faults::HelperFaultRepository;
 use crate::repositories::mailbox_polls::MailboxPollRepository;
 use crate::repositories::protocol_records::ProtocolRecordRepository;
 use crate::utils::time::rfc3339_from_unix_ms;
@@ -65,6 +66,7 @@ pub struct ActorServiceImpl {
     actors: Arc<dyn ActorRepository>,
     records: Arc<dyn ProtocolRecordRepository>,
     disabled_helpers: Arc<dyn DisabledHelperRepository>,
+    helper_faults: Arc<dyn HelperFaultRepository>,
     helper_channels: Arc<dyn HelperChannelIndex>,
     polls: Arc<dyn MailboxPollRepository>,
     inboxes: Arc<dyn InboxDirectory>,
@@ -78,6 +80,7 @@ impl ActorServiceImpl {
         actors: Arc<dyn ActorRepository>,
         records: Arc<dyn ProtocolRecordRepository>,
         disabled_helpers: Arc<dyn DisabledHelperRepository>,
+        helper_faults: Arc<dyn HelperFaultRepository>,
         helper_channels: Arc<dyn HelperChannelIndex>,
         polls: Arc<dyn MailboxPollRepository>,
         inboxes: Arc<dyn InboxDirectory>,
@@ -88,6 +91,7 @@ impl ActorServiceImpl {
             actors,
             records,
             disabled_helpers,
+            helper_faults,
             helper_channels,
             polls,
             inboxes,
@@ -231,6 +235,11 @@ impl ActorService for ActorServiceImpl {
                 .is_disabled(&actor.id)
                 .await
                 .unwrap_or(false);
+            let fault = self
+                .helper_faults
+                .fault(&actor.id)
+                .await
+                .unwrap_or_default();
             let browser_managed = self.inboxes.kind(&actor.id) == Some(InboxKind::Browser);
             let last_polled_at = if browser_managed {
                 self.polls.last(&actor.id).map(rfc3339_from_unix_ms)
@@ -243,6 +252,7 @@ impl ActorService for ActorServiceImpl {
                 channel_id,
                 shared_key,
                 disabled,
+                fault,
                 browser_managed,
                 last_polled_at,
             });
@@ -494,6 +504,7 @@ fn contact_message(contact: &PeerContact) -> Result<derec_proto::ContactMessage,
     let mlkem_encapsulation_key = decode(&contact.mlkem_encapsulation_key)?;
     let ecies_public_key = decode(&contact.ecies_public_key)?;
     let contact_binding_hash = decode(&contact.contact_binding_hash)?;
+    let fingerprint_commitment = decode(&contact.fingerprint_commitment)?;
 
     if contact.endpoints.is_empty() {
         return Err(ServiceError::BadRequest(
@@ -501,7 +512,7 @@ fn contact_message(contact: &PeerContact) -> Result<derec_proto::ContactMessage,
         ));
     }
 
-    Ok(derec_proto::ContactMessage {
+    let mut message = derec_proto::ContactMessage {
         channel_id,
         nonce,
         supported_transports: contact.endpoints.clone(),
@@ -510,7 +521,15 @@ fn contact_message(contact: &PeerContact) -> Result<derec_proto::ContactMessage,
         ecies_public_key,
         contact_binding_hash,
         timestamp: None,
-    })
+        fingerprint_commitment,
+    };
+    // Passed on as given: the SDK judges whether it is present and fresh.
+    if let Some(minted) = contact.timestamp {
+        let timestamp = message.timestamp.insert(Default::default());
+        timestamp.seconds = minted.seconds;
+        timestamp.nanos = minted.nanos;
+    }
+    Ok(message)
 }
 
 #[cfg(test)]
@@ -520,14 +539,15 @@ mod tests {
     use crate::repositories::helper_channels::InMemoryHelperChannelIndex;
     use crate::repositories::mailbox_polls::InMemoryMailboxPolls;
     use crate::services::test_fakes::{
-        helper_record, FakeActorRepository, FakeDisabledHelpers, FakeGateway, FakeInboxes,
-        FakeProtocolRecords, FakeRoutes,
+        helper_record, FakeActorRepository, FakeDisabledHelpers, FakeGateway, FakeHelperFaults,
+        FakeInboxes, FakeProtocolRecords, FakeRoutes,
     };
 
     struct Fixture {
         actors: Arc<FakeActorRepository>,
         records: Arc<FakeProtocolRecords>,
         disabled: Arc<FakeDisabledHelpers>,
+        faults: Arc<FakeHelperFaults>,
         channels: Arc<InMemoryHelperChannelIndex>,
         polls: Arc<InMemoryMailboxPolls>,
         inboxes: Arc<FakeInboxes>,
@@ -541,6 +561,7 @@ mod tests {
                 actors: Arc::new(FakeActorRepository::default()),
                 records: Arc::new(FakeProtocolRecords::default()),
                 disabled: Arc::new(FakeDisabledHelpers::default()),
+                faults: Arc::new(FakeHelperFaults::default()),
                 channels: Arc::new(InMemoryHelperChannelIndex::new()),
                 polls: Arc::new(InMemoryMailboxPolls::new()),
                 inboxes: Arc::new(FakeInboxes::default()),
@@ -554,6 +575,7 @@ mod tests {
                 self.actors.clone(),
                 self.records.clone(),
                 self.disabled.clone(),
+                self.faults.clone(),
                 self.channels.clone(),
                 self.polls.clone(),
                 self.inboxes.clone(),

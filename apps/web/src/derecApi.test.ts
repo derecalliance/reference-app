@@ -17,7 +17,7 @@ function failure(code: string, message: string) {
 afterEach(() => vi.unstubAllGlobals())
 
 describe('relayMessage', () => {
-  it('names the vault it relays for, so the node can attribute the request', async () => {
+  it('names the secret it relays for, so the node can attribute the request', async () => {
     const fetchMock = respond(202, {})
     vi.stubGlobal('fetch', fetchMock)
 
@@ -57,6 +57,23 @@ describe('relayMessage', () => {
 })
 
 describe('sendMessage', () => {
+  it('posts the raw protobuf bytes as application/octet-stream', async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 202 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const message = new Uint8Array([8, 1, 16, 2])
+
+    await sendMessage('http://peer:5000/derec/x', message)
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://peer:5000/derec/x',
+      expect.objectContaining({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: message,
+      }),
+    )
+  })
+
   it('marks an endpoint that could not be reached at all as worth resending', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch') }))
 
@@ -84,7 +101,7 @@ describe('pollMailbox', () => {
   })
 
   it('keeps an answer from the node about this one mailbox as an ordinary error', async () => {
-    // The node is up; it is this vault's actor it does not know.
+    // The node is up; it is this secret's actor it does not know.
     vi.stubGlobal('fetch', respond(404, { error: 'actor not found' }))
 
     const err = await pollMailbox('owner-uuid').catch((e: unknown) => e)

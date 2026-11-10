@@ -1,0 +1,469 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 DeRec Alliance. All rights reserved.
+
+import { InfoTooltip } from '../InfoTooltip'
+import { BagPayloadModal } from './BagPayloadModal'
+import { PreviousVersionsTable } from './PreviousVersionsTable'
+import { VerifySharesModal } from './VerifySharesModal'
+import { useState } from 'react'
+import { EyeIcon, EyeOffIcon, TrashIcon } from './icons'
+import { verifyBlockedReason, type VerifyDispatch } from './verification'
+import { recoverability } from './recoverability'
+import type { AutoVerificationResult, BagVersion, PairedParticipant, PendingProtectRound, ItemBag, Item } from '../types'
+import { shareFailureLabel } from './shareFailure'
+
+/**
+ * Removing an item from the current version. Earlier versions are history
+ * (see `PreviousVersionsTable`): removal publishes a new version, it does not
+ * edit an old one.
+ */
+interface ItemRemoval {
+  onRemove: (item: Item) => void
+  /** Why removal is unavailable right now, shown as the button's tooltip; `null` when it is available. */
+  disabledReason: string | null
+}
+
+function BagVersionDetails({
+  version,
+  participants,
+  onVerify,
+  verifyDisabledReason,
+  removal,
+}: {
+  version: BagVersion
+  participants: PairedParticipant[]
+  /** Open verification for this version. */
+  onVerify: (version: number) => void
+  /** Why Verify Shares is unavailable right now; `null` when it is available. */
+  verifyDisabledReason: string | null
+  removal: ItemRemoval
+}) {
+  const [revealedItems, setRevealedItems] = useState<Set<string>>(new Set())
+  const [payloadOpen, setPayloadOpen] = useState(false)
+
+  function toggleItemVisibility(itemId: string) {
+    setRevealedItems(prev => {
+      const next = new Set(prev)
+      if (next.has(itemId)) next.delete(itemId)
+      else next.add(itemId)
+      return next
+    })
+  }
+  const confirmedParticipants = participants.filter(h => version.participantIds.includes(h.id))
+  const failedEntries = (version.failedParticipantIds ?? []).map(f => ({
+    ...f,
+    name: participants.find(h => h.id === f.id)?.name ?? f.id,
+  }))
+  const verifiedCount = version.verifiedParticipantIds.length
+
+  return (
+    <div className="card-body">
+      <dl className="field-list">
+        <div className="field-row">
+          <dt>Version</dt>
+          <dd><span className="version-tag">v{version.version}</span></dd>
+        </div>
+        {version.threshold !== undefined && (
+          <div className="field-row">
+            <dt>Threshold</dt>
+            <dd>
+              <span className="threshold-value">{version.threshold}</span>
+              <span className="empty-hint"> subshares needed to recover v{version.version}</span>
+            </dd>
+          </div>
+        )}
+        <div className="field-row field-row--full">
+          <dt>Items ({version.items.length})</dt>
+          <dd>
+            <table className="items-table">
+              <thead>
+                <tr>
+                  <th className="items-table__th">Name</th>
+                  <th className="items-table__th">Value</th>
+                  <th className="items-table__th items-table__th--action" />
+                </tr>
+              </thead>
+              <tbody>
+                {version.items.map(s => {
+                  const visible = revealedItems.has(s.id)
+                  return (
+                    <tr key={s.id} className="items-table__row">
+                      <td className="items-table__td items-table__name">{s.name}</td>
+                      <td className="items-table__td items-table__value">
+                        <code>{visible ? s.data : '••••••••'}</code>
+                      </td>
+                      <td className="items-table__td items-table__td--action">
+                        <button
+                          type="button"
+                          className="secondary reveal-btn"
+                          onClick={() => toggleItemVisibility(s.id)}
+                          aria-label={visible ? `Hide ${s.name}` : `Reveal ${s.name}`}
+                        >
+                          {visible ? <EyeOffIcon /> : <EyeIcon />}
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary reveal-btn remove-item-btn"
+                          onClick={() => removal.onRemove(s)}
+                          disabled={removal.disabledReason !== null}
+                          title={removal.disabledReason ?? `Remove ${s.name}`}
+                          aria-label={`Remove ${s.name}`}
+                        >
+                          <TrashIcon />
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </dd>
+        </div>
+      </dl>
+
+      <div className="card-sub-section">
+        <div className="sub-heading-row">
+          <h4 className="sub-heading">Helper Shares</h4>
+          {confirmedParticipants.length > 0 && (
+            <span className="verified-summary">
+              {verifiedCount}/{confirmedParticipants.length} verified
+            </span>
+          )}
+        </div>
+        <RecoverabilityLine version={version} />
+        {confirmedParticipants.length === 0 ? (
+          <p className="empty-hint">Waiting for participants to confirm…</p>
+        ) : (
+          <ul className="participant-tag-list" role="list">
+            {confirmedParticipants.map(h => {
+              const isVerified = version.verifiedParticipantIds.includes(h.id)
+              // The helper's own refusal of the last challenge, if it refused.
+              const rejection = isVerified
+                ? undefined
+                : version.verifyRejections?.find(r => r.id === h.id)
+              const invalidProof =
+                !isVerified && (version.invalidProofParticipantIds?.includes(h.id) ?? false)
+              const state = isVerified
+                ? { className: 'participant-tag--verified', icon: '✓', label: 'Verified' }
+                : invalidProof
+                  ? {
+                      className: 'participant-tag--failed',
+                      icon: '✗',
+                      label: 'Failed verification: its proof does not match the share sent',
+                    }
+                  : rejection
+                    ? {
+                        className: 'participant-tag--failed',
+                        icon: '✗',
+                        label: `Rejected verification: ${rejection.memo || `status ${rejection.status}`}`,
+                      }
+                    : { className: '', icon: '○', label: 'Not yet verified' }
+              return (
+                <li key={h.id} className={`participant-tag ${state.className}`}>
+                  <span>{h.name}</span>
+                  <span
+                    className="participant-verification-icon"
+                    title={state.label}
+                    aria-label={state.label}
+                  >
+                    {state.icon}
+                  </span>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+        {failedEntries.length > 0 && (
+          <div className="failed-helpers-section">
+            <h5 className="sub-heading sub-heading--failed">Failed ({failedEntries.length})</h5>
+            <ul className="participant-tag-list" role="list">
+              {failedEntries.map(f => {
+                // One word for the kind of failure, the same in every view; the
+                // library's own memo stays in the tooltip.
+                const label = shareFailureLabel(f)
+                const detail = f.memo || `Status ${f.status}`
+                return (
+                  <li key={f.id} className="participant-tag participant-tag--failed">
+                    <span>{f.name}</span>
+                    <span className="participant-failure-reason" title={detail}>{label}</span>
+                  </li>
+                )
+              })}
+            </ul>
+          </div>
+        )}
+      </div>
+
+      <div className="card-actions">
+        <button
+          type="button"
+          className="secondary"
+          onClick={() => setPayloadOpen(true)}
+        >
+          View Payload
+        </button>
+        {confirmedParticipants.length > 0 && (
+          <button
+            type="button"
+            className="secondary verify-btn"
+            onClick={() => onVerify(version.version)}
+            disabled={verifyDisabledReason !== null}
+            title={verifyDisabledReason ?? undefined}
+          >
+            Verify Shares
+          </button>
+        )}
+      </div>
+      {confirmedParticipants.length > 0 && verifyDisabledReason && (
+        <p className="empty-hint">{verifyDisabledReason}</p>
+      )}
+
+      {payloadOpen && (
+        <BagPayloadModal
+          version={version}
+          onClose={() => setPayloadOpen(false)}
+        />
+      )}
+    </div>
+  )
+}
+
+export function ItemBagPanel({
+  bag,
+  participants,
+  pendingRounds,
+  onVerify,
+  onVerifyClose,
+  onAddItem,
+  onRemoveItem,
+  onRemoveVersion,
+  lastAutoVerification,
+  publishDisabledReason,
+  onRepublish,
+  defaultThreshold,
+  thresholdPercent = null,
+  thresholdRaisedNote = null,
+}: {
+  bag: ItemBag | null
+  participants: PairedParticipant[]
+  /** Publishing rounds still open, oldest first — see `Secret.pendingProtectRounds`. */
+  pendingRounds: readonly PendingProtectRound[]
+  onVerify: (version: number) => Promise<VerifyDispatch>
+  onVerifyClose?: () => void
+  onAddItem: () => void
+  onRemoveItem: (item: Item) => void
+  /** Remove an earlier version and its verification copies from this device. */
+  onRemoveVersion: (version: number) => Promise<void>
+  /** How the last automatic verification ended; absent when it is off or has not run. */
+  lastAutoVerification?: AutoVerificationResult
+  /**
+   * Why nothing that publishes can run right now — e.g. too few paired
+   * participants, or a round still open. Disables Add, Remove and Republish.
+   */
+  publishDisabledReason: string | null
+  /** Open Republish: the current items again, with the Channels tab's threshold and weights. */
+  onRepublish: () => void
+  /** The threshold the next publish uses (Channels tab). */
+  defaultThreshold: number
+  /** The percentage it was worked out from, or `null` for a fixed threshold. */
+  thresholdPercent?: number | null
+  /** Why the threshold is above that percentage, or `null` — see `thresholdRaisedText`. */
+  thresholdRaisedNote?: string | null
+}) {
+  const [showPreviousVersions, setShowPreviousVersions] = useState(false)
+  // The version being verified, by number: held here, above the per-version
+  // cards, so a publish that moves the current version mid-verification
+  // cannot swap the version the open dialog is reading.
+  const [verifying, setVerifying] = useState<number | null>(null)
+
+  if (!bag) {
+    return (
+      <div className="tab-empty-state">
+        <PendingRoundsNotice rounds={pendingRounds} participants={participants} />
+        <p>No items protected yet. Add an item to create the bag and distribute it to all paired participants.</p>
+        <button
+          type="button"
+          className="primary"
+          onClick={onAddItem}
+          disabled={publishDisabledReason !== null}
+          title={publishDisabledReason ?? undefined}
+          style={{ marginTop: '1rem' }}
+        >
+          Add Item
+        </button>
+      </div>
+    )
+  }
+
+  const verifyingVersion =
+    verifying === null
+      ? null
+      : [bag.currentVersion, ...bag.previousVersions].find(v => v.version === verifying) ?? null
+
+  return (
+    <div className="card-list">
+      <div className="detail-card">
+        <div className="card-header">
+          <span className="card-title">Items</span>
+          <span className="version-tag">v{bag.currentVersion.version}</span>
+        </div>
+
+        <PendingRoundsNotice rounds={pendingRounds} participants={participants} />
+        {lastAutoVerification && <LastAutoVerificationLine result={lastAutoVerification} />}
+
+        <BagVersionDetails
+          version={bag.currentVersion}
+          participants={participants}
+          onVerify={setVerifying}
+          verifyDisabledReason={verifyBlockedReason(bag.currentVersion, pendingRounds)}
+          removal={{ onRemove: onRemoveItem, disabledReason: publishDisabledReason }}
+        />
+
+        {bag.previousVersions.length > 0 && (
+          <div className="card-body previous-versions">
+            <button
+              type="button"
+              className="secondary previous-versions__toggle"
+              onClick={() => setShowPreviousVersions(v => !v)}
+              aria-expanded={showPreviousVersions}
+            >
+              {showPreviousVersions ? 'Hide' : 'Show'} Previous Versions ({bag.previousVersions.length})
+            </button>
+            {showPreviousVersions && (
+              <PreviousVersionsTable
+                versions={bag.previousVersions}
+                participants={participants}
+                pendingRounds={pendingRounds}
+                onVerify={setVerifying}
+                onRemove={onRemoveVersion}
+              />
+            )}
+          </div>
+        )}
+
+        <div className="card-body" style={{ borderTop: '1px solid var(--border)' }}>
+          <dl className="field-list">
+            <div className="field-row">
+              <dt>Secret ID</dt>
+              <dd><code className="secret-id-value">{bag.secretId}</code></dd>
+            </div>
+            <div className="field-row">
+              <dt>Threshold</dt>
+              <dd>
+                <span className="threshold-value">{defaultThreshold}</span>
+                {thresholdPercent !== null && ` (at least ${thresholdPercent}%)`}
+                {thresholdRaisedNote && (
+                  <InfoTooltip label="Why the threshold is above the percentage" variant="info">
+                    {thresholdRaisedNote}
+                  </InfoTooltip>
+                )}{' '}
+                <button
+                  type="button"
+                  className="secondary small"
+                  onClick={onRepublish}
+                  disabled={publishDisabledReason !== null}
+                  title={publishDisabledReason ?? 'Publish the current items again with the threshold and weights set on the Channels tab'}
+                >
+                  Republish…
+                </button>
+              </dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+
+      {verifyingVersion && (
+        <VerifySharesModal
+          version={verifyingVersion.version}
+          verifiedParticipantIds={verifyingVersion.verifiedParticipantIds}
+          rejections={verifyingVersion.verifyRejections}
+          invalidProofParticipantIds={verifyingVersion.invalidProofParticipantIds}
+          confirmedParticipants={participants.filter(h => verifyingVersion.participantIds.includes(h.id))}
+          onClose={() => { setVerifying(null); onVerifyClose?.() }}
+          onVerify={onVerify}
+        />
+      )}
+    </div>
+  )
+}
+
+/**
+ * How the last automatic verification ended, kept on the card so a failure
+ * seen in a background tab, or before a reload, is still in front of the owner.
+ */
+function LastAutoVerificationLine({ result }: { result: AutoVerificationResult }) {
+  const at = new Date(result.at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  return (
+    <div className="card-body">
+      <p className={`auto-verification-line auto-verification-line--${result.passed ? 'passed' : 'failed'}`}>
+        <strong>Last automatic check of v{result.version}: {result.passed ? 'passed' : 'failed'}</strong> ({at}) —{' '}
+        {result.summary}
+      </p>
+    </div>
+  )
+}
+
+/**
+ * Whether `version` can be rebuilt from the helpers that proved they hold it,
+ * once any have — counted in subshares against that version's own threshold.
+ * Says "unknown" for a version published before the SDK recorded the counts,
+ * rather than guessing each helper held one.
+ */
+function RecoverabilityLine({ version }: { version: BagVersion }) {
+  const verdict = recoverability(version)
+  if (!verdict) return null
+  const text =
+    verdict.kind === 'recoverable'
+      ? `v${version.version} recoverable — ${verdict.verified} of ${verdict.threshold} subshares verified`
+      : verdict.kind === 'short'
+        ? `v${version.version} not recoverable from verified helpers alone — ${verdict.verified} of ${verdict.threshold} subshares verified; unverified helpers may still hold the rest`
+        : `v${version.version} recoverability unknown — this version was published before subshare counts were recorded`
+  return (
+    <p className={`recoverability recoverability--${verdict.kind}`} role="status">
+      {text}
+    </p>
+  )
+}
+
+/**
+ * The publishing rounds still open, so closing the progress dialog early does
+ * not make a round disappear: the version is not in the bag until the round
+ * commits, and without this the tab read as though nothing had happened.
+ */
+function PendingRoundsNotice({
+  rounds,
+  participants,
+}: {
+  rounds: readonly PendingProtectRound[]
+  participants: readonly PairedParticipant[]
+}) {
+  if (rounds.length === 0) return null
+  return (
+    <div className="card-body">
+      {rounds.map(round => {
+        const confirmedIds = round.bag.currentVersion.participantIds
+        const confirmed = confirmedIds.length
+        const total = participants.filter(p =>
+          p.secretShares.some(s => s.version === round.version),
+        ).length
+        // The round's own threshold; rounds recorded before it was kept fall
+        // back to the version's, then the bag's.
+        const threshold = round.threshold ?? round.bag.currentVersion.threshold ?? round.bag.threshold
+        // The threshold counts subshares; a round recorded before weighted
+        // helpers has no weights, and every helper in it weighed 1.
+        const weightOf = (id: string) => round.weights?.[id] ?? 1
+        const confirmedWeight = confirmedIds.reduce((sum, id) => sum + weightOf(id), 0)
+        const weighted = Object.values(round.weights ?? {}).some(w => w > 1)
+        return (
+          <p key={round.version} className="round-pending-note" role="status">
+            Publishing v{round.version}: {confirmed} of {total} confirmed
+            {weighted ? ` (${confirmedWeight} of ${threshold} subshares needed).` : ` (need ${threshold}).`}{' '}
+            {confirmedWeight >= threshold
+              ? 'Threshold reached — it is committed once the rest answer or time out.'
+              : 'It is committed once enough participants confirm, or rolled back if too few do.'}
+          </p>
+        )
+      })}
+    </div>
+  )
+}

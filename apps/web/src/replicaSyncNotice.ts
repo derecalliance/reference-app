@@ -35,12 +35,12 @@ export function describeManualSyncOutcome(
     case 'dispatched':
       return {
         severity: 'success',
-        message: `A copy of this vault was sent. ${name} will acknowledge it once it arrives.`,
+        message: `A copy of this secret was sent. ${name} will acknowledge it once it arrives.`,
       }
     case 'nothing-to-mirror':
       return {
         severity: 'info',
-        message: `This vault holds no secrets yet, so there was nothing to send to ${name}.`,
+        message: `This secret holds no items yet, so there was nothing to send to ${name}.`,
       }
     case 'busy':
       return {
@@ -51,7 +51,7 @@ export function describeManualSyncOutcome(
     case 'failed':
       return {
         severity: 'error',
-        message: `Could not send this vault to ${name}: ${errorText(outcome.error)}`,
+        message: `Could not send this secret to ${name}: ${errorText(outcome.error)}`,
       }
   }
 }
@@ -72,12 +72,12 @@ export function describeAutomaticSyncOutcome(
       return {
         severity: 'info',
         message:
-          'A replica became ready to receive this vault, but the vault holds no secrets yet, so nothing was sent. Protect a secret, then use “Sync now” here.',
+          'A replica became ready to receive this secret, but it holds no items yet, so nothing was sent. Add an item, then use “Sync now” here.',
       }
     case 'failed':
       return {
         severity: 'error',
-        message: `Automatically sending this vault to a newly confirmed replica failed: ${errorText(
+        message: `Automatically sending this secret to a newly confirmed replica failed: ${errorText(
           outcome.error,
         )}. It will not be retried on its own — use “Sync now” here.`,
       }

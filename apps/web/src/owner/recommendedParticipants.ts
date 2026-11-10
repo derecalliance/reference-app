@@ -2,7 +2,7 @@
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
 /**
- * How many paired participants to recommend, given how many this vault could
+ * How many paired participants to recommend, given how many this secret could
  * pair with at all.
  *
  * The configured recommendation is a node-wide number (default 5) and a pool

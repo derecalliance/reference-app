@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
-import { MIN_PROTOCOL_TIMEOUT_SECS, type ServerDefaults } from '../config'
+import type { ServerDefaults } from '../config'
 
 /** The editable numbers on the Settings pane. */
 export type NumericDefault =
@@ -9,7 +9,6 @@ export type NumericDefault =
   | 'minParticipants'
   | 'recommendedParticipants'
   | 'prePairedCount'
-  | 'protocolTimeoutSecs'
   | 'helperTransports'
 
 /** One message per field that is wrong; a field absent here is fine. */
@@ -26,12 +25,9 @@ export const MAX_PARTICIPANTS = 255
 /**
  * The smallest usable threshold. The library refuses to split a secret into
  * shares any one helper could reconstruct alone (`threshold must be >= 2`), so
- * a vault created with 1 could never start.
+ * a secret created with 1 could never start.
  */
 export const MIN_THRESHOLD = 2
-
-/** Upper bound the node accepts for a protocol timeout, in seconds. */
-export const MAX_PROTOCOL_TIMEOUT_SECS = 86_400
 
 const DIGITS_ONLY = /^\d+$/
 
@@ -55,7 +51,7 @@ export function wholeNumberError(value: number, min: number, max?: number): stri
   return null
 }
 
-/** What is wrong with a vault threshold, or `null` when it is usable. */
+/** What is wrong with a secret threshold, or `null` when it is usable. */
 export function thresholdError(value: number, pool?: number): string | null {
   const error = wholeNumberError(value, MIN_THRESHOLD, MAX_PARTICIPANTS)
   if (error) return error
@@ -64,12 +60,11 @@ export function thresholdError(value: number, pool?: number): string | null {
 }
 
 /**
- * What is wrong with a draft of the protocol defaults, field by field.
+ * What is wrong with a draft of the pool defaults, field by field.
  *
  * These values are written straight into provisioning requests and into every
- * new vault, and nothing downstream re-checks them: a minimum above the pool
- * size makes protecting impossible, a timeout of 0 makes every flow time out at
- * once, and a negative pool size reaches the backend as a request it refuses
+ * new secret, and nothing downstream re-checks them: a minimum above the pool
+ * size makes protecting impossible, and a negative pool size reaches the backend as a request it refuses
  * with a status code. So they are checked here, where the field can say why.
  */
 export function validateDefaults(draft: ServerDefaults): DefaultsErrors {
@@ -101,13 +96,6 @@ export function validateDefaults(draft: ServerDefaults): DefaultsErrors {
   } else if (poolKnown && draft.prePairedCount > pool) {
     errors.prePairedCount = `Cannot exceed the pool of ${pool}`
   }
-
-  const timeoutError = wholeNumberError(
-    draft.protocolTimeoutSecs,
-    MIN_PROTOCOL_TIMEOUT_SECS,
-    MAX_PROTOCOL_TIMEOUT_SECS,
-  )
-  if (timeoutError) errors.protocolTimeoutSecs = timeoutError
 
   if (draft.grpcEnabled && poolKnown) {
     const { http, grpc, both } = draft.helperTransports

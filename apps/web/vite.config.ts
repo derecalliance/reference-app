@@ -8,10 +8,15 @@ import react from '@vitejs/plugin-react'
 // No SPA fallback middleware: every screen lives at the base path, and the
 // client-side routes that exist are hash routes (`#/vault/<id>`, see
 // `src/routing.ts`), which never reach the server.
+//
+// The `/reference-app/` base is GitHub Pages' project path, so only what is
+// built for Pages needs it (`vite build`, and `vite preview` serving that
+// build). The dev server serves from the root; the Docker image overrides the
+// build with `--base=/`.
 // https://vite.dev/config/
-export default defineConfig({
+export default defineConfig(({ command, isPreview }) => ({
   plugins: [react()],
-  base: '/reference-app/',
+  base: command === 'serve' && !isPreview ? '/' : '/reference-app/',
   build: {
     rolldownOptions: {
       output: {
@@ -46,4 +51,4 @@ export default defineConfig({
     environment: 'jsdom',
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
   },
-})
+}))

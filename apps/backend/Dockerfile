@@ -48,11 +48,12 @@ RUN npm run build -- --base=/ \
 #
 # The Rust pin is the oldest toolchain the locked dependency tree builds with,
 # and matches `rust-version` in Cargo.toml. The SDK crates declare 1.88, but
-# their own dependencies (`aes` 0.9 through `aes-gcm`, `enum-ordinalize`
-# through the `ark` crates) need 1.89, as does `uuid`. `protoc` is still
+# 0.0.11 uses `if let` match guards, stable only from 1.95 (their dependencies
+# — `aes` 0.9 through `aes-gcm`, `enum-ordinalize` through the `ark` crates,
+# and `uuid` — already needed 1.89). `protoc` is still
 # needed — not for the SDK, which ships generated types, but for the vendored
 # transport protos this app compiles itself.
-FROM rust:1.89-bookworm AS backend
+FROM rust:1.95-bookworm AS backend
 
 # `libprotobuf-dev` as well as the compiler: it ships the well-known types
 # (`google/protobuf/timestamp.proto` and friends) under /usr/include, which the
@@ -112,7 +113,7 @@ FROM debian:bookworm-slim AS runtime
 
 # Set by scripts/publish-image.sh; VERSION follows apps/backend/Cargo.toml
 # (scripts/version.sh keeps them in step).
-ARG VERSION=0.0.8-alpha.1
+ARG VERSION=0.0.11
 ARG REVISION=unknown
 ARG CREATED=unknown
 

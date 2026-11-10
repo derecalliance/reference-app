@@ -522,6 +522,106 @@ async fn a_browser_contact_round_trips_as_json() {
     assert_eq!(body, contact);
 }
 
+// ── Contact content negotiation ─────────────────────────────────────────────
+
+/// `POST /api/v1/actors/{actor}/contact` with `accept`, if any; answers the
+/// response's head and its raw body.
+async fn mint_contact(
+    router: &Router,
+    actor: &str,
+    accept: Option<&str>,
+) -> (axum::http::response::Parts, Vec<u8>) {
+    let mut request = Request::post(format!("/api/v1/actors/{actor}/contact"));
+    if let Some(accept) = accept {
+        request = request.header(header::ACCEPT, accept);
+    }
+    let response = router
+        .clone()
+        .oneshot(request.body(Body::empty()).expect("request builds"))
+        .await
+        .expect("router is infallible");
+    let (parts, body) = response.into_parts();
+    let bytes = axum::body::to_bytes(body, usize::MAX)
+        .await
+        .expect("response body readable");
+    (parts, bytes.to_vec())
+}
+
+fn header_of(parts: &axum::http::response::Parts, name: header::HeaderName) -> &str {
+    parts
+        .headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+}
+
+#[actix_rt::test]
+async fn a_contact_is_the_json_envelope_by_default() {
+    let (_, router) = app().await;
+    let helper = provision(&router, json!({ "name": "Alex" })).await;
+
+    for accept in [None, Some("*/*"), Some("application/json")] {
+        let (parts, bytes) = mint_contact(&router, &helper, accept).await;
+
+        assert_eq!(parts.status, StatusCode::OK, "{accept:?}");
+        assert!(
+            header_of(&parts, header::CONTENT_TYPE).starts_with("application/json"),
+            "{accept:?}"
+        );
+        assert!(
+            header_of(&parts, header::VARY).contains("accept"),
+            "{accept:?}"
+        );
+        let body: Value = serde_json::from_slice(&bytes).expect("JSON body");
+        assert!(body["result"]["channel_id"].is_string(), "{body}");
+        assert!(body["request_id"].is_string(), "{body}");
+    }
+}
+
+#[actix_rt::test]
+async fn a_contact_asked_for_as_octet_stream_is_the_encoded_protobuf() {
+    use prost::Message as _;
+
+    let (_, router) = app().await;
+    let helper = provision(&router, json!({ "name": "Alex" })).await;
+
+    let (parts, bytes) = mint_contact(&router, &helper, Some("application/octet-stream")).await;
+
+    assert_eq!(parts.status, StatusCode::OK);
+    assert_eq!(
+        header_of(&parts, header::CONTENT_TYPE),
+        "application/octet-stream"
+    );
+    assert!(header_of(&parts, header::VARY).contains("accept"));
+    assert!(
+        !header_of(&parts, header::HeaderName::from_static("x-request-id")).is_empty(),
+        "the request id still travels as a header"
+    );
+    let contact = derec_proto::ContactMessage::decode(bytes.as_slice()).expect("a ContactMessage");
+    assert_ne!(contact.channel_id, 0);
+    assert!(
+        !contact.supported_transports.is_empty(),
+        "the contact names an endpoint"
+    );
+    assert!(
+        contact.mlkem_encapsulation_key.is_some() && contact.ecies_public_key.is_some(),
+        "the default inline-keys contact carries its keys"
+    );
+}
+
+#[actix_rt::test]
+async fn a_refused_contact_is_the_json_error_envelope_whatever_was_accepted() {
+    let (_, router) = app().await;
+    // A browser actor mints its own contacts, so the route refuses it.
+    let owner = register_owner(&router, "Bob").await;
+
+    let (parts, bytes) = mint_contact(&router, &owner, Some("application/octet-stream")).await;
+
+    assert_eq!(parts.status, StatusCode::BAD_REQUEST);
+    let body: Value = serde_json::from_slice(&bytes).expect("JSON body");
+    assert_error_shape(header_of(&parts, header::CONTENT_TYPE), &body);
+}
+
 // ── Roster ──────────────────────────────────────────────────────────────────
 
 #[actix_rt::test]
@@ -547,6 +647,7 @@ async fn the_roster_prefers_a_paired_channel_over_a_newer_pending_one() {
             peer_role: derec_proto::SenderKind::Owner,
             status,
             created_at,
+            weight: 1,
         })
     };
     let mut store = derec_backend::repositories::sdk::channel::SqlChannelStore::new(

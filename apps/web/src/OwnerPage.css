@@ -257,6 +257,33 @@
 /* ── Modal form fields ─────────────────────────────────────────────────────── */
 
 /* A checkbox with its label beside it, inside a `.form-field`. */
+/* The mode choice and its value share one row, wrapping under each other only
+   when the tab is too narrow. */
+.threshold-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 24px;
+}
+
+.threshold-mode-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.threshold-input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Sized for a three-digit value and the spinner, not the row's width. */
+.threshold-input {
+  width: 5.5em;
+  text-align: right;
+}
+
 .checkbox-row {
   display: flex;
   align-items: center;
@@ -425,6 +452,27 @@
   background: color-mix(in srgb, var(--danger) 12%, transparent);
   border-bottom: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
   color: var(--danger);
+}
+
+.owner-banner--with-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+
+.owner-banner__text {
+  flex: 1 1 320px;
+  margin: 0;
+}
+
+.owner-banner__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.owner-banner__error {
+  font-weight: 600;
 }
 
 /* ── Two-column layout ─────────────────────────────────────────────────────── */
@@ -1129,6 +1177,14 @@
     color: var(--recovery);
     background: var(--recovery-bg);
   }
+
+  /* A failure the node simulates on purpose: dashed, so it does not read as a real one. */
+  &.fault {
+    color: var(--danger);
+    background: var(--danger-bg);
+    outline: 1px dashed var(--danger);
+    outline-offset: -1px;
+  }
 }
 /* ── Participant dot ────────────────────────────────────────────────────────────── */
 
@@ -1786,7 +1842,7 @@ button.small {
   padding: 1px 6px;
 }
 
-/* ── Secrets table ────────────────────────────────────────────────────────── */
+/* ── Items table ──────────────────────────────────────────────────────────── */
 
 .field-row--full {
   display: block;
@@ -1806,13 +1862,13 @@ button.small {
   }
 }
 
-.secrets-table {
+.items-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
 }
 
-.secrets-table__th {
+.items-table__th {
   text-align: left;
   font-size: 11px;
   font-weight: 600;
@@ -1823,11 +1879,11 @@ button.small {
   border-bottom: 1px solid var(--border);
 }
 
-.secrets-table__th--action {
+.items-table__th--action {
   width: 1%;
 }
 
-.secrets-table__row {
+.items-table__row {
   border-bottom: 1px solid var(--border);
 
   &:last-child {
@@ -1835,87 +1891,156 @@ button.small {
   }
 }
 
-.secrets-table__td {
+.items-table__td {
   padding: 6px 8px;
   vertical-align: middle;
 }
 
-.secrets-table__name {
+.items-table__name {
   font-weight: 500;
   color: var(--text);
   white-space: nowrap;
 }
 
-.secrets-table__value code {
+.items-table__value code {
   font-family: var(--mono, monospace);
   font-size: 12px;
   color: var(--muted);
   word-break: break-all;
 }
 
-.secrets-table__td--action {
+.items-table__td--action {
   text-align: center;
   padding: 4px;
   white-space: nowrap;
 }
 
 /* Reveal and remove sit side by side; `.reveal-btn` alone would stack them. */
-.secrets-table__td--action .reveal-btn {
+.items-table__td--action .reveal-btn {
   display: inline-flex;
   vertical-align: middle;
   padding: 3px 5px;
 }
 
-.secrets-table__td--action .reveal-btn + .reveal-btn {
+.items-table__td--action .reveal-btn + .reveal-btn {
   margin-left: 4px;
 }
 
-button.secondary.remove-secret-btn:hover:not(:disabled) {
+button.secondary.remove-item-btn:hover:not(:disabled) {
   border-color: var(--danger);
   background: var(--danger-bg);
   color: var(--danger);
 }
 
-/* ── Previous version history list ──────────────────────────────────────────── */
+/* ── Previous versions table ─────────────────────────────────────────────────── */
 
-.version-history-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+.previous-versions {
+  border-top: 1px solid var(--border);
 }
 
-.version-history-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
+.previous-versions__toggle {
+  width: 100%;
 }
 
-.version-history-label {
-  color: var(--text);
-  font-family: var(--mono, monospace);
+/* Narrow screens scroll the table sideways rather than squeezing its columns. */
+.versions-table-wrap {
+  margin-top: 12px;
+  overflow-x: auto;
 }
 
-.version-history-note {
-  color: var(--muted);
-  font-style: italic;
+.versions-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+
+  th {
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    color: var(--muted);
+    padding: 4px 8px 6px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+
+  td {
+    padding: 6px 8px;
+    vertical-align: middle;
+    white-space: nowrap;
+  }
 }
 
-.version-history-verified {
-  font-size: 11px;
+.versions-table__row {
+  border-bottom: 1px solid var(--border);
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+
+.versions-table__actions-th {
+  width: 1%;
+}
+
+/* The names column takes the slack and truncates; the full list is the tooltip. */
+.versions-table__secrets {
+  max-width: 0;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.versions-table__count {
   font-weight: 600;
-  color: var(--success);
-  white-space: nowrap;
+  margin-right: 6px;
 }
-.version-verify-btn {
+
+.versions-table__names {
+  color: var(--muted);
+}
+
+.versions-table__failed {
+  color: var(--danger);
+}
+
+.versions-table__actions {
+  text-align: right;
+
+  button + button {
+    margin-left: 6px;
+  }
+}
+
+/* The trash button holds an icon, not text: line it up with its text neighbours. */
+.versions-table__remove {
+  display: inline-flex;
+  vertical-align: middle;
+  padding: 3px 6px;
+}
+
+.versions-table__check {
+  width: 1%;
+}
+
+/* ── Verification Copies tab ─────────────────────────────────────────────────── */
+
+.copies-auto-line {
+  margin: 8px 0 0;
+  font-size: 13px;
+}
+
+.copies-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.copies-lock {
   font-size: 11px;
-  padding: 2px 8px;
-  margin-left: auto;
-  white-space: nowrap;
-  flex-shrink: 0;
+  color: var(--muted);
 }
 
 /* ── Card actions with multiple buttons ──────────────────────────────────────── */
@@ -2851,7 +2976,7 @@ recovery-pairing-notice {
 /* ── Phones ────────────────────────────────────────────────────────────────── */
 
 @media (max-width: 640px) {
-  /* The vault's identity, then its address on a line of its own, then the
+  /* The secret's identity, then its address on a line of its own, then the
      actions as an even grid. Right-aligned and wrapping, the four buttons
      landed as a ragged 3 + 1 with the primary one stranded on its own. */
   .owner-info-bar {
@@ -2920,4 +3045,211 @@ recovery-pairing-notice {
   .recovery-helper-row .card-title {
     flex: 1 1 auto;
   }
+}
+
+/* Helper weights editor: name, number field, and its error under them. */
+.helper-weight-row {
+  display: grid;
+  grid-template-columns: 1fr 5rem;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 9px 12px;
+
+  .form-label {
+    margin: 0;
+  }
+
+  .field-error {
+    grid-column: 1 / -1;
+    margin: 0;
+  }
+}
+
+.helper-weight-input {
+  width: 100%;
+  text-align: right;
+}
+
+.share-progress-item-weight {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Secret Settings: grouped radio choices, and a second level under "Automatically". */
+fieldset.form-field {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.nested-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-left: 24px;
+}
+
+/* Recoverability verdict under a version's helper shares. */
+.recoverability {
+  margin: 4px 0 8px;
+  font-size: 0.85rem;
+}
+
+.recoverability--recoverable {
+  color: var(--success);
+}
+
+.recoverability--short {
+  color: var(--warning);
+}
+
+.recoverability--unknown {
+  color: var(--muted);
+}
+
+/* Periodic verification: "Every [n] [unit]" on one line. */
+.schedule-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── Settings tab ──────────────────────────────────────────────────────────── */
+
+.settings-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  max-width: 880px;
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.settings-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-section-title {
+  margin: 0;
+  font-size: 15px;
+  color: var(--text-h);
+}
+
+/* Two columns of labelled controls where there is room, one on a phone. */
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px 24px;
+}
+
+.settings-select {
+  cursor: pointer;
+}
+
+/* Sized for its value, not the column. */
+.settings-number-input {
+  width: 9em;
+}
+
+.settings-restart-note {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--warning);
+  background: var(--warning-bg);
+}
+
+.settings-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+
+/* ── Notifications tab ───────────────────────────────────────────────────────── */
+
+.notification-filters {
+  display: inline-flex;
+  gap: 4px;
+  margin-right: auto;
+}
+
+button.secondary.notification-filter--active {
+  border-color: var(--text);
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* The message wraps; the table's other columns stay on one line. */
+.versions-table td.notifications-table__message {
+  white-space: normal;
+  width: 100%;
+}
+
+.notifications-table__title {
+  display: block;
+  color: var(--text);
+}
+
+.notifications-table__detail {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* Unread rows: a bar in the gutter as well as bold text, so it is not colour alone. */
+.notification-row--unread {
+  box-shadow: inset 3px 0 0 var(--text);
+
+  .notifications-table__title {
+    font-weight: 600;
+  }
+}
+
+.notification-severity {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.notification-severity--critical {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.notification-severity--info {
+  background: var(--code-bg);
+  color: var(--muted);
+}
+
+/* Last automatic verification on the Items card. */
+.auto-verification-line {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+
+.auto-verification-line--passed {
+  color: var(--success);
+  background: var(--success-bg);
+}
+
+.auto-verification-line--failed {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border: 1px solid var(--danger);
 }

@@ -15,7 +15,7 @@ image). Then:
 
 ```
 npm ci
-npm run dev        # http://localhost:5173/reference-app/
+npm run dev        # http://localhost:5173/
 npm run dev:lan    # the same, bound to the network for a phone or second machine
 ```
 

@@ -346,7 +346,7 @@ fn warn_about_exposure(port: u16, defaults: &Defaults) {
         "This is a development tool with NO authentication. It listens on all interfaces \
          (HTTP port {port}{grpc}), allows cross-origin requests from any site, and serves \
          every channel's shared keys from GET /api/v1/actors. Anyone who can reach it can read \
-         and drive every vault on it. Run it only on a trusted machine or LAN; never expose \
+         and drive every secret on it. Run it only on a trusted machine or LAN; never expose \
          it to the internet."
     );
 }
@@ -473,7 +473,7 @@ pub fn build_router(state: AppState) -> Router {
     //
     // A fallback cannot shadow the API: every route above is an explicit path
     // and the API's own fallback answers everything under its prefix. There is
-    // no SPA rewrite because the app routes by hash (`#/vault/<id>`), which
+    // no SPA rewrite because the app routes by hash (`#/secret/<id>`), which
     // never reaches the server.
     let router = match state.config.loaded.settings.server.static_dir.as_str() {
         "" => router,

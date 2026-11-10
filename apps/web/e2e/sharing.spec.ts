@@ -21,10 +21,10 @@ test.describe('secret lifecycle', () => {
 
     await protectSecret(page, 'Passphrase', 'hunter2')
 
-    await openTab(page, 'Secrets')
+    await openTab(page, 'Items')
     await expect(page.locator('.tab-panel')).toContainText('Passphrase')
     await expect(page.locator('.tab-panel')).toContainText('v1')
-    expect(await tabCount(page, 'Secrets')).toBe(1)
+    expect(await tabCount(page, 'Items')).toBe(1)
     expect(pageErrors).toEqual([])
   })
 
@@ -34,7 +34,7 @@ test.describe('secret lifecycle', () => {
     await pairParticipant(page, { index: 1, mode: 'Inline keys' })
     await protectSecret(page, 'Passphrase', 'hunter2')
 
-    await openTab(page, 'Secrets')
+    await openTab(page, 'Items')
     // Storing a share and being able to prove it is still there are different
     // claims: verification challenges each helper to answer from the bytes it
     // holds, which is the only thing that distinguishes them.
@@ -46,32 +46,34 @@ test.describe('secret lifecycle', () => {
   })
 
   /**
-   * The vault decides which versions helpers keep (SDK 0.0.7 `keepList`): the
-   * latest three committed ones, plus the one being sent. So the fifth round
-   * tells every helper to drop the first — and a helper asked to prove a
-   * share it no longer holds refuses, which the verification view shows as a
-   * rejection rather than waiting on an answer that is not coming.
+   * The secret decides which earlier version helpers keep (SDK 0.0.10
+   * `keepVersion`): the newest committed one, beside the one being sent. So
+   * the third round tells every helper to drop the first — and the library
+   * deletes this device's verification copies of it too, so no challenge for
+   * it goes out. The view says why at once, rather than waiting on answers
+   * that are not coming or blaming a restore that never happened.
    */
-  test('helpers drop versions the vault no longer keeps, and refuse to verify them', async ({
+  test('a version helpers no longer keep cannot be verified, and the view says why', async ({
     page,
     pageErrors,
   }) => {
-    // Five publishing rounds, each waited out to its commit.
+    // Three publishing rounds, each waited out to its commit.
     test.setTimeout(300_000)
     await setUpOwner(page, { name: 'Alice', participants: 3, prePaired: 0, minParticipants: 2 })
     await pairParticipant(page, { index: 0, mode: 'Inline keys' })
     await pairParticipant(page, { index: 1, mode: 'Inline keys' })
-    for (let i = 1; i <= 5; i++) await protectSecret(page, `Secret ${i}`, `value-${i}`)
+    for (let i = 1; i <= 3; i++) await protectSecret(page, `Secret ${i}`, `value-${i}`)
 
-    await openTab(page, 'Secrets')
+    await openTab(page, 'Items')
     await page.getByRole('button', { name: /Show Previous Versions/ }).click()
     // Previous versions are listed newest first, so the last Verify is the
     // oldest version — the one no helper keeps any more.
     await page.getByRole('button', { name: 'Verify Shares' }).last().click()
 
     const modal = page.locator('.verify-modal--progress')
-    await expect(modal).toContainText('0 of 2 verified · 2 rejected', { timeout: 90_000 })
-    await expect(modal.locator('.share-progress-item-status', { hasText: 'Rejected' })).toHaveCount(2)
+    await expect(modal).toContainText('0 of 2 verified · 2 failed', { timeout: 90_000 })
+    await expect(modal).toContainText('This device holds no verification copies for v1')
+    await expect(modal).not.toContainText('restored from a recovered bag')
     await expect(modal.getByRole('button', { name: 'Done' })).toBeVisible()
     expect(pageErrors).toEqual([])
   })
@@ -93,7 +95,7 @@ test.describe('secret lifecycle', () => {
     expect(pageErrors).toEqual([])
   })
 
-  test('a second secret lands in a new bag version', async ({ page, pageErrors }) => {
+  test('a second item lands in a new bag version', async ({ page, pageErrors }) => {
     await setUpOwner(page, { name: 'Alice', participants: 3, prePaired: 0, minParticipants: 2 })
     await pairParticipant(page, { index: 0, mode: 'Inline keys' })
     await pairParticipant(page, { index: 1, mode: 'Inline keys' })
@@ -104,27 +106,27 @@ test.describe('secret lifecycle', () => {
     // a particular number.
     await protectSecret(page, 'Recovery code', '123456')
 
-    await openTab(page, 'Secrets')
+    await openTab(page, 'Items')
     await expect(page.locator('.tab-panel')).toContainText('Passphrase')
     await expect(page.locator('.tab-panel')).toContainText('Recovery code')
-    expect(await tabCount(page, 'Secrets')).toBe(2)
+    expect(await tabCount(page, 'Items')).toBe(2)
     expect(pageErrors).toEqual([])
   })
 
-  test('removing a secret distributes a new bag version without it', async ({ page, pageErrors }) => {
+  test('removing an item distributes a new bag version without it', async ({ page, pageErrors }) => {
     await setUpOwner(page, { name: 'Alice', participants: 3, prePaired: 0, minParticipants: 2 })
     await pairParticipant(page, { index: 0, mode: 'Inline keys' })
     await pairParticipant(page, { index: 1, mode: 'Inline keys' })
     await protectSecret(page, 'Passphrase', 'hunter2')
     await protectSecret(page, 'Recovery code', '123456')
 
-    await openTab(page, 'Secrets')
+    await openTab(page, 'Items')
     const currentVersion = page.locator('.card-header .version-tag')
     const before = Number((await currentVersion.innerText()).replace(/\D+/g, ''))
 
     await page.getByRole('button', { name: 'Remove Recovery code' }).click()
-    const dialog = page.locator('.modal-overlay[aria-label="Remove secret"] .modal')
-    await dialog.getByRole('button', { name: 'Remove Secret' }).click()
+    const dialog = page.locator('.modal-overlay[aria-label="Remove item"] .modal')
+    await dialog.getByRole('button', { name: 'Remove Item' }).click()
 
     // Removal is a full sharing round, exactly as adding is: every paired
     // helper has to confirm the new version before it becomes current.
@@ -134,7 +136,7 @@ test.describe('secret lifecycle', () => {
     const panel = page.locator('.tab-panel')
     await expect(panel).not.toContainText('Recovery code')
     await expect(panel).toContainText('Passphrase')
-    expect(await tabCount(page, 'Secrets')).toBe(1)
+    expect(await tabCount(page, 'Items')).toBe(1)
     expect(Number((await currentVersion.innerText()).replace(/\D+/g, ''))).toBeGreaterThan(before)
     // The new version's shares are held, not merely sent.
     await expect(panel).toContainText('0/2 verified')

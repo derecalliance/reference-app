@@ -81,7 +81,8 @@
 
   font: 18px/145% var(--sans);
   letter-spacing: 0.18px;
-  color-scheme: dark light;
+  /* Native controls and scrollbars follow the app's scheme, not the system's. */
+  color-scheme: dark;
   color: var(--text);
   background: var(--bg);
   font-synthesis: none;
@@ -94,45 +95,48 @@
   }
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    --bg: var(--cream);
-    --surface: #fbf7ed;
-    --code-bg: #efe6d2;
+/* Light is chosen by `data-theme` on <html> rather than a media query, so the
+ * header toggle can override the system. Until the viewer picks, the attribute
+ * follows `prefers-color-scheme` (see `colorScheme.ts` and `index.html`). */
+:root[data-theme='light'] {
+  color-scheme: light;
 
-    --text-h: var(--ink-3);
-    --text: var(--ink-3);
-    --muted: #5a5f52;
-    --muted-2: #6e6a57;
-    --border: var(--cream-line);
+  --bg: var(--cream);
+  --surface: #fbf7ed;
+  --code-bg: #efe6d2;
 
-    /* The palette calls for --gold-deep here, having already ruled out --gold
-     * as too light on cream. At body size --gold-deep is 2.8:1, so the same
-     * reasoning goes one shade further: this is a darkened gold that clears AA
-     * (4.6:1). --gold-deep remains right for large or decorative accents. */
-    --accent: #8a6417;
-    --accent-bg: color-mix(in srgb, var(--gold-deep) 16%, transparent);
-    --accent-border: color-mix(in srgb, var(--gold-deep) 50%, transparent);
+  --text-h: var(--ink-3);
+  --text: var(--ink-3);
+  --muted: #5a5f52;
+  --muted-2: #6e6a57;
+  --border: var(--cream-line);
 
-    --success: #2f6234;
-    --warning: #8f4e12;
-    --danger: #9b342a;
-    --info: #345e6b;
-    --recovery: #7a4e6b;
+  /* The palette calls for --gold-deep here, having already ruled out --gold
+   * as too light on cream. At body size --gold-deep is 2.8:1, so the same
+   * reasoning goes one shade further: this is a darkened gold that clears AA
+   * (4.6:1). --gold-deep remains right for large or decorative accents. */
+  --accent: #8a6417;
+  --accent-bg: color-mix(in srgb, var(--gold-deep) 16%, transparent);
+  --accent-border: color-mix(in srgb, var(--gold-deep) 50%, transparent);
 
-    --success-bg: color-mix(in srgb, var(--success) 10%, transparent);
-    --warning-bg: color-mix(in srgb, var(--warning) 10%, transparent);
-    --danger-bg: color-mix(in srgb, var(--danger) 10%, transparent);
-    --info-bg: color-mix(in srgb, var(--info) 10%, transparent);
-    --recovery-bg: color-mix(in srgb, var(--recovery) 10%, transparent);
+  --success: #2f6234;
+  --warning: #8f4e12;
+  --danger: #9b342a;
+  --info: #345e6b;
+  --recovery: #7a4e6b;
 
-    --status-contrast: var(--cream);
+  --success-bg: color-mix(in srgb, var(--success) 10%, transparent);
+  --warning-bg: color-mix(in srgb, var(--warning) 10%, transparent);
+  --danger-bg: color-mix(in srgb, var(--danger) 10%, transparent);
+  --info-bg: color-mix(in srgb, var(--info) 10%, transparent);
+  --recovery-bg: color-mix(in srgb, var(--recovery) 10%, transparent);
 
-    --social-bg: color-mix(in srgb, var(--ink-3) 5%, transparent);
-    --scrim: rgba(20, 32, 27, 0.42);
-    --shadow:
-      rgba(31, 26, 12, 0.12) 0 10px 15px -3px, rgba(31, 26, 12, 0.07) 0 4px 6px -2px;
-  }
+  --status-contrast: var(--cream);
+
+  --social-bg: color-mix(in srgb, var(--ink-3) 5%, transparent);
+  --scrim: rgba(20, 32, 27, 0.42);
+  --shadow:
+    rgba(31, 26, 12, 0.12) 0 10px 15px -3px, rgba(31, 26, 12, 0.07) 0 4px 6px -2px;
 }
 
 #root {

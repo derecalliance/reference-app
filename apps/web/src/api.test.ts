@@ -74,7 +74,7 @@ describe('api — reachable backend', () => {
   it('reports the server as reachable and uses its defaults', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(() => ok({ participant_count: 4, protocol_timeout_secs: 99 })),
+      vi.fn(() => ok({ participant_count: 4, grpc_port: 6099 })),
     )
 
     const result = await apiGetServerDefaults()
@@ -82,7 +82,7 @@ describe('api — reachable backend', () => {
     expect(result.reachable).toBe(true)
     expect(result.fromServer).toBe(true)
     expect(result.defaults.participantCount).toBe(4)
-    expect(result.defaults.protocolTimeoutSecs).toBe(99)
+    expect(result.defaults.grpcEnabled).toBe(true)
   })
 
   it('treats a served error status as reachable, falling back on the values', async () => {

@@ -96,7 +96,7 @@ export class StorageQuotaError extends Error {
 /** What a full browser storage means for the person using the app. */
 export const STORAGE_FULL_MESSAGE =
   'This browser’s storage for the app is full, so the change could not be saved. ' +
-  'Remove vaults or secrets you no longer need (or use smaller secrets), then try again.'
+  'Remove secrets or items you no longer need (or use smaller items), then try again.'
 
 /** When storage last refused a write, or `null` if it has not since it was last read. */
 let lastQuotaFailureAt: number | null = null
@@ -154,7 +154,7 @@ const HEADROOM_PROBE_KEY = 'derec:storage-headroom-probe'
  * throwaway value of that size and removes it at once. Checked before work
  * whose writes cannot be taken back — a protect round sends each share to its
  * helper *before* storing this side's copy, so running out of space halfway
- * would leave the helpers holding a version this vault never recorded.
+ * would leave the helpers holding a version this secret never recorded.
  */
 export function hasStorageHeadroom(chars: number): boolean {
   if (chars <= 0) return true
@@ -519,6 +519,12 @@ export interface StoredHelperChannel {
   peerRole: string | null
   /** Seconds since the epoch the record was created, or `null` when absent. */
   createdAtSecs: number | null
+  /**
+   * Subshares the library gives this helper each round. A record written
+   * before weighted helpers has no `weight`, and the library reads both that
+   * and a stored `0` as 1, so this does too.
+   */
+  weight: number
 }
 
 /**
@@ -542,17 +548,78 @@ export function listHelperChannels(namespace: string, secretId: string): StoredH
       if (!record) continue
       const status = record['status']
       const createdAt = record['created_at']
+      const weight = record['weight']
       channels.push({
         channelId,
         status: status === 'Pending' || status === 'Paired' || status === 'Unpairing' ? status : 'Paired',
         peerRole: typeof record['peer_role'] === 'string' ? (record['peer_role'] as string) : null,
         createdAtSecs: typeof createdAt === 'number' && createdAt > 0 ? createdAt : null,
+        weight: typeof weight === 'number' && Number.isInteger(weight) && weight > 0 ? weight : 1,
       })
     } catch {
       // A record that will not parse is the library's to report.
     }
   }
   return channels
+}
+
+/**
+ * The weight the library has stored for each paired helper this secret is
+ * protected with, by channel id.
+ *
+ * A protect round's `weights` map is the *full* assignment: a helper it does
+ * not name goes back to 1. So every round passes this back unless the owner is
+ * changing it, or the weights they chose would be lost on the next publish.
+ * Channels where the peer is the owner — this secret's actor helping someone
+ * else — are not this secret's to weight, and the library refuses them as keys.
+ */
+export function storedHelperWeights(namespace: string, secretId: string): Map<string, number> {
+  return new Map(
+    listHelperChannels(namespace, secretId)
+      .filter(c => c.status === 'Paired' && c.peerRole === 'Helper')
+      .map(c => [c.channelId, c.weight]),
+  )
+}
+
+/** How much this device stores for one version of its own secret. */
+export interface ProofVersionUsage {
+  version: number
+  /** Verification copies held for it — one per helper channel that has one. */
+  copies: number
+  /** Their size in storage, approximately (the decoded share bytes). */
+  bytes: number
+}
+
+/**
+ * The owner side's verification copies in one partition, per version, newest
+ * first: the exact share this device sent (or, on a replica, mirrored) to each
+ * of its helpers, kept only to check that helper's answers.
+ *
+ * Only this owner's helper channels — peer role `Helper` — are counted: a
+ * channel whose peer is an owner holds a share this secret's actor keeps *for*
+ * someone else, which is theirs and never this secret's to delete.
+ */
+export function listOwnerProofVersions(namespace: string, secretId: string): ProofVersionUsage[] {
+  const byVersion = new Map<number, ProofVersionUsage>()
+  for (const channel of listHelperChannels(namespace, secretId)) {
+    if (channel.peerRole !== 'Helper') continue
+    for (const version of loadNumberArray(channelVersionsKey(namespace, secretId, channel.channelId))) {
+      const data = localStorage.getItem(shareDataKey(namespace, secretId, channel.channelId, version))
+      if (data === null) continue
+      const usage = byVersion.get(version) ?? { version, copies: 0, bytes: 0 }
+      usage.copies += 1
+      usage.bytes += Math.floor((data.length * 3) / 4)
+      byVersion.set(version, usage)
+    }
+  }
+  return [...byVersion.values()].sort((a, b) => b.version - a.version)
+}
+
+/** The channel ids of this owner's helper channels in one partition — see `listOwnerProofVersions`. */
+export function ownerHelperChannelIds(namespace: string, secretId: string): string[] {
+  return listHelperChannels(namespace, secretId)
+    .filter(c => c.peerRole === 'Helper')
+    .map(c => c.channelId)
 }
 
 /**
@@ -580,8 +647,7 @@ export function forgetHelperChannel(namespace: string, secretId: string, channel
 
   const cKey = channelVersionsKey(namespace, secretId, channelId)
   for (const version of loadNumberArray(cKey)) {
-    localStorage.removeItem(shareDataKey(namespace, secretId, channelId, version))
-    localStorage.removeItem(shareMetaKey(namespace, secretId, channelId, version))
+    removeShareRecords(namespace, secretId, channelId, version)
   }
   localStorage.removeItem(cKey)
   const sharesKey = shareChannelsKey(namespace, secretId)
@@ -599,7 +665,7 @@ export function forgetHelperChannel(namespace: string, secretId: string, channel
   }
 }
 
-/** What a peer last told this vault about itself, as its channel record holds it. */
+/** What a peer last told this secret about itself, as its channel record holds it. */
 export interface StoredChannelInfo {
   /** The peer's advertised `name`, or `null` when it sent none. */
   name: string | null
@@ -783,6 +849,14 @@ export interface Share {
   secretId: string
   version: number
   bytes: Uint8Array
+  /**
+   * Subshares this share carries — owner side only (SDK 0.0.9). Absent on a
+   * helper's share and on owner shares stored before it was recorded; absent
+   * is "not recorded", never 0.
+   */
+  subshares?: number | null
+  /** The threshold this version was split with — owner side only, as `subshares`. */
+  threshold?: number | null
 }
 
 // ── Share storage keys ───────────────────────────────────────────────────────
@@ -815,6 +889,28 @@ function shareMetaKey(
   return `${partition(ns, secretId)}:share-meta:${channelId}:${version}`
 }
 
+/**
+ * The owner side's per-version subshare count and threshold, as JSON
+ * `{ subshares?, threshold? }`: derec:<ns>:<secretId>:share-counts:<channelId>:<version>.
+ * Written only when either is present, so a helper's share and every record
+ * from before SDK 0.0.9 simply has none.
+ */
+function shareCountsKey(ns: string, secretId: string, channelId: string, version: number): string {
+  return `${partition(ns, secretId)}:share-counts:${channelId}:${version}`
+}
+
+interface StoredShareCounts {
+  subshares?: number
+  threshold?: number
+}
+
+/** Remove every record one stored share is made of. */
+function removeShareRecords(ns: string, secretId: string, channelId: string, version: number): void {
+  localStorage.removeItem(shareDataKey(ns, secretId, channelId, version))
+  localStorage.removeItem(shareMetaKey(ns, secretId, channelId, version))
+  localStorage.removeItem(shareCountsKey(ns, secretId, channelId, version))
+}
+
 /** Version index per channel, within one secret partition. */
 function channelVersionsKey(ns: string, secretId: string, channelId: string): string {
   return `${partition(ns, secretId)}:share-idx:channel-versions:${channelId}`
@@ -845,23 +941,22 @@ export function loadRawShare(
 // ── Share store ──────────────────────────────────────────────────────────────
 
 /**
- * The owner's answer to `ShareStore.keepList`: the versions every helper keeps
- * once the round distributing `version` lands, or `null` to send no list (the
- * helpers then keep everything they hold).
+ * The owner's answer to `ShareStore.keepVersion` (SDK 0.0.10): the one version
+ * other than `version` every helper keeps once the round distributing it
+ * lands, `0` for none. It must be below `version`.
  *
- * Injected rather than computed here: only the vault knows which versions
- * committed, and the store has no view of the vault record. See
- * `vault/keepList.ts` for the policy the app plugs in.
+ * Injected rather than computed here: only the secret knows which versions
+ * committed, and the store has no view of the secret record. See
+ * `secret/keepVersion.ts` for the policy the app plugs in.
  */
-export type KeepListSource = (secretId: string, version: number) => number[] | null
+export type KeepVersionSource = (secretId: string, version: number) => number
 
 export interface ShareStoreOptions {
   /**
-   * Defaults to "no list" — helpers keep every version. That is the library's
-   * own safe default, and the right one for an instance that never acts as an
-   * owner (a probe, a test).
+   * Defaults to the version just below, the newest that may have committed —
+   * right for an instance that never acts as an owner (a probe, a test).
    */
-  keepList?: KeepListSource
+  keepVersion?: KeepVersionSource
 }
 
 export function makeShareStore(namespace: string, options: ShareStoreOptions = {}) {
@@ -875,7 +970,14 @@ export function makeShareStore(namespace: string, options: ShareStoreOptions = {
     // before the metadata existed.
     const recordSecretId =
       localStorage.getItem(shareMetaKey(namespace, secretId, channelId, version)) ?? secretId
-    return { secretId: recordSecretId, version, bytes: fromBase64Url(dataVal) }
+    const share: Share = { secretId: recordSecretId, version, bytes: fromBase64Url(dataVal) }
+    const counts = localStorage.getItem(shareCountsKey(namespace, secretId, channelId, version))
+    if (counts) {
+      const { subshares, threshold } = JSON.parse(counts) as StoredShareCounts
+      if (subshares !== undefined) share.subshares = subshares
+      if (threshold !== undefined) share.threshold = threshold
+    }
+    return share
   }
 
   function versionsFor(secretId: string, channelId: string): number[] {
@@ -938,6 +1040,15 @@ export function makeShareStore(namespace: string, options: ShareStoreOptions = {
         shareMetaKey(namespace, secretId, channelId, share.version),
         share.secretId,
       )
+      // Persisted as given and returned unchanged, as the SDK requires; a
+      // re-save without them must not leave a stale count behind.
+      const counts: StoredShareCounts = {
+        ...(share.subshares != null ? { subshares: share.subshares } : {}),
+        ...(share.threshold != null ? { threshold: share.threshold } : {}),
+      }
+      const countsKey = shareCountsKey(namespace, secretId, channelId, share.version)
+      if (Object.keys(counts).length > 0) storeItem(countsKey, JSON.stringify(counts))
+      else localStorage.removeItem(countsKey)
 
       const cKey = channelVersionsKey(namespace, secretId, channelId)
       const storedVersions = loadNumberArray(cKey)
@@ -970,8 +1081,7 @@ export function makeShareStore(namespace: string, options: ShareStoreOptions = {
     async removeChannel(secretId: string, channelId: string): Promise<void> {
       const cKey = channelVersionsKey(namespace, secretId, channelId)
       for (const v of loadNumberArray(cKey)) {
-        localStorage.removeItem(shareDataKey(namespace, secretId, channelId, v))
-        localStorage.removeItem(shareMetaKey(namespace, secretId, channelId, v))
+        removeShareRecords(namespace, secretId, channelId, v)
       }
       localStorage.removeItem(cKey)
 
@@ -983,7 +1093,7 @@ export function makeShareStore(namespace: string, options: ShareStoreOptions = {
 
     /**
      * Drop the shares stored under `(secretId, channelId)` at each of
-     * `versions` — how a helper applies the owner's `keepList`. Idempotent: a
+     * `versions` — how a helper applies the owner's `keepVersion`. Idempotent: a
      * version not stored is skipped, and an empty list does nothing. Other
      * channels and partitions are never touched.
      */
@@ -991,8 +1101,7 @@ export function makeShareStore(namespace: string, options: ShareStoreOptions = {
       if (versions.length === 0) return
       const doomed = new Set(versions)
       for (const v of doomed) {
-        localStorage.removeItem(shareDataKey(namespace, secretId, channelId, v))
-        localStorage.removeItem(shareMetaKey(namespace, secretId, channelId, v))
+        removeShareRecords(namespace, secretId, channelId, v)
       }
 
       const cKey = channelVersionsKey(namespace, secretId, channelId)
@@ -1013,10 +1122,16 @@ export function makeShareStore(namespace: string, options: ShareStoreOptions = {
       storeItem(shareChannelsKey(namespace, secretId), JSON.stringify(channels))
     },
 
-    /** Owner only — see `KeepListSource`. Asked once per sharing round. */
-    async keepList(secretId: string, version: number): Promise<number[] | null> {
-      return options.keepList?.(secretId, version) ?? null
+    /** Owner only — see `KeepVersionSource`. Asked once per sharing round. */
+    async keepVersion(secretId: string, version: number): Promise<number> {
+      return options.keepVersion?.(secretId, version) ?? Math.max(0, version - 1)
     },
+
+    // Called once per verification challenge this helper accepts, after the
+    // challenged share is found. The app sets no verification-frequency limit,
+    // so every one is allowed; refusing would mean rejecting with
+    // `shareStoreRefusal('too_frequent')`.
+    async recordVerification(): Promise<void> {},
   }
 }
 
@@ -1033,6 +1148,14 @@ export interface UserSecrets {
   version: number
   secrets: UserSecretEntry[]
   description?: string
+  /**
+   * Decimal replica id of the member that published `version` — what replica
+   * members compare to tell a re-send from a conflicting copy. Store and
+   * return it unchanged.
+   */
+  author_replica_id?: string
+  /** The threshold the next publish splits at unless one is passed (SDK 0.0.9). */
+  threshold?: number | null
 }
 
 /** Persisted form — binary fields base64url-encoded so it survives JSON. */
@@ -1040,6 +1163,8 @@ interface StoredUserSecrets {
   version: number
   secrets: Array<{ id: string; name: string; data: string }>
   description?: string
+  author_replica_id?: string
+  threshold?: number
 }
 
 function userSecretKey(ns: string, secretId: string): string {
@@ -1065,6 +1190,8 @@ export function makeUserSecretStore(namespace: string) {
           name: s.name,
           data: fromBase64Url(s.data),
         })),
+        ...(stored.author_replica_id !== undefined ? { author_replica_id: stored.author_replica_id } : {}),
+        ...(stored.threshold !== undefined ? { threshold: stored.threshold } : {}),
       }
     },
 
@@ -1077,6 +1204,8 @@ export function makeUserSecretStore(namespace: string) {
           name: s.name,
           data: toBase64Url(s.data),
         })),
+        ...(value.author_replica_id !== undefined ? { author_replica_id: value.author_replica_id } : {}),
+        ...(value.threshold != null ? { threshold: value.threshold } : {}),
       }
       storeItem(userSecretKey(namespace, secretId), JSON.stringify(stored))
     },
@@ -1222,14 +1351,29 @@ export function makeStateStore(namespace: string) {
  * replica or gated helper is confirmed — never pass through the app's round
  * tracker, and `verifyFingerprint` does not even return their events. Such a
  * round can stay open for a while after every helper stored its share, because
- * the library also waits on the replica leg; a newer round that left it out of
- * its `keepList` made the helpers delete a version that then committed.
+ * the library also waits on the replica leg.
  */
 export function openSharingRoundVersions(namespace: string, secretId: string): number[] {
   return loadStringArray(stateIndexKey(namespace, secretId, 3))
     .filter(composite => localStorage.getItem(stateRowKey(namespace, secretId, composite)) !== null)
     .map(composite => Number(composite.slice('3:'.length)))
     .filter(version => Number.isSafeInteger(version) && version > 0)
+}
+
+/**
+ * The channels with an unpair still waiting for the helper's answer — the
+ * library's `PendingUnpair` state rows (kind 2), written by `start(Unpair)`
+ * under `UnpairAck::Required` and removed on the answer or the timeout.
+ *
+ * Each one is a round about to start: when the unpair completes, inside
+ * `process` or `tick`, the app publishes a new version to the helpers that
+ * remain (`SecretRuntime.publishAfterUnpair`).
+ */
+export function pendingUnpairChannelIds(namespace: string, secretId: string): string[] {
+  return loadStringArray(stateIndexKey(namespace, secretId, 2))
+    .filter(composite => localStorage.getItem(stateRowKey(namespace, secretId, composite)) !== null)
+    .map(composite => composite.slice('2:'.length))
+    .filter(channelId => channelId !== '')
 }
 
 // ── Transport ────────────────────────────────────────────────────────────────
@@ -1249,13 +1393,17 @@ export function openSharingRoundVersions(namespace: string, secretId: string): n
  * each of `retryDelaysMs` before the next one is tried. Message handling is
  * idempotent on the receiving side, so a duplicate is harmless. The retry is
  * deliberately short and bounded: the library awaits this call while holding
- * the protocol lock, so a long one would stall every other flow on the vault.
+ * the protocol lock, so a long one would stall every other flow on the secret.
  * A peer down for longer is reported as not delivered, and each flow says so.
  */
 export function makeTransport(
   sendFn: (uri: string, message: Uint8Array) => Promise<void>,
   relayFn: (uri: string, message: Uint8Array) => Promise<void>,
-  options: { retryDelaysMs?: readonly number[] } = {},
+  options: {
+    retryDelaysMs?: readonly number[]
+    /** Told of every message before it goes out — see `ReplayGuard`. */
+    onSend?: (message: Uint8Array) => void
+  } = {},
 ) {
   const retryDelaysMs = options.retryDelaysMs ?? DEFAULT_SEND_RETRY_DELAYS_MS
 
@@ -1295,6 +1443,9 @@ export function makeTransport(
           `transport: no dialable endpoint among the peer's ${endpoints.length} offer(s)`,
         )
       }
+      // Before the first attempt: a delivery that reports failure may still
+      // have landed, and its copy can come back.
+      options.onSend?.(message)
 
       const failures: string[] = []
       for (const leg of plan) {
@@ -1315,12 +1466,16 @@ export function makeTransport(
 
 // ── Delivery failures, in the node's own words ───────────────────────────────
 //
-// The library reports a failed send as a bare "transport.send promise
-// rejected": the reason this transport threw — the node's "relay delivery
+// The library reports a failed send as a bare "transport send failed: the
+// message reached none of the peer's endpoints" (`transport_send_failed`,
+// SDK 0.0.11; "transport.send promise rejected" before it): the reason this transport threw — the node's "relay delivery
 // failed: …", "gRPC is disabled on this node", an unknown actor — does not
 // survive the trip through WASM. Each failure is kept here, briefly, by the
 // endpoints it was for, so whoever reports the library's error can put the
 // real reason back.
+
+/** The library's failed-send text, current and before SDK 0.0.11. */
+const TRANSPORT_SEND_FAILED = /transport[. ]send/i
 
 /** How long a recorded failure may explain a library error. */
 const DELIVERY_FAILURE_RELEVANCE_MS = 30_000
@@ -1338,7 +1493,7 @@ function recordDeliveryFailure(uris: readonly string[], message: string): void {
  * given, any send — failed moments ago. Anything else is returned unchanged.
  */
 export function explainDeliveryFailure(error: string, uris?: readonly string[]): string {
-  if (!/transport\.send/i.test(error)) return error
+  if (!TRANSPORT_SEND_FAILED.test(error)) return error
   const now = Date.now()
   let latest: { message: string; at: number } | null = null
   for (const [uri, failure] of deliveryFailures) {

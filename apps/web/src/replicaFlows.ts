@@ -5,11 +5,11 @@
  * Replica pairing and fingerprint confirmation.
  *
  * A replica is a second device of the *same* owner, mirroring that owner's
- * vault. Pairing is unidirectional — `ReplicaSource` (the owner's primary
+ * secret. Pairing is unidirectional — `ReplicaSource` (the owner's primary
  * device) against `ReplicaDestination` (the mirror) — and, unlike a helper
  * pairing, the handshake alone is not enough: the channel stays `Pending`
  * until *both* devices verify the shared fingerprint out of band. Only then
- * is it eligible to receive the owner's secrets.
+ * is it eligible to receive the owner's secret.
  *
  * This module owns the orchestration (protocol calls + backend calls) so the
  * components stay presentational.
@@ -30,8 +30,8 @@ import {
 import { dtoToContactMessage, protocolName } from './contactDto'
 import { resolveRosterEntries } from './peerIdentity'
 import { bytesToHex, toBytes } from './bytes'
-import type { KeepListSource } from './stores'
-import type { BagVersion, PairedParticipant, SecretBag, UserSecret } from './types'
+import type { KeepVersionSource } from './stores'
+import type { BagVersion, PairedParticipant, ItemBag, Item } from './types'
 
 /** One row of the actor roster, as the backend reports it. */
 type RosterActor = BEActorWithStatus
@@ -47,20 +47,15 @@ export type ReplicaSecretShares = Extract<DeRecEvent, { type: 'ReplicaSecretRece
 /** The typed `Secret` recovery produces, and the sole input `protocol.restore` accepts. */
 type RecoveredSecretPayload = Extract<DeRecEvent, { type: 'SecretRecovered' }>['secret']
 
-/**
- * True iff `X` and `Y` are the *same* type, not merely mutually assignable.
- *
- * The conditional is deferred behind an unresolved type parameter, so the
- * compiler compares the two identically rather than checking assignability in
- * each direction — which would also accept, say, a widened or optional-ised
- * variant of a field.
- */
-type ExactlyEqual<X, Y> =
-  (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y ? 1 : 2 ? true : false
+/** True iff `X` and `Y` have exactly the same keys. */
+type SameKeys<X, Y> = [keyof X] extends [keyof Y] ? ([keyof Y] extends [keyof X] ? true : false) : false
+
+/** The element type of an array-valued field, or `never`. */
+type Elem<T> = T extends readonly (infer E)[] ? E : never
 
 /**
- * Compile-time proof that a mirrored secret is byte-for-byte the shape
- * `protocol.restore` takes.
+ * Compile-time proof that a mirrored secret is the shape `protocol.restore`
+ * takes.
  *
  * `restore` is typed against `SecretRecovered['secret']` specifically, and the
  * whole point of mirroring is that a destination can install what it was sent
@@ -70,11 +65,22 @@ type ExactlyEqual<X, Y> =
  * drifting. If the shapes ever diverge, `npm run typecheck` fails *here*,
  * naming the reason, instead of a `restore` call somewhere downstream failing
  * with a shape error at runtime on a device that is mid-recovery.
+ *
+ * Two checks rather than one exact equality: SDK 0.0.9 lets `restore` accept
+ * a `null` `communication_info` that a mirrored copy never carries, so the two
+ * types are no longer identical — but a mirrored copy must still be *passable*
+ * to `restore` as-is, and must carry exactly the same fields at every level, so
+ * nothing `restore` reads can be missing from it.
  */
-export const REPLICA_PAYLOAD_MIRRORS_RECOVERY: ExactlyEqual<
-  ReplicaSecretPayload,
-  RecoveredSecretPayload
-> = true
+export const REPLICA_PAYLOAD_MIRRORS_RECOVERY: [
+  ReplicaSecretPayload extends RecoveredSecretPayload ? true : false,
+  SameKeys<ReplicaSecretPayload, RecoveredSecretPayload>,
+  SameKeys<Elem<ReplicaSecretPayload['helpers']>, Elem<RecoveredSecretPayload['helpers']>>,
+  SameKeys<
+    Elem<NonNullable<ReplicaSecretPayload['replicas']>['members']>,
+    Elem<NonNullable<RecoveredSecretPayload['replicas']>['members']>
+  >,
+] = [true, true, true, true]
 
 // ── Status machine ───────────────────────────────────────────────────────────
 
@@ -85,7 +91,7 @@ export const REPLICA_PAYLOAD_MIRRORS_RECOVERY: ExactlyEqual<
  *
  * - `unpaired` — no handshake yet, so there is no channel and nothing to verify.
  * - `pending`  — the library holds the channel `Pending`; it is not a share target.
- * - `paired`   — the library holds the channel `Paired`; it is eligible to receive secrets.
+ * - `paired`   — the library holds the channel `Paired`; it is eligible to receive the mirrored secret.
  */
 export type ReplicaStatus = 'unpaired' | 'pending' | 'paired'
 
@@ -301,8 +307,8 @@ export type { ReplicaPairingRole }
 
 export interface PairReplicaOptions {
   protocol: ReplicaProtocol
-  /** This vault's actor id — the key its replica bookkeeping lives under. */
-  vaultId: string
+  /** This secret's actor id — the key its replica bookkeeping lives under. */
+  localSecretId: string
   /** Backend actor id of the helper to pair with. */
   replicaId: string
   /** Display name, forwarded to the peer as communication info. */
@@ -313,12 +319,12 @@ export interface PairReplicaOptions {
    */
   role?: ReplicaPairingRole
   /**
-   * This owner's own `secret_id` — what makes the peer a replica of this vault.
+   * This owner's own `secret_id` — what makes the peer a replica of this secret.
    *
    * A helper's *own* instance is bound to the helper's own secret, so a contact
    * minted from it yields a helper relationship no matter what `sender_kind`
    * the handshake declares. Passing this mints from an instance bound to the
-   * mirrored vault instead.
+   * mirrored secret instead.
    *
    * Omitting it pairs the same actor as an ordinary helper, which is what makes
    * this the one field separating the two.
@@ -336,7 +342,7 @@ export interface PairReplicaOptions {
  * `ownerSecretId` is load-bearing in the same way but on the *peer's* side: the
  * wire kind alone does not decide which of the peer's protocol instances holds
  * the channel, and a contact minted from the wrong one leaves the peer holding
- * a replica channel against a vault it is not mirroring.
+ * a replica channel against a secret it is not mirroring.
  *
  * The returned id is the transient one carried on the contact — the handshake
  * rotates to a long-term id that arrives later on `PairingCompleted`. It is
@@ -360,7 +366,7 @@ export async function pairReplica(opts: PairReplicaOptions): Promise<bigint> {
   const started = events.find(e => e.type === 'PairingStarted')
   if (!started) throw new Error('replica pairing dispatched no PairingStarted event')
 
-  recordPendingReplicaPairing(opts.vaultId, started.channel_id, opts.replicaId)
+  recordPendingReplicaPairing(opts.localSecretId, started.channel_id, opts.replicaId)
   return BigInt(started.channel_id)
 }
 
@@ -385,7 +391,9 @@ export async function fetchFingerprint(
  * The consequence is worth being explicit about: because the code being verified
  * is the one just derived here, this call cannot report a mismatch. `false` is
  * therefore not "the codes differ" but "the channel key changed underneath us",
- * which is why callers surface it as an error rather than as a retry prompt.
+ * which is why callers surface it as an error rather than as a retry prompt —
+ * and from SDK 0.0.10 the library has already revoked the `Pending` pairing,
+ * so there is nothing left to retry on.
  * Refusing a mismatch is done by *not calling this* — see the dialog's reject
  * action, which leaves the channel `Pending`.
  */
@@ -468,19 +476,19 @@ export interface ReplicaRecord {
    */
   refused?: boolean
   /**
-   * On a destination: the person agreed to adopt the peer's vault, replacing
+   * On a destination: the person agreed to adopt the peer's secret, replacing
    * this one, before this device confirmed the fingerprint.
    *
    * Confirming *is* that decision from SDK 0.0.7's point of view — once the
    * channel is `Paired`, the group's publishes are installed as they arrive,
    * with no further prompt — so the app asks first and confirms only on a yes.
-   * The mirrored vault is then adopted as soon as it lands, without asking
+   * The mirrored secret is then adopted as soon as it lands, without asking
    * again: asking twice would make the second answer look like a choice it
    * no longer is.
    */
   adoptionConsented?: boolean
   /**
-   * On a destination: the person declined to adopt the peer's vault, so the
+   * On a destination: the person declined to adopt the peer's secret, so the
    * fingerprint was never confirmed and never will be from that answer. The
    * channel stays `Pending` until it expires. Cleared by a later consent.
    */
@@ -501,7 +509,7 @@ export interface ReplicaChannelRecord {
    * The role **this** device declared on the channel.
    *
    * Fixed at handshake time and never inferred: it decides whether this device
-   * mirrors its vault out (`replica_source`) or is offered the peer's
+   * mirrors its secret out (`replica_source`) or is offered the peer's
    * (`replica_destination`), and the latter is the destructive side.
    */
   role: ReplicaPairingRole
@@ -539,7 +547,7 @@ export interface ReplicaChannelRecord {
 
 /** The last mirrored version a destination acknowledged. */
 export interface ReplicaSyncRecord {
-  /** Secret-bag version carried on the ack. */
+  /** Item-bag version carried on the ack. */
   version: number
   /** Epoch milliseconds at which the ack was observed. */
   syncedAt: number
@@ -589,17 +597,17 @@ const EMPTY_STATE: ReplicaState = {
 
 const EMPTY_RECORD: ReplicaRecord = { local: false, peer: 'none' }
 
-function stateKey(vaultId: string): string {
-  return `${REPLICA_STATE_KEY_PREFIX}${vaultId}`
+function stateKey(localSecretId: string): string {
+  return `${REPLICA_STATE_KEY_PREFIX}${localSecretId}`
 }
 
 /**
- * Drop this vault's replica bookkeeping.
+ * Drop this secret's replica bookkeeping.
  *
- * `derec:replica-state:<vaultId>` sits outside every `derec:<ns>:` partition,
+ * `derec:replica-state:<localSecretId>` sits outside every `derec:<ns>:` partition,
  * so `clearNamespace` does not reach it — which is what adoption needs, because
  * the confirmations and `syncs` recorded here are keyed by channel ids the
- * library drops when the vault is replaced. Left behind, a destination that had
+ * library drops when the secret is replaced. Left behind, a destination that had
  * itself paired a replica keeps showing that row as `paired` against a channel
  * that no longer exists.
  *
@@ -607,17 +615,17 @@ function stateKey(vaultId: string): string {
  * different key and must survive adoption, or the device would silently become
  * a different peer.
  */
-export function clearReplicaState(vaultId: string): void {
+export function clearReplicaState(localSecretId: string): void {
   try {
-    localStorage.removeItem(stateKey(vaultId))
+    localStorage.removeItem(stateKey(localSecretId))
   } catch {
     // Storage unavailable — nothing to clear.
   }
 }
 
-export function loadReplicaState(vaultId: string): ReplicaState {
+export function loadReplicaState(localSecretId: string): ReplicaState {
   try {
-    const raw = localStorage.getItem(stateKey(vaultId))
+    const raw = localStorage.getItem(stateKey(localSecretId))
     if (!raw) return EMPTY_STATE
     const parsed = JSON.parse(raw) as Partial<ReplicaState>
     return {
@@ -634,9 +642,9 @@ export function loadReplicaState(vaultId: string): ReplicaState {
   }
 }
 
-function saveReplicaState(vaultId: string, state: ReplicaState): ReplicaState {
+function saveReplicaState(localSecretId: string, state: ReplicaState): ReplicaState {
   try {
-    localStorage.setItem(stateKey(vaultId), JSON.stringify(state))
+    localStorage.setItem(stateKey(localSecretId), JSON.stringify(state))
   } catch {
     // Storage unavailable — the returned value still drives this tab's UI.
   }
@@ -645,13 +653,13 @@ function saveReplicaState(vaultId: string, state: ReplicaState): ReplicaState {
 
 /** Merge a patch into one replica's record and persist. Returns the new state. */
 export function recordConfirmation(
-  vaultId: string,
+  localSecretId: string,
   replicaId: string,
   patch: Partial<ReplicaRecord>,
 ): ReplicaState {
-  const current = loadReplicaState(vaultId)
+  const current = loadReplicaState(localSecretId)
   const existing = current.replicas[replicaId] ?? EMPTY_RECORD
-  return saveReplicaState(vaultId, {
+  return saveReplicaState(localSecretId, {
     ...current,
     replicas: { ...current.replicas, [replicaId]: { ...existing, ...patch } },
   })
@@ -668,17 +676,17 @@ export function recordConfirmation(
  * that existed before the trigger.
  */
 export function markReplicaFirstSyncStarted(
-  vaultId: string,
+  localSecretId: string,
   replicaIds: readonly string[],
 ): ReplicaState {
-  const current = loadReplicaState(vaultId)
+  const current = loadReplicaState(localSecretId)
   if (replicaIds.length === 0) return current
 
   const replicas = { ...current.replicas }
   for (const replicaId of replicaIds) {
     replicas[replicaId] = { ...(replicas[replicaId] ?? EMPTY_RECORD), firstSyncStarted: true }
   }
-  return saveReplicaState(vaultId, { ...current, replicas })
+  return saveReplicaState(localSecretId, { ...current, replicas })
 }
 
 /**
@@ -686,12 +694,12 @@ export function markReplicaFirstSyncStarted(
  * `PairingCompleted` can be attributed without guessing.
  */
 export function recordPendingReplicaPairing(
-  vaultId: string,
+  localSecretId: string,
   transientChannelId: string,
   replicaId: string,
 ): ReplicaState {
-  const current = loadReplicaState(vaultId)
-  return saveReplicaState(vaultId, {
+  const current = loadReplicaState(localSecretId)
+  return saveReplicaState(localSecretId, {
     ...current,
     pendingPairings: { ...current.pendingPairings, [transientChannelId]: replicaId },
   })
@@ -704,11 +712,11 @@ export function recordPendingReplicaPairing(
  * existed) and the backend roster remains the only source for it.
  */
 export function resolveReplicaPairing(
-  vaultId: string,
+  localSecretId: string,
   transientChannelId: string,
   channelId: string,
 ): ReplicaState {
-  const current = loadReplicaState(vaultId)
+  const current = loadReplicaState(localSecretId)
   const replicaId = current.pendingPairings[transientChannelId]
   if (!replicaId) return current
 
@@ -716,7 +724,7 @@ export function resolveReplicaPairing(
     Object.entries(current.pendingPairings).filter(([id]) => id !== transientChannelId),
   )
   const existing = current.replicas[replicaId] ?? EMPTY_RECORD
-  return saveReplicaState(vaultId, {
+  return saveReplicaState(localSecretId, {
     ...current,
     replicas: { ...current.replicas, [replicaId]: { ...existing, channelId } },
     pendingPairings,
@@ -745,16 +753,16 @@ export function resolveReplicaPairing(
  * channel does not have.
  */
 export function recordReplicaChannel(
-  vaultId: string,
+  localSecretId: string,
   record: ReplicaChannelRecord,
 ): ReplicaState {
-  const current = loadReplicaState(vaultId)
+  const current = loadReplicaState(localSecretId)
   const existing = current.channels[record.channelId]
   const peerName = record.peerName ?? existing?.peerName
   const establishedAt = existing?.establishedAt ?? record.establishedAt
   const peerReplicaId = record.peerReplicaId ?? existing?.peerReplicaId
 
-  return saveReplicaState(vaultId, {
+  return saveReplicaState(localSecretId, {
     ...current,
     channels: {
       ...current.channels,
@@ -781,15 +789,15 @@ export function recordReplicaChannel(
  * Keyed by the peer's replica id, so a member whose channel moved during an
  * admission handover is still found.
  */
-export function forgetReplicaMember(vaultId: string, peerReplicaId: string): ReplicaState {
-  const current = loadReplicaState(vaultId)
+export function forgetReplicaMember(localSecretId: string, peerReplicaId: string): ReplicaState {
+  const current = loadReplicaState(localSecretId)
 
   const doomed = Object.values(current.channels)
     .filter(c => c.peerReplicaId === peerReplicaId)
     .map(c => c.channelId)
   if (doomed.length === 0) return current
 
-  return saveReplicaState(vaultId, pruneChannels(current, doomed))
+  return saveReplicaState(localSecretId, pruneChannels(current, doomed))
 }
 
 /**
@@ -805,9 +813,9 @@ export function forgetReplicaMember(vaultId: string, peerReplicaId: string): Rep
  * point — it is the way out of a row the library will not act on, which
  * otherwise stays on screen forever offering actions that all fail.
  */
-export function forgetReplicaChannel(vaultId: string, channelId: string): ReplicaState {
-  const current = loadReplicaState(vaultId)
-  return saveReplicaState(vaultId, pruneChannels(current, [channelId]))
+export function forgetReplicaChannel(localSecretId: string, channelId: string): ReplicaState {
+  const current = loadReplicaState(localSecretId)
+  return saveReplicaState(localSecretId, pruneChannels(current, [channelId]))
 }
 
 /**
@@ -818,11 +826,11 @@ export function forgetReplicaChannel(vaultId: string, channelId: string): Replic
  * recorded here no longer exists in the library — and a stale record still
  * names its member, which hides that member's row from the Replicas tab.
  */
-export function retainReplicaChannels(vaultId: string, keep: readonly string[]): ReplicaState {
-  const current = loadReplicaState(vaultId)
+export function retainReplicaChannels(localSecretId: string, keep: readonly string[]): ReplicaState {
+  const current = loadReplicaState(localSecretId)
   const doomed = Object.keys(current.channels).filter(channelId => !keep.includes(channelId))
   if (doomed.length === 0) return current
-  return saveReplicaState(vaultId, pruneChannels(current, doomed))
+  return saveReplicaState(localSecretId, pruneChannels(current, doomed))
 }
 
 /** Remove every trace of `doomed` channel ids from a replica state. */
@@ -864,15 +872,15 @@ function pruneChannels(current: ReplicaState, doomed: readonly string[]): Replic
  * role on it.
  */
 export function recordPeerReplicaId(
-  vaultId: string,
+  localSecretId: string,
   channelId: string,
   peerReplicaId: string,
 ): ReplicaState {
-  const current = loadReplicaState(vaultId)
+  const current = loadReplicaState(localSecretId)
   const existing = current.channels[channelId]
   if (!existing) return current
 
-  return saveReplicaState(vaultId, {
+  return saveReplicaState(localSecretId, {
     ...current,
     channels: {
       ...current.channels,
@@ -940,12 +948,12 @@ export function channelsOfMember(state: ReplicaState, replicaId: string): string
  * state so the caller can render from it without a second read.
  */
 export function recordReplicaSync(
-  vaultId: string,
+  localSecretId: string,
   channelId: string,
   sync: ReplicaSyncRecord,
 ): ReplicaState {
-  const current = loadReplicaState(vaultId)
-  return saveReplicaState(vaultId, {
+  const current = loadReplicaState(localSecretId)
+  return saveReplicaState(localSecretId, {
     ...current,
     syncs: {
       ...current.syncs,
@@ -960,7 +968,7 @@ export function recordReplicaSync(
 // holds after `ReplicaSecretReceived` arrives, before the user has decided
 // whether to adopt it. The staged offer survives a reload (`replicaOfferStore`)
 // so the owner is asked again rather than silently never — but adoption
-// (wiping this device's vault and calling `protocol.restore`) stays a separate,
+// (wiping this device's secret and calling `protocol.restore`) stays a separate,
 // explicitly user-gated step, and nothing performs it automatically on reload.
 
 /** A mirrored secret received from a replica source, staged for the user's
@@ -972,9 +980,9 @@ export interface PendingReplicaAdoption {
   fromReplicaId: string
   /** The source's protocol-level secret id. */
   secretId: string
-  /** Secret-bag version this round carried. */
+  /** Item-bag version this round carried. */
   version: number
-  secret: ReplicaSecretPayload
+  payload: ReplicaSecretPayload
   shares: ReplicaSecretShares
 }
 
@@ -998,7 +1006,7 @@ export function mergeReplicaSecretReceipt(
 /**
  * Who the pending offer belongs to, for the confirmation prompt.
  *
- * A destination adopts a *named owner's* vault, so the prompt has to name that
+ * A destination adopts a *named owner's* secret, so the prompt has to name that
  * owner rather than an opaque replica id. The only reliable link is the secret:
  * the roster records each owner actor's `secret_id`, and the offer carries the
  * source's. Matching on that — rather than on "the owner", which is not well
@@ -1110,7 +1118,7 @@ function readChannelIds(record: Record<string, unknown> | null): string[] {
  *
  * Nothing here summarises or reinterprets: the code, the message and any
  * `channel_ids` all survive into `text` as they arrived. A wipe-and-adopt that
- * fails leaves the device's own vault already erased, so the user needs the
+ * fails leaves the device's own secret already erased, so the user needs the
  * library's own words, not the app's paraphrase of them.
  */
 export function describeRestoreFailure(err: unknown): RestoreFailure {
@@ -1139,7 +1147,7 @@ export function describeRestoreFailure(err: unknown): RestoreFailure {
  * Distinguished from a `restore` rejection because nothing was attempted and,
  * crucially, **nothing was destroyed** — this is raised before the wipe. The
  * device is exactly as it was, so the message says so rather than inheriting
- * the "your vault was erased" framing a genuine restore failure carries.
+ * the "your secret was erased" framing a genuine restore failure carries.
  */
 export function describeUnreadableSecret(err: unknown): RestoreFailure {
   const message = err instanceof Error ? err.message : String(err)
@@ -1152,7 +1160,7 @@ export function describeUnreadableSecret(err: unknown): RestoreFailure {
     wipeDidNotTake: false,
     text:
       `The mirrored copy could not be read, so nothing was changed on this ` +
-      `device — its vault is intact. ${message}`,
+      `device — its secret is intact. ${message}`,
   }
 }
 
@@ -1164,18 +1172,18 @@ export function describeUnreadableSecret(err: unknown): RestoreFailure {
  * the WASM boundary rejects anything that is not a genuine view. Structure is
  * preserved exactly; only the byte fields are rebuilt.
  */
-export function normalizeReplicaSecret(secret: ReplicaSecretPayload): ReplicaSecretPayload {
+export function normalizeReplicaSecret(payload: ReplicaSecretPayload): ReplicaSecretPayload {
   return {
-    ...secret,
-    helpers: secret.helpers.map(h => ({ ...h, shared_key: toBytes(h.shared_key) })),
-    secrets: secret.secrets.map(s => ({
+    ...payload,
+    helpers: payload.helpers.map(h => ({ ...h, shared_key: toBytes(h.shared_key) })),
+    secrets: payload.secrets.map(s => ({
       ...s,
       id: toBytes(s.id),
       data: toBytes(s.data),
     })),
-    replicas: secret.replicas
-      ? { ...secret.replicas, shared_key: toBytes(secret.replicas.shared_key) }
-      : secret.replicas,
+    replicas: payload.replicas
+      ? { ...payload.replicas, shared_key: toBytes(payload.replicas.shared_key) }
+      : payload.replicas,
   }
 }
 
@@ -1200,8 +1208,8 @@ export interface ReplicaAdoptionProtocolConfig {
   ownTransportUri: string
   communicationInfo: Record<string, string>
   threshold: number
-  /** Which versions helpers keep — see `vault/keepList.ts`. */
-  keepList: KeepListSource
+  /** Which earlier version helpers keep — see `secret/keepVersion.ts`. */
+  keepVersion: KeepVersionSource
   timeoutSecs: number
   unpairAck: 'required' | 'not_required'
 }
@@ -1233,7 +1241,7 @@ export interface ReplicaAdoptionInstanceParams extends ReplicaAdoptionProtocolCo
 /** The slice of a built protocol instance adoption drives. */
 export interface AdoptableInstance {
   protocol: {
-    restore(secret: ReplicaSecretPayload, version: number): Promise<DeRecEvent[]>
+    restore(payload: ReplicaSecretPayload, version: number): Promise<DeRecEvent[]>
   }
 }
 
@@ -1272,7 +1280,7 @@ export interface ReplicaAdoptionDeps {
    * Helper channel. Here it can, because the payload names the channel for
    * each one, so the state is put back rather than lost.
    *
-   * Without this the destination holds a vault it can read and recover from
+   * Without this the destination holds a secret it can read and recover from
    * but cannot verify — every Helper answers, and every answer is rejected
    * with "no committed share stored for this channel/version".
    */
@@ -1288,7 +1296,7 @@ export interface ReplicaAdoptionOptions {
 }
 
 export interface ReplicaAdoptionOutcome {
-  /** The instance now bound to the adopted vault. Callers must install it. */
+  /** The instance now bound to the adopted secret. Callers must install it. */
   instance: AdoptableInstance
   /** The adopted (source's) secret id. */
   secretId: string
@@ -1300,16 +1308,16 @@ export interface ReplicaAdoptionOutcome {
   /**
    * Why the tracking shares could not be written, when they could not.
    *
-   * Non-null means the vault is adopted and usable but **not verifiable**: the
+   * Non-null means the secret is adopted and usable but **not verifiable**: the
    * helpers will answer a verification round and this device will reject every
    * answer. Reported rather than thrown, because failing the adoption here
-   * would erase a vault and then refuse the replacement.
+   * would erase a secret and then refuse the replacement.
    */
   trackingSharesError: unknown
 }
 
 /**
- * Erase this device's vault and adopt the source's.
+ * Erase this device's secret and adopt the source's.
  *
  * The order is the whole point and must not be rearranged:
  *
@@ -1318,7 +1326,7 @@ export interface ReplicaAdoptionOutcome {
  *     `secret_id` (`ALREADY_RESTORED`) or when a channel already sits at a
  *     canonical helper/replica id (`CONFLICT`). Wiping is what makes both
  *     unreachable. It is not a way around the library's contract: the product
- *     rule is one vault per device, and the library's preconditions say the
+ *     rule is one secret per device, and the library's preconditions say the
  *     same thing from the other side. `clearReplicaBookkeeping` belongs to the
  *     same step: the FE's replica records are keyed by owner rather than by
  *     namespace, and everything in them is keyed by channel ids `restore` is
@@ -1344,11 +1352,11 @@ export async function adoptReplicaSecret(
   //    array back across the WASM boundary fails with "parameter 1 is not of
   //    type 'ArrayBuffer'". That used to surface from `restore` in step 3 —
   //    after the wipe — so a payload this device could never have adopted still
-  //    cost it its vault. Whatever cannot be read is rejected here, while the
+  //    cost it its secret. Whatever cannot be read is rejected here, while the
   //    device is still intact.
-  let secret: ReplicaSecretPayload
+  let payload: ReplicaSecretPayload
   try {
-    secret = normalizeReplicaSecret(adoption.secret)
+    payload = normalizeReplicaSecret(adoption.payload)
   } catch (err) {
     throw new ReplicaAdoptionError(describeUnreadableSecret(err))
   }
@@ -1377,13 +1385,13 @@ export async function adoptReplicaSecret(
 
   let events: DeRecEvent[]
   try {
-    events = Array.from(await instance.protocol.restore(secret, adoption.version))
+    events = Array.from(await instance.protocol.restore(payload, adoption.version))
   } catch (err) {
     throw new ReplicaAdoptionError(describeRestoreFailure(err))
   }
 
   // 4. Put the tracking shares back, after `restore` has created the channels
-  //    they key against. Non-fatal: the vault is adopted either way, and a
+  //    they key against. Non-fatal: the secret is adopted either way, and a
   //    device that cannot verify is worth strictly more than one that reports
   //    the adoption as failed and blocks itself.
   try {
@@ -1406,20 +1414,20 @@ export async function adoptReplicaSecret(
   }
 }
 
-/** The FE owner state an adopted vault implies. */
-export interface AdoptedVaultState {
+/** The FE owner state an adopted secret implies. */
+export interface AdoptedSecretState {
   participants: PairedParticipant[]
-  secretBag: SecretBag
+  itemBag: ItemBag
 }
 
 /**
- * A replica payload's user secrets, as the vault records them: ids in hex,
- * contents as text.
+ * A replica payload's entries (the SDK's user secrets) as the app's items:
+ * ids in hex, contents as text.
  */
-export function userSecretsFromWire(
-  secrets: ReadonlyArray<{ id: Uint8Array; name: string; data: Uint8Array }>,
-): UserSecret[] {
-  return secrets.map(s => ({
+export function itemsFromWire(
+  items: ReadonlyArray<{ id: Uint8Array; name: string; data: Uint8Array }>,
+): Item[] {
+  return items.map(s => ({
     id: bytesToHex(toBytes(s.id)),
     name: s.name,
     // Payloads are text in this app; decode lossily so a binary surprise
@@ -1444,18 +1452,18 @@ export function userSecretsFromWire(
  * source showed the pairing was live: the row was gone from the roster, so the
  * tab counted nothing, even though the channel itself survived.
  */
-export function adoptedVaultState(
+export function adoptedSecretState(
   adoption: PendingReplicaAdoption,
   actors: readonly RosterActor[],
   threshold: number,
-): AdoptedVaultState {
+): AdoptedSecretState {
   // The helpers and the replica source are re-identified together, so no two
   // of them can claim one actor — see `resolveRosterEntries`.
-  const group = adoption.secret.replicas
+  const group = adoption.payload.replicas
   const sourceMember = group?.members?.find(m => m.role === 'Source')
   const helperMatches = resolveRosterEntries(
     [
-      ...adoption.secret.helpers.map(h => ({
+      ...adoption.payload.helpers.map(h => ({
         channelId: h.channel_id,
         transports: h.transports,
         name: h.communication_info?.['name'],
@@ -1473,7 +1481,7 @@ export function adoptedVaultState(
     actors,
   )
 
-  const participants: PairedParticipant[] = adoption.secret.helpers.map((h, i) => {
+  const participants: PairedParticipant[] = adoption.payload.helpers.map((h, i) => {
     const { actor, transportUri } = helperMatches[i]
     // The matched entry's own discriminant, not an assumption: a `grpc` or
     // `both` helper's first-recognised endpoint may be a `grpc://` one.
@@ -1491,27 +1499,37 @@ export function adoptedVaultState(
       connectionStatus: 'paired' as const,
       // Every peer in the owner's snapshot held a share for that owner.
       peerRole: 'helper' as const,
-      secretShares: [{ version: adoption.version, status: 'confirmed' as const, verified: false }],
+      secretShares: [
+        { version: adoption.version, status: 'confirmed' as const, verified: false, weight: h.weight },
+      ],
       browserManaged: actor?.browser_managed,
+      // Hydration writes the roster weight into the channel record, so this is
+      // what the next publish gives the helper (SDK 0.0.9).
+      weight: h.weight,
     }
   })
 
+  // The group's own threshold when the roster carries one — hydration stores
+  // it as the next publish's — otherwise this device's configured minimum.
+  const groupThreshold = adoption.payload.threshold ?? threshold
+
   const currentVersion: BagVersion = {
     version: adoption.version,
+    ...(adoption.payload.threshold !== undefined ? { threshold: adoption.payload.threshold } : {}),
     participantIds: participants.map(p => p.id),
     verifiedParticipantIds: [],
     failedParticipantIds: [],
-    secrets: userSecretsFromWire(adoption.secret.secrets),
+    items: itemsFromWire(adoption.payload.secrets),
     // Display-only and unread — the library decodes the snapshot itself and no
     // longer surfaces the raw wire bytes.
     rawBytes: '',
     helpers: participants.map(p => ({ id: p.id, name: p.name, channelId: p.channelId })),
     // Straight from the secret the source sent, so the version shows the group
     // it actually carried.
-    replicas: adoption.secret.replicas
+    replicas: adoption.payload.replicas
       ? {
-          channelId: adoption.secret.replicas.channel_id,
-          members: (adoption.secret.replicas.members ?? []).map(m => ({
+          channelId: adoption.payload.replicas.channel_id,
+          members: (adoption.payload.replicas.members ?? []).map(m => ({
             replicaId: m.replica_id,
             role: m.role ?? null,
             name: m.communication_info?.['name'] || null,
@@ -1525,12 +1543,12 @@ export function adoptedVaultState(
   if (group?.channel_id && sourceMember) {
     // Nothing on a wire payload is assumed present. The declared types say
     // these fields are always there; a member arriving without them threw
-    // inside the adoption path, which had already erased the vault — so a
+    // inside the adoption path, which had already erased the secret — so a
     // cosmetic roster row cost the device its contents. Defaults here mean the
     // worst case is a row labelled "Replica source".
     const transports = sourceMember.transports ?? []
     const info = sourceMember.communication_info ?? {}
-    const { actor, transportUri } = helperMatches[adoption.secret.helpers.length]
+    const { actor, transportUri } = helperMatches[adoption.payload.helpers.length]
     participants.push({
       id: actor?.id ?? `peer-${group.channel_id}`,
       name: actor?.name || info['name'] || 'Replica source',
@@ -1542,7 +1560,7 @@ export function adoptedVaultState(
       connectionStatus: 'paired' as const,
       // The peer is the source; this device is the destination that adopted.
       peerRole: 'replica_source' as const,
-      // A replica channel holds no share for this device — it mirrors a vault.
+      // A replica channel holds no share for this device — it mirrors a secret.
       secretShares: [],
       browserManaged: actor?.browser_managed,
     })
@@ -1550,13 +1568,11 @@ export function adoptedVaultState(
 
   return {
     participants,
-    secretBag: {
+    itemBag: {
       secretId: adoption.secretId,
       currentVersion,
       previousVersions: [],
-      // The threshold is not carried in the snapshot; the owner's configured
-      // minimum is the same value the source protected with.
-      threshold,
+      threshold: groupThreshold,
     },
   }
 }
@@ -1594,9 +1610,9 @@ export interface ReplicaSyncTarget {
  *  - **`direction === 'replica_source'`** is what keeps the *other* side of the
  *    mirror out. On a `replica_destination` row the peer is the source: the
  *    library's `peer_role` there is `ReplicaSource`, which it does not select,
- *    and a round dispatched from here would push this device's vault at a peer
+ *    and a round dispatched from here would push this device's secret at a peer
  *    that never asked for it — on the destination, seconds before adoption
- *    erases the vault it just re-split.
+ *    erases the secret it just re-split.
  *
  * The direction test lives here, in the one selector, precisely so the manual
  * and automatic paths inherit it and cannot diverge.
@@ -1626,16 +1642,16 @@ export function canRequestReplicaSync(view: ReplicaView): boolean {
 
 /**
  * Whether a source row's destination has acknowledged an older version than
- * this vault holds — it missed a round, most often while offline.
+ * this secret holds — it missed a round, most often while offline.
  *
  * Only for a confirmed `replica_source` row with an acknowledgement on file: a
  * row that never acked says so in its own words, and a destination row has no
  * acks to lag.
  */
-export function isReplicaBehind(view: ReplicaView | null, vaultVersion: number | null): boolean {
+export function isReplicaBehind(view: ReplicaView | null, secretVersion: number | null): boolean {
   if (!view || view.direction !== 'replica_source' || view.status !== 'paired') return false
-  if (vaultVersion === null || view.lastSync === null) return false
-  return view.lastSync.version < vaultVersion
+  if (secretVersion === null || view.lastSync === null) return false
+  return view.lastSync.version < secretVersion
 }
 
 // ── Sync as soon as a destination becomes eligible ───────────────────────────
@@ -1696,7 +1712,7 @@ export type ReplicaSyncReason = 'first-sync' | 'manual'
 export type ReplicaSyncRoundResult =
   /** A `ProtectSecret` round went out. */
   | 'dispatched'
-  /** The vault holds no secrets, so there was nothing to mirror and no round ran. */
+  /** The secret holds no items, so there was nothing to mirror and no round ran. */
   | 'nothing-to-mirror'
 
 /**
@@ -1918,7 +1934,7 @@ export interface ReplicaView {
   /**
    * Which side of the mirror **this** device is on for this channel.
    *
-   * `replica_source` mirrors its vault to the peer; `replica_destination` is
+   * `replica_source` mirrors its secret to the peer; `replica_destination` is
    * offered the peer's. Read from the channel record written at pairing time.
    */
   direction: ReplicaPairingRole
@@ -1944,7 +1960,7 @@ export interface ReplicaView {
   refused: boolean
   /**
    * This device is the destination, and its person declined to adopt the
-   * peer's vault, so the channel was never confirmed — see
+   * peer's secret, so the channel was never confirmed — see
    * [`ReplicaRecord.adoptionDeclined`]. Never true once this device has
    * confirmed. Optional: absent reads as "not declined".
    */
@@ -1964,7 +1980,7 @@ export function isReplicaChannelConfirmedLocally(state: ReplicaState, channelId:
 }
 
 /**
- * Whether the person agreed, on this device, to adopt a replica source's vault
+ * Whether the person agreed, on this device, to adopt a replica source's secret
  * — see [`ReplicaRecord.adoptionConsented`].
  *
  * Not tied to the channel an offer arrives on: a destination joining an
@@ -2005,7 +2021,7 @@ function defaultPeerLabel(localRole: ReplicaPairingRole): string {
  *
  * Restricted to `helper` actors on purpose. The one thing a caller can do with
  * this is drive the `/helpers` endpoints, which reject anything else, so
- * returning an `owner` actor — what another browser device mirroring this vault
+ * returning an `owner` actor — what another browser device mirroring this secret
  * registers as — would hand out an id that 400s.
  */
 function helperActorForChannel(
@@ -2061,7 +2077,7 @@ function localChannelView(
  * Every row comes from a channel this device recorded at pairing time, because
  * that is the only place the relationship is written down. Nothing on the
  * roster marks a replica: a helper paired in replica mode is an ordinary helper
- * there, and another browser device mirroring this vault is an ordinary owner.
+ * there, and another browser device mirroring this secret is an ordinary owner.
  * A replica is a pairing *mode*, so what it produces is a channel.
  *
  * `actors` is still consulted, but only to enrich a row: it is where a helper

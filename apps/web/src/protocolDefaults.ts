@@ -1,12 +1,39 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
-import type { ServerDefaults } from './config'
-import type { VaultConfig, VaultConfigOverrides } from './types'
+import {
+  DEFAULT_AUTHENTICATION_METHOD,
+  DEFAULT_AUTO_ACCEPT_STORE_SHARE_REQUESTS,
+  DEFAULT_AUTO_ACCEPT_UNPAIR_REQUESTS,
+  DEFAULT_AUTO_ACCEPT_VERIFY_SHARE_REQUESTS,
+  DEFAULT_PROTOCOL_TIMEOUT_SECS,
+  DEFAULT_UNPAIR_ACK,
+  type ServerDefaults,
+} from './config'
+import type { SecretConfig, SecretConfigOverrides } from './types'
 import { fitTransportsTo } from './transportMix'
 
 /**
- * Browser-local overrides for the node's protocol defaults.
+ * The node-level defaults this browser may override: the helper pool a node is
+ * provisioned with, and the counts the setup wizard starts from.
+ */
+export type PoolDefaultKey =
+  | 'participantCount'
+  | 'prePairedCount'
+  | 'minParticipants'
+  | 'recommendedParticipants'
+  | 'helperTransports'
+
+export const POOL_DEFAULT_KEYS: readonly PoolDefaultKey[] = [
+  'participantCount',
+  'prePairedCount',
+  'minParticipants',
+  'recommendedParticipants',
+  'helperTransports',
+]
+
+/**
+ * Browser-local overrides for the node's pool defaults.
  *
  * The backend resolves its own set at boot — from its config file and `DEREC_*`
  * variables — and serves them from `GET /api/v1/config`. It holds no policy about them
@@ -14,13 +41,17 @@ import { fitTransportsTo } from './transportMix'
  * sends on each provisioning request. That is what makes these editable here
  * without an endpoint to write them.
  *
+ * Only the pool: a secret's protocol settings are its own (`SecretConfig`, set
+ * on the owner's Settings tab) and start from the app's defaults, never from
+ * the node or this browser.
+ *
  * Stored as a *partial* rather than a full copy, deliberately. Freezing a whole
  * snapshot would mean a node reconfigured and restarted still handed a
  * developer the values it had when they last opened Settings, with nothing on
  * screen explaining why. An override names only what it changes; everything
  * else keeps following the server.
  */
-export type DefaultOverrides = Partial<ServerDefaults>
+export type DefaultOverrides = Partial<Pick<ServerDefaults, PoolDefaultKey>>
 
 const STORAGE_KEY = 'derec.protocolDefaults'
 
@@ -37,7 +68,14 @@ export function loadDefaultOverrides(): DefaultOverrides {
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       return {}
     }
-    return parsed as DefaultOverrides
+    // Keys outside the pool are left by older builds, which also kept a
+    // secret's protocol settings here; they are no longer read.
+    const stored = parsed as Record<string, unknown>
+    const overrides: Record<string, unknown> = {}
+    for (const key of POOL_DEFAULT_KEYS) {
+      if (key in stored) overrides[key] = stored[key]
+    }
+    return overrides as DefaultOverrides
   } catch {
     // Unparseable, or storage unavailable. This is a convenience layer; losing
     // it must not take a screen down.
@@ -62,11 +100,13 @@ export function clearDefaultOverrides(): void {
 }
 
 /**
- * What to actually provision with: the node's values, with any local overrides
- * on top.
+ * What to actually provision with: the node's values, with any local pool
+ * overrides on top.
  *
  * The single place that merge happens, so the setup wizard, the Participants
- * pane and the Settings pane cannot disagree about what a default is.
+ * pane and the Settings pane cannot disagree about what a default is. The
+ * protocol fields stay the node's: they are what the node's own helpers are
+ * provisioned with.
  */
 export function effectiveDefaults(server: ServerDefaults): ServerDefaults {
   const merged: ServerDefaults = {
@@ -100,25 +140,33 @@ export function effectiveDefaults(server: ServerDefaults): ServerDefaults {
 }
 
 /**
- * What a vault actually runs with: the node's defaults, this browser's
- * overrides, then the vault's own — the third tier of the merge
- * [`effectiveDefaults`] performs, and the only place it happens.
+ * The protocol settings every secret starts from, defined by the app rather
+ * than taken from the node: they are the defaults the app means to encourage,
+ * and a secret's owner changes them for that secret alone on its Settings tab.
+ */
+export const SECRET_CONFIG_DEFAULTS: SecretConfig = {
+  protocolTimeoutSecs: DEFAULT_PROTOCOL_TIMEOUT_SECS,
+  authenticationMethod: DEFAULT_AUTHENTICATION_METHOD,
+  unpairAck: DEFAULT_UNPAIR_ACK,
+  autoAcceptUnpairRequests: DEFAULT_AUTO_ACCEPT_UNPAIR_REQUESTS,
+  autoAcceptStoreShareRequests: DEFAULT_AUTO_ACCEPT_STORE_SHARE_REQUESTS,
+  autoAcceptVerifyShareRequests: DEFAULT_AUTO_ACCEPT_VERIFY_SHARE_REQUESTS,
+}
+
+/**
+ * What a secret actually runs with: the app's defaults with the secret's own
+ * overrides on top — the only place that merge happens.
  *
  * `minParticipants` is deliberately absent. It is the Shamir threshold passed to
  * `withThreshold`, and shares already distributed depend on it, so it is
- * resolved once and frozen onto the vault record at creation rather than
- * inherited live — otherwise editing a browser default would retroactively
- * change the threshold of a vault that has already published. See
- * `Vault.minParticipants`.
+ * resolved once and frozen onto the secret record at creation. See
+ * `Secret.minParticipants`.
  *
  * Every field is resolved with `??` rather than `||`: `autoAcceptUnpairRequests:
- * false` is a real choice, and `||` would silently restore the server's `true`.
+ * false` is a real choice, and `||` would silently restore the default `true`.
  */
-export function resolveVaultConfig(
-  overrides: VaultConfigOverrides,
-  server: ServerDefaults,
-): VaultConfig {
-  const base = effectiveDefaults(server)
+export function resolveSecretConfig(overrides: SecretConfigOverrides): SecretConfig {
+  const base = SECRET_CONFIG_DEFAULTS
   return {
     protocolTimeoutSecs: overrides.protocolTimeoutSecs ?? base.protocolTimeoutSecs,
     authenticationMethod: overrides.authenticationMethod ?? base.authenticationMethod,
@@ -130,4 +178,16 @@ export function resolveVaultConfig(
     autoAcceptVerifyShareRequests:
       overrides.autoAcceptVerifyShareRequests ?? base.autoAcceptVerifyShareRequests,
   }
+}
+
+/**
+ * The overrides that make a secret run with `config`: only what differs from
+ * the app's defaults, so a value left at its default keeps following them.
+ */
+export function overridesFor(config: SecretConfig): SecretConfigOverrides {
+  const overrides: Record<string, unknown> = {}
+  for (const key of Object.keys(config) as (keyof SecretConfig)[]) {
+    if (config[key] !== SECRET_CONFIG_DEFAULTS[key]) overrides[key] = config[key]
+  }
+  return overrides as SecretConfigOverrides
 }

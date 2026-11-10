@@ -32,6 +32,7 @@ fn config(secret_id: u64, pool: sqlx::AnyPool, actor_id: uuid::Uuid) -> Protocol
         pool,
         actor_id,
         local_delivery: None,
+        replay_guard: Default::default(),
     }
 }
 
@@ -81,7 +82,7 @@ async fn a_replica_mode_contact_is_minted_from_the_owners_instance() {
 
     // The decisive assertion: the minted channel routes to the replica
     // instance, not the helper's own. If it resolved to OWN_SECRET the peer's
-    // reply would be handed to the wrong vault.
+    // reply would be handed to the wrong secret.
     let owner = addr
         .send(InstanceForChannelMsg {
             channel_id: contact.channel_id,

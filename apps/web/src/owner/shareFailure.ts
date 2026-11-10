@@ -15,7 +15,7 @@ import type { SecretShareRef } from '../types'
  * - `unreachable` — the request never left: the send itself failed (the relay
  *   is off, the node is down, the address is wrong). Nothing the peer did.
  *
- * Every view that names a failure — the protect round's progress, the Secrets
+ * Every view that names a failure — the protect round's progress, the Items
  * panel, a channel row — reads it from here, so one peer is never "Rejected"
  * in one place and "timeout" in another.
  */

@@ -128,7 +128,7 @@ describe('the protocol defaults form', () => {
     expect(loadDefaultOverrides()).toEqual({ minParticipants: 2 })
   })
 
-  it('refuses a minimum of 1, which no vault could start with', async () => {
+  it('refuses a minimum of 1, which no secret could start with', async () => {
     await render()
     await act(async () => {
       resolveDefaults({ defaults: FALLBACK_SERVER_DEFAULTS, reachable: true, fromServer: true })

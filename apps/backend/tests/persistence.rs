@@ -43,6 +43,7 @@ fn helper_channel(channel_id: u64) -> HelperChannel {
         peer_role: derec_proto::SenderKind::Owner,
         status: ChannelStatus::Paired,
         created_at: 0,
+        weight: 1,
     }
 }
 

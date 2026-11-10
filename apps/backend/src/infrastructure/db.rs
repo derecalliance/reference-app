@@ -282,7 +282,7 @@ fn current_uid() -> Option<u32> {
 /// Deliberately several lines and deliberately `warn`: the audience is a
 /// developer scrolling `docker logs`, who will not infer the consequences from
 /// seeing `sqlite::memory:` in a settings dump. Every actor, pairing, share and
-/// vault on this node is gone on restart, and a browser that reconnects
+/// secret on this node is gone on restart, and a browser that reconnects
 /// afterwards will be holding channel state for peers the node no longer has.
 pub fn warn_if_ephemeral(database_url: &str) {
     if !DatabaseUrl::from(database_url).is_ephemeral() {
@@ -292,7 +292,7 @@ pub fn warn_if_ephemeral(database_url: &str) {
     tracing::warn!("║  EPHEMERAL DATABASE — this node keeps nothing across a restart.      ║");
     tracing::warn!("║                                                                      ║");
     tracing::warn!("║  DEREC_DATABASE_URL names an in-memory SQLite database, so every     ║");
-    tracing::warn!("║  actor, pairing, share and vault is lost when this process stops.    ║");
+    tracing::warn!("║  actor, pairing, share and secret is lost when this process stops.   ║");
     tracing::warn!("║  A browser that reconnects after a restart will still hold channel   ║");
     tracing::warn!("║  state for peers this node no longer knows, and its flows will fail  ║");
     tracing::warn!("║  in ways that look like protocol bugs but are not.                   ║");

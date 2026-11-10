@@ -6,13 +6,13 @@ import { AppMuiTheme } from './AppMuiTheme'
 import type { RestoreFailure } from './replicaFlows'
 
 /**
- * Terminal screen for a wipe-and-adopt that erased this device's vault and then
+ * Terminal screen for a wipe-and-adopt that erased this device's secret and then
  * failed.
  *
  * `adoptReplicaSecret` clears the namespace before it can reject, so a rejection
  * leaves the page holding a protocol instance bound to stores that no longer
- * exist. Continuing to render the owner page would let the user add secrets to,
- * and poll for, a vault whose channels are gone — so the page stops here
+ * exist. Continuing to render the owner page would let the user add items to,
+ * and poll for, a secret whose channels are gone — so the page stops here
  * instead.
  *
  * There is deliberately no retry and no "continue anyway": `restore`'s
@@ -29,13 +29,13 @@ import type { RestoreFailure } from './replicaFlows'
 
 export interface ReplicaAdoptionBlockedScreenProps {
   failure: RestoreFailure
-  /** Whose vault this device was holding before the wipe. */
-  vaultName: string
+  /** Whose secret this device was holding before the wipe. */
+  secretName: string
 }
 
 export function ReplicaAdoptionBlockedScreen({
   failure,
-  vaultName,
+  secretName,
 }: ReplicaAdoptionBlockedScreenProps) {
   return (
     <AppMuiTheme>
@@ -47,7 +47,7 @@ export function ReplicaAdoptionBlockedScreen({
                 This device is no longer usable
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                {vaultName}’s vault on this device was erased to make room for a mirrored
+                {secretName}’s secret on this device was erased to make room for a mirrored
                 copy, and installing that copy did not complete.
               </Typography>
             </Stack>
@@ -66,9 +66,9 @@ export function ReplicaAdoptionBlockedScreen({
             <Typography variant="body2">
               {failure.wipeDidNotTake
                 ? 'This rejection can only happen when the erase did not take effect, so this device is in a state no retry can improve.'
-                : 'The erase completed but the mirrored vault was not installed, so this device now holds nothing.'}{' '}
+                : 'The erase completed but the mirrored secret was not installed, so this device now holds nothing.'}{' '}
               Nothing will be retried, and no further protocol activity runs here: polling
-              has stopped and secrets cannot be added. Reloading will not change that — this
+              has stopped and items cannot be added. Reloading will not change that — this
               screen is recorded in the browser and comes back with it.
             </Typography>
 

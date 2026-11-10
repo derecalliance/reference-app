@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 DeRec Alliance. All rights reserved.
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useMemo, type ReactNode } from 'react'
 import { ThemeProvider, createTheme } from '@mui/material/styles'
+
+import { useColorScheme } from './colorScheme'
 
 /**
  * MUI theming that follows the app's own CSS custom properties.
  *
- * The app is styled by hand in `index.css` and adapts to the system scheme
- * through `@media (prefers-color-scheme: light)`, which reassigns the `--text`,
- * `--bg`, … variables on `:root`. MUI knows nothing about any of that, so
- * without this its surfaces render as default light against a dark app.
+ * The app is styled by hand in `index.css`, whose light palette applies under
+ * `:root[data-theme='light']` and reassigns the `--text`, `--bg`, … variables
+ * (`colorScheme.ts` decides the attribute). MUI knows nothing about any of
+ * that, so without this its surfaces render as default light against a dark app.
  *
  * The palette is dark-first, so dark is the default and light is the override —
  * matching `index.css` rather than MUI's own light default.
@@ -25,11 +27,9 @@ import { ThemeProvider, createTheme } from '@mui/material/styles'
  *  - Paper/Dialog backgrounds would otherwise be white inside a dark page.
  *
  * Values are read from the live computed style rather than hardcoded, so the
- * palette cannot drift from `index.css`, and are re-read when the system scheme
+ * palette cannot drift from `index.css`, and are re-read when the scheme
  * changes.
  */
-
-const LIGHT_QUERY = '(prefers-color-scheme: light)'
 
 interface ThemeVars {
   text: string
@@ -81,38 +81,22 @@ function readThemeVars(): ThemeVars {
   }
 }
 
-/** True only when the viewer has actively asked for light. Dark is the default,
- *  so "no preference" resolves to dark, exactly as `index.css` does. */
-function usePrefersLight(): boolean {
-  const [prefersLight, setPrefersLight] = useState(
-    () => typeof window !== 'undefined' && window.matchMedia(LIGHT_QUERY).matches,
-  )
-
-  useEffect(() => {
-    const query = window.matchMedia(LIGHT_QUERY)
-    const onChange = (e: MediaQueryListEvent) => setPrefersLight(e.matches)
-    query.addEventListener('change', onChange)
-    return () => query.removeEventListener('change', onChange)
-  }, [])
-
-  return prefersLight
-}
-
 export interface AppMuiThemeProps {
   children: ReactNode
 }
 
 export function AppMuiTheme({ children }: AppMuiThemeProps) {
-  const prefersLight = usePrefersLight()
+  const scheme = useColorScheme()
 
   const theme = useMemo(() => {
-    // Re-read on every scheme change: the media query in `index.css` swaps the
-    // custom properties, so the previous snapshot is stale.
+    // Re-read on every scheme change: `data-theme` swaps the custom properties
+    // (and is set before subscribers hear of the change), so the previous
+    // snapshot is stale.
     const vars = readThemeVars()
 
     return createTheme({
       palette: {
-        mode: prefersLight ? 'light' : 'dark',
+        mode: scheme,
         // `main` is the text/border gold, which darkens on cream so links stay
         // legible. `contrastText` is stated rather than derived because MUI
         // would compute white on gold, which is 2.2:1.
@@ -144,6 +128,16 @@ export function AppMuiTheme({ children }: AppMuiThemeProps) {
             },
           },
         },
+        // Same reasoning for a filled primary chip (the env-variable source tag
+        // under Settings): dark text on the darkened gold is 3.8:1 on cream.
+        MuiChip: {
+          styleOverrides: {
+            filledPrimary: {
+              backgroundColor: vars.accentFill,
+              color: vars.accentContrast,
+            },
+          },
+        },
         MuiPaper: {
           styleOverrides: {
             root: ({ theme: t }) => ({ color: t.palette.text.primary }),
@@ -156,7 +150,7 @@ export function AppMuiTheme({ children }: AppMuiThemeProps) {
         },
       },
     })
-  }, [prefersLight])
+  }, [scheme])
 
   return <ThemeProvider theme={theme}>{children}</ThemeProvider>
 }

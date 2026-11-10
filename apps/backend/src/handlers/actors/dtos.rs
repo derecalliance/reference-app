@@ -4,7 +4,10 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
 
-use crate::models::{Actor, ActorListing, ContactOptions, PeerContact};
+use crate::handlers::helpers::dtos::HelperFaultDto;
+use crate::models::{
+    Actor, ActorListing, ContactOptions, ContactTimestamp, HelperFault, PeerContact,
+};
 
 /// Actor enriched with live pairing state — used in `GET /api/v1/actors`.
 #[derive(Debug, Clone, Serialize)]
@@ -20,6 +23,10 @@ pub struct ActorWithStatus {
     /// Whether this actor is currently simulating offline status.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disabled: Option<bool>,
+    /// The failure a provisioned helper simulates; absent while it behaves
+    /// normally.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fault: Option<HelperFaultDto>,
     /// True when this actor's protocol instance runs in a browser rather than
     /// on the backend, so it has no backend instance to drive. Peers must fetch
     /// its contact from the signaling endpoint instead of `/api/v1/actors/{id}/contact`.
@@ -47,6 +54,7 @@ impl From<ActorListing> for ActorWithStatus {
                 .shared_key
                 .map(|key| URL_SAFE_NO_PAD.encode(&key[..])),
             disabled: listing.disabled.then_some(true),
+            fault: (listing.fault != HelperFault::None).then(|| listing.fault.into()),
             browser_managed: listing.browser_managed.then_some(true),
             last_polled_at: listing.browser_managed.then_some(listing.last_polled_at),
         }
@@ -185,6 +193,31 @@ pub struct ContactMessageDto {
     /// SHA-384 commitment over the key material; present only under `HashedKeys`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contact_binding_hash: Option<String>,
+    /// The creator's commitment to its fingerprint nonce (SDK 0.0.10);
+    /// present only under `InlineKeys`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint_commitment: Option<String>,
+    /// When the contact was minted (required by SDK 0.0.11, which refuses a
+    /// contact without one and expires it after the pairing lifetime).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<ContactTimestampDto>,
+}
+
+/// A protobuf `Timestamp`: Unix seconds, which a JavaScript number holds
+/// exactly, and nanoseconds.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ContactTimestampDto {
+    pub seconds: i64,
+    pub nanos: i32,
+}
+
+impl From<ContactTimestampDto> for ContactTimestamp {
+    fn from(dto: ContactTimestampDto) -> Self {
+        Self {
+            seconds: dto.seconds,
+            nanos: dto.nanos,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -257,6 +290,14 @@ impl From<&derec_proto::ContactMessage> for ContactMessageDto {
                 .contact_binding_hash
                 .as_ref()
                 .map(|h| URL_SAFE_NO_PAD.encode(h)),
+            fingerprint_commitment: c
+                .fingerprint_commitment
+                .as_ref()
+                .map(|h| URL_SAFE_NO_PAD.encode(h)),
+            timestamp: c.timestamp.as_ref().map(|t| ContactTimestampDto {
+                seconds: t.seconds,
+                nanos: t.nanos,
+            }),
         }
     }
 }
@@ -271,6 +312,8 @@ impl From<ContactMessageDto> for PeerContact {
             mlkem_encapsulation_key: dto.mlkem_encapsulation_key,
             ecies_public_key: dto.ecies_public_key,
             contact_binding_hash: dto.contact_binding_hash,
+            fingerprint_commitment: dto.fingerprint_commitment,
+            timestamp: dto.timestamp.map(Into::into),
         }
     }
 }
@@ -290,6 +333,7 @@ mod tests {
             channel_id: None,
             shared_key: Some([0u8; 32]),
             disabled,
+            fault: HelperFault::None,
             browser_managed,
             last_polled_at: last_polled_at.map(str::to_owned),
         }
@@ -303,6 +347,16 @@ mod tests {
         assert!(json.get("browser_managed").is_none());
         assert!(json.get("last_polled_at").is_none());
         assert!(json.get("disabled").is_none());
+        assert!(json.get("fault").is_none(), "a helper behaving normally carries no fault");
+    }
+
+    #[test]
+    fn a_simulated_fault_is_listed_by_its_wire_name() {
+        let mut row = listing(false, false, None);
+        row.fault = HelperFault::RefusesVerification;
+        let json = serde_json::to_value(ActorWithStatus::from(row)).expect("serializes");
+
+        assert_eq!(json["fault"], serde_json::json!("refuses_verification"));
     }
 
     #[test]
@@ -343,6 +397,8 @@ mod tests {
             mlkem_encapsulation_key: None,
             ecies_public_key: None,
             contact_binding_hash: None,
+            fingerprint_commitment: None,
+            timestamp: None,
         }
     }
 
@@ -407,6 +463,7 @@ mod tests {
             ecies_public_key: None,
             contact_binding_hash: None,
             timestamp: None,
+            fingerprint_commitment: None,
         };
 
         let dto = ContactMessageDto::from(&contact);
@@ -432,6 +489,29 @@ mod tests {
         assert!(dto.transport_protocol.is_none());
         assert_eq!(dto.endpoints().len(), 1);
         assert_eq!(dto.endpoints()[0].uri, "grpc://a:1");
+    }
+
+    #[test]
+    fn a_contact_keeps_the_time_it_was_minted() {
+        // SDK 0.0.11 refuses a contact without one, so dropping it on the way
+        // through would make every pasted contact unpairable.
+        let json = r#"{
+            "channel_id": "1",
+            "nonce": "7",
+            "supported_transports": [{ "uri": "https://a", "protocol": "https" }],
+            "timestamp": { "seconds": 1700000000, "nanos": 42 }
+        }"#;
+
+        let dto: ContactMessageDto = serde_json::from_str(json).expect("deserializes");
+        let contact = PeerContact::from(dto);
+
+        assert_eq!(
+            contact.timestamp,
+            Some(ContactTimestamp {
+                seconds: 1_700_000_000,
+                nanos: 42
+            })
+        );
     }
 
     #[test]

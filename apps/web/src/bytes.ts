@@ -9,7 +9,7 @@
  * a field can be a plain `number[]`, a bare `ArrayBuffer`, or an array-like
  * object. Handing any of those to `TextDecoder.decode` or back into the WASM
  * boundary fails with "parameter 1 is not of type 'ArrayBuffer'" — which is how
- * a replica adoption managed to erase a device's vault and then fall over
+ * a replica adoption managed to erase a device's secret and then fall over
  * decoding the very payload it had just cleared the way for.
  *
  * So nothing trusts the declared type. Everything that reads these fields goes
@@ -23,7 +23,7 @@ export type ByteSource = Uint8Array | ArrayBuffer | number[] | ArrayLike<number>
  * A real `Uint8Array` over `value`, copying only when it has to.
  *
  * Throws rather than returning empty on something genuinely unusable: a silent
- * zero-length secret would be written into the vault as if it were the truth.
+ * zero-length item would be written into the secret as if it were the truth.
  */
 export function toBytes(value: ByteSource): Uint8Array {
   if (value instanceof Uint8Array) return value
@@ -47,10 +47,10 @@ export function toBytes(value: ByteSource): Uint8Array {
 }
 
 /**
- * Lower-case hex, as the app writes user-secret ids everywhere it mints them.
+ * Lower-case hex, as the app writes item ids everywhere it mints them.
  *
- * Restored and adopted secrets arrive as bytes; writing them as hex too keeps
- * one id spelling across the app, so the same secret shows the same id on the
+ * Restored and adopted items arrive as bytes; writing them as hex too keeps
+ * one id spelling across the app, so the same item shows the same id on the
  * source and on a replica that adopted it.
  */
 export function bytesToHex(bytes: Uint8Array): string {

@@ -14,9 +14,9 @@ import type { ReplicaRemovalRequest } from './replicaRemoval'
  * but this device's own list — the library keeps the member and keeps
  * mirroring to it. Remove from group is the protocol's real teardown, and it
  * is destructive for the *other* device: once the evicted member sees a roster
- * without itself, the library there drops its whole copy of the vault. Before
+ * without itself, the library there drops its whole copy of the secret. Before
  * this dialog existed that was one click, which let a destination erase the
- * source's own vault by accident.
+ * source's own secret by accident.
  */
 
 export interface ReplicaRemovalDialogProps {
@@ -90,7 +90,7 @@ function ForgetBody({ name, channelId }: { name: string; channelId: string }) {
           a teardown this action does not perform. */}
       <p>
         <strong>Only this device’s list changes.</strong> {name} is not told, and the
-        protocol still counts them as a member: every protect round from this vault
+        protocol still counts them as a member: every protect round from this secret
         keeps mirroring to them. To stop that, use “Remove from group” instead — it is
         offered once the peer has announced its replica id.
       </p>
@@ -121,11 +121,11 @@ function RemoveBody({
       {targetIsSource ? (
         <div className="replica-row-notice replica-row-notice--error" role="alert">
           <span className="replica-row-prompt__text">
-            <strong>{name} is the source of this group — the device this vault came from.</strong>{' '}
+            <strong>{name} is the source of this group — the device this secret came from.</strong>{' '}
             {name} is not asked and gets no warning: once it sees the new roster, the protocol
-            on that device erases its whole copy of the vault — its secrets, helper channels
+            on that device erases its whole copy of the secret — its items, helper channels
             and shares. The first remaining member in this device’s replica list becomes the
-            source, which may be this device; from then on, it publishes the vault. The secret
+            source, which may be this device; from then on, it publishes new versions. The secret
             itself survives on the remaining members and the helpers. This cannot be undone
             from here.
           </span>
@@ -134,7 +134,7 @@ function RemoveBody({
         <p>
           <strong>This erases {name}’s copy.</strong> {name} is not asked and gets no warning:
           once it sees the new roster, the protocol on that device drops everything it holds
-          for this vault. The secret survives on the remaining members and the helpers. {name}{' '}
+          for this secret, which survives on the remaining members and the helpers. {name}{' '}
           would have to be paired and mirrored again to come back.
         </p>
       )}

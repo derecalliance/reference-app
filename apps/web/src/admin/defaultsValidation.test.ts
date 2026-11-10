@@ -53,12 +53,6 @@ describe('validateDefaults', () => {
     )
   })
 
-  it('refuses a timeout too short for any flow to finish', () => {
-    expect(validateDefaults(draft({ protocolTimeoutSecs: 0 })).protocolTimeoutSecs).toBe(
-      'Must be at least 10',
-    )
-  })
-
   it('allows pre-pairing none, but not a negative count or more than the pool', () => {
     expect(validateDefaults(draft({ prePairedCount: 0 })).prePairedCount).toBeUndefined()
     expect(validateDefaults(draft({ prePairedCount: -1 })).prePairedCount).toBe('Must be at least 0')

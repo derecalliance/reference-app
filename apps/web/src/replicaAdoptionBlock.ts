@@ -6,10 +6,10 @@
  *
  * `adoptReplicaSecret` clears this device's namespace before `restore` can
  * reject, so a rejection leaves the device holding nothing while the *owner
- * envelope* — helpers, participants, secret bag — is still on disk and still
+ * envelope* — helpers, participants, item bag — is still on disk and still
  * loads. Holding the block in React state alone therefore made a reload
  * un-block a wiped device: the guards read a fresh `null`, the persisted roster
- * listed helpers whose stores no longer existed, and the user could add a secret
+ * listed helpers whose stores no longer existed, and the user could add an item
  * and protect against them.
  *
  * So the block is written to storage the moment it is raised and read back on
@@ -20,8 +20,8 @@
  *
  * The only things that remove it are the user's: the header's "Reset browser
  * data" action sweeps the whole `derec:` prefix, which is why this key carries
- * it, and removing the blocked vault from the browser erases its record along
- * with the vault (see `clearReplicaAdoptionBlock`).
+ * it, and removing the blocked secret from the browser erases its record along
+ * with the secret (see `clearReplicaAdoptionBlock`).
  *
  * Keyed per owner. It used to be a single key carrying the owner id inside the
  * record, on the grounds that a wipe erases the device's protocol storage so at
@@ -103,8 +103,8 @@ export function saveReplicaAdoptionBlock(ownerId: string, failure: RestoreFailur
 }
 
 /**
- * Forget the block for a vault that is being removed from this browser. Not a
- * way out of the block: the vault it guarded goes with it.
+ * Forget the block for a secret that is being removed from this browser. Not a
+ * way out of the block: the secret it guarded goes with it.
  */
 export function clearReplicaAdoptionBlock(ownerId: string): void {
   try {

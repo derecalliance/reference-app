@@ -14,47 +14,47 @@ function formatTime(date: Date): string {
   return date.toLocaleTimeString(undefined, { hour12: false })
 }
 
-// ── Vault filter ──────────────────────────────────────────────────────────────
+// ── Secret filter ──────────────────────────────────────────────────────────────
 
 /**
- * Which entries the panel shows: every one, only those about one vault, or only
- * those about no vault — the node-wide `server` entries.
+ * Which entries the panel shows: every one, only those about one secret, or only
+ * those about no secret — the node-wide `server` entries.
  *
- * Encoded as the `<select>` value. A vault is prefixed so no vault id can ever
+ * Encoded as the `<select>` value. A secret is prefixed so no local secret id can ever
  * collide with the two fixed choices.
  */
-type VaultFilter = 'all' | 'node' | `vault:${string}`
+type SecretFilter = 'all' | 'node' | `secret:${string}`
 
-function matchesVaultFilter(entry: ConsoleEntry, filter: VaultFilter): boolean {
+function matchesSecretFilter(entry: ConsoleEntry, filter: SecretFilter): boolean {
   if (filter === 'all') return true
-  if (filter === 'node') return entry.vaultId === undefined
-  return entry.vaultId === filter.slice('vault:'.length)
+  if (filter === 'node') return entry.localSecretId === undefined
+  return entry.localSecretId === filter.slice('secret:'.length)
 }
 
-/** Every vault that has written to the log, in order of first appearance. */
-function vaultIdsIn(entries: ConsoleEntry[]): string[] {
+/** Every secret that has written to the log, in order of first appearance. */
+function localSecretIdsIn(entries: ConsoleEntry[]): string[] {
   const ids = new Set<string>()
   // Entries are newest-first; walk oldest-first so the list does not reorder
-  // every time a vault logs.
+  // every time a secret logs.
   for (let i = entries.length - 1; i >= 0; i--) {
-    const id = entries[i].vaultId
+    const id = entries[i].localSecretId
     if (id !== undefined) ids.add(id)
   }
   return [...ids]
 }
 
-/** Vault ids are opaque; a prefix is enough to tell a handful apart. */
-function shortVaultId(id: string): string {
+/** Local secret ids are opaque; a prefix is enough to tell a handful apart. */
+function shortLocalSecretId(id: string): string {
   return id.length > 8 ? `${id.slice(0, 8)}…` : id
 }
 
 /**
- * How a vault is named in the filter: by the name the owner gave it, as the
- * vault list and switcher do. Its id is the fallback for a vault no longer in
+ * How a secret is named in the filter: by the name the owner gave it, as the
+ * secret list and switcher do. Its id is the fallback for a secret no longer in
  * this browser — its entries outlive it.
  */
-function vaultOptionLabel(id: string, names: ReadonlyMap<string, string>): string {
-  return names.get(id) ?? `Vault ${shortVaultId(id)}`
+function secretOptionLabel(id: string, names: ReadonlyMap<string, string>): string {
+  return names.get(id) ?? `Secret ${shortLocalSecretId(id)}`
 }
 
 // ── Badges ────────────────────────────────────────────────────────────────────
@@ -91,7 +91,7 @@ function serializeLog(entries: ConsoleEntry[]): string {
       flow: entry.flow,
       step: entry.step,
       description: entry.description,
-      ...(entry.vaultId !== undefined ? { vaultId: entry.vaultId } : {}),
+      ...(entry.localSecretId !== undefined ? { localSecretId: entry.localSecretId } : {}),
       ...(entry.payload !== undefined ? { payload: entry.payload } : {}),
       ...(entry.response !== undefined ? { response: entry.response } : {}),
     })),
@@ -246,7 +246,7 @@ function EntryRow({ entry }: { entry: ConsoleEntry }) {
         flow: entry.flow,
         step: entry.step,
         description: entry.description,
-        ...(entry.vaultId !== undefined ? { vaultId: entry.vaultId } : {}),
+        ...(entry.localSecretId !== undefined ? { localSecretId: entry.localSecretId } : {}),
         ...(entry.payload !== undefined ? { payload: entry.payload } : {}),
         ...(entry.response !== undefined ? { response: entry.response } : {}),
       },
@@ -300,20 +300,20 @@ function EntryRow({ entry }: { entry: ConsoleEntry }) {
 // ── Panel ─────────────────────────────────────────────────────────────────────
 
 export interface ConsolePanelProps {
-  /** Vaults this browser holds, so the filter can name them. */
-  vaults: ReadonlyArray<{ id: string; name: string }>
+  /** Secrets this browser holds, so the filter can name them. */
+  secrets: ReadonlyArray<{ id: string; name: string }>
 }
 
-export default function ConsolePanel({ vaults }: ConsolePanelProps) {
+export default function ConsolePanel({ secrets }: ConsolePanelProps) {
   const { entries, clear } = useConsole()
   const [expanded, setExpanded] = useState(false)
-  const [vaultFilter, setVaultFilter] = useState<VaultFilter>('all')
+  const [secretFilter, setSecretFilter] = useState<SecretFilter>('all')
 
-  const vaultIds = vaultIdsIn(entries)
-  const vaultNames = new Map(vaults.map(v => [v.id, v.name]))
+  const localSecretIds = localSecretIdsIn(entries)
+  const secretNames = new Map(secrets.map(v => [v.id, v.name]))
   const visible =
-    vaultFilter === 'all' ? entries : entries.filter(e => matchesVaultFilter(e, vaultFilter))
-  // Copy and Download take what the filter shows: narrowing to one vault and
+    secretFilter === 'all' ? entries : entries.filter(e => matchesSecretFilter(e, secretFilter))
+  // Copy and Download take what the filter shows: narrowing to one secret and
   // then exporting it is the reason to filter. The labels say so whenever that
   // is not the whole log, so nobody files a partial log thinking it complete.
   const filtered = visible.length !== entries.length
@@ -338,18 +338,18 @@ export default function ConsolePanel({ vaults }: ConsolePanelProps) {
         </button>
 
         <div className="console-header-actions">
-          {vaultIds.length > 0 && (
+          {localSecretIds.length > 0 && (
             <select
               className="console-filter"
-              value={vaultFilter}
-              onChange={e => setVaultFilter(e.target.value as VaultFilter)}
+              value={secretFilter}
+              onChange={e => setSecretFilter(e.target.value as SecretFilter)}
               aria-label="Show entries for"
               title="Show entries for"
             >
-              <option value="all">All vaults</option>
-              {vaultIds.map(id => (
-                <option key={id} value={`vault:${id}`} title={id}>
-                  {vaultOptionLabel(id, vaultNames)}
+              <option value="all">All secrets</option>
+              {localSecretIds.map(id => (
+                <option key={id} value={`secret:${id}`} title={id}>
+                  {secretOptionLabel(id, secretNames)}
                 </option>
               ))}
               <option value="node">Node only</option>

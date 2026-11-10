@@ -27,7 +27,7 @@ afterEach(() => {
 
 function Probe() {
   const route = useHashRoute()
-  return <span>{route.kind === 'vault' ? `vault:${route.id}` : route.kind}</span>
+  return <span>{route.kind === 'secret' ? `secret:${route.id}` : route.kind}</span>
 }
 
 describe('useHashRoute', () => {
@@ -36,10 +36,10 @@ describe('useHashRoute', () => {
     expect(host.textContent).toBe('list')
 
     await act(async () => {
-      navigate({ kind: 'vault', id: 'abc' })
+      navigate({ kind: 'secret', id: 'abc' })
       window.dispatchEvent(new HashChangeEvent('hashchange'))
     })
 
-    expect(host.textContent).toBe('vault:abc')
+    expect(host.textContent).toBe('secret:abc')
   })
 })

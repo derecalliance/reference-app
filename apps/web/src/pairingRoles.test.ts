@@ -86,7 +86,7 @@ describe('replicaRoleForSenderKind', () => {
 describe('localReplicaRoleForPeerSenderKind', () => {
   it('reports the counterparty of what the peer declared', () => {
     // Alice declares ReplicaSource; Bob, receiving it, is the destination — the
-    // side whose vault is replaced. Getting this backwards would warn the wrong
+    // side whose secret is replaced. Getting this backwards would warn the wrong
     // device and leave the one being erased unwarned.
     expect(localReplicaRoleForPeerSenderKind(SenderKind.ReplicaSource)).toBe(
       'replica_destination',

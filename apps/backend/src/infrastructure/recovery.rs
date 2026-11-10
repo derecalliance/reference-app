@@ -222,15 +222,23 @@ async fn load_stored_instances(
         .collect();
 
     let ttl = i64::try_from(PIN_TTL.as_secs()).unwrap_or(i64::MAX);
-    let since = crate::utils::time::now_unix_secs().saturating_sub(ttl);
+    let now = crate::utils::time::now_unix_secs();
+    let since = now.saturating_sub(ttl);
     let unpaired_contacts = state
         .protocol_records
         .unpaired_contacts(&actor.id, since)
         .await?;
 
+    let seen_messages = state
+        .actor_dependencies()
+        .seen_messages
+        .live(&actor.id, u64::try_from(now).unwrap_or(0))
+        .await?;
+
     Ok(StoredInstances {
         replica_secret_ids,
         unpaired_contacts,
+        seen_messages,
     })
 }
 

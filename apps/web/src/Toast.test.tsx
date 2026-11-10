@@ -37,25 +37,25 @@ function toastButton(name: string): HTMLButtonElement {
 }
 
 describe('ToastProvider', () => {
-  it('names the vault a banner came from', () => {
-    act(() => reportInfo('Secret recovered', { vaultId: 'beta', vaultName: 'Beta' }))
+  it('names the secret a banner came from', () => {
+    act(() => reportInfo('Secret recovered', { localSecretId: 'beta', secretName: 'Beta' }))
 
     expect(host.textContent).toContain('Beta: Secret recovered')
   })
 
-  it('opens the vault when its banner is clicked, and dismisses the banner', () => {
-    act(() => reportInfo('Secret recovered', { vaultId: 'beta', vaultName: 'Beta' }))
+  it('opens the secret when its banner is clicked, and dismisses the banner', () => {
+    act(() => reportInfo('Secret recovered', { localSecretId: 'beta', secretName: 'Beta' }))
 
     act(() => toastButton('Beta: Secret recovered').click())
 
-    // A vault removed since the banner was raised is not special here: the
+    // A secret removed since the banner was raised is not special here: the
     // route resolves to the list with a notice, as any unknown id does.
-    expect(navigate).toHaveBeenCalledWith({ kind: 'vault', id: 'beta' })
+    expect(navigate).toHaveBeenCalledWith({ kind: 'secret', id: 'beta' })
     expect(host.textContent).not.toContain('Secret recovered')
   })
 
-  it('names the vault on an error, too', () => {
-    act(() => reportError('Mailbox poll failed', 'offline', undefined, { vaultId: 'beta', vaultName: 'Beta' }))
+  it('names the secret on an error, too', () => {
+    act(() => reportError('Mailbox poll failed', 'offline', undefined, { localSecretId: 'beta', secretName: 'Beta' }))
 
     expect(host.textContent).toContain('Beta: Mailbox poll failed: offline')
   })

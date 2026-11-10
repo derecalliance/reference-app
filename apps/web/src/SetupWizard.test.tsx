@@ -7,8 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { BEActorWithStatus, ServerDefaultsResult } from './api'
 import { FALLBACK_SERVER_DEFAULTS } from './config'
-import { persistDefaultOverrides } from './protocolDefaults'
-import type { Vault } from './types'
+import { persistDefaultOverrides, SECRET_CONFIG_DEFAULTS } from './protocolDefaults'
+import type { Secret } from './types'
 
 const api = vi.hoisted(() => ({
   apiGetServerDefaults: vi.fn(),
@@ -64,7 +64,7 @@ afterEach(() => {
   host.remove()
 })
 
-function render(onReady: (vault: Vault) => Promise<boolean> = async () => true) {
+function render(onReady: (secret: Secret) => Promise<boolean> = async () => true) {
   act(() =>
     root.render(<SetupWizard initialFlow="setup" onReady={onReady} onCancel={() => {}} />),
   )
@@ -111,13 +111,13 @@ describe('the settings step while the node is still being probed', () => {
     await landDefaults({ prePairedCount: 3 })
 
     // Two helpers online cap the default of three: shown and used agree.
-    expect(counts()).toEqual(['300', '2'])
+    expect(counts()).toEqual([String(SECRET_CONFIG_DEFAULTS.protocolTimeoutSecs), '2'])
     expect(button('Set up').disabled).toBe(false)
   })
 
   it('pre-pairs exactly what the stepper showed', async () => {
-    const onReady = vi.fn(async (vault: Vault) => {
-      void vault
+    const onReady = vi.fn(async (secret: Secret) => {
+      void secret
       return true
     })
     render(onReady)
@@ -132,7 +132,7 @@ describe('the settings step while the node is still being probed', () => {
   })
 })
 
-describe('a vault the app could not take on', () => {
+describe('a secret the app could not take on', () => {
   it('leaves the busy state and says why when onReady answers false', async () => {
     render(async () => false)
     typeName('Alice')
@@ -148,41 +148,42 @@ describe('a vault the app could not take on', () => {
 })
 
 describe('Settings overrides with a name typed before /config returns', () => {
-  it('creates the vault from the overridden defaults and records no override', async () => {
-    persistDefaultOverrides({ minParticipants: 2, protocolTimeoutSecs: 120 })
-    const onReady = vi.fn(async (vault: Vault) => {
-      void vault
+  it('creates the secret from the overridden pool and the app timeout, and records no override', async () => {
+    persistDefaultOverrides({ minParticipants: 2 })
+    const onReady = vi.fn(async (secret: Secret) => {
+      void secret
       return true
     })
     render(onReady)
     // The race QA hit: the name is in before the node's defaults land.
     typeName('Alice')
-    await landDefaults({ minParticipants: 3, protocolTimeoutSecs: 300 })
+    await landDefaults({ minParticipants: 3 })
     act(() => button('Next →').click())
 
-    expect(counts()[0]).toBe('120')
+    // A secret's timeout starts from the app's default, not the node's.
+    expect(counts()[0]).toBe(String(SECRET_CONFIG_DEFAULTS.protocolTimeoutSecs))
     await act(async () => button('Set up').click())
 
-    const vault = onReady.mock.calls[0][0]
-    expect(vault.minParticipants).toBe(2)
-    // Nothing was edited, so nothing is frozen onto the vault.
-    expect(vault.configOverrides).toEqual({})
+    const secret = onReady.mock.calls[0][0]
+    expect(secret.minParticipants).toBe(2)
+    // Nothing was edited, so nothing is frozen onto the secret.
+    expect(secret.configOverrides).toEqual({})
   })
 
   it('records the timeout only when the user changed it', async () => {
-    const onReady = vi.fn(async (vault: Vault) => {
-      void vault
+    const onReady = vi.fn(async (secret: Secret) => {
+      void secret
       return true
     })
     render(onReady)
     typeName('Alice')
     act(() => button('Next →').click())
-    await landDefaults({ protocolTimeoutSecs: 300 })
+    await landDefaults()
 
     act(() => button('Increase protocol timeout').click())
     await act(async () => button('Set up').click())
 
-    expect(onReady.mock.calls[0][0].configOverrides).toEqual({ protocolTimeoutSecs: 330 })
+    expect(onReady.mock.calls[0][0].configOverrides).toEqual({ protocolTimeoutSecs: SECRET_CONFIG_DEFAULTS.protocolTimeoutSecs + 30 })
   })
 })
 
@@ -249,7 +250,7 @@ describe('the name step', () => {
 describe('claiming an owner that looks active elsewhere', () => {
   const liveOwner: BEActorWithStatus = { ...OWNER, last_polled_at: new Date().toISOString() }
 
-  function renderClaim(onReady: (vault: Vault) => Promise<boolean> = async () => true) {
+  function renderClaim(onReady: (secret: Secret) => Promise<boolean> = async () => true) {
     act(() =>
       root.render(<SetupWizard initialFlow="claim" onReady={onReady} onCancel={() => {}} />),
     )
@@ -297,8 +298,8 @@ describe('the name step’s limits', () => {
   })
 
   it('counts a decomposed accent once, as the node will after NFC', async () => {
-    const onReady = vi.fn(async (vault: Vault) => {
-      void vault
+    const onReady = vi.fn(async (secret: Secret) => {
+      void secret
       return true
     })
     render(onReady)
@@ -314,14 +315,14 @@ describe('the name step’s limits', () => {
     expect(onReady.mock.calls[0][0].name).toBe(sent)
   })
 
-  it('warns, without blocking, on a name another vault here already uses', () => {
+  it('warns, without blocking, on a name another secret here already uses', () => {
     act(() =>
       root.render(
         <SetupWizard
           initialFlow="setup"
           onReady={async () => true}
           onCancel={() => {}}
-          existingVaultNames={['Alice']}
+          existingSecretNames={['Alice']}
         />,
       ),
     )
@@ -344,8 +345,8 @@ describe('an unusable minimum from Settings', () => {
   })
 })
 
-describe('the claimed vault’s threshold', () => {
-  function renderClaim(onReady: (vault: Vault) => Promise<boolean>) {
+describe('the claimed secret’s threshold', () => {
+  function renderClaim(onReady: (secret: Secret) => Promise<boolean>) {
     act(() =>
       root.render(<SetupWizard initialFlow="claim" onReady={onReady} onCancel={() => {}} />),
     )
@@ -365,10 +366,10 @@ describe('the claimed vault’s threshold', () => {
     })
   }
 
-  it('creates the vault with the threshold the person confirmed', async () => {
+  it('creates the secret with the threshold the person confirmed', async () => {
     api.apiGetActors.mockReset().mockResolvedValue([OWNER])
-    const onReady = vi.fn(async (vault: Vault) => {
-      void vault
+    const onReady = vi.fn(async (secret: Secret) => {
+      void secret
       return true
     })
     renderClaim(onReady)
