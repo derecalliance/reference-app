@@ -39,7 +39,7 @@ The backend deliberately implements **no protocol logic** — see
 
 Before building the project, install the required development tools:
 
-- Rust (1.89 or newer)
+- Rust (1.95 or newer)
 - `protoc` (Protocol Buffers compiler), for the backend's vendored transport protos
 - Node.js (22 or newer) and npm
 - Google Chrome, for the end-to-end tests

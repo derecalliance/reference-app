@@ -33,6 +33,7 @@ use crate::repositories::participant_data::{
 use crate::repositories::protocol_records::{
     ProtocolRecordRepository, SqlProtocolRecordRepository,
 };
+use crate::repositories::seen_messages::{SeenMessageRepository, SqlSeenMessageRepository};
 use crate::repositories::sharing_rounds::{SharingRoundRepository, SqlSharingRoundRepository};
 use crate::services::actors::ActorServiceImpl;
 use crate::services::configuration::ConfigurationServiceImpl;
@@ -108,6 +109,8 @@ impl Node {
             Arc::new(SqlProtocolRecordRepository::new(pool.clone()));
         let sharing_rounds: Arc<dyn SharingRoundRepository> =
             Arc::new(SqlSharingRoundRepository::new(pool.clone()));
+        let seen_messages: Arc<dyn SeenMessageRepository> =
+            Arc::new(SqlSeenMessageRepository::new(pool.clone()));
         let helper_channels: Arc<dyn HelperChannelIndex> =
             Arc::new(InMemoryHelperChannelIndex::new());
         let mailbox_polls: Arc<dyn MailboxPollRepository> = Arc::new(InMemoryMailboxPolls::new());
@@ -143,6 +146,7 @@ impl Node {
                 channel_router: Arc::clone(&channel_router),
                 helper_channels: Arc::clone(&helper_channels),
                 sharing_rounds: Arc::clone(&sharing_rounds),
+                seen_messages,
             },
             pool.clone(),
             http_client.clone(),

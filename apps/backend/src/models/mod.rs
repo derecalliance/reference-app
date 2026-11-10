@@ -42,7 +42,7 @@ pub use contact::{ContactOptions, ContactRequest, ContactTimestamp, PeerContact,
 pub use delivery::{DispatchOutcome, LocalAttempt, RelayRefusal, RelayRequest, RelayTarget};
 pub use diagnostics::{ActorSnapshot, GrpcStatus, NodeSnapshot};
 pub use display_name::{DisplayName, NameError, MAX_NAME_CHARS};
-pub use envelope::{EnvelopeError, EnvelopeMeta};
+pub use envelope::{EnvelopeError, EnvelopeMeta, SeenEnvelope};
 pub use event::{Carrier, Direction, Event, EventSnapshot, NewEvent, Outcome, EVENT_LOG_CAPACITY};
 pub use helper::{
     AddHelper, EnsurePool, EnsuredPool, HelperFault, UnknownHelperFault, MAX_POOL_SIZE,

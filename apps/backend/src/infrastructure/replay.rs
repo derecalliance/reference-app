@@ -16,17 +16,23 @@
 //! `process` accepted until `max(sent or received at, its timestamp) + the
 //! inbound window`, and drop an inbound envelope whose id is kept.
 //!
-//! Ids are kept in memory, one log per actor, shared by its transport and its
-//! inbound path. A node restart forgets them, so a copy replayed within one
-//! inbound window of a restart is processed again; persisting them would close
-//! that, at the cost of a write per message.
+//! The contract also asks for the record to survive a restart: an id kept
+//! only in memory would let a copy replayed just after one be processed again.
+//! Each actor checks its own log in memory, shared by its transport and its
+//! inbound path, and writes every id through to the database
+//! ([`SeenMessageRepository`]), from which the log is restored when the actor
+//! starts. The write is not awaited by the message it records, so a crash in
+//! the moment between the two can still lose one id.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use derec_library::derec_message::message_id;
+use uuid::Uuid;
 
+use crate::models::SeenEnvelope;
+use crate::repositories::seen_messages::SeenMessageRepository;
 use crate::utils::time::now_unix_secs;
 
 /// Now, in the unsigned seconds `message_id` reports.
@@ -34,8 +40,13 @@ fn now_secs() -> u64 {
     u64::try_from(now_unix_secs()).unwrap_or(0)
 }
 
+/// Where an actor's log is written through to.
+struct Persistence {
+    store: Arc<dyn SeenMessageRepository>,
+    actor_id: Uuid,
+}
+
 /// One actor's log of the messages it sent or accepted.
-#[derive(Debug)]
 pub struct ReplayGuard {
     /// Envelope id → when it may be forgotten, in Unix seconds.
     seen: Mutex<HashMap<[u8; 32], u64>>,
@@ -44,6 +55,17 @@ pub struct ReplayGuard {
     window_secs: AtomicU64,
     /// The current time in Unix seconds; replaced in tests.
     clock: fn() -> u64,
+    /// `None` keeps the log in memory only, for fixtures.
+    persistence: Option<Persistence>,
+}
+
+impl std::fmt::Debug for ReplayGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReplayGuard")
+            .field("window_secs", &self.window_secs)
+            .field("persisted", &self.persistence.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 /// A log with no window, for fixtures that never set one: an id is kept only
@@ -55,8 +77,25 @@ impl Default for ReplayGuard {
 }
 
 impl ReplayGuard {
+    /// A log kept in memory only.
     pub fn new(window_secs: u64) -> Self {
         Self::with_clock(window_secs, now_secs)
+    }
+
+    /// `actor_id`'s log, holding what it had remembered before a restart and
+    /// writing what it remembers from now on to `store`.
+    pub fn persisted(
+        window_secs: u64,
+        store: Arc<dyn SeenMessageRepository>,
+        actor_id: Uuid,
+        restored: &[SeenEnvelope],
+    ) -> Self {
+        let mut guard = Self::new(window_secs);
+        guard.persistence = Some(Persistence { store, actor_id });
+        if let Ok(seen) = guard.seen.get_mut() {
+            seen.extend(restored.iter().map(|s| (s.id, s.expires_at)));
+        }
+        guard
     }
 
     fn with_clock(window_secs: u64, clock: fn() -> u64) -> Self {
@@ -64,6 +103,7 @@ impl ReplayGuard {
             seen: Mutex::new(HashMap::new()),
             window_secs: AtomicU64::new(window_secs),
             clock,
+            persistence: None,
         }
     }
 
@@ -98,6 +138,35 @@ impl ReplayGuard {
             seen.retain(|_, &mut until| until >= now);
             seen.insert(id.id, expires);
         }
+        self.persist(
+            SeenEnvelope {
+                id: id.id,
+                expires_at: expires,
+            },
+            now,
+        );
+    }
+
+    /// Write `seen` through to the database, off the message's own path.
+    fn persist(&self, seen: SeenEnvelope, now: u64) {
+        let Some(persistence) = &self.persistence else {
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            tracing::warn!(actor_id = %persistence.actor_id, "no runtime to record a message id on; kept in memory only");
+            return;
+        };
+        let store = Arc::clone(&persistence.store);
+        let actor_id = persistence.actor_id;
+        runtime.spawn(async move {
+            if let Err(e) = store.remember(&actor_id, seen, now).await {
+                tracing::warn!(
+                    actor_id = %actor_id,
+                    error = %e,
+                    "could not record a message id; a copy replayed after a restart would not be recognised"
+                );
+            }
+        });
     }
 }
 
@@ -142,6 +211,44 @@ mod tests {
         assert!(guard.is_copy(&envelope(b"sealed", 120)));
         NOW.store(151, Ordering::Relaxed);
         assert!(!guard.is_copy(&envelope(b"sealed", 120)));
+    }
+
+    #[test]
+    fn a_restored_log_still_knows_what_was_remembered_before_the_restart() {
+        struct NoStore;
+        #[async_trait::async_trait]
+        impl SeenMessageRepository for NoStore {
+            async fn live(
+                &self,
+                _: &Uuid,
+                _: u64,
+            ) -> Result<Vec<SeenEnvelope>, crate::repositories::RepositoryError> {
+                Ok(Vec::new())
+            }
+            async fn remember(
+                &self,
+                _: &Uuid,
+                _: SeenEnvelope,
+                _: u64,
+            ) -> Result<(), crate::repositories::RepositoryError> {
+                Ok(())
+            }
+        }
+
+        let now = now_secs();
+        let sent = envelope(b"sealed", now as i64);
+        let Ok(id) = message_id(&sent) else {
+            panic!("an envelope with a timestamp has an id");
+        };
+        let restored = [SeenEnvelope {
+            id: id.id,
+            expires_at: now + 30,
+        }];
+
+        let guard = ReplayGuard::persisted(30, Arc::new(NoStore), Uuid::new_v4(), &restored);
+
+        assert!(guard.is_copy(&sent));
+        assert!(!guard.is_copy(&envelope(b"other", now as i64)));
     }
 
     #[test]

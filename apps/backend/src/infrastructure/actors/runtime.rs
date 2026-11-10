@@ -21,7 +21,9 @@ use super::provisioned::{
 };
 use crate::infrastructure::replay::ReplayGuard;
 use crate::infrastructure::transport::is_unreachable;
-use crate::models::{Actor, ActorSettings, ChannelSummary, ContactRequest, UnpairedContact};
+use crate::models::{
+    Actor, ActorSettings, ChannelSummary, ContactRequest, SeenEnvelope, UnpairedContact,
+};
 use crate::services::delivery::LocalDelivery;
 use crate::services::ports::{ActorCallError, ActorGateway, SpawnError};
 
@@ -37,6 +39,9 @@ pub struct StoredInstances {
     /// Contacts minted and still inside their lifetime, whose first inbound
     /// message has not arrived. Their routes lived only in memory.
     pub unpaired_contacts: Vec<UnpairedContact>,
+    /// Envelopes the actor sent or accepted that are still inside the inbound
+    /// window: a copy of one delivered after the restart is still a copy.
+    pub seen_messages: Vec<SeenEnvelope>,
 }
 
 /// The provisioned actors on this node.
@@ -119,7 +124,12 @@ impl ActorRuntime {
             pool: self.pool.clone(),
             actor_id,
             local_delivery: Some(Arc::clone(&self.local_delivery)),
-            replay_guard: Arc::new(ReplayGuard::new(u64::from(settings.timeout_secs))),
+            replay_guard: Arc::new(ReplayGuard::persisted(
+                u64::from(settings.timeout_secs),
+                Arc::clone(&self.deps.seen_messages),
+                actor_id,
+                &stored.seen_messages,
+            )),
         };
 
         let protocol = build_protocol(&config).map_err(|e| {

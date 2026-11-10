@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: DeRec reference app — backend
-  version: "0.0.10"
+  version: "0.0.11"
   description: |
     The backend half of the DeRec reference app: an actor registry, a message
     relay, and a debug surface. It runs as a developer's local container and

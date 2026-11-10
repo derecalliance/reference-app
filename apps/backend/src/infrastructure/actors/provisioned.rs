@@ -23,6 +23,7 @@ use super::{MAX_REPLICA_INSTANCES, PENDING_CHANNEL_TTL_SECS};
 use crate::infrastructure::routing::ChannelRouter;
 use crate::models::{ChannelSummary, EnvelopeMeta, Role, Side, UnpairAck};
 use crate::repositories::helper_channels::HelperChannelIndex;
+use crate::repositories::seen_messages::SeenMessageRepository;
 use crate::repositories::sharing_rounds::SharingRoundRepository;
 
 /// How often each actor advances its own time-driven state.
@@ -251,6 +252,9 @@ pub struct ActorDependencies {
     pub helper_channels: Arc<dyn HelperChannelIndex>,
     /// How each sharing round ended, for the share store's `keep_version`.
     pub sharing_rounds: Arc<dyn SharingRoundRepository>,
+    /// The envelopes each actor sent or accepted, kept across restarts — see
+    /// [`ReplayGuard`](crate::infrastructure::replay::ReplayGuard).
+    pub seen_messages: Arc<dyn SeenMessageRepository>,
 }
 
 /// A backend-managed protocol participant.

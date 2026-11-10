@@ -202,10 +202,18 @@ describe('recovery answers without a share', () => {
     const answered = foldEvent(recovering({ sharesReceived: 1, refusals: [{ channelId: '1', status: 6, memo: '' }] }), refused('3'), context())
     expect(answered.recoveryProgress?.error).toBeNull()
 
-    const next = foldEvent(answered, { type: 'RecoveryIncomplete', version: 3, shares_received: 1 }, context())
+    const next = foldEvent(answered, { type: 'RecoveryIncomplete', secret_id: '42', version: 3, shares_received: 1 }, context())
 
     expect(next.recoveryProgress?.error).toMatch(/Not enough shares.*1 share collected, 2 helpers answered without a usable share/)
     expect(next.recoveryFailures).toHaveLength(1)
+  })
+
+  it('leaves the progress of another secret alone when its recovery closes incomplete', () => {
+    const ctx = context()
+    const next = foldEvent(recovering({ sharesReceived: 1 }), { type: 'RecoveryIncomplete', secret_id: '7', version: 3, shares_received: 0 }, ctx)
+
+    expect(next.recoveryProgress?.error).toBeNull()
+    expect(next.recoveryFailures).toEqual([expect.objectContaining({ secretId: '7', version: 3 })])
   })
 
   it('notes a helper that timed out instead of reporting a dispatch failure', () => {
@@ -218,7 +226,7 @@ describe('recovery answers without a share', () => {
 
     expect(next.recoveryProgress?.timedOut).toEqual(['3'])
     expect(ctx.notify.error).not.toHaveBeenCalled()
-    const closed = foldEvent(next, { type: 'RecoveryIncomplete', version: 3, shares_received: 2 }, ctx)
+    const closed = foldEvent(next, { type: 'RecoveryIncomplete', secret_id: '42', version: 3, shares_received: 2 }, ctx)
     expect(closed.recoveryProgress?.error).toMatch(/1 did not answer in time/)
   })
 
@@ -248,7 +256,7 @@ describe('recovery answers without a share', () => {
     const progress = { totalRequested: 2, requestedChannelIds: ['1', '2'] }
     const once = foldEvent(recovering(progress), malformed('1'), ctx)
     const twice = foldEvent(once, malformed('2'), ctx)
-    const next = foldEvent(twice, { type: 'RecoveryIncomplete', version: 3, shares_received: 0 }, ctx)
+    const next = foldEvent(twice, { type: 'RecoveryIncomplete', secret_id: '42', version: 3, shares_received: 0 }, ctx)
 
     expect(ctx.notify.error).toHaveBeenCalledWith(expect.stringContaining('before an SDK upgrade'), undefined, expect.anything())
     expect(ctx.notify.error).not.toHaveBeenCalledWith(expect.stringContaining('An honest helper never'), undefined, expect.anything())

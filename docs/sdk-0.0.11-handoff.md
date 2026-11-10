@@ -1,22 +1,25 @@
 # SDK 0.0.11 — findings from the reference app
 
-Findings the reference app hit while moving to the local, unreleased
-lib-derec 0.0.11 (`fix/security_findings`: "Security fixed #8, #16 and #17",
+Findings the reference app hit while moving to lib-derec 0.0.11 — first the
+local, unreleased build (`fix/security_findings`: "Security fixed #8, #16 and #17",
 "#18", "#19", "#9" plus staged changes). App-side changes are in the app; these
-are the library's to decide. Nothing in lib-derec was changed.
+are the library's to decide. Nothing in lib-derec was changed. The app was
+then moved to the published 0.0.11 (crates.io / npm), and the status column
+reflects it.
 
 None of these blocks the app: every item has an app-side workaround in place.
-They are things every integrator will run into, so they are worth settling in
-the library or its docs before 0.0.11 is published.
+They are things every integrator will run into, so the ones still open are
+worth settling in the library or its docs in a later release.
 
 | # | Area | Severity | Status |
 | --- | --- | --- | --- |
 | 1 | Default `pairing` lifetime (30 s) is too short for human-paced pairing | Medium | Open — suggestion |
-| 2 | `RecoveryIncomplete` does not say which secret it closes | Low | Open — question |
+| 2 | `RecoveryIncomplete` does not say which secret it closes | Low | Fixed in published 0.0.11 (`secret_id` added) — app uses it |
 | 3 | A helper timeout is a `RecoverSecretFailed` with the magic error `"timeout"` | Low | Open — suggestion |
 | 4 | `AutoAcceptPolicy::all()` still enables `update_channel_info`, which the docs now call unsafe | Medium | Open — question |
-| 5 | Replay and reflection detection is left to every integrator | Medium | Open — suggestion |
-| 6 | Contacts now need a timestamp: easy to lose in an app's own wire form | Low | Docs — suggestion |
+| 5 | Replay and reflection detection is left to every integrator | Medium | Open — suggestion (published 0.0.11 adds "keep it across restarts"; app now persists) |
+| 6 | Contacts now need a timestamp: easy to lose in an app's own wire form | Low | Migration note added in published 0.0.11; own error code still open |
+| 7 | `rust-version = "1.88"` but the crate needs 1.95 (`if let` guards) | Medium | Open — third release in a row |
 
 ## 1. Default `pairing` lifetime (30 s) is too short for human-paced pairing
 
@@ -110,9 +113,11 @@ inbound_message`, and drop an inbound envelope whose id is kept. Getting it
 wrong is silent: a reflected message decrypts as the peer's.
 
 **App workaround:** the web app keeps the ids in localStorage
-(`apps/web/src/secret/replayGuard.ts`); the backend keeps them in memory per
-actor (`apps/backend/src/infrastructure/replay.rs`), so a node restart forgets
-them for one inbound window.
+(`apps/web/src/secret/replayGuard.ts`); the backend checks them in memory per
+actor and writes them through to a `seen_messages` table, restored when the
+actor starts (`apps/backend/src/infrastructure/replay.rs`). The published
+0.0.11 contract now requires the record to survive a restart, which the
+pre-release build tested first did not say.
 
 **Suggestion:** an optional store-backed id log in the library, with the
 same store abstraction the other stores use, so `process` can drop copies
@@ -137,3 +142,24 @@ and backend, and a readable message for a contact from an older build.
 **Suggestion:** say in the migration note that apps which serialize contacts
 themselves must now carry `timestamp`, and give the error for a missing one
 its own code (e.g. `contact_without_timestamp`) so apps need not match text.
+
+## 7. `rust-version = "1.88"` but the crate needs 1.95
+
+**Where:** `derec-library` 0.0.11's `Cargo.toml` (`rust-version = "1.88"`);
+`src/protocol/obligation.rs:377` and `:507` use `if let` match guards
+(`_ if let Some(author) = replica_author(&self.request) => …`), which are
+stable only from Rust 1.95.
+
+**What happens:** on any toolchain from 1.88 to 1.94 cargo accepts the
+declared floor and the build then fails with `error[E0658]: if let guards are
+experimental`. The reference app's Docker image, pinned to `rust:1.89-bookworm`,
+failed this way; local builds on a newer rustc never noticed.
+
+**App fix:** builder image, `rust-version` and docs raised to 1.95.
+
+**Ask:** this is the same drift reported for 0.0.8 (item 5 of
+`sdk-0.0.8-handoff.md`) and 0.0.9. Either raise the declared `rust-version`
+to what the code needs, or rewrite the two guards as `if matches!(…)` / a
+nested `match`, and add a CI job that builds on the declared floor so the two
+cannot drift again.
+

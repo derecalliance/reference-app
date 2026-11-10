@@ -26,7 +26,7 @@ Without cloning anything, the published image runs on its own:
 
 ```
 docker run -d --name derec -p 5000:5000 -p 50051:50051 \
-  -v derec-data:/var/lib/derec ghcr.io/derecalliance/reference-app:0.0.10
+  -v derec-data:/var/lib/derec ghcr.io/derecalliance/reference-app:0.0.11
 ```
 
 ### Run it in Docker
@@ -59,7 +59,7 @@ the browser settings a phone needs.
 
 ### Run it from source
 
-For working on the code. Needs [Rust](https://rustup.rs) 1.89+ and
+For working on the code. Needs [Rust](https://rustup.rs) 1.95+ and
 [Node.js](https://nodejs.org) 22+, and two terminals:
 
 ```
@@ -211,7 +211,7 @@ volume. It is published as `ghcr.io/derecalliance/reference-app` for
 
 ```
 docker run -d --name derec -p 5000:5000 -p 50051:50051 \
-  -v derec-data:/var/lib/derec ghcr.io/derecalliance/reference-app:0.0.10
+  -v derec-data:/var/lib/derec ghcr.io/derecalliance/reference-app:0.0.11
 ```
 
 **[docs/DOCKER.md](docs/DOCKER.md) is the image's reference:** tags and

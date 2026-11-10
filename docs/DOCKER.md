@@ -30,7 +30,7 @@ transports over HTTP and gRPC. It is built for `linux/amd64` and
 docker run -d --name derec \
   -p 5000:5000 -p 50051:50051 \
   -v derec-data:/var/lib/derec \
-  ghcr.io/derecalliance/reference-app:0.0.10
+  ghcr.io/derecalliance/reference-app:0.0.11
 ```
 
 Open <http://localhost:5000>. The UI and the API share that origin; there is no
@@ -43,7 +43,7 @@ and tell the node about it (see [Ports](#ports)):
 docker run -d --name derec \
   -p 8080:5000 -p 50051:50051 -e DEREC_PUBLIC_PORT=8080 \
   -v derec-data:/var/lib/derec \
-  ghcr.io/derecalliance/reference-app:0.0.10
+  ghcr.io/derecalliance/reference-app:0.0.11
 ```
 
 ## Tags and versions
@@ -68,7 +68,7 @@ Every image carries standard OCI labels (`org.opencontainers.image.version`,
 attestation and an SBOM:
 
 ```
-docker buildx imagetools inspect ghcr.io/derecalliance/reference-app:0.0.10
+docker buildx imagetools inspect ghcr.io/derecalliance/reference-app:0.0.11
 ```
 
 ## Ports
@@ -306,7 +306,7 @@ services:
     restart: unless-stopped
 
   node:
-    image: ghcr.io/derecalliance/reference-app:0.0.10
+    image: ghcr.io/derecalliance/reference-app:0.0.11
     env_file:
       - path: .env
         required: false
@@ -354,7 +354,7 @@ not node settings.
 docker run -d --name derec -p 5000:5000 -p 50051:50051 \
   -v derec-data:/var/lib/derec \
   -e DEREC_BASE_URL=http://192.168.0.28 \
-  ghcr.io/derecalliance/reference-app:0.0.10
+  ghcr.io/derecalliance/reference-app:0.0.11
 ```
 
 Find the address with `ipconfig getifaddr en0` (macOS) or `hostname -I`

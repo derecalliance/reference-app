@@ -339,19 +339,19 @@ export const recoveryHandlers = {
       flow: 'recovery',
       step: 'RecoveryIncomplete',
       description: `Recovery of v${event.version} closed without a secret: ${error}`,
-      payload: { version: event.version, sharesReceived: event.shares_received },
+      payload: { secretId: event.secret_id, version: event.version, sharesReceived: event.shares_received },
     })
-    const secretId = pending?.secretId ?? progress?.secretId
-    if (secretId === undefined) return current
+    // The event names the recovery that closed (SDK 0.0.11); the pending
+    // round is only a fallback for an event without it.
+    const secretId = event.secret_id || pending?.secretId || progress?.secretId
+    if (!secretId) return current
     ctx.notify.outcome(`Recovery failed: ${error}`)
     // A terminal failure goes on the per-version list, so it survives later
     // Recover clicks on other versions.
+    const closesProgress = progress?.secretId === secretId && progress.version === event.version
     return {
       ...current,
-      recoveryProgress:
-        progress && progress.version === event.version
-          ? { ...progress, sharesReceived: event.shares_received, error }
-          : progress,
+      recoveryProgress: closesProgress ? { ...progress, sharesReceived: event.shares_received, error } : progress,
       recoveryFailures: upsertRecoveryFailure(current.recoveryFailures, secretId, event.version, error),
     }
   },

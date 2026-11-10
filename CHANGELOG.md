@@ -9,15 +9,15 @@ the SDK is compiled into both halves, so a different SDK means a different
 release rather than a different setting. Pre-releases of a version carry a
 suffix (`0.0.8-alpha.1`, `-beta.N`, `-rc.N`).
 
-## [0.0.10] — unreleased
+## [0.0.11] — unreleased
 
 First release. Built against DeRec SDK 0.0.11, a security release, on top
 of 0.0.10's single kept version, fingerprint commitment, and a mismatch that
-revokes the pairing. Until 0.0.11 is published the SDK comes from a local
-lib-derec checkout (path dependencies and a packed `@derec-alliance/web`), so
-the Docker image and `start.sh` cannot build this entry yet; once it is
-published, the dependencies move to crates.io and npm and the version to
-0.0.11.
+revokes the pairing.
+
+Building from source needs Rust 1.95 or newer (the Docker image builds on
+`rust:1.95-bookworm`): SDK 0.0.11 uses `if let` match guards, although its
+crates still declare 1.88.
 
 ### Changed
 
@@ -191,8 +191,9 @@ published, the dependencies move to crates.io and npm and the version to
   fresh one.
 - **Replayed and reflected messages are dropped (SDK 0.0.11).** The browser
   and the node's helpers keep the `message_id` of every message they send or
-  accept for the replay window and drop an incoming copy of one; the browser
-  keeps them across reloads, the node in memory. A contact update older than
+  accept for the replay window and drop an incoming copy of one, and keep
+  them across restarts — the browser in local storage, the node in a new
+  `seen_messages` table (migration `0007`). A contact update older than
   one already applied on the channel is refused. A replica pairing still
   waiting for its fingerprint no longer stops a secret from publishing.
 - **Fingerprint commitment (SDK 0.0.10).** Contacts carry

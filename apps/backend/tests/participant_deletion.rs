@@ -109,6 +109,13 @@ fn seed_rows(actor: &str) -> Vec<(&'static str, String)> {
             format!("INSERT INTO disabled_helpers (actor_id) VALUES ('{actor}')"),
         ),
         (
+            "seen_messages",
+            format!(
+                "INSERT INTO seen_messages (actor_id, message_id, expires_at) \
+             VALUES ('{actor}', 'ab', 1)"
+            ),
+        ),
+        (
             "participant_contacts",
             format!("INSERT INTO participant_contacts (actor_id, contact) VALUES ('{actor}', 'c')"),
         ),

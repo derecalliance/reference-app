@@ -25,6 +25,7 @@ pub mod mailboxes;
 pub mod participant_data;
 pub mod protocol_records;
 pub mod sdk;
+pub mod seen_messages;
 pub mod sharing_rounds;
 
 /// Why a repository call failed.

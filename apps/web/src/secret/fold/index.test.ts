@@ -130,7 +130,7 @@ describe('foldEvent', () => {
         recoveryProgress: { secretId: '42', version: 2, sharesReceived: 0, totalRequested: 2, error: null },
       })
 
-      foldEvent(current, { type: 'RecoveryIncomplete', version: 2, shares_received: 1 }, ctx)
+      foldEvent(current, { type: 'RecoveryIncomplete', secret_id: '42', version: 2, shares_received: 1 }, ctx)
 
       expect(ctx.notify.outcome).toHaveBeenCalledWith(
         expect.stringMatching(/^Recovery failed: Not enough shares to reconstruct the secret \(1 share collected\)/),

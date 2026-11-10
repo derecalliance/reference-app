@@ -80,7 +80,7 @@ docker run -d --name derec -p 5000:5000 -p 50051:50051 \
 
 ## From source
 
-Needs Rust 1.89+ and Node.js 22+, and two terminals:
+Needs Rust 1.95+ and Node.js 22+, and two terminals:
 
 ```
 cd apps/backend && cargo run          # backend on http://localhost:5000, state in apps/backend/derec.db

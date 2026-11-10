@@ -22,6 +22,8 @@ use derec_backend::repositories::sharing_rounds::{
 };
 use derec_backend::models::HelperFault;
 use derec_backend::repositories::helper_faults::{HelperFaultRepository, SqlHelperFaultRepository};
+use derec_backend::repositories::seen_messages::{SeenMessageRepository, SqlSeenMessageRepository};
+use derec_backend::models::SeenEnvelope;
 use derec_library::protocol::{
     CollectedShare, DeRecShareStore, DeRecStateStore, Share, ShareStoreError, StateItem,
 };
@@ -101,6 +103,7 @@ async fn reset(pool: &sqlx::AnyPool) {
         "sharing_rounds",
         "state_items",
         "helper_faults",
+        "seen_messages",
     ] {
         sqlx::query(&format!("DELETE FROM {table}"))
             .execute(pool)
@@ -437,3 +440,35 @@ async fn paired_channel_ids_counts_only_completed_pairings_of_that_actor() {
     })
     .await;
 }
+
+/// The replay log survives a restart (SDK 0.0.11 asks for it): what an actor
+/// remembered is read back while it is live, an expired id is pruned by the
+/// next write, and one actor's ids are not another's.
+#[tokio::test]
+async fn the_seen_message_log_keeps_live_ids_per_actor() {
+    on_every_engine(|pool| async move {
+        let log = SqlSeenMessageRepository::new(pool);
+        let (alice, bob) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let old = SeenEnvelope { id: [1; 32], expires_at: 100 };
+        let fresh = SeenEnvelope { id: [2; 32], expires_at: 200 };
+        let renewed = SeenEnvelope { expires_at: 250, ..fresh };
+
+        log.remember(&alice, old, 50).await.expect("remember");
+        log.remember(&alice, fresh, 50).await.expect("remember");
+        // Remembered again, an id keeps the later expiry.
+        log.remember(&alice, renewed, 50).await.expect("remember");
+
+        let mut live = log.live(&alice, 90).await.expect("live");
+        live.sort_by_key(|s| s.expires_at);
+        assert_eq!(live, vec![old, renewed]);
+        assert_eq!(log.live(&alice, 150).await.expect("live"), vec![renewed]);
+        assert!(log.live(&bob, 0).await.expect("live").is_empty());
+
+        // A write after the old id expired removes its row.
+        let later = SeenEnvelope { id: [3; 32], expires_at: 300 };
+        log.remember(&alice, later, 150).await.expect("remember");
+        assert_eq!(log.live(&alice, 0).await.expect("live").len(), 2);
+    })
+    .await;
+}
+
